@@ -1418,8 +1418,12 @@ methods are `pub(super)`, so no other ui code can drop the requests they return.
   installs it only while its row is the one the chat shows (`take_opened`, `with_chat`), through
   `State::install_chat_picture`: `issue_preview` advances the generation, so a preview reply in flight is stale, never
   `forget_fired`, so the fired target stays (`requests_tests::a_chat_picture_outdates_the_reply_in_flight_and_keeps_the_fired_target`),
-  and `install_preview_reply` installs the bytes with no node (`InkLayer::install_preview` hides the canvas; drawing, crop,
-  scale and open act on nothing). A cursor move, a switch to another row or a `preview.changed` for the fired node shows a file again.
+  and `install_preview_reply` installs the bytes with no node (`InkLayer::install_preview` hides the canvas). Every reader that
+  acts on what is shown reads `State::shown_target`, the fired target unless the pane shows bytes with no node: the visible
+  region (the crop and its paste to the agent, fe-state, the saved view's record and restore), the scale prompt, the title,
+  the caption, the editor and the page re-raster; so over a chat picture they act on nothing, while the refetches (a
+  reconnect, a `preview.changed`, a page turn) keep the fired target (the native fixture asserts no region, no title and no
+  scale prompt after the open). A cursor move, a switch to another row or a `preview.changed` for the fired node shows a file again.
   The native fixture `a_chats_pictures_show_and_one_opens_in_the_preview` runs it through the window: `Primary+o` on the
   marked message asks one original, and the answer is the preview's source and raster, with no node and the fired target
   as it was. Cost, at the 40-megapixel bound (measured 2026-11-16 in release on one Linux computer): the check's decode
@@ -1427,8 +1431,7 @@ methods are `pub(super)`, so no other ui code can drop the requests they return.
   check holds the decoded pixels (up to 320 MB for 16-bit RGBA) until it drops them, then the preview holds its decode
   and its RGBA copy (up to 480 MB) while it makes the texture, and the bytes stay in the installed source and in the row's
   parked view, as any preview's do. Limits: the press reaches `press_chat` only through `mouse_input`, which no test runs
-  (the drawer's `open_at` is tested); a cached image view of the fired node's folder whose size matches the picture's can
-  be restored over it (`RasterView::reset_view` keys on the fired target; read from the code, not seen).
+  (the drawer's `open_at` is tested).
 - The band of tiles (the plan's D9, `drawer/chat/view.rs`): each placed record that is not deleted shows its picture files
   (`ChatFile::is_picture`) as square tiles in a band below its text and meta lines, `THUMB_PX` (180) a side at text scale 1
   with `THUMB_GAP_PX` between, as many to a row as the text's width holds (a text narrower than a tile makes the tile its

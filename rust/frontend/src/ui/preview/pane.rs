@@ -229,6 +229,15 @@ impl State {
         self.window.request_redraw();
     }
 
+    /// The node the preview pane stands for: the fired target, unless the pane shows bytes that are no file's (a chat
+    /// picture, installed with no node), when it is none. Every reader that acts on what is shown reads this: the visible
+    /// region (crop and its paste to the agent, fe-state), the scale prompt, the title and the caption, the saved view and
+    /// the editor. The refetches (a reconnect, a `preview.changed`, a page turn) read the fired target itself.
+    pub(in crate::ui) fn shown_target(&self) -> Option<&str> {
+        let nodeless = self.preview_source.bytes().is_some() && self.preview_source.node_id().is_none();
+        self.preview_requests.fired_target().filter(|_| !nodeless)
+    }
+
     /// Display name for the preview-pane title: the **basename** of the file
     /// the preview pane is *showing* (the fired target), not the roaming
     /// cursor — so while pinned (C2) the title tracks the pinned file. Only the
@@ -237,10 +246,7 @@ impl State {
     /// `None` for non-file previews (sessions / hosts / workspace rows) and
     /// before any preview has fired.
     pub(in crate::ui) fn preview_pane_name(&self) -> Option<String> {
-        let rel = self
-            .preview_requests
-            .fired_target()?
-            .strip_prefix("files:")?;
+        let rel = self.shown_target()?.strip_prefix("files:")?;
         if rel.is_empty() {
             return None;
         }
@@ -333,8 +339,7 @@ impl State {
                         // across pages and must reset, not inherit another
                         // page's view.
                         let carry = self
-                            .preview_requests
-                            .fired_target()
+                            .shown_target()
                             .filter(|nid| Self::is_image_node_id(nid))
                             .map(str::to_owned);
                         self.raster.reset_view(carry.as_deref());

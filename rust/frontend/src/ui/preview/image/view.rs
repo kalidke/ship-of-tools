@@ -289,7 +289,7 @@ impl State {
         if target <= have * 1.2 {
             return;
         }
-        let Some(node_id) = self.preview_requests.fired_target().map(str::to_owned) else {
+        let Some(node_id) = self.shown_target().map(str::to_owned) else {
             return;
         };
         let (Some(fw), Some(fh)) = self.preview_fit_px() else {

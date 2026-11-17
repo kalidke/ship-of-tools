@@ -248,8 +248,7 @@ impl State {
             return clear_and_none(self);
         };
         let is_image = self
-            .preview_requests
-            .fired_target()
+            .shown_target()
             .map(Self::is_image_node_id)
             .unwrap_or(false);
         if !is_image {
@@ -325,7 +324,7 @@ impl State {
             s.overlays.clear_caption_label();
             None
         };
-        let Some(node_id) = self.preview_requests.fired_target().map(str::to_owned) else {
+        let Some(node_id) = self.shown_target().map(str::to_owned) else {
             return clear_and_none(self);
         };
         if !Self::is_image_node_id(&node_id) {
@@ -383,7 +382,7 @@ impl State {
     /// Returns false when there's nothing to calibrate, so the caller can leave
     /// the keystroke alone.
     pub(in crate::ui) fn begin_scale_entry(&mut self) -> bool {
-        let Some(node_id) = self.preview_requests.fired_target().map(str::to_owned) else {
+        let Some(node_id) = self.shown_target().map(str::to_owned) else {
             return false;
         };
         if !Self::is_image_node_id(&node_id) {

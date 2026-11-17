@@ -374,11 +374,16 @@ impl State {
         self.witness_frame(&mut frames, &newest, "marked")?;
         self.witness_key(Key::Character("o".into()), (true, false), Some(Action::ChatOpenImage))?;
         self.witness_pump(events, sent, &mut daemon)?;
-        anyhow::ensure!(daemon.seen.originals == ["F6-0"], "originals asked: {:?}", daemon.seen.originals);
+        anyhow::ensure!(daemon.seen.originals == ["SAME"], "originals asked: {:?}", daemon.seen.originals);
         anyhow::ensure!(self.preview_source.node_id().is_none() && self.preview_source.mime() == Some("image/png"), "the preview shows {:?} of {:?}", self.preview_source.mime(), self.preview_source.node_id());
         anyhow::ensure!(self.preview_requests.fired_target().map(str::to_owned) == fired, "the open changed the fired target");
         anyhow::ensure!(self.raster.is_shown(), "the opened picture is not the pane's raster");
         self.witness_frame(&mut frames, &newest, "opened")?;
+        // Nothing that acts on what is shown names the fired file under the picture: no region (crop, its paste to the agent,
+        // fe-state, the saved view), no title, no scale prompt.
+        anyhow::ensure!(self.raster.roi().is_none(), "the picture's region is recorded as {:?}", self.raster.roi().map(|r| r.node_id.clone()));
+        anyhow::ensure!(self.preview_pane_name().is_none(), "the pane is titled {:?} over the picture", self.preview_pane_name());
+        anyhow::ensure!(!self.begin_scale_entry(), "the scale prompt opened for the fired file over the picture");
         println!("chat-thumbnails tiles={} textures={made} centers={checked} cut={cut}", before.1);
         Ok(())
     }

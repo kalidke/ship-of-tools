@@ -111,7 +111,7 @@ pub(in crate::ui) fn enter_editor(state: &mut State) {
     // lands (see the FileRead handler). The editor's armed
     // file matches the reply to this request.
     if !entered && !state.editor.is_editing() {
-        if let Some(node_id) = state.preview_requests.fired_target().map(str::to_owned) {
+        if let Some(node_id) = state.shown_target().map(str::to_owned) {
             if node_id.starts_with("files:") {
                 let ws = state.selected.workspace_id().clone();
                 if let Err(e) = state.send(OutgoingReq::FileRead {

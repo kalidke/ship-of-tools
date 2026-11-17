@@ -21,8 +21,8 @@ impl State {
         let row_key = self.active_result_row_key();
         if let (true, Some(letterbox_rect)) = (self.raster.is_shown(), png_rect) {
             let aim = self.preview_requests.take_ready_roi_aim(row_key.as_ref());
-            let fired = self.preview_requests.fired_target();
-            let Some(frame) = self.raster.frame(image_rect, letterbox_rect, aim, fired) else {
+            let fired = self.shown_target().map(str::to_owned);
+            let Some(frame) = self.raster.frame(image_rect, letterbox_rect, aim, fired.as_deref()) else {
                 return Ok(());
             };
             let canvas_rect = frame.rect;
@@ -32,7 +32,7 @@ impl State {
             // what's on screen. Image files only — a PDF page's source is
             // the `.pdf`, which `image.crop` can't decode (v2).
             let new_roi: Option<PreviewRoi> =
-                self.preview_requests.fired_target().and_then(|nid| {
+                self.shown_target().and_then(|nid| {
                     if !Self::is_image_node_id(nid) {
                         return None;
                     }
