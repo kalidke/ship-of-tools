@@ -937,6 +937,12 @@ impl ChatDrawer {
         self.view.placed_tops()
     }
 
+    /// The body the last layout placed the records in.
+    #[cfg(test)]
+    pub(super) fn records_body(&self) -> Option<ScreenRect> {
+        self.view.body()
+    }
+
     /// How many held pictures have a texture on the GPU.
     #[cfg(test)]
     pub(super) fn textures(&self) -> usize {

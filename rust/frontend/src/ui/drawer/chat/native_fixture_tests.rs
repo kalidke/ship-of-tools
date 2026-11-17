@@ -97,7 +97,8 @@ impl Daemon {
                     let figured = |i: u32| {
                         let mut r = short(i);
                         if self.figures && i + 3 > top {
-                            r["files"] = (0..2).map(|k| serde_json::json!({ "id": format!("F{i}-{k}"), "name": "figure", "mime": "image/png", "bytes": 100, "thumbnail": true })).collect();
+                            // The newest message shows one file twice (a file shared again in its channel).
+                            r["files"] = (0..2).map(|k| serde_json::json!({ "id": if i == top { "SAME".to_string() } else { format!("F{i}-{k}") }, "name": "figure", "mime": "image/png", "bytes": 100, "thumbnail": true })).collect();
                         }
                         r
                     };
@@ -112,12 +113,25 @@ impl Daemon {
             }
             OutgoingReq::ChatFile { req } if self.figures => {
                 let mut bytes = std::io::Cursor::new(Vec::new());
-                image::RgbaImage::from_pixel(64, 48, image::Rgba([200, 80, 60, 255])).write_to(&mut bytes, image::ImageFormat::Png).ok()?;
+                image::RgbaImage::from_pixel(64, 48, image::Rgba(figure_color(&req.file))).write_to(&mut bytes, image::ImageFormat::Png).ok()?;
                 Some(ChatEvt::File { req, reply: ChatReply::Done(crate::net::transport::ChatPicture { mime: "image/png".into(), bytes: bytes.into_inner() }) })
             }
             _ => None,
         }
     }
+}
+
+/// The solid colors a figure's picture is served in: none of them is a color any other pixel of the window has.
+const FIGURE_COLORS: [[u8; 4]; 3] = [[253, 1, 254, 255], [2, 253, 1, 255], [251, 253, 3, 255]];
+
+/// The color of the picture of file `id`.
+fn figure_color(id: &str) -> [u8; 4] {
+    FIGURE_COLORS[id.bytes().map(usize::from).sum::<usize>() % FIGURE_COLORS.len()]
+}
+
+/// Whether `pixel` is a figure's color, a few levels off where the sampler blends.
+fn is_figure(pixel: &image::Rgba<u8>) -> bool {
+    FIGURE_COLORS.iter().any(|c| pixel.0.iter().zip(c).all(|(a, b)| a.abs_diff(*b) <= 3))
 }
 
 /// The link's hello, as the window's connection reports it.
@@ -320,7 +334,31 @@ impl State {
         // A frame after all of them draws from the textures it has: none is made again.
         self.witness_frame(&mut frames, &newest, "settled")?;
         anyhow::ensure!(self.chat.textures() == made, "the textures changed with nothing new");
-        println!("chat-thumbnails tiles={} textures={made}", before.1);
+        // The pass is read by pixels: a frame read back through the selfie. Each tile whose center is in the body shows its picture's
+        // color there (so a thumbnail is over its box and under nothing, and the newest message's two tiles of one file both
+        // show it), and no figure-colored pixel lies outside the body.
+        let path = std::env::temp_dir().join(format!("sot-chat-thumbnails-{}.png", std::process::id()));
+        self.capture.request_selfie(path.clone());
+        self.witness_frame(&mut frames, &newest, "read back")?;
+        let shot = image::open(&path).map_err(|e| anyhow::anyhow!("the frame was not read back: {e}")).map(|i| i.to_rgba8());
+        let _ = std::fs::remove_file(&path);
+        let shot = shot?;
+        let body = self.chat.records_body().ok_or_else(|| anyhow::anyhow!("no body"))?;
+        let (bx, by, bw, bh) = crate::ui::render::scissor::scissor_px(body, shot.dimensions()).ok_or_else(|| anyhow::anyhow!("an empty body"))?;
+        let (mut checked, mut cut) = (0, 0);
+        for t in self.chat.tiles() {
+            let (cx, cy) = ((t.rect.x + t.rect.w / 2.0).round() as u32, (t.rect.y + t.rect.h / 2.0).round() as u32);
+            cut += usize::from(t.rect.y < body.y || t.rect.y + t.rect.h > body.y + body.h);
+            if (bx..bx + bw).contains(&cx) && (by..by + bh).contains(&cy) {
+                let got = shot.get_pixel(cx, cy).0;
+                anyhow::ensure!(got.iter().zip(figure_color(&t.file)).all(|(a, b)| a.abs_diff(b) <= 3), "the center of the tile of {} is {got:?}, not its picture's", t.file);
+                checked += 1;
+            }
+        }
+        anyhow::ensure!(checked >= 2 && cut >= 1, "{checked} tile centers read, {cut} tiles cut by the body: the frame does not exercise the clip");
+        let stray = shot.enumerate_pixels().filter(|(x, y, p)| is_figure(p) && !((bx..bx + bw).contains(x) && (by..by + bh).contains(y))).count();
+        anyhow::ensure!(stray == 0, "{stray} figure-colored pixels lie outside the body");
+        println!("chat-thumbnails tiles={} textures={made} centers={checked} cut={cut}", before.1);
         Ok(())
     }
 

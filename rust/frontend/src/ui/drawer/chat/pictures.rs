@@ -38,14 +38,14 @@ const RETRIES: u8 = 3;
 /// A picture's identity: the host it was read from and its record's workspace, channel and file id.
 type Key = (HostKey, String, String, String);
 
-/// A held picture: its pixels, and its texture once the frame that first drew it made one.
+/// A held picture: its size, and its pixels until the frame that first draws it makes its texture, which then holds them.
 struct Picture {
-    image: RgbaImage,
+    size: (u32, u32),
     texture: Texture,
 }
 
 enum Texture {
-    Unmade,
+    Unmade(RgbaImage),
     Made(Quad),
     /// The GPU refused it: the tile stays an empty box, and no frame tries again.
     Failed,
@@ -207,7 +207,7 @@ impl ChatPictures {
         let Stand::Flight { failed } = e.stand else { return self.asks(now) };
         // `Err`: final, `true` when a thumbnail arriving in its record asks again (its retries ran out with none).
         let next = match reply {
-            ChatReply::Done(p) => catch_unwind(AssertUnwindSafe(|| decode(&p.bytes))).ok().flatten().map(|image| Stand::Held(Picture { image, texture: Texture::Unmade })).ok_or(false),
+            ChatReply::Done(p) => catch_unwind(AssertUnwindSafe(|| decode(&p.bytes))).ok().flatten().map(|image| Stand::Held(Picture { size: image.dimensions(), texture: Texture::Unmade(image) })).ok_or(false),
             ChatReply::Refused(ChatCode::NotAnImage | ChatCode::TooLarge | ChatCode::BadRequest) => Err(false),
             ChatReply::Refused(ChatCode::Busy | ChatCode::Unavailable) => Ok(Stand::Wanted { due: now + PACE, failed }),
             ChatReply::Refused(ChatCode::Limited) => Ok(Stand::Wanted { due: now + LIMITED_PACE, failed }),
@@ -242,7 +242,7 @@ impl ChatPictures {
         for t in tiles {
             let key = (host.clone(), t.workspace, t.channel, t.file);
             let Some(Entry { stand: Stand::Held(p), .. }) = self.entries.get(&key) else { continue };
-            let fitted = fitted_in(p.image.dimensions(), t.rect);
+            let fitted = fitted_in(p.size, t.rect);
             match shown.iter_mut().find(|(k, _)| *k == key) {
                 Some((_, rects)) => rects.push(fitted),
                 None => shown.push((key, vec![fitted])),
@@ -250,9 +250,11 @@ impl ChatPictures {
         }
         for (key, rects) in shown {
             let Some(Entry { stand: Stand::Held(p), .. }) = self.entries.get_mut(&key) else { continue };
-            if matches!(p.texture, Texture::Unmade) {
-                p.texture = make(&p.image).map_or(Texture::Failed, Texture::Made);
-            }
+            // The pixels go once the texture is made, or refused.
+            p.texture = match std::mem::replace(&mut p.texture, Texture::Failed) {
+                Texture::Unmade(image) => make(&image).map_or(Texture::Failed, Texture::Made),
+                made_or_failed => made_or_failed,
+            };
             if let Texture::Made(quad) = &mut p.texture {
                 paint(quad, body, &rects)?;
             }
@@ -296,11 +298,11 @@ impl ChatPictures {
         idle.into_iter().take(over).for_each(|(_, k)| drop(self.entries.remove(&k)));
     }
 
-    /// The held picture of `file` in `channel` on `host`, if any.
+    /// The size of the held picture of `file` in `channel` on `host`, if any.
     #[cfg(test)]
-    pub(super) fn held(&self, host: &str, workspace: &str, channel: &str, file: &str) -> Option<&RgbaImage> {
+    pub(super) fn held(&self, host: &str, workspace: &str, channel: &str, file: &str) -> Option<(u32, u32)> {
         match self.entries.get(&(host.to_string(), workspace.to_string(), channel.to_string(), file.to_string()))?.stand {
-            Stand::Held(ref p) => Some(&p.image),
+            Stand::Held(ref p) => Some(p.size),
             _ => None,
         }
     }

@@ -2,6 +2,7 @@
 
 use crate::ui::*;
 use super::ReplEffects;
+use crate::ui::render::scissor::scissor_px;
 
 // State supplies a normalized row key; presentation never resolves row identities.
 type ImageKey = (WsKey, u64, usize);
@@ -187,13 +188,7 @@ impl<I> ReplPresentation<I> {
             let area = self.scrollback_px;
             let (win_start, win_end) = self.window;
             let (width, height) = surface;
-            let sw = (area.w.max(0.0) as u32).min(width);
-            let sh = (area.h.max(0.0) as u32).min(height);
-            if sw > 0 && sh > 0 {
-                let sx = (area.x.max(0.0) as u32).min(width - 1);
-                let sy = (area.y.max(0.0) as u32).min(height - 1);
-                let sw = sw.min(width - sx);
-                let sh = sh.min(height - sy);
+            if let Some((sx, sy, sw, sh)) = scissor_px(area, surface) {
                 let mut painted = false;
                 for slot in &self.image_slots {
                     if slot.line + slot.rows as usize <= win_start || slot.line >= win_end {

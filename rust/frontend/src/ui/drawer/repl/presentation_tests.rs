@@ -485,7 +485,8 @@ fn painting_uses_the_visible_window_and_restores_the_scissor() {
         assert!(paint(&owner).is_empty());
     }
     owner.commit_layout(ScreenRect { x: -10.0, y: 790.0, ..rect(200.0, 200.0) }, (0, 6));
-    assert_eq!(paint(&owner)[0], Paint::Scissor(0, 790, 200, 10));
+    // The area runs from -10 to 190: the scissor is the part of it on the surface, not its width from the surface's edge.
+    assert_eq!(paint(&owner)[0], Paint::Scissor(0, 790, 190, 10));
     let mut painter = Painter { fail: true, ..Default::default() };
     assert_eq!(owner.paint(true, 8.0, 16.0, (1000, 800), &mut painter).unwrap_err().to_string(), "paint failed");
     assert_eq!(painter.events.len(), 2, "failure propagates immediately, before success-only scissor restoration");

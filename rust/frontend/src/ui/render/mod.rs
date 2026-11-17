@@ -7,6 +7,7 @@ pub(crate) mod cells;
 pub(in crate::ui) mod brushes;
 pub(in crate::ui) mod canvas;
 pub(in crate::ui) mod gpu;
+pub(in crate::ui) mod scissor;
 pub(crate) mod quad;
 pub(crate) mod text;
 mod capture;

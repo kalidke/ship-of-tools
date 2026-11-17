@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::ui::render::brushes::Solid;
+use crate::ui::render::scissor::set_scissor;
 
 const BLOCK_PAD_Y: f32 = 4.0;
 
@@ -76,11 +77,7 @@ impl State {
             // Scissor to the IMAGE rect, not the pane: this is what stops a
             // zoomed/panned canvas from painting over the reserved caption
             // band at the bottom.
-            let sx = image_rect.x.max(0.0) as u32;
-            let sy = image_rect.y.max(0.0) as u32;
-            let sw = image_rect.w.max(0.0) as u32;
-            let sh = image_rect.h.max(0.0) as u32;
-            rpass.set_scissor_rect(sx, sy, sw, sh);
+            set_scissor(&mut rpass, image_rect, (self.gpu.config().width, self.gpu.config().height));
             if let Some(quad) = self.raster.quad() {
                 quad.render(
                     self.gpu.queue(),
@@ -123,8 +120,7 @@ impl State {
         }
         let rect = letterbox(image_rect, sot_protocol::ink::CANVAS_DIMS);
         self.ink.set_frame(rect, image_rect);
-        rpass.set_scissor_rect(image_rect.x.max(0.0) as u32, image_rect.y.max(0.0) as u32,
-            image_rect.w.max(0.0) as u32, image_rect.h.max(0.0) as u32);
+        set_scissor(rpass, image_rect, (self.gpu.config().width, self.gpu.config().height));
         self.brushes.paint(Solid::Canvas, &self.gpu, rpass, &[rect])?;
         self.paint_ink_overlay(rpass, rect)?;
         rpass.set_scissor_rect(0, 0, self.gpu.config().width, self.gpu.config().height);
@@ -148,11 +144,7 @@ impl State {
         // fields — one map borrowed twice would alias. The raster's
         // borrow ended when the image block closed.
         if let Some(sb) = scalebar_draw.as_ref() {
-            let sx = image_rect.x.max(0.0) as u32;
-            let sy = image_rect.y.max(0.0) as u32;
-            let sw = image_rect.w.max(0.0) as u32;
-            let sh = image_rect.h.max(0.0) as u32;
-            rpass.set_scissor_rect(sx, sy, sw, sh);
+            set_scissor(&mut rpass, image_rect, (self.gpu.config().width, self.gpu.config().height));
             self.brushes.paint(Solid::ScalebarBack, &self.gpu, &mut rpass, std::slice::from_ref(&sb.backing))?;
             self.brushes.paint(Solid::ScalebarBar, &self.gpu, &mut rpass, std::slice::from_ref(&sb.bar))?;
             rpass.set_scissor_rect(0, 0, self.gpu.config().width, self.gpu.config().height);
@@ -162,11 +154,7 @@ impl State {
         // (`preview_rect`) — the band lives in the strip `image_rect`
         // deliberately gave up, which is outside the image scissor.
         if let Some(cap) = caption_draw.as_ref() {
-            let sx = preview_rect.x.max(0.0) as u32;
-            let sy = preview_rect.y.max(0.0) as u32;
-            let sw = preview_rect.w.max(0.0) as u32;
-            let sh = preview_rect.h.max(0.0) as u32;
-            rpass.set_scissor_rect(sx, sy, sw, sh);
+            set_scissor(&mut rpass, preview_rect, (self.gpu.config().width, self.gpu.config().height));
             self.brushes.paint(Solid::CaptionBack, &self.gpu, &mut rpass, std::slice::from_ref(&cap.backing))?;
             rpass.set_scissor_rect(0, 0, self.gpu.config().width, self.gpu.config().height);
         }
@@ -197,11 +185,7 @@ impl State {
         // rect squashes the bitmap — so it gets the same wgpu scissor
         // the PNG canvas path uses, then reset to full-frame after.
         {
-            let sx = preview_rect.x.max(0.0) as u32;
-            let sy = preview_rect.y.max(0.0) as u32;
-            let sw = preview_rect.w.max(0.0) as u32;
-            let sh = preview_rect.h.max(0.0) as u32;
-            rpass.set_scissor_rect(sx, sy, sw, sh);
+            set_scissor(&mut rpass, preview_rect, (self.gpu.config().width, self.gpu.config().height));
         }
         for (block_idx, rect) in &media_paint_targets {
             let Some(block) = self.shaped.md().media_blocks.get(*block_idx) else {

@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::ui::render::brushes::Solid;
+use crate::ui::render::scissor::{scissor_px, set_scissor};
 use crate::ui::drawer::repl::presentation::ReplImagePainter;
 
 struct ReplQuadPainter<'a, 'pass> {
@@ -67,13 +68,11 @@ impl State {
         let surface = (self.gpu.config().width, self.gpu.config().height);
         let make = |image: &image::RgbaImage| Quad::from_rgba8(device, queue, pipeline, image.as_raw(), image.width(), image.height()).ok();
         let result = self.chat.paint_thumbs(make, |quad, body, rects| {
-            // The scissor is the body cut to the surface: a rectangle past it is a validation error.
-            let (left, top) = (body.x.max(0.0).floor() as u32, body.y.max(0.0).floor() as u32);
-            let (right, bottom) = (((body.x + body.w).max(0.0).ceil() as u32).min(surface.0), ((body.y + body.h).max(0.0).ceil() as u32).min(surface.1));
-            if right <= left || bottom <= top {
+            // An empty scissor draws nothing: a body wholly off the surface is skipped.
+            if scissor_px(body, surface).is_none() {
                 return Ok(());
             }
-            rpass.set_scissor_rect(left, top, right - left, bottom - top);
+            set_scissor(rpass, body, surface);
             quad.render_many(device, queue, pipeline, rpass, rects, surface)
         });
         rpass.set_scissor_rect(0, 0, surface.0, surface.1);
