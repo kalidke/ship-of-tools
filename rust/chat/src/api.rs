@@ -598,11 +598,6 @@ impl Api {
         self
     }
 
-    /// Whether a user token is held for a person's post: false from the start with none, and after Slack refused it.
-    pub fn posts_as_person(&self) -> bool {
-        self.person.lock().unwrap().is_some()
-    }
-
     /// The token a post of `kind` goes out under: the bot's for a row, the person's for a person, and never the bot's in
     /// its place.
     fn poster(&self, kind: PostKind) -> Result<Secret, ApiError> {

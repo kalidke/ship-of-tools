@@ -29,7 +29,7 @@ fn unmapped() -> (ChatDrawer, Instant, Vec<Out>) {
     let t0 = Instant::now();
     let mut d = ChatDrawer::default();
     d.set_focused(true);
-    d.on_connection(&host(), true, t0);
+    d.on_connection(&host(), true, false, t0);
     d.tick(shown("ROW1"), t0);
     d.tick(shown("ROW1"), t0 + Duration::from_millis(200));
     let at = t0 + Duration::from_millis(210);
@@ -212,7 +212,7 @@ fn the_setup_chord_offers_no_channel_first_on_a_mapped_row() {
     let mut off = ChatDrawer::default();
     off.tick(shown("ROW1"), at);
     assert_eq!(off.open_picker(shown("ROW1").as_ref()).unwrap_err(), "not connected");
-    off.on_connection(&host(), true, at);
+    off.on_connection(&host(), true, false, at);
     off.tick(shown("ROW1"), at + Duration::from_millis(200));
     off.on_evt(&host(), answer("ROW1", serde_json::json!({ "state": "invalid" })), at + Duration::from_millis(210));
     assert!(off.open_picker(shown("ROW1").as_ref()).unwrap_err().starts_with("the hub has no usable chat configuration"));
@@ -257,7 +257,7 @@ fn the_picker_belongs_to_its_row_and_link_and_opens_by_itself_once_while_the_dra
     // A drawer that does not have the keys asks Slack for nothing: the person scanning rows spends no list read.
     let t0 = Instant::now();
     let mut d = ChatDrawer::default();
-    d.on_connection(&host(), true, t0);
+    d.on_connection(&host(), true, false, t0);
     d.tick(shown("ROW1"), t0);
     d.tick(shown("ROW1"), t0 + Duration::from_millis(200));
     d.on_evt(&host(), answer("ROW1", serde_json::json!({ "state": "unmapped" })), t0 + Duration::from_millis(210));
@@ -270,8 +270,8 @@ fn the_picker_belongs_to_its_row_and_link_and_opens_by_itself_once_while_the_dra
     d.dismiss_picker();
     assert!(!d.picking());
     assert_eq!(lists(&d.tick(shown("ROW1"), at + Duration::from_millis(32)).0), 0);
-    d.on_connection(&host(), false, at + Duration::from_secs(1));
-    d.on_connection(&host(), true, at + Duration::from_secs(2));
+    d.on_connection(&host(), false, false, at + Duration::from_secs(1));
+    d.on_connection(&host(), true, false, at + Duration::from_secs(2));
     d.tick(shown("ROW1"), at + Duration::from_secs(3));
     d.on_evt(&host(), answer("ROW1", serde_json::json!({ "state": "unmapped" })), at + Duration::from_secs(4));
     assert_eq!((lists(&d.tick(shown("ROW1"), at + Duration::from_secs(5)).0), d.picking()), (0, false));
@@ -282,7 +282,7 @@ fn the_picker_belongs_to_its_row_and_link_and_opens_by_itself_once_while_the_dra
     d.on_evt(&host(), answer("ROW1", serde_json::json!({ "state": "unmapped" })), at + Duration::from_secs(9));
     assert_eq!((lists(&d.tick(shown("ROW1"), at + Duration::from_secs(10)).0), d.picking()), (1, true));
     // A link change closes it; so does a row change.
-    d.on_connection(&host(), false, at + Duration::from_secs(11));
+    d.on_connection(&host(), false, false, at + Duration::from_secs(11));
     assert!(!d.picking());
     let (mut d, at, _) = unmapped();
     d.tick(shown("ROW2"), at + Duration::from_secs(1));

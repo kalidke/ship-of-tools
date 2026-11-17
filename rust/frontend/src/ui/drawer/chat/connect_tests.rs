@@ -84,7 +84,7 @@ fn in_step(reason: &str) -> (ChatDrawer, Instant) {
     let t0 = Instant::now();
     let mut d = ChatDrawer::default();
     d.set_login(LOGIN);
-    d.on_connection(&host(), true, t0);
+    d.on_connection(&host(), true, false, t0);
     d.tick(shown("ROW1"), t0);
     assert_eq!(resolves(&d.tick(shown("ROW1"), t0 + Duration::from_millis(200)).0), 1);
     d.on_evt(&host(), unconfigured(reason), t0 + Duration::from_millis(210));
@@ -118,8 +118,8 @@ fn step(reason: ChatUnconfigured) -> Connect {
     Connect::new(host(), reason, LOGIN, true)
 }
 
-/// A mapped row whose person's post the hub refused `no_user_token`: the Connect step it brings, and the instant after.
-fn after_a_refused_post() -> (ChatDrawer, Instant) {
+/// A mapped row ROW1 with a person's post in flight, and that post's request.
+fn post_in_flight() -> (ChatDrawer, Instant, sot_protocol::ops::ChatPostReq) {
     let (mut d, at) = channel(&[top(1)]);
     d.set_login(LOGIN);
     let r = shown("ROW1");
@@ -128,8 +128,18 @@ fn after_a_refused_post() -> (ChatDrawer, Instant) {
         [(_, OutgoingReq::ChatPost { req })] => req.clone(),
         other => panic!("one chat.post expected, got {other:?}"),
     };
-    let refused = ChatReply::Done(sot_protocol::ops::ChatPostRes::Refused { code: ChatCode::NoUserToken });
-    d.on_evt(&host(), ChatEvt::Posted { req, reply: refused }, at);
+    (d, at, req)
+}
+
+/// The hub's answer that it holds no token that posts as the person.
+fn no_user_token() -> ChatReply<sot_protocol::ops::ChatPostRes> {
+    ChatReply::Done(sot_protocol::ops::ChatPostRes::Refused { code: ChatCode::NoUserToken })
+}
+
+/// A mapped row whose person's post the hub refused `no_user_token`: the Connect step it brings, and the instant after.
+fn after_a_refused_post() -> (ChatDrawer, Instant) {
+    let (mut d, at, req) = post_in_flight();
+    d.on_evt(&host(), ChatEvt::Posted { req, reply: no_user_token() }, at);
     (d, at)
 }
 
@@ -245,8 +255,8 @@ fn a_paste_in_the_connect_step_never_reaches_the_draft() {
     d.set_login(LOGIN);
     d.edit(shown("ROW1").as_ref(), Edit::Text("a")).unwrap();
     assert_eq!(d.draft(), Some(("a", "CH1")));
-    d.on_connection(&host(), false, at);
-    d.on_connection(&host(), true, at);
+    d.on_connection(&host(), false, false, at);
+    d.on_connection(&host(), true, false, at);
     assert_eq!(resolves(&d.tick(shown("ROW1"), at + Duration::from_millis(10)).0), 1);
     d.on_evt(&host(), unconfigured("not_connected"), at);
     d.tick(shown("ROW1"), at + Duration::from_millis(20));
@@ -439,7 +449,7 @@ fn a_modal_screen_ends_at_a_row_change_a_hidden_drawer_and_a_link_change() {
     let ends: [(&str, End); 3] = [
         ("row change", |d, t| drop(d.tick(shown("ROW2"), t))),
         ("hidden drawer", |d, _| d.hide()),
-        ("link change", |d, t| drop(d.on_connection(&host(), false, t))),
+        ("link change", |d, t| drop(d.on_connection(&host(), false, false, t))),
     ];
     for (why, end) in ends {
         // The Connect step, holding a token.
@@ -514,6 +524,29 @@ fn a_post_refused_for_no_user_token_brings_the_post_as_you_screen_and_keeps_the_
     let (mut d, _) = after_a_refused_post();
     let (_, asks) = key(&mut d, ESC);
     assert!(asks.close);
+}
+
+/// A refusal that comes after the person moved to another row opens nothing over that row (the step is for the row that was
+/// posted in), and one that comes while a Connect step holds a pasted token leaves the step and its token alone.
+#[test]
+fn a_late_refusal_never_opens_over_another_row_or_replaces_a_step_holding_a_token() {
+    let (mut d, at, req) = post_in_flight();
+    d.tick(shown("ROW2"), at + Duration::from_millis(10));
+    d.on_evt(&host(), ChatEvt::Posted { req, reply: no_user_token() }, at + Duration::from_millis(20));
+    assert!(!d.in_setup(), "the refusal was for another row's post");
+
+    let (mut d, at, req) = post_in_flight();
+    // Connect Slack again, last in the picker, brings the step over the mapped row; a bot token is pasted.
+    assert_eq!(lists(&d.open_picker(shown("ROW1").as_ref()).unwrap()), 1);
+    let listed: ChatChannelsRes = serde_json::from_value(serde_json::json!({ "channels": [
+        { "id": "C1", "name": "lab-general", "private": false, "member": true } ] })).unwrap();
+    d.on_evt(&host(), ChatEvt::Channels { reply: ChatReply::Done(listed) }, at);
+    (0..3).for_each(|_| d.picker_step(true));
+    assert!(d.picker_enter().is_empty() && d.in_setup());
+    paste(&mut d, &bot());
+    d.on_evt(&host(), ChatEvt::Posted { req, reply: no_user_token() }, at + Duration::from_millis(30));
+    assert_eq!(d.setup_held(), Some((Some(bot()), None, None)), "the pasted token is kept");
+    assert_eq!(d.title(), " chat · set up Slack · step 2 of 3: the first two tokens ", "and the step is the one the person was in");
 }
 
 /// B1: the Connected screen, over a row whose channel the hub maps, parks the channel's records as the picker does.
@@ -657,8 +690,8 @@ fn every_end_of_a_connect_frees_the_slot_and_a_refusal_keeps_the_other_token_thr
                 drop(d.on_evt(&host(), evt, t));
             }
             LinkDrop => {
-                d.on_connection(&host(), false, t);
-                d.on_connection(&host(), true, t);
+                d.on_connection(&host(), false, false, t);
+                d.on_connection(&host(), true, false, t);
                 drop(d.on_evt(&host(), ChatEvt::ConnectUnknown, t));
             }
         }

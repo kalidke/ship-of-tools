@@ -171,7 +171,7 @@ fn shown(row: &str) -> Option<ResultRowIdentity> {
 fn answered_with(evt: impl FnOnce(&str) -> ChatEvt) -> (ChatDrawer, Instant) {
     let t0 = Instant::now();
     let mut d = ChatDrawer::default();
-    d.on_connection(&"a".to_string(), true, t0);
+    d.on_connection(&"a".to_string(), true, false, t0);
     d.tick(shown("R"), t0);
     assert_eq!(d.title(), " chat · reading… ");
     d.tick(shown("R"), t0 + Duration::from_millis(200));
@@ -201,8 +201,8 @@ fn gap_title(code: ChatCode) -> String {
 fn every_outcome_has_a_state_a_next_action_and_words() {
     let pace = Duration::from_secs(60);
     let link = |d: &mut ChatDrawer, at: Instant| {
-        d.on_connection(&"a".to_string(), false, at);
-        d.on_connection(&"a".to_string(), true, at + Duration::from_millis(1));
+        d.on_connection(&"a".to_string(), false, false, at);
+        d.on_connection(&"a".to_string(), true, false, at + Duration::from_millis(1));
         let asked = asks_at(d, at + Duration::from_millis(2));
         assert_eq!(d.title(), " chat · reading… ", "the old answer is forgotten");
         asked
@@ -217,7 +217,7 @@ fn every_outcome_has_a_state_a_next_action_and_words() {
     let t0 = Instant::now();
     d.tick(shown("R"), t0);
     assert_eq!(d.title(), " chat · not connected ");
-    d.on_connection(&"a".to_string(), true, t0);
+    d.on_connection(&"a".to_string(), true, false, t0);
     assert!(asks_at(&mut d, t0 + Duration::from_millis(200)));
 
     // No usable configuration, an old daemon and not the hub: asked again at a link change, never on a frame. (An unmapped
@@ -272,8 +272,8 @@ fn every_outcome_has_a_state_a_next_action_and_words() {
         assert_eq!(d.title(), format!(" chat · C1 {} ", code.text()));
         let outs = d.tick(shown("R"), at + pace * 5).0;
         assert!(outs.iter().all(|(_, r)| matches!(r, OutgoingReq::ChatResolve { .. })), "{code:?}: not asked again (the resolve for a name apart)");
-        d.on_connection(&"a".to_string(), false, at + pace * 6);
-        let outs = d.on_connection(&"a".to_string(), true, at + pace * 6 + Duration::from_millis(1));
+        d.on_connection(&"a".to_string(), false, false, at + pace * 6);
+        let outs = d.on_connection(&"a".to_string(), true, false, at + pace * 6 + Duration::from_millis(1));
         assert_eq!(outs.iter().filter(|(_, r)| matches!(r, OutgoingReq::ChatWatch { target } if target.channel.as_str() == "C1")).count(), 1, "{code:?}: asked again at a link change");
     }
     let (mut d, at) = answered_with(mapped);

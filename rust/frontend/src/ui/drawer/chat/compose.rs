@@ -97,29 +97,30 @@ pub(in crate::ui) enum ComposeText {
     /// The foot asks for the posting name: the name typed, with the cursor block while focused.
     Name(String),
     /// Nothing typed and nothing to say of the destination: what to do, and the chord that changes the project's channel.
-    Hint { focused: bool, as_person: bool },
+    Hint { focused: bool, as_person: Option<bool> },
 }
 
 /// What an empty draft shows after `> `, and under it, how the post appears and how the channel is changed (the chord is the
 /// default's, `Cmd` on macOS).
 const PLACEHOLDER: &str = "type a message and press Enter to post it";
-/// `as_person`: the connection's hello said the daemon posts under the person's own Slack token; an older daemon's post goes
-/// out as the app, and the hint says so.
-fn hint(as_person: bool) -> String {
+/// `as_person`: what the connection's hello said of whether the daemon posts under the person's own Slack token (an older
+/// daemon's post goes out as the app, and the hint says so); `None`, with no hello read (a link down, one not up yet), the
+/// hint says nothing of the daemon.
+fn hint(as_person: Option<bool>) -> String {
     let chord = if cfg!(target_os = "macos") { "Cmd+Shift+K" } else { "Ctrl+Shift+K" };
-    let how = if as_person {
-        "as your own message, from your Slack account"
-    } else {
-        "as the app's message, under your [chat] name (this hub's daemon is older and cannot post as you)"
+    let how = match as_person {
+        Some(true) => "What you post appears in the channel as your own message, from your Slack account. ",
+        Some(false) => "What you post appears in the channel as the app's message, under your [chat] name (this hub's daemon is older and cannot post as you). ",
+        None => "",
     };
-    format!("What you post appears in the channel {how}. {chord} changes this project's channel.")
+    format!("{how}{chord} changes this project's channel.")
 }
 
 /// The one row the foot shows while it asks for the name.
 const ASK: &str = "Name for your chat posts: ";
 
 impl ComposeText {
-    pub(super) fn of(draft: Option<&str>, to: Option<String>, focused: bool, as_person: bool) -> Self {
+    pub(super) fn of(draft: Option<&str>, to: Option<String>, focused: bool, as_person: Option<bool>) -> Self {
         let text = draft.unwrap_or("");
         if text.is_empty() && to.is_none() {
             return ComposeText::Hint { focused, as_person };

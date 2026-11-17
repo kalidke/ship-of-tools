@@ -69,7 +69,7 @@ pub(super) fn channel(held: &[ChatRecord]) -> (ChatDrawer, Instant) {
 fn channel_with(held: &[ChatRecord], next: Option<&str>) -> (ChatDrawer, Instant) {
     let t0 = Instant::now();
     let mut d = ChatDrawer::default();
-    d.on_connection(&host(), true, t0);
+    d.on_connection(&host(), true, false, t0);
     d.tick(shown("ROW1"), t0);
     d.tick(shown("ROW1"), t0 + Duration::from_millis(200));
     let mapped = serde_json::json!({ "state": "mapped", "workspace": "WS1", "channel": "CH1", "delivers": false });
@@ -225,16 +225,16 @@ fn a_thread_is_read_whole_and_its_replies_match_by_value() {
 
     // A link's end keeps the thread open; its walk starts again at `Connected`, from the first page.
     on(&mut d, &req, page(&[reply_to(&parent, 0)], None), at(78));
-    assert!(d.on_connection(&host(), false, at(80)).iter().all(|(_, r)| !matches!(r, OutgoingReq::ChatHistory { .. })));
+    assert!(d.on_connection(&host(), false, false, at(80)).iter().all(|(_, r)| !matches!(r, OutgoingReq::ChatHistory { .. })));
     assert_eq!(d.title(), " chat · CH1 · thread not connected ");
-    let outs = d.on_connection(&host(), true, at(81));
+    let outs = d.on_connection(&host(), true, false, at(81));
     let again = outs.iter().filter(|(_, r)| matches!(r, OutgoingReq::ChatHistory { req } if req.thread.is_some())).count();
     assert_eq!(again, 1, "the walk starts again");
     d.layout(&mut fonts, body(), 1.0, body());
     assert_eq!(d.placed_text().len(), 1, "from the first page: {}", joined(&d));
     // A reply to the read a link's end left in flight comes to nothing.
     let lost = outs.iter().find_map(|(_, r)| if let OutgoingReq::ChatHistory { req } = r { Some(req.clone()) } else { None }).expect("the read");
-    d.on_connection(&host(), false, at(82));
+    d.on_connection(&host(), false, false, at(82));
     on(&mut d, &lost, page(&[reply_to(&parent, 7)], None), at(83));
     d.layout(&mut fonts, body(), 1.0, body());
     assert_eq!(d.placed_text().len(), 1, "{}", joined(&d));
@@ -339,9 +339,9 @@ fn thread_view_compose_and_back_keep_target() {
     assert!(d.placed_text()[0].contains("message 1"), "{:?}", d.placed_text());
 
     // A link's end keeps it open.
-    d.on_connection(&host(), false, at);
+    d.on_connection(&host(), false, false, at);
     assert_eq!(d.title(), " chat · CH1 · thread not connected ", "the link's words stay over a thread");
-    d.on_connection(&host(), true, at);
+    d.on_connection(&host(), true, false, at);
     assert!(d.title().starts_with(" chat · CH1 · thread "));
 
     // Escape closes it: the channel's view is back, with its mark on the parent.
@@ -474,8 +474,8 @@ fn a_thread_read_held_behind_an_equal_one_is_cancelled_by_a_link_change() {
     let first = history(&open(&mut d, &mut fonts, &[true]));
     assert!(d.close_thread());
     assert_eq!(reads(&open(&mut d, &mut fonts, &[])), 0, "held behind the first");
-    d.on_connection(&host(), false, at);
-    let outs = d.on_connection(&host(), true, at);
+    d.on_connection(&host(), false, false, at);
+    let outs = d.on_connection(&host(), true, false, at);
     assert_eq!(outs.iter().filter(|(_, r)| matches!(r, OutgoingReq::ChatHistory { req } if req.thread.is_some())).count(), 1);
     assert_eq!(reads(&on(&mut d, &first, page(&[], None), at)), 0, "the cancelled read does not go out");
 }
@@ -488,7 +488,7 @@ fn the_threads_title_keeps_its_phrases_apart_and_says_an_unsupported_reply() {
     let (mut d, at) = channel(&held);
     let req = history(&open(&mut d, &mut fonts, &[true]));
     on(&mut d, &req, ChatReply::Refused(ChatCode::Busy), at);
-    d.on_connection(&host(), false, at);
+    d.on_connection(&host(), false, false, at);
     assert_eq!(d.title(), format!(" chat · CH1 · thread the thread is not read: {} · not connected ", ChatCode::Busy.text()));
     d.close_thread();
     let (mut d, at) = channel(&held);
@@ -506,8 +506,8 @@ fn another_hosts_link_change_leaves_the_thread_alone() {
     let parent = held[1].ts.clone();
     let req = history(&open(&mut d, &mut fonts, &[true]));
     let other = "b".to_string();
-    assert!(d.on_connection(&other, false, at).is_empty());
-    assert_eq!(reads(&d.on_connection(&other, true, at)), 0, "no thread read goes out");
+    assert!(d.on_connection(&other, false, false, at).is_empty());
+    assert_eq!(reads(&d.on_connection(&other, true, false, at)), 0, "no thread read goes out");
     on(&mut d, &req, page(&[reply_to(&parent, 0)], None), at);
     assert_eq!(d.thread_len(), 2, "the read in flight still fills the thread");
 }
@@ -521,8 +521,8 @@ fn a_restart_clears_a_refusal() {
     let req = history(&open(&mut d, &mut fonts, &[true]));
     on(&mut d, &req, ChatReply::Refused(ChatCode::Busy), at);
     assert!(d.title().contains("not read"));
-    d.on_connection(&host(), false, at);
-    d.on_connection(&host(), true, at);
+    d.on_connection(&host(), false, false, at);
+    d.on_connection(&host(), true, false, at);
     assert!(!d.title().contains("not read"), "{}", d.title());
     assert_eq!(reads(&d.tick(shown("ROW1"), at + Duration::from_secs(10)).0), 0, "the old read is not asked again");
 }
@@ -658,8 +658,8 @@ fn a_draft_posts_to_the_destination_it_was_begun_in() {
     d.tick(shown("ROW1"), at + Duration::from_secs(2));
     d.on_evt(&host(), ChatEvt::Resolved { row: "ROW1".into(), reply: ChatReply::Refused(ChatCode::Unmapped) }, at + Duration::from_secs(3));
     assert!(to_line(&d).starts_with(PARENT_STAMP), "the draft keeps its thread through a row switch and a lost watch");
-    d.on_connection(&host(), false, at);
-    d.on_connection(&host(), true, at);
+    d.on_connection(&host(), false, false, at);
+    d.on_connection(&host(), true, false, at);
     let req = send(&mut d, at);
     assert_eq!((req.thread.as_ref(), req.target.channel.as_str(), req.text.as_str()), (Some(&parent), "CH1", "hi"));
     assert!(d.send(shown("ROW1").as_ref(), Some("Ada"), at).is_err(), "the post waits: no second one");

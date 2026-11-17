@@ -101,7 +101,7 @@ fn the_draft_keeps_its_destination_and_its_escaped_bound() {
 fn watching() -> (ChatDrawer, Instant) {
     let t0 = Instant::now();
     let mut d = ChatDrawer::default();
-    d.on_connection(&"a".to_string(), true, t0);
+    d.on_connection(&"a".to_string(), true, false, t0);
     d.tick(Some(row("R")), t0);
     let at = t0 + Duration::from_millis(200);
     d.tick(Some(row("R")), at);
@@ -291,7 +291,7 @@ fn compose_retains_refused_limited_and_unknown_drafts() {
 
     // A link that drops while the post waits leaves it unknown, and the status line says so.
     let _ = posted(d.send(Some(&r), Some("Ada"), at + Duration::from_secs(60)).unwrap());
-    d.on_connection(&"a".to_string(), false, at);
+    d.on_connection(&"a".to_string(), false, false, at);
     assert!(d.take_notice().unwrap().starts_with("may have been posted"));
     assert_eq!(d.draft(), Some(("next", "C1")), "kept, and no longer frozen");
 
@@ -384,7 +384,7 @@ fn enter_with_no_name_opens_the_prompt_and_sends_nothing_until_the_next_enter() 
 fn enter_with_no_name_on_a_row_that_is_not_mapped_says_why_and_opens_no_prompt() {
     let (mut d, at) = watching();
     d.edit(Some(&row("R")), Edit::Text("hello")).unwrap();
-    d.on_connection(&"a".to_string(), false, at);
+    d.on_connection(&"a".to_string(), false, false, at);
     let words = d.send(Some(&row("R")), None, at).unwrap_err();
     assert!(words.starts_with("not posted: ") && words.contains("not connected"), "{words}");
     assert_eq!(d.asking(), None);
@@ -412,7 +412,7 @@ fn the_prompt_ends_where_the_view_it_asked_in_ends_and_keeps_the_draft() {
     assert_eq!(d.asking(), None, "no wanted row");
     // The link changes.
     let (mut d, at3) = asking();
-    d.on_connection(&"a".to_string(), false, at3);
+    d.on_connection(&"a".to_string(), false, false, at3);
     assert_eq!(d.asking(), None, "a link change");
     // The row's mapping is gone: unmapped.
     let (mut d, at4) = asking();
@@ -442,45 +442,47 @@ fn a_pasted_control_character_or_a_name_past_the_bound_is_refused_whole() {
     assert_eq!(d.asking().map(str::len), Some(MAX_NAME));
 }
 
-/// The hint says what a post will be by the connection's hello: the person's own message on a daemon that posts as them, the
-/// app's on one that does not (or has not said), and the daemon's end of the link forgets the word.
+/// The hint says what a post will be by the connection's hello, carried in with the link's coming up: the person's own message on
+/// a daemon that posts as them, the app's on one that does not, and nothing of the daemon's age with no hello read (a link
+/// that is down).
 #[test]
 fn the_hint_says_whether_the_post_goes_out_as_the_person_or_as_the_app_by_the_hello() {
     let (mut d, at) = watching();
     let host = "a".to_string();
-    let said = |d: &ChatDrawer| compose_rows(&d.compose_text(false).expect("the foot's text"), 120, 10).join(" ");
+    let said = |d: &ChatDrawer| compose_rows(&d.compose_text(false).expect("the foot's text"), 160, 10).join(" ");
+    let chord = if cfg!(target_os = "macos") { "Cmd+Shift+K" } else { "Ctrl+Shift+K" };
+    // `watching` brought the link up with the word false: an older daemon.
     assert!(said(&d).contains("as the app's message, under your [chat] name (this hub's daemon is older and cannot post as you)"), "{}", said(&d));
-    d.set_posts_as_person(&host, true);
+    // A hello that says true.
+    d.on_connection(&host, true, true, at);
     assert!(said(&d).contains("as your own message, from your Slack account"), "{}", said(&d));
     assert!(!said(&d).contains("the app's message"));
-    d.set_posts_as_person(&host, false);
-    assert!(said(&d).contains("the app's message"));
-    // The link's end forgets the word: the next hello says it again.
-    d.set_posts_as_person(&host, true);
-    d.on_connection(&host, false, at);
-    d.on_connection(&host, true, at);
-    d.tick(Some(row("R")), at);
-    d.tick(Some(row("R")), at + Duration::from_millis(200));
-    d.on_evt(&host, mapped("R"), at + Duration::from_millis(210));
-    assert!(said(&d).contains("the app's message"), "{}", said(&d));
+    // The link goes: nothing is said of the daemon, only of the channel's chord.
+    d.on_connection(&host, false, false, at);
+    d.tick(Some(row("R")), at + Duration::from_millis(1));
+    if let Some(text) = d.compose_text(false) {
+        let said = compose_rows(&text, 160, 10).join(" ");
+        assert!(!said.contains("older") && !said.contains("the app's message") && !said.contains("your own message"), "{said}");
+        assert!(said.contains(&format!("{chord} changes this project's channel.")), "{said}");
+    }
 }
 
 #[test]
 fn an_empty_draft_shows_what_to_type_and_the_chord_that_changes_the_channel() {
     use super::compose::ComposeText;
     let chord = if cfg!(target_os = "macos") { "Cmd+Shift+K" } else { "Ctrl+Shift+K" };
-    let hint = |focused| compose_rows(&ComposeText::of(None, None, focused, true), 80, 10);
+    let hint = |focused| compose_rows(&ComposeText::of(None, None, focused, Some(true)), 80, 10);
     assert_eq!(hint(false)[0], "> type a message and press Enter to post it");
     assert_eq!(hint(true)[0], "> █type a message and press Enter to post it");
     let said = hint(false)[1..].join(" ");
     assert_eq!(said, format!("What you post appears in the channel as your own message, from your Slack account. {chord} changes this project's channel."));
     // The prompt row comes first at any height, and a narrow drawer wraps it.
-    assert_eq!(compose_rows(&ComposeText::of(None, None, false, true), 80, 1), ["> type a message and press Enter to post it"]);
-    assert!(compose_rows(&ComposeText::of(None, None, false, true), 80, 0).is_empty());
-    assert!(compose_rows(&ComposeText::of(None, None, false, true), 20, 10).iter().all(|r| r.chars().count() <= 20));
+    assert_eq!(compose_rows(&ComposeText::of(None, None, false, Some(true)), 80, 1), ["> type a message and press Enter to post it"]);
+    assert!(compose_rows(&ComposeText::of(None, None, false, Some(true)), 80, 0).is_empty());
+    assert!(compose_rows(&ComposeText::of(None, None, false, Some(true)), 20, 10).iter().all(|r| r.chars().count() <= 20));
     // Anything typed, or a destination to name, is the draft's own foot.
-    assert_eq!(compose_rows(&ComposeText::of(Some("hi"), None, false, true), 80, 10), ["> hi"]);
-    assert_eq!(compose_rows(&ComposeText::of(None, Some("to C1".into()), false, true), 80, 10), ["> ", "to C1"]);
+    assert_eq!(compose_rows(&ComposeText::of(Some("hi"), None, false, Some(true)), 80, 10), ["> hi"]);
+    assert_eq!(compose_rows(&ComposeText::of(None, Some("to C1".into()), false, Some(true)), 80, 10), ["> ", "to C1"]);
 }
 
 #[test]

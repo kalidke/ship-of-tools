@@ -635,12 +635,18 @@ async fn the_service_api_holds_the_credentials_user_token() {
         let with = Service::start_for_test(&config, credentials_with_user(&config), fake.http(), &dir.0, url.clone(), timing())
             .await
             .expect("service with a user token");
-        assert!(with.api().unwrap().posts_as_person());
+        // The person's post is made (Slack's answer is the fake's refusal) under the credentials' user token, not unsent.
+        let sent = with.api().unwrap().post("C0AAAA", None, crate::api::PostKind::Person, "tester", "hi").await;
+        assert!(sent.is_ok(), "{sent:?}");
+        let by = fake.seen().into_iter().find(|s| s.path().ends_with("/chat.postMessage")).and_then(|s| s.authorization);
+        assert_eq!(by.as_deref(), Some(&*format!("Bearer {}", ["xoxp", "-sentinel-user-cccc"].concat())), "the person's bearer");
         with.stop(Duration::from_secs(3)).await;
         let without = Service::start_for_test(&config, credentials(&config), fake.http(), &dir.0, url, timing())
             .await
             .expect("service without one");
-        assert!(!without.api().unwrap().posts_as_person());
+        let unsent = without.api().unwrap().post("C0AAAA", None, crate::api::PostKind::Person, "tester", "hi").await;
+        assert_eq!(unsent, Err(crate::api::ApiError::NoPersonToken));
+        assert_eq!(fake.seen().iter().filter(|s| s.path().ends_with("/chat.postMessage")).count(), 1, "nothing sent without a token");
         without.stop(Duration::from_secs(3)).await;
         fake.shutdown().await;
     })

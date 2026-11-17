@@ -105,6 +105,11 @@ impl Connect {
         Connect { post_as_you: true, ..Connect::new(host, ChatUnconfigured::NotConnected, login, false) }
     }
 
+    /// Whether any token is pasted: a late reply to an older post leaves such a step alone.
+    pub(super) fn holds_token(&self) -> bool {
+        self.bot.is_some() || self.user.is_some() || self.app.is_some()
+    }
+
     pub(super) fn host(&self) -> &HostKey {
         &self.host
     }

@@ -137,8 +137,10 @@ impl State {
         self.with_chat(|c, now| c.on_bus_lost(host, bus, now));
     }
 
-    pub(in crate::ui) fn on_chat_connection(&mut self, host: &HostKey, up: bool) {
-        self.with_chat(|c, now| c.on_connection(host, up, now));
+    /// A link coming up (with its hello's word on whether the daemon posts a person's chat post under their own Slack token) or
+    /// going: one call, so the word and the link cannot disagree.
+    pub(in crate::ui) fn on_chat_connection(&mut self, host: &HostKey, up: bool, posts_as_person: bool) {
+        self.with_chat(|c, now| c.on_connection(host, up, posts_as_person, now));
     }
 
     pub(in crate::ui) fn tick_chat(&mut self) {

@@ -50,7 +50,7 @@ impl State {
                     resolved,
                     backend_version,
                     repl_running,
-                    // Read into the Chat drawer by `note_host_connection`, before this match.
+                    // Read into the Chat drawer with the link's coming up, below.
                     posts_as_person: _,
                 } => {
                     self.on_repl_running(&event_host, repl_running);
@@ -321,9 +321,6 @@ impl State {
     }
 
     fn note_host_connection(&mut self, event_host: &HostKey, evt: &crate::net::transport::IncomingEvt) {
-        if let crate::net::transport::IncomingEvt::Connected { posts_as_person, .. } = &evt {
-            self.chat.set_posts_as_person(event_host, *posts_as_person);
-        }
         if let crate::net::transport::IncomingEvt::Connected { host: Some(declared), .. } = &evt {
             self.record_declared_host(&event_host, declared.clone());
             // Session-listing brief decision 2: a reconnecting hub's
@@ -353,14 +350,14 @@ impl State {
         // per-host connection status is exactly this — no new wire
         // signal, just watching the two evts that already exist.
         match &evt {
-            crate::net::transport::IncomingEvt::Connected { .. } => {
+            crate::net::transport::IncomingEvt::Connected { posts_as_person, .. } => {
                 self.note_connection(&event_host, true);
-                self.on_chat_connection(&event_host, true);
+                self.on_chat_connection(&event_host, true, *posts_as_person);
                 self.selection_share.on_connection(&event_host, true);
             }
             crate::net::transport::IncomingEvt::Disconnected { .. } => {
                 self.note_connection(&event_host, false);
-                self.on_chat_connection(&event_host, false);
+                self.on_chat_connection(&event_host, false, false);
                 self.selection_share.on_connection(&event_host, false);
             }
             _ => {}

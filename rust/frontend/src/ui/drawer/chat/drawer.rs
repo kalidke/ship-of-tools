@@ -106,8 +106,9 @@ pub(in crate::ui) struct ChatDrawer {
     pair_sent: Option<ResultRowIdentity>,
     /// The drawer has the keys (State sets it each frame): only then does an unmapped row open the picker by itself.
     focused: bool,
-    /// The hosts whose hello said the daemon posts a person's chat post under their own token; the hint says so only for these.
-    posts_as_person: std::collections::HashSet<HostKey>,
+    /// What each connected host's hello said of whether its daemon posts a person's chat post under their own Slack token; a host
+    /// is here only while its link is up and its hello was read, so the hint says nothing of a daemon it has not heard from.
+    posts_as_person: std::collections::HashMap<HostKey, bool>,
 }
 
 /// What holds the drawer's body in place of the records, one at a time. Whatever it is, the drawer parks the channel's view
@@ -268,16 +269,6 @@ impl ChatDrawer {
         })
     }
 
-    /// The connection's hello said whether the daemon posts a person's chat post under their own Slack token (State, at
-    /// each `Connected`); gone when the link is. The compose hint says what a post will be by it.
-    pub(in crate::ui) fn set_posts_as_person(&mut self, host: &HostKey, yes: bool) {
-        if yes {
-            self.posts_as_person.insert(host.clone());
-        } else {
-            self.posts_as_person.remove(host);
-        }
-    }
-
     /// The login the person's app is named for (State sets `connect::login()`; a test its own).
     pub(in crate::ui) fn set_login(&mut self, login: &'static str) {
         self.login = login;
@@ -336,9 +327,13 @@ impl ChatDrawer {
         [self.owner.next_ask(), self.rows.next_ask()].into_iter().flatten().min()
     }
 
-    pub(super) fn on_connection(&mut self, host: &HostKey, up: bool, now: Instant) -> Vec<Out> {
+    /// A link coming up, with its hello's word on whether the daemon posts as the person (`posts_as_person`, which the compose
+    /// hint reads), or going (the word goes with it).
+    pub(super) fn on_connection(&mut self, host: &HostKey, up: bool, posts_as_person: bool, now: Instant) -> Vec<Out> {
         self.rows.on_connection(host, up);
-        if !up {
+        if up {
+            self.posts_as_person.insert(host.clone(), posts_as_person);
+        } else {
             self.posts_as_person.remove(host);
         }
         self.cancel_name();
@@ -427,7 +422,9 @@ impl ChatDrawer {
                 // A hub that holds no token that posts as the person (never held, or Slack stopped accepting it): the Connect step
                 // takes the channel's place for the row shown, its post-as-you screen first. The draft stays the row's.
                 let shown = self.rows.row().is_some_and(|r| &r.host == host && r.workspace_id == req.target.row);
-                if shown && matches!(reply, ChatReply::Done(ChatPostRes::Refused { code: ChatCode::NoUserToken })) {
+                // A reply that comes late never replaces a Connect step that holds a pasted token (one re-paste is the cost).
+                let holds_token = self.connect().is_some_and(Connect::holds_token);
+                if shown && !holds_token && matches!(reply, ChatReply::Done(ChatPostRes::Refused { code: ChatCode::NoUserToken })) {
                     self.open_modal(Kind::Connect(Connect::for_post(host.clone(), self.login)));
                 }
                 let mut made = None;
@@ -872,7 +869,7 @@ impl ChatDrawer {
             None if self.thread.is_none() && !elsewhere => None,
             None => Some(format!("to {}", self.rows.label(dest.channel.as_str()))),
         };
-        let as_person = self.rows.row().is_some_and(|r| self.posts_as_person.contains(&r.host));
+        let as_person = self.rows.row().and_then(|r| self.posts_as_person.get(&r.host).copied());
         Some(ComposeText::of(draft.map(|d| d.text.as_str()), to, focused, as_person))
     }
 

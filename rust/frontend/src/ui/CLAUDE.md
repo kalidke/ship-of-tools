@@ -1342,8 +1342,11 @@ methods are `pub(super)`, so no other ui code can drop the requests they return.
   `a_refused_user_token_returns_to_step_two_and_keeps_the_others`,
   `a_hub_that_holds_no_user_token_shows_post_as_you_and_enter_opens_the_apps`,
   `a_post_refused_for_no_user_token_brings_the_post_as_you_screen_and_keeps_the_draft` (a post the hub refuses `no_user_token` opens the step for the row shown, and resolves nothing again;
-  the draft is kept), `the_hint_says_whether_the_post_goes_out_as_the_person_or_as_the_app_by_the_hello` (`compose_tests.rs`: a post goes out as
-  the person's on a hub whose hello says `posts_as_person`, and the hint says so only then; otherwise it says the app's),
+  the draft is kept), `the_hint_says_whether_the_post_goes_out_as_the_person_or_as_the_app_by_the_hello` (`compose_tests.rs`: the hello's word comes in
+  with the link, `ChatDrawer::on_connection(host, up, posts_as_person)`, and goes with it; the hint says the person's on a hub whose
+  hello says `posts_as_person`, the app's on one whose hello does not, and nothing of the daemon with no hello read; the native
+  fixture reads it back through the window's own event route),
+  `a_late_refusal_never_opens_over_another_row_or_replaces_a_step_holding_a_token`,
   `every_end_of_a_connect_frees_the_slot_and_a_refusal_keeps_the_other_token_through_the_next_frames` (a reply of each
   kind, `ConnectUnknown`, `never_written` and a link drop, each then ticked, and a fresh step's two pastes sent),
   `a_clipped_screen_says_there_is_more_and_every_scroll_moves_it`, `a_paste_that_is_no_slack_token_is_dropped_unshown`,

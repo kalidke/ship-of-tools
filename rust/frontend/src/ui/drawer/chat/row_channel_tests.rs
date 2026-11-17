@@ -71,7 +71,7 @@ fn the_watch_follows_the_shown_rows_channel_and_ends_with_it() {
     let t0 = Instant::now();
     let at = |ms: u64| t0 + Duration::from_millis(ms);
     let mut d = ChatDrawer::default();
-    d.on_connection(&host(), true, t0);
+    d.on_connection(&host(), true, false, t0);
 
     // Row R shown: nothing inside the debounce (the pacer is asked back), one resolve after it, `mapped` gives one watch.
     let (outs, settling) = d.tick(wanted("R"), t0);
@@ -109,17 +109,17 @@ fn the_watch_follows_the_shown_rows_channel_and_ends_with_it() {
     assert_eq!(watches(&d.on_evt(&host(), mapped("R"), at(1160))), 1);
 
     // The link goes down and up: one resolve, and a second `mapped` for it changes nothing.
-    assert!(d.on_connection(&host(), false, at(1500)).is_empty());
+    assert!(d.on_connection(&host(), false, false, at(1500)).is_empty());
     assert!(d.tick(wanted("R"), at(1510)).0.is_empty(), "no resolve on a host that is down");
-    d.on_connection(&host(), true, at(1520));
+    d.on_connection(&host(), true, false, at(1520));
     assert_eq!(resolves(&d.tick(wanted("R"), at(1530)).0), 1);
     assert!(d.tick(wanted("R"), at(1540)).0.is_empty());
     assert!(d.on_evt(&host(), mapped("R"), at(1550)).is_empty());
     assert!(d.on_evt(&host(), mapped("R"), at(1560)).is_empty());
 
     // The shown row's answer decides its watch: after a link returns, `unmapped` ends the watch the owner took up again.
-    d.on_connection(&host(), false, at(1600));
-    assert_eq!(watches(&d.on_connection(&host(), true, at(1610))), 1);
+    d.on_connection(&host(), false, false, at(1600));
+    assert_eq!(watches(&d.on_connection(&host(), true, false, at(1610))), 1);
     assert_eq!(resolves(&d.tick(wanted("R"), at(1620)).0), 1);
     let unmapped = answer("R", serde_json::json!({ "state": "unmapped" }));
     assert_eq!(unwatches(&d.on_evt(&host(), unmapped, at(1630))), 1);
@@ -132,7 +132,7 @@ fn a_read_from_before_a_rewatch_never_fills_the_new_watch() {
     let t0 = Instant::now();
     let at = |ms: u64| t0 + Duration::from_millis(ms);
     let mut d = ChatDrawer::default();
-    d.on_connection(&host(), true, t0);
+    d.on_connection(&host(), true, false, t0);
     d.tick(wanted("R"), t0);
     assert_eq!(resolves(&d.tick(wanted("R"), at(150)).0), 1);
     d.on_evt(&host(), mapped("R"), at(160));
@@ -182,10 +182,10 @@ fn a_link_change_clears_the_reads_in_flight() {
     let t0 = Instant::now();
     let at = |ms: u64| t0 + Duration::from_millis(ms);
     let mut d = ChatDrawer::default();
-    d.on_connection(&host(), true, t0);
+    d.on_connection(&host(), true, false, t0);
     reading(&mut d, t0, 0, "C1");
-    d.on_connection(&host(), false, at(300));
-    d.on_connection(&host(), true, at(310));
+    d.on_connection(&host(), false, false, at(300));
+    d.on_connection(&host(), true, false, at(310));
     let outs = d.on_evt(&host(), complete("R"), at(320));
     assert_eq!(count(&outs, |r| matches!(r, OutgoingReq::ChatHistory { .. })), 1, "not held behind the dropped read");
 }
@@ -197,7 +197,7 @@ fn a_held_read_given_up_is_cancelled_and_never_sent() {
     let t0 = Instant::now();
     let at = |ms: u64| t0 + Duration::from_millis(ms);
     let mut d = ChatDrawer::default();
-    d.on_connection(&host(), true, t0);
+    d.on_connection(&host(), true, false, t0);
     let first = reading(&mut d, t0, 0, "C1");
     d.tick(None, at(200));
     d.tick(wanted("R"), at(300));
@@ -222,7 +222,7 @@ fn an_answer_that_ends_or_replaces_the_watch_orphans_its_read() {
     let at = |ms: u64| t0 + Duration::from_millis(ms);
     for ended in [true, false] {
         let mut d = ChatDrawer::default();
-        d.on_connection(&host(), true, t0);
+        d.on_connection(&host(), true, false, t0);
         let old = reading(&mut d, t0, 0, "C1");
         if ended {
             d.on_evt(&host(), answer("R", serde_json::json!({ "state": "unmapped" })), at(200));
@@ -245,7 +245,7 @@ fn a_frame_during_the_read_keeps_it() {
     let t0 = Instant::now();
     let at = |ms: u64| t0 + Duration::from_millis(ms);
     let mut d = ChatDrawer::default();
-    d.on_connection(&host(), true, t0);
+    d.on_connection(&host(), true, false, t0);
     let read = reading(&mut d, t0, 0, "C1");
     d.tick(wanted("R"), at(186));
     assert!(d.on_evt(&host(), answered(&read), at(200)).is_empty());
@@ -259,16 +259,16 @@ fn another_hosts_link_change_keeps_this_hosts_reads_in_flight() {
     let t0 = Instant::now();
     let at = |ms: u64| t0 + Duration::from_millis(ms);
     let mut d = ChatDrawer::default();
-    d.on_connection(&host(), true, t0);
-    d.on_connection(&host_b(), true, t0);
+    d.on_connection(&host(), true, false, t0);
+    d.on_connection(&host_b(), true, false, t0);
     let old = reading(&mut d, t0, 0, "C1");
     d.tick(None, at(200));
     d.tick(wanted("R"), at(300));
     d.tick(wanted("R"), at(450));
     d.on_evt(&host(), mapped("R"), at(460));
     assert!(d.on_evt(&host(), complete("R"), at(470)).is_empty(), "held behind the orphan");
-    d.on_connection(&host_b(), false, at(500));
-    d.on_connection(&host_b(), true, at(510));
+    d.on_connection(&host_b(), false, false, at(500));
+    d.on_connection(&host_b(), true, false, at(510));
     let sent = d.on_evt(&host(), answered(&old), at(520));
     assert_eq!(d.fill(), Some(Fill::Reading), "the old reply installed nothing");
     assert_eq!(history(&sent), old, "then the held read goes");
@@ -281,16 +281,16 @@ fn a_link_change_cancels_that_hosts_held_read() {
     let t0 = Instant::now();
     let at = |ms: u64| t0 + Duration::from_millis(ms);
     let mut d = ChatDrawer::default();
-    d.on_connection(&host(), true, t0);
-    d.on_connection(&host_b(), true, t0);
+    d.on_connection(&host(), true, false, t0);
+    d.on_connection(&host_b(), true, false, t0);
     let old = reading(&mut d, t0, 0, "C1");
     d.tick(None, at(200));
     d.tick(wanted("R"), at(300));
     d.tick(wanted("R"), at(450));
     d.on_evt(&host(), mapped("R"), at(460));
     assert!(d.on_evt(&host(), complete("R"), at(470)).is_empty(), "held behind the orphan");
-    d.on_connection(&host(), false, at(600));
-    d.on_connection(&host(), true, at(610));
+    d.on_connection(&host(), false, false, at(600));
+    d.on_connection(&host(), true, false, at(610));
     let b_read = reading_on(&mut d, &host_b(), t0, 700, "S", "C1");
     assert!(d.on_evt(&host_b(), answered(&b_read), at(880)).is_empty(), "no stray read of the old watch goes out");
     d.tick(wanted("R"), at(900));
@@ -313,7 +313,7 @@ fn a_switch_back_draws_the_channels_records_while_it_is_read_again() {
     let t0 = Instant::now();
     let at = |ms: u64| t0 + Duration::from_millis(ms);
     let mut d = ChatDrawer::default();
-    d.on_connection(&host(), true, t0);
+    d.on_connection(&host(), true, false, t0);
     let shown = |d: &mut ChatDrawer, from: u64, row: &str, channel: Option<&str>| {
         d.tick(wanted(row), at(from));
         assert_eq!(resolves(&d.tick(wanted(row), at(from + 150)).0), 1);
@@ -370,7 +370,7 @@ fn the_drawer_names_the_instant_of_a_first_watchs_next_ask() {
     let t0 = Instant::now();
     let at = |ms: u64| t0 + Duration::from_millis(ms);
     let mut d = ChatDrawer::default();
-    d.on_connection(&host(), true, t0);
+    d.on_connection(&host(), true, false, t0);
     d.tick(wanted("R"), t0);
     assert_eq!(resolves(&d.tick(wanted("R"), at(150)).0), 1);
     assert_eq!(d.next_ask(), None, "nothing watched before the answer");
@@ -390,7 +390,7 @@ fn a_page_read_again_after_a_hide_and_show_waits_for_the_first_reply() {
     let t0 = Instant::now();
     let at = |ms: u64| t0 + Duration::from_millis(ms);
     let mut d = ChatDrawer::default();
-    d.on_connection(&host(), true, t0);
+    d.on_connection(&host(), true, false, t0);
     let snapshot = reading(&mut d, t0, 0, "C1");
     let reply = serde_json::json!({ "records": [{ "workspace": "T1", "channel": "C1", "ts": "5.000001", "thread_ts": "5.000001",
         "author": { "id": "U1", "name": "A" }, "origin": "member", "text": "x", "reply_count": 0, "files": [] }], "next": "older" });
@@ -426,7 +426,7 @@ fn named_to(row: &str, channel: &str, name: &str) -> ChatEvt {
 fn the_title_names_the_channel_when_the_answer_did_and_says_the_id_otherwise() {
     let t0 = Instant::now();
     let mut d = ChatDrawer::default();
-    d.on_connection(&host(), true, t0);
+    d.on_connection(&host(), true, false, t0);
     d.tick(wanted("R"), t0);
     d.tick(wanted("R"), t0 + Duration::from_millis(150));
     d.on_evt(&host(), mapped("R"), t0 + Duration::from_millis(160));
@@ -524,7 +524,7 @@ fn the_title_shows_the_name_once_a_later_answer_carries_it() {
     let t0 = Instant::now();
     let at = |ms: u64| t0 + Duration::from_millis(ms);
     let mut d = ChatDrawer::default();
-    d.on_connection(&host(), true, t0);
+    d.on_connection(&host(), true, false, t0);
     d.tick(wanted("R"), t0);
     assert_eq!(resolves(&d.tick(wanted("R"), at(150)).0), 1);
     assert_eq!(watches(&d.on_evt(&host(), mapped("R"), at(160))), 1);

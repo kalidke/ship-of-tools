@@ -3023,7 +3023,6 @@ async fn with_no_person_token_a_persons_post_is_refused_unsent_and_a_refused_tok
 
         // None held: nothing is sent, and the bot's token is not used in its place.
         let bare = new_api_with(&fake, None);
-        assert!(!bare.posts_as_person());
         let got = bare.post("C0CHAN", None, PostKind::Person, "tester", "hi").await;
         assert_eq!(got, Err(ApiError::NoPersonToken));
         // A person's share is refused unsent too, with or without a token: it would go out under the bot's.
@@ -3038,14 +3037,17 @@ async fn with_no_person_token_a_persons_post_is_refused_unsent_and_a_refused_tok
 
         // Not being in the channel is the person's to fix: the token is kept.
         let api = new_api(&fake);
-        assert!(api.posts_as_person());
+        // The token is held when the next person's post is made (sent, whatever Slack answers), not refused unsent.
+        async fn held(api: &Api) -> bool {
+            api.post("C0CHAN", None, PostKind::Person, "tester", "hi").await.is_ok()
+        }
         let got = api.post("C0NOTIN", None, PostKind::Person, "tester", "hi").await;
         assert_eq!(got, Ok(PostOutcome::Refused("not_in_channel".into())));
-        assert!(api.posts_as_person(), "kept");
+        assert!(held(&api).await, "kept");
         // So is a channel that is not found.
         let got = api.post("C0GONE", None, PostKind::Person, "tester", "hi").await;
         assert_eq!(got, Ok(PostOutcome::Refused("channel_not_found".into())));
-        assert!(api.posts_as_person(), "kept");
+        assert!(held(&api).await, "kept");
 
         // A refusal that names the token or its scope forgets it, and the answer is still the refusal. The next post
         // is refused unsent.
@@ -3053,7 +3055,6 @@ async fn with_no_person_token_a_persons_post_is_refused_unsent_and_a_refused_tok
             let api = new_api(&fake);
             let got = api.post(channel, None, PostKind::Person, "tester", "hi").await;
             assert_eq!(got, Ok(PostOutcome::Refused(code.into())));
-            assert!(!api.posts_as_person(), "{code}: forgotten");
             let before = posts(&fake);
             let again = api.post("C0CHAN", None, PostKind::Person, "tester", "hi").await;
             assert_eq!(again, Err(ApiError::NoPersonToken), "{code}");
@@ -3064,7 +3065,7 @@ async fn with_no_person_token_a_persons_post_is_refused_unsent_and_a_refused_tok
         let api = new_api(&fake);
         let got = api.post("C0REVOKED", None, PostKind::Row, "build-7", "hi").await;
         assert_eq!(got, Ok(PostOutcome::Refused("token_revoked".into())));
-        assert!(api.posts_as_person(), "a row's refusal is the bot token's");
+        assert!(held(&api).await, "a row's refusal is the bot token's");
         fake.shutdown().await;
     })
     .await;

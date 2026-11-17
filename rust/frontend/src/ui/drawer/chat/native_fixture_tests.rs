@@ -280,6 +280,13 @@ impl State {
         let send = |evt: IncomingEvt| events.send((host.clone(), evt)).map_err(|_| anyhow::anyhow!("the fixture's event channel closed"));
         self.witness_show(host, events)?;
         self.witness_pump(events, sent, &mut daemon)?;
+        // The hello's word reaches the hint through the window's own event route: this link's hello said the daemon posts as the
+        // person (`connected()`), so the empty draft's hint says so and nothing of an older daemon.
+        let hint = self.chat.compose_text(true);
+        anyhow::ensure!(
+            matches!(hint, Some(super::compose::ComposeText::Hint { as_person: Some(true), .. })),
+            "the hint does not carry the hello's word"
+        );
         // A draft begun in the mapped channel; then the hub's chat goes unconfigured, seen at the link's return.
         anyhow::ensure!(!self.keys_take_secrets(), "a mapped channel's keys are taken as secret");
         self.witness_key(Key::Character("a".into()), (false, false), None)?;
