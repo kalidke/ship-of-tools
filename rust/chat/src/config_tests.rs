@@ -1087,7 +1087,7 @@ fn a_named_file_must_hold_its_workspace_and_the_defaults_is_chat_secrets() {
     );
     assert_eq!(opened, [SECRETS_FILE, "chat-secrets-T0BBBB.toml", "chat-secrets-T0DDDD.toml"]);
     // The default's id, named, takes no place among the named files.
-    assert_eq!(loaded.named(), ["T0BBBB", "T0DDDD"]);
+    assert_eq!(loaded.named("T0AAAA"), ["T0BBBB", "T0DDDD"]);
 }
 
 #[test]
@@ -1104,7 +1104,7 @@ fn a_folder_of_many_secrets_files_opens_at_most_the_bound() {
     assert_eq!(loaded.refused(), garbage.into_iter().chain(rest).collect::<Vec<_>>());
     assert!(E::TooManyWorkspaces.explain().contains(&MAX_WORKSPACES.to_string()));
     // Every listed named file is named, opened or not, refused or not: the files a new one would sort among.
-    assert_eq!(loaded.named(), (0..12).map(|i| format!("T0B{i:02}")).collect::<Vec<_>>());
+    assert_eq!(loaded.named("T0AAAA"), (0..12).map(|i| format!("T0B{i:02}")).collect::<Vec<_>>());
     // At the bound exactly, nothing is left out.
     let (full, opened) = many_secrets(MAX_WORKSPACES - 1);
     assert_eq!((full.workspaces().count(), full.refused().len(), opened.len()), (MAX_WORKSPACES - 3, 3, MAX_WORKSPACES));

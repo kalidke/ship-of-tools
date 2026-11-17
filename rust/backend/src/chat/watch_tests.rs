@@ -169,7 +169,7 @@ fn an_end_tells_and_clears_only_its_workspaces_slots() {
 
 /// C7: a workspace's status names only its own connections and its own channels.
 #[test]
-fn publishing_one_workspaces_states_keeps_anothers() {
+fn a_workspaces_status_names_only_its_own_connections_and_channels() {
     let hub = Hub::new();
     let (one, two) = (hub.connect(), hub.connect());
     one.conn.claim(target_in("T0AAAA", "C0AAAA01")).unwrap();
@@ -203,10 +203,11 @@ async fn the_daemons_filings_take_one_slot_file_gap_apart() {
     assert!(at[1] - at[0] >= Duration::from_millis(30) + sot_chat::delivery::FILE_GAP, "the second filing began {:?} after the first", at[1] - at[0]);
 }
 
-/// L6 rule 5: a filing still waiting for the slot when its delivery ends files nothing, and the slot's holder is not
-/// held up by it.
+/// The slot's own rule (`FilingSlot::file`): a filing marked dropped while it waits files nothing, and the slot's holder
+/// is not held up by it. The owner's use of it, `end_delivery`, is
+/// `chat_mail_tests::a_filing_waiting_behind_another_workspaces_ends_at_once_with_its_delivery`.
 #[tokio::test(start_paused = true)]
-async fn a_filing_waiting_for_the_slot_ends_at_once_with_its_delivery() {
+async fn a_dropped_filing_waiting_at_the_slot_files_nothing() {
     let slot = Arc::new(FilingSlot::new());
     let (go, gate) = tokio::sync::oneshot::channel::<()>();
     let holder = {

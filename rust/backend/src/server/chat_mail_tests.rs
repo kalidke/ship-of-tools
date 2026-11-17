@@ -176,7 +176,8 @@ async fn the_owner_runs_after_a_reload_with_no_watch() {
     let chat = w.start(&w.fake).await;
     // The file now delivers: the reload's owner opens the delivery with no watch and no window.
     w.home.delivering_toml(&[w.folder.clone()]);
-    assert_eq!(chat.reload(&chat.setup().await, &w.rows).await, Status::Running);
+    chat.reload(&chat.setup().await, &w.rows).await;
+    assert_eq!(chat.status(), Status::Running);
     let target = ChatTarget { row: w.rows.list()[0].workspace_id.clone(), workspace: "T0AAAA".into(), channel: ChatChannel::try_from("C0AAAA".to_string()).unwrap() };
     super::chat_watch_tests::after_hello(&chat, &w.rows, &target).await;
     until("the first socket's end", || w.fake.sockets().0 == 1).await;
@@ -400,7 +401,10 @@ async fn a_filing_in_flight_at_an_end_returns_before_a_reload_starts_the_next_se
     assert!(soon(|| service.ended() == Some("wrong_app")).await, "the service did not end");
     let reloading = tokio::spawn({
         let (chat, rows) = (chat.clone(), w.rows.clone());
-        async move { chat.reload(&chat.setup().await, &rows).await }
+        async move {
+            chat.reload(&chat.setup().await, &rows).await;
+            chat.status()
+        }
     });
     tokio::time::sleep(Duration::from_millis(600)).await;
     assert!(!reloading.is_finished(), "the reload went on while the filing was in flight");
@@ -674,12 +678,21 @@ fn post_record(n: u32) -> sot_protocol::chat::ChatRecord {
     }
 }
 
-/// L8 and C8: a delivering file maps alpha to a channel of the default workspace and beta to one of a second; a member's
-/// post in each workspace's channel becomes one mail line in its own row's inbox, each workspace's owner filing through
-/// the daemon's one filing slot.
-#[tokio::test(flavor = "multi_thread")]
-async fn two_workspaces_file_their_own_mail_one_filing_at_a_time() {
-    let (a, b) = ("T0AAAA", "T0BBBB");
+/// A delivering file maps alpha to a channel of the default workspace `MA` and beta to one of a second, `MB`, each row
+/// with a live handle; both workspaces run and both sockets said hello.
+struct MailTwo {
+    teams: sot_chat::fake_slack::Teams,
+    th: TestHome,
+    folders: [std::path::PathBuf; 2],
+    chat: Arc<Chat>,
+    _home: Home,
+}
+
+const MA: &str = "T0AAAA";
+const MB: &str = "T0BBBB";
+
+async fn mail_two() -> MailTwo {
+    let (a, b) = (MA, MB);
     let teams = sot_chat::fake_slack::Teams::start(&[(a, "Alpha Lab"), (b, "Beta Lab")]).await;
     teams.channels(a, &[("C0AAAA01", "alpha-one", false, true)]);
     teams.channels(b, &[("C0BBBB01", "beta-one", false, true)]);
@@ -716,18 +729,71 @@ async fn two_workspaces_file_their_own_mail_one_filing_at_a_time() {
         let target = ChatTarget { row: row.clone(), workspace: w.into(), channel: ChatChannel::try_from(c.to_string()).unwrap() };
         super::chat_watch_tests::after_hello(&chat, &rows, &target).await;
     }
-    let inbox = |handle: &str| -> Vec<String> {
-        let text = std::fs::read_to_string(th.home.join("inbox").join(format!("{handle}.jsonl"))).unwrap_or_default();
+    MailTwo { teams, th, folders: [fa, fb], chat, _home: home }
+}
+
+impl MailTwo {
+    /// The mail lines in `handle`'s inbox.
+    fn inbox(&self, handle: &str) -> Vec<String> {
+        let text = std::fs::read_to_string(self.th.home.join("inbox").join(format!("{handle}.jsonl"))).unwrap_or_default();
         text.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()).filter_map(|v| v["msg"].as_str().map(str::to_string)).collect()
-    };
-    teams.feed(a, teams.message(a, "C0AAAA01", 1, "1700000100.000100"));
-    teams.feed(b, teams.message(b, "C0BBBB01", 2, "1700000200.000100"));
-    until("each post filed", || inbox("alpha-h").len() == 1 && inbox("beta-h").len() == 1).await;
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    let (alpha, beta) = (inbox("alpha-h"), inbox("beta-h"));
+    }
+
+    /// Alpha's filing held in the slot (one arm of the hold point at a time, so alpha's alone), and beta's job at the slot
+    /// behind it (its author looked up, which comes first).
+    async fn beta_behind_alpha(&self) -> sot_platform::test_hold::Arm {
+        let hold_a = Holds::here().arm("chat.mail.filing").key(self.folders[0].display()).hold(1);
+        self.teams.feed(MA, self.teams.message(MA, "C0AAAA01", 1, "1700000100.000100"));
+        hold_a.reached_async(0).await;
+        self.teams.feed(MB, self.teams.message(MB, "C0BBBB01", 2, "1700000200.000100"));
+        until("beta's name lookup", || !self.teams.calls(MB, "xoxb", "/users.info").is_empty()).await;
+        hold_a
+    }
+}
+
+/// L8 and C8: a member's post in each workspace's channel becomes one mail line in its own row's inbox, each workspace's
+/// owner filing through the daemon's one filing slot: while alpha's filing holds it, beta's (its names already looked
+/// up, so a slow Slack in one workspace holds no other's) waits, and takes it no sooner than `FILE_GAP` after alpha's
+/// returned. No request crosses workspaces (the fake fails the test if one did).
+#[tokio::test(flavor = "multi_thread")]
+async fn two_workspaces_file_their_own_mail_one_filing_at_a_time() {
+    let w = mail_two().await;
+    let hold_a = w.beta_behind_alpha().await;
+    let released = std::time::Instant::now();
+    hold_a.release(0);
+    // Beta's line lands only after alpha's filing returned and FILE_GAP passed; had beta not waited for alpha's slot, it
+    // would be there at once.
+    until("beta's post filed", || w.inbox("beta-h").len() == 1).await;
+    let waited = released.elapsed();
+    assert!(waited >= sot_chat::delivery::FILE_GAP, "beta's filing landed {waited:?} after alpha's was released, within FILE_GAP");
+    assert_eq!(w.inbox("alpha-h").len(), 1, "alpha's filing returned");
+    w.chat.request_stop();
+    assert!(w.chat.wait_retired(LONG));
+    // Retired: nothing more is filed, so the counts are final.
+    let (alpha, beta) = (w.inbox("alpha-h"), w.inbox("beta-h"));
     assert_eq!((alpha.len(), beta.len()), (1, 1), "a post filed twice or to the other row");
-    assert!(alpha[0].contains(&format!("ts=1700000100.000100 thread=1700000100.000100 channel=C0AAAA01 workspace={a}")), "{}", alpha[0]);
-    assert!(beta[0].contains(&format!("ts=1700000200.000100 thread=1700000200.000100 channel=C0BBBB01 workspace={b}")), "{}", beta[0]);
-    chat.request_stop();
-    assert!(chat.wait_retired(LONG));
+    assert!(alpha[0].contains(&format!("ts=1700000100.000100 thread=1700000100.000100 channel=C0AAAA01 workspace={MA}")), "{}", alpha[0]);
+    assert!(beta[0].contains(&format!("ts=1700000200.000100 thread=1700000200.000100 channel=C0BBBB01 workspace={MB}")), "{}", beta[0]);
+}
+
+/// B1 review S4, through the owner: beta's service ends on its own while its filing waits behind alpha's held one; beta's
+/// owner drops that filing at once (it has filed nothing), so its end does not wait `MAIL_END` on another workspace's
+/// filing, and alpha's filing goes on.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_filing_waiting_behind_another_workspaces_ends_at_once_with_its_delivery() {
+    let w = mail_two().await;
+    let hold_a = w.beta_behind_alpha().await;
+    // An envelope of another app ends beta's service (`wrong_app`).
+    let mut other = w.teams.message(MB, "C0BBBB01", 3, "1700000300.000100");
+    other["payload"]["api_app_id"] = json!("A0OTHER");
+    w.teams.feed(MB, other);
+    let begun = std::time::Instant::now();
+    until("beta off", || w.chat.status_of(MB) == Status::Failed("wrong_app")).await;
+    assert!(begun.elapsed() < crate::chat::watch::MAIL_END / 3, "beta's end waited on alpha's filing: {:?}", begun.elapsed());
+    assert!(w.chat.hub().running_in(MA) && w.inbox("beta-h").is_empty(), "alpha's owner runs and beta's waiting filing filed nothing");
+    hold_a.release(0);
+    until("alpha's post filed", || w.inbox("alpha-h").len() == 1).await;
+    w.chat.request_stop();
+    assert!(w.chat.wait_retired(LONG));
+    assert!(w.inbox("beta-h").is_empty());
 }

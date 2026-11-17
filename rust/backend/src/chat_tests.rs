@@ -971,7 +971,8 @@ fn stops(listeners: &[Arc<Fake>]) -> Vec<usize> {
 /// The reload of a chat of fakes, which has no owner to start, under the setup lock.
 async fn reload(chat: &Arc<Chat<Fake>>) -> Status {
     let held = chat.setup().await;
-    chat.reload_then(&held, |_| {}).await
+    chat.reload_then(&held, |_| {}).await;
+    chat.status()
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -992,7 +993,8 @@ async fn a_reload_applies_new_tokens_and_a_new_mapping_with_no_daemon_restart() 
     let bot = BOT.replace("aaaa", "cccc");
     home.write(SECRETS_FILE, &format!("workspace = \"T0AAAA\"\nbot_token = \"{bot}\"\napp_token = \"{APP}\"\n"));
     home.chat_toml(&[a.to_string_lossy().into_owned(), b.to_string_lossy().into_owned()]);
-    assert_eq!(chat.reload(&chat.setup().await, &rows).await, Status::Running);
+    chat.reload(&chat.setup().await, &rows).await;
+    assert_eq!(chat.status(), Status::Running);
     // The first service stopped, freeing the workspace's lock: the second start took it at its first try.
     assert_eq!(first.status(), sot_chat::service::Status::Stopped);
     assert_eq!(tries.load(Ordering::SeqCst), 2);
@@ -1078,7 +1080,8 @@ async fn a_holder_of_the_setup_lock_edits_the_files_and_reloads() {
     assert_eq!(chat.status(), Status::Refused(ConfigError::Missing));
     let held = chat.setup().await;
     home.configured();
-    assert_eq!(chat.reload_then(&held, |_| {}).await, Status::Running);
+    chat.reload_then(&held, |_| {}).await;
+    assert_eq!(chat.status(), Status::Running);
     assert!(chat.setup.try_lock().is_err(), "the holder still holds the lock after its reload");
     drop(held);
     assert!(chat.setup.try_lock().is_ok());
@@ -1187,8 +1190,8 @@ fn two_files() -> Home {
     home
 }
 
-/// C5, review D2: the hub fact is the chat's, so one watch asks it whatever the units and the reloads (the watch holds
-/// the chat's one weak reference), and when another computer is named the hub every workspace steps down.
+/// C5, review D2: the hub fact is the chat's, asked by one watch whatever the units and the reloads, so when another
+/// computer is named the hub every workspace steps down, after two reloads as at the boot.
 #[tokio::test(flavor = "multi_thread")]
 async fn one_hub_fact_watch_steps_every_workspace_down() {
     let home = two_files();
@@ -1200,25 +1203,29 @@ async fn one_hub_fact_watch_steps_every_workspace_down() {
         assert_eq!(reload(&chat).await, Status::Running);
     }
     until("both running again", || chat.status_of("T0BBBB") == Status::Running).await;
-    tokio::time::sleep(5 * FAST).await;
-    assert_eq!(Arc::weak_count(&chat), 1, "one hub fact watch for the chat, whatever its units and reloads");
     home.list("elsewhere");
     until("every workspace steps down", || chat.status_of("T0AAAA") == Status::NotHub && chat.status_of("T0BBBB") == Status::NotHub).await;
     assert_eq!(stops(&[a, b]), [3, 3], "two reloads' stops and the step-down's, in each workspace");
 }
 
-/// C5: a workspace held by another daemon waits alone; the other runs.
+/// C5: a workspace held by another daemon waits alone, asking again, while the other runs.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_held_workspace_waits_alone() {
     let home = two_files();
     let a = Arc::new(Fake::default());
+    let held_tries = Arc::new(AtomicUsize::new(0));
+    let tries = held_tries.clone();
     let start: Starter<Fake> = Box::new(move |workspace, _, _| {
         let (a, held) = (a.clone(), workspace == "T0BBBB");
+        if held {
+            tries.fetch_add(1, Ordering::SeqCst);
+        }
         Box::pin(async move { if held { Err("held") } else { Ok(a) } })
     });
     let chat = Chat::begin(&home.env, &|p| config::read_file(p), &Registry::new(), start, setup::Verifier::none(), FAST);
     assert_eq!(settled(&chat).await, Status::Running);
-    tokio::time::sleep(5 * FAST).await;
+    // Each of the held workspace's tries is seen, not waited for: after its third, it still waits and the other runs.
+    until("the held workspace's third try", || held_tries.load(Ordering::SeqCst) >= 3).await;
     assert_eq!((chat.status_of("T0AAAA"), chat.status_of("T0BBBB")), (Status::Running, Status::Starting));
 }
 

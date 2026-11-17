@@ -4,6 +4,11 @@
 //! that workspace, and the upgrade's ticket picks its socket, whose hello and envelopes name its app. A bearer that is no
 //! workspace's, or a bot token `revoke` was called for, is refused with Slack's codes. The tokens are built at run time
 //! from the workspace's id and a fixed body, so no token-shaped literal is written.
+//!
+//! The fake is the witness that no request crosses workspaces: every request whose bearer is one workspace's token and
+//! whose channel or user is another workspace's own (a channel listed for it alone, its bot user) is recorded
+//! (`crossed`), and a `Teams` dropped holding one fails its test, unless the test said it crosses on purpose
+//! (`expect_crossing`).
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -47,6 +52,8 @@ fn own(prefix: &str, id: &str) -> String {
 pub struct Teams {
     fake: FakeSlack,
     teams: Arc<Vec<Team>>,
+    crossed: Arc<Mutex<Vec<String>>>,
+    crossing: AtomicBool,
 }
 
 impl Teams {
@@ -60,9 +67,28 @@ impl Teams {
             })
             .collect();
         let teams = Arc::new(teams);
-        let held = teams.clone();
-        let fake = FakeSlack::start(Identity::Trusted, move |seen, port| answer(&held, seen, port)).await;
-        Teams { fake, teams }
+        let crossed = Arc::new(Mutex::new(Vec::new()));
+        let (held, seen_crossed) = (teams.clone(), crossed.clone());
+        let fake = FakeSlack::start(Identity::Trusted, move |seen, port| {
+            if let Some(what) = crossing(&held, seen) {
+                seen_crossed.lock().unwrap().push(what);
+            }
+            answer(&held, seen, port)
+        })
+        .await;
+        Teams { fake, teams, crossed, crossing: AtomicBool::new(false) }
+    }
+
+    /// Each request so far that carried one workspace's token for another workspace's channel or user, as
+    /// `<bearer's workspace> <kind> <method> <the other's id>`.
+    pub fn crossed(&self) -> Vec<String> {
+        self.crossed.lock().unwrap().clone()
+    }
+
+    /// The test sends a crossing request on purpose (a channel of another workspace, to be refused): dropping the fake
+    /// then fails nothing.
+    pub fn expect_crossing(&self) {
+        self.crossing.store(true, Ordering::SeqCst);
     }
 
     pub fn fake(&self) -> &FakeSlack {
@@ -123,6 +149,30 @@ impl Teams {
         let bearer = format!("Bearer {}", token(kind, id));
         self.fake.seen().into_iter().filter(|s| s.authorization.as_deref() == Some(bearer.as_str()) && s.path().ends_with(method)).collect()
     }
+}
+
+impl Drop for Teams {
+    fn drop(&mut self) {
+        let crossed = self.crossed();
+        if !std::thread::panicking() && !self.crossing.load(Ordering::SeqCst) {
+            assert!(crossed.is_empty(), "requests crossed workspaces: {crossed:?}");
+        }
+    }
+}
+
+/// A request under one workspace's token naming another's own channel (listed for it and not for the bearer's) or its
+/// bot user: `<bearer's workspace> <kind> <method> <id>`.
+fn crossing(teams: &[Team], seen: &Seen) -> Option<String> {
+    let (team, kind) = bearer(teams, seen)?;
+    let named = |key: &str| seen.param(key).or_else(|| seen.json().and_then(|j| j[key].as_str().map(str::to_string)));
+    let has = |t: &Team, c: &str| t.channels.lock().unwrap().iter().any(|x| x.0 == c);
+    let others = || teams.iter().filter(|t| t.id != team.id);
+    let method = seen.path().rsplit('/').next().unwrap_or_default().to_string();
+    if let Some(c) = named("channel").filter(|c| !has(team, c) && others().any(|t| has(t, c))) {
+        return Some(format!("{} {kind} {method} {c}", team.id));
+    }
+    let u = named("user").filter(|u| others().any(|t| *u == own("U", t.id)))?;
+    Some(format!("{} {kind} {method} {u}", team.id))
 }
 
 /// The workspace and the kind of a request's bearer, when it is one of the fake's tokens.

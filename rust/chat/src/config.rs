@@ -478,13 +478,9 @@ pub struct Secrets {
     admitted: BTreeMap<String, (SecretsFile, Credentials)>,
     /// Why `chat-secrets.toml` was not admitted (`Missing` when it is absent).
     default: Option<ConfigError>,
-    /// Each named file refused or not read, by its name, in name order.
+    /// Each named file refused or not read, by its name, in name order: every listed named file not admitted, those past
+    /// the bound included.
     refused: Vec<(String, ConfigError)>,
-    /// The ids of every `chat-secrets-<id>.toml` listed but the default's, in name order: admitted, refused or past the
-    /// bound alike.
-    named: Vec<String>,
-    /// `chat.toml`'s workspace, whose file is `chat-secrets.toml`.
-    default_id: String,
 }
 
 impl Secrets {
@@ -496,7 +492,7 @@ impl Secrets {
     /// named file. Every open goes through `read`.
     pub fn read(dir: &Path, read: Reader, config: &Config) -> Secrets {
         let open = |name: &str| text(read, &dir.join(name)).and_then(|t| Credentials::parse(&t));
-        let mut s = Secrets { admitted: BTreeMap::new(), default: None, refused: Vec::new(), named: Vec::new(), default_id: config.workspace.clone() };
+        let mut s = Secrets { admitted: BTreeMap::new(), default: None, refused: Vec::new() };
         match open(SECRETS_FILE) {
             Ok((w, c)) if w == config.workspace => { s.admitted.insert(w, (SecretsFile(None), c)); }
             Ok(_) => s.default = Some(ConfigError::SecondWorkspace),
@@ -505,7 +501,6 @@ impl Secrets {
         let mut named = named_ids(dir);
         named.sort_unstable();
         let mut opened = 1;
-        s.named = named.iter().filter(|id| **id != config.workspace).cloned().collect();
         for id in named {
             let file = SecretsFile(Some(id.clone()));
             let held = if id == config.workspace {
@@ -550,21 +545,27 @@ impl Secrets {
     }
 
     /// Why `chat-secrets.toml` was not admitted: `Missing` when it is absent. A named file's refusal is never this.
+    #[cfg(test)]
     pub fn default_refusal(&self) -> Option<ConfigError> {
         self.default
     }
 
-    /// The ids of the `chat-secrets-<id>.toml` files the folder lists, the default's id left out, whether each was
-    /// admitted, refused or past the bound: the files a new workspace's file would sort among.
-    pub fn named(&self) -> &[String] {
-        &self.named
+    /// The ids of the `chat-secrets-<id>.toml` files the folder lists, `default`'s (`chat.toml`'s workspace) left out,
+    /// whether each was admitted, refused or past the bound (every listed named file is one or the other): the files a new
+    /// workspace's file would sort among. Read before `take`, which moves the admitted out.
+    pub fn named(&self, default: &str) -> Vec<String> {
+        let admitted = self.admitted.iter().filter(|(_, (f, _))| f.0.is_some()).map(|(w, _)| w.clone());
+        let refused = self.refused.iter().filter_map(|(name, _)| SecretsFile::named(name).map(str::to_string));
+        let mut named: Vec<String> = admitted.chain(refused).filter(|id| id != default).collect();
+        named.sort_unstable();
+        named
     }
 
-    /// Each workspace whose own file was refused, with that file's code: `chat-secrets.toml`'s under `chat.toml`'s
-    /// workspace (not when it is absent), and each named file's under the id its name says. A file's refusal is its own
-    /// workspace's alone.
-    pub fn refusals(&self) -> Vec<(String, ConfigError)> {
-        let default = self.default.filter(|e| *e != ConfigError::Missing).map(|e| (self.default_id.clone(), e));
+    /// Each workspace whose own file was refused, with that file's code: `chat-secrets.toml`'s under `default`
+    /// (`chat.toml`'s workspace; not when the file is absent), and each named file's under the id its name says. A file's
+    /// refusal is its own workspace's alone.
+    pub fn refusals(&self, default: &str) -> Vec<(String, ConfigError)> {
+        let default = self.default.filter(|e| *e != ConfigError::Missing).map(|e| (default.to_string(), e));
         let named = self.refused.iter().filter_map(|(name, e)| SecretsFile::named(name).map(|id| (id.to_string(), *e)));
         default.into_iter().chain(named).collect()
     }

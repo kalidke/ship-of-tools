@@ -40,7 +40,7 @@ const LOOK: Duration = Duration::from_secs(30);
 const EVENTS_QUEUE: usize = 256;
 /// How long a stop waits for the delivery's filing in flight (a name lookup and a guarded append, each bounded) before it
 /// goes on; the retirement's own bound reports a longer wait and never extends the daemon's end.
-const MAIL_END: Duration = Duration::from_secs(15);
+pub(crate) const MAIL_END: Duration = Duration::from_secs(15);
 
 /// One event for the connections that watch.
 #[derive(Clone)]
@@ -186,9 +186,12 @@ impl Hub {
         *lock(&self.timing) = timing;
     }
 
-    /// Wake `workspace`'s owner (or its next one: a kick is kept until an owner waits).
+    /// Wake `workspace`'s owner, when it has a desk (an owner ran or runs): a kick is kept until that owner waits. A
+    /// workspace no owner ever ran has nothing to wake (its first owner reads the table at its start), and gets no desk.
     fn kick(&self, workspace: &str) {
-        lock(&self.desks).entry(workspace.to_string()).or_default().kick.notify_one();
+        if let Some(d) = lock(&self.desks).get(workspace) {
+            d.kick.notify_one();
+        }
     }
 
     /// Wake every workspace's owner.
@@ -215,6 +218,12 @@ impl Hub {
     #[cfg(test)]
     pub(crate) fn subscribe(&self) -> broadcast::Receiver<Evt> {
         self.events.subscribe()
+    }
+
+    /// The workspaces with a desk.
+    #[cfg(test)]
+    pub(crate) fn desks(&self) -> Vec<String> {
+        lock(&self.desks).keys().cloned().collect()
     }
 
     /// The held slots as (connection, channel).
@@ -395,7 +404,6 @@ enum Done {
 /// The pure `Delivery` and what its owner keeps to run it: each job's handle and the instant to ask again.
 struct Mail {
     delivery: Delivery,
-    workspace: String,
     /// The state folder, on this computer's disk.
     dir: std::path::PathBuf,
     /// Channel and its mapped folder.
@@ -443,19 +451,19 @@ async fn read_inboxes(env: Env, tx: mpsc::Sender<Done>, timing: Timing) {
 #[cfg(test)]
 pub(crate) static PANIC_ON: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
-/// One filing, at the daemon's one filing slot: the slot taken, then `FILE_GAP` after the daemon's last filing returned,
-/// the author named as a read names it, the guarded append, and the slot freed with the return recorded. A job its
-/// delivery's end dropped while it waited files nothing.
+/// One filing: the author named as a read names it (a Slack call of this workspace's, so before the slot), then at the
+/// daemon's one filing slot: the slot taken, `FILE_GAP` after the daemon's last filing returned, the guarded append, and
+/// the slot freed with the return recorded. A job its delivery's end dropped before it held the slot files nothing.
 async fn file_job(env: Env, rows: Workspaces, service: Arc<Service>, folder: String, mut f: Filing, filing: Arc<FilingSlot>, at: Arc<Mutex<Slot>>) -> Done {
     #[cfg(test)]
     assert!(!PANIC_ON.lock().unwrap().contains(&f.record.ts.as_str().to_string()), "a test's filing job fails here");
     let (channel, ts, live) = (f.channel.clone(), f.record.ts.clone(), f.live);
+    if let Ok(api) = service.api() {
+        api.fill_names(std::slice::from_mut(&mut f.record)).await;
+    }
     let filed = filing
         .file(&at, async {
             sot_platform::hold_point_async!("chat.mail.filing", folder);
-            if let Ok(api) = service.api() {
-                api.fill_names(std::slice::from_mut(&mut f.record)).await;
-            }
             mail::file(&env, &rows, &folder, &f.record).await
         })
         .await;
@@ -628,7 +636,7 @@ impl Own {
         }
         let timing = *lock(&self.hub.timing);
         let read = tokio::spawn(read_inboxes(self.chat.env.clone(), tx.clone(), timing));
-        Some(Mail { delivery: Delivery::new(timing, std::time::Instant::now(), states), workspace: self.workspace.clone(), dir, folders, tx, wake: None, read, filing: None, pass: None })
+        Some(Mail { delivery: Delivery::new(timing, std::time::Instant::now(), states), dir, folders, tx, wake: None, read, filing: None, pass: None })
     }
 
     /// A job came back: the delivery learns its result, and the daemon's log gets one line (fixed codes and ids, no text).
@@ -710,7 +718,7 @@ impl Own {
                     m.pass = Some(run_job(tx, pass_job(env, rows, service, folder(&channel), order, pace), Done::Skipped(channel, "job_failed")));
                 }
                 Action::Commit { channel, boundary } => {
-                    let (dir, workspace) = (m.dir.clone(), m.workspace.clone());
+                    let (dir, workspace) = (m.dir.clone(), self.workspace.clone());
                     drop(tokio::task::spawn_blocking(move || {
                         if let Err(code) = mail::commit(&dir, &workspace, &channel, &boundary) {
                             tracing::warn!(?code, channel, "project chat: a boundary was not written");

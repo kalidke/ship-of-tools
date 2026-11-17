@@ -364,7 +364,8 @@ impl<L: Listener> Chat<L> {
             tracing::warn!(file = %file, %why, "project chat: a secrets file is not served");
         }
         let mut refused = BTreeMap::new();
-        for (workspace, why) in secrets.refusals() {
+        let named = secrets.named(admitted.workspace());
+        for (workspace, why) in secrets.refusals(admitted.workspace()) {
             refused.entry(workspace).or_insert(why);
         }
         let ids: Vec<String> = secrets
@@ -377,7 +378,6 @@ impl<L: Listener> Chat<L> {
             })
             .collect();
         let plans: Vec<(String, Credentials)> = ids.into_iter().filter_map(|w| secrets.take(&w).map(|c| (w, c))).collect();
-        let named = secrets.named().to_vec();
         drop(secrets);
         // The comm folder's, not this daemon's: every daemon that files into these inboxes takes the same lock.
         let Some(locks) = crate::comm::home::chat_dir(env) else {
@@ -741,12 +741,12 @@ impl<L: Listener> Chat<L> {
     /// the service stopped), all at once, and each unit and its owner is waited for; then the boot's load on the blocking
     /// pool (it canonicalizes on the shared home), and, under the units lock and only while the chat is not closed, the
     /// configuration and the units swapped and each admitted workspace launched; then `started` (the product's starts
-    /// the owners). A closed chat stops, reads and swaps nothing. Answers the default workspace's status once every start
-    /// ended, or at [`SETUP_WAIT`]; a stop that outlasts it starts nothing. Each give-up is logged.
-    async fn reload_then(self: &Arc<Self>, held: &Setup<'_>, started: impl FnOnce(&Arc<Self>)) -> Status {
+    /// the owners). A closed chat stops, reads and swaps nothing. Returns once every start ended, or at [`SETUP_WAIT`]; a
+    /// stop that outlasts it starts nothing. Each give-up is logged; a caller reads each workspace's status after it.
+    async fn reload_then(self: &Arc<Self>, held: &Setup<'_>, started: impl FnOnce(&Arc<Self>)) {
         assert!(std::ptr::eq(tokio::sync::MutexGuard::mutex(&held.0), &self.setup), "a reload under another chat's setup lock");
         if self.closed_now() {
-            return self.status();
+            return;
         }
         let all = self.unit_list();
         let stopped = async {
@@ -760,12 +760,12 @@ impl<L: Listener> Chat<L> {
         };
         if tokio::time::timeout(SETUP_WAIT, stopped).await.is_err() {
             tracing::warn!("project chat: a reload gave up waiting for the chat to stop and started nothing");
-            return self.status();
+            return;
         }
         let env = self.env.clone();
         let Ok(load) = tokio::task::spawn_blocking(move || Self::load(&env, &config::read_file)).await else {
             tracing::warn!("project chat: a reload's load did not finish and started nothing");
-            return self.status();
+            return;
         };
         {
             let mut units = self.units();
@@ -789,7 +789,6 @@ impl<L: Listener> Chat<L> {
         if tokio::time::timeout(SETUP_WAIT, starts).await.is_err() {
             tracing::warn!("project chat: a reload stopped waiting for its start, which goes on");
         }
-        self.status()
     }
 
     /// Until `workspace`'s unit is `Off` (none: at once).
@@ -873,7 +872,7 @@ impl Chat<Service> {
     }
 
     /// Load both files again and start from them, with no daemon restart: [`Chat::reload_then`] with the owners' start.
-    pub(crate) async fn reload(self: &Arc<Self>, held: &Setup<'_>, rows: &Workspaces) -> Status {
+    pub(crate) async fn reload(self: &Arc<Self>, held: &Setup<'_>, rows: &Workspaces) {
         self.reload_then(held, |chat| drop(chat.start_owner(rows.clone()))).await
     }
 }

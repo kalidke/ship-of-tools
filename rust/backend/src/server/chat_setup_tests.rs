@@ -1070,6 +1070,8 @@ fn two_workspaces_from_nothing_each_project_reads_and_posts_in_its_own() {
         w.teams.feed(B, w.teams.message(B, "C0BBBB01", 2, &stamp(2)));
         let put_b = changed_in(&mut conn, "C0BBBB01").await;
         assert_eq!(put_b["workspace"], B, "{put_b}");
+        // B's owner published its states for that put (alpha's owner had nothing to do): alpha's state is kept.
+        assert_eq!(probe.conn.state(A, "C0AAAA01"), sot_protocol::ops::ChatWatchState::Complete, "one workspace's publish cleared another's states");
 
         // 8. A person's post in beta's channel goes out once under the second workspace's user token.
         let posted = conn.ask(13, op::CHAT_POST, json!({"target": tb, "kind": "person", "name": "tester", "text": "hello"})).await;
@@ -1178,6 +1180,8 @@ fn the_workspaces_op_keeps_a_failed_workspaces_name() {
 fn a_channel_of_another_workspace_is_no_such_channel() {
     logged(|| async {
         let w = two().await;
+        // The pair asks B's bot about A's channel, to be refused: the one crossing this test makes.
+        w.teams.expect_crossing();
         let mut conn = connect_window(w.services.clone()).await;
         conn.ask(2, op::CHAT_CONNECT, w.connect_req(A)).await;
         conn.ask(3, op::CHAT_CONNECT, w.connect_req(B)).await;
@@ -1210,5 +1214,40 @@ fn resolve_judges_a_row_by_its_own_workspace_and_an_unmapped_row_by_whether_any_
         assert_eq!(beta, json!({"state": "unmapped"}), "an unmapped row read unconfigured while another workspace runs");
         // And it pairs there.
         assert_eq!(conn.ask(8, op::CHAT_PAIR, json!({"row": w.ids[1], "workspace": B, "channel": "C0BBBB01"})).await, json!({}));
+    });
+}
+
+/// B1 (review): a request whose target names one running workspace for a channel the row maps in another is
+/// `stale_mapping` at admission, for every request op, and nothing reaches Slack under the named workspace's tokens (the
+/// fake records every crossed request, and fails the test when it is dropped holding one).
+#[test]
+fn a_target_naming_another_running_workspace_for_the_rows_channel_is_stale_mapping() {
+    logged(|| async {
+        let w = two().await;
+        let mut conn = connect_window(w.services.clone()).await;
+        conn.ask(2, op::CHAT_CONNECT, w.connect_req(A)).await;
+        conn.ask(3, op::CHAT_CONNECT, w.connect_req(B)).await;
+        assert_eq!(conn.ask(4, op::CHAT_PAIR, json!({"row": w.ids[0], "channel": "C0AAAA01"})).await, json!({}));
+        std::fs::write(w.folders[0].join("fit.png"), b"png").unwrap();
+        w.rows.set_agent_handle(&w.ids[0], "alpha-h").unwrap();
+        let crafted = w.target(0, B, "C0AAAA01");
+        let asks = [
+            (op::CHAT_HISTORY, json!({"target": crafted, "limit": 5})),
+            (op::CHAT_POST, json!({"target": crafted, "kind": "person", "name": "tester", "text": "hello"})),
+            (op::CHAT_FILE, json!({"target": crafted, "file": "F0PIC0001", "variant": "thumb"})),
+            (op::CHAT_WATCH, json!({"target": crafted})),
+        ];
+        for (n, (name, payload)) in asks.into_iter().enumerate() {
+            let reply = conn.ask(10 + n as u64, name, payload).await;
+            assert_eq!(reply["code"].as_str(), Some("stale_mapping"), "{name}: {reply}");
+        }
+        let mut cli = connect(w.services.clone()).await;
+        let filed = json!({"target": crafted, "kind": "row", "name": "alpha-h", "node_id": "files:fit.png", "comment": "the fit"});
+        let reply = cli.ask(20, op::CHAT_POST_FILE, filed).await;
+        assert_eq!(reply["code"].as_str(), Some("stale_mapping"), "post_file: {reply}");
+        for (kind, method) in [("xoxb", "/conversations.history"), ("xoxb", "/chat.postMessage"), ("xoxp", "/chat.postMessage"), ("xoxb", "/files.info"), ("xoxp", "/files.getUploadURLExternal")] {
+            assert!(w.teams.calls(B, kind, method).is_empty(), "the crafted target reached Slack under B's {kind}: {method}");
+        }
+        assert!(w.teams.crossed().is_empty(), "{:?}", w.teams.crossed());
     });
 }

@@ -521,7 +521,8 @@ async fn a_watch_through_a_reload_is_told_and_its_next_watch_is_served_by_the_ne
     let mut conn = connect(rig.services.clone()).await;
     assert!(ok_watch(&conn.ask(2, op::CHAT_WATCH, watch(&rig.alpha, "C0AAAA")).await));
     complete(&hub, &["C0AAAA"]).await;
-    assert_eq!(chat.reload(&chat.setup().await, &rig.rows).await, Status::Running);
+    chat.reload(&chat.setup().await, &rig.rows).await;
+    assert_eq!(chat.status(), Status::Running);
     // The watch is told its channel needs a snapshot, as at any stop.
     let (name, payload) = conn.evt("a chat.status for the reload's stop").await;
     assert_eq!(name, op::CHAT_STATUS, "{payload}");
@@ -549,7 +550,10 @@ async fn a_reload_starts_its_service_only_after_the_old_owner_ended() {
     let arm = Holds::here().arm("chat.owner.end").key(Arc::as_ptr(&hub) as usize).hold(1);
     let reloading = tokio::spawn({
         let (chat, rows) = (chat.clone(), rig.rows.clone());
-        async move { chat.reload(&chat.setup().await, &rows).await }
+        async move {
+            chat.reload(&chat.setup().await, &rows).await;
+            chat.status()
+        }
     });
     arm.reached_async(0).await;
     until("the old service off", || chat.status() == Status::Stopped).await;
@@ -935,7 +939,8 @@ async fn an_ended_service_turns_the_chat_off_with_its_code_and_frees_its_lock() 
     // The lock was freed with the listener: the next service, of the app the bot names, starts and holds it.
     *lv.hello_app.lock().unwrap() = None;
     lv.hello.add_permits(1);
-    assert_eq!(bounded("the reload", async { chat.reload(&chat.setup().await, &rig.rows).await }).await, Status::Running);
+    bounded("the reload", async { chat.reload(&chat.setup().await, &rig.rows).await }).await;
+    assert_eq!(chat.status(), Status::Running);
     after_hello(&chat, &rig.rows, &alpha_target(&rig)).await;
     assert!(ok_watch(&conn.ask(4, op::CHAT_WATCH, watch(&rig.alpha, "C0AAAA")).await));
 }
@@ -1007,4 +1012,22 @@ async fn the_boots_wait_ends_when_the_chat_is_retired_while_starting() {
     Participant::request_stop(&*chat);
     bounded("the boot's wait to end", task).await.unwrap();
     assert!(!chat.hub().running());
+}
+
+/// B1 review S3: a watch refused for a workspace the daemon does not run leaves nothing of it, however many such names a
+/// connection sends: no desk, no slot, nothing walked at its close.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refused_watch_of_an_unknown_workspace_leaves_no_desk() {
+    let (fake, _lv) = live().await;
+    let rig = live_rig(&fake).await;
+    let hub = rig.services.chat.hub().clone();
+    let mut conn = connect(rig.services.clone()).await;
+    assert!(ok_watch(&conn.ask(2, op::CHAT_WATCH, json!({"target": alpha_target(&rig)})).await));
+    let before = hub.desks();
+    for i in 0..1_000u64 {
+        let target = json!({"row": rig.alpha, "workspace": format!("T9{i:06}"), "channel": "C0AAAA"});
+        assert_eq!(code(&conn.ask(10 + i, op::CHAT_WATCH, json!({"target": target})).await), "unavailable");
+    }
+    assert_eq!(hub.desks(), before, "a refused watch made a desk");
+    assert_eq!(hub.slots().len(), 1, "a refused watch held a slot");
 }
