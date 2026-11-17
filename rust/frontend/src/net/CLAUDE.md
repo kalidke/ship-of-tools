@@ -80,17 +80,19 @@ through the channel types below.
   0), never the generic `Event`; the window's one arm logs it and gives a lost `chat.changed` to the chat owner, which watches again; no other pane recovers from loss yet. Tests
   `reply_tests::bus_lost_evt_decodes_into_its_typed_event`.
 - The project chat is typed edges on the host's one control connection, so a remote host's chat costs no login and no
-  channel (M7, asserted inside `a_remote_host_costs_one_login_for_control_pages_and_rows`): `OutgoingReq::{ChatResolve, ChatWatch, ChatUnwatch, ChatHistory, ChatPost, ChatFile, ChatConnect, ChatChannels, ChatPair}`
+  channel (M7, asserted inside `a_remote_host_costs_one_login_for_control_pages_and_rows`): `OutgoingReq::{ChatResolve, ChatWatch, ChatUnwatch, ChatHistory, ChatPost, ChatPostFile, ChatFile, ChatConnect, ChatChannels, ChatPair}`
   and `IncomingEvt::Chat(ChatEvt)` (transport/ops/chat.rs). A reply carries the request it answers (the row, target,
   history query or post), and is `Done`, `Unsupported` (an older daemon's exact unknown-op answer, which ends only that
   request: `old_daemon_chat_refusal_preserves_other_requests`) or `Refused(code)` (`Other` for a code the window does not
   know). `chat.unwatch` is fire-and-forget. `chat.changed` and `chat.status` are decoded into `ChatEvt::Changed` and
   `ChatEvt::Status`; one that does not parse is a warning and a `ChatEvt::Unreadable`, a loss the owner resyncs from. A post is written on one connection at most
-  (`ChatPost` is not replayable) and its outcome is `Done(Unknown)` unless the reply proves it was not made: an error
+  (`ChatPost` and `ChatPostFile`, whose reply is `ChatEvt::FilePosted`, are not replayable) and its outcome is `Done(Unknown)` unless the reply proves it was not made: an error
   reply whose code is not a refusal `ChatCode` (`handler_error`), an answer that does not parse and a connection that
   ends first are unknown, never refused, so the window never offers to resend (tests
   `a_post_answered_by_a_handler_error_is_unknown_never_refused`, `a_chat_post_without_its_answer_is_unknown_and_never_written_again` (which also pins the dropped watch and read),
-  `a_chat_reply_carries_its_request_and_its_refusal`, `chat_events_decode_into_their_typed_events`, which pins `Unreadable`).
+  `a_chat_reply_carries_its_request_and_its_refusal`, `chat_events_decode_into_their_typed_events`, which pins `Unreadable`,
+  `a_file_post_without_its_answer_is_unknown_and_never_written_again`). A file post passes no `posts_plain_text` gate:
+  every daemon that knows `chat.post_file` escapes its comment, and one that does not answers `Unsupported`.
   The setup requests are the same edge (`ChatEvt::{Connect, Channels, Paired}`, each reply `Done`, `Unsupported` or `Refused(code)`).
   `ChatConnect` (three tokens: `bot_token`, `user_token`, `app_token`; its `Debug`, pending kind, event and log line print no byte of any, `a_connect_formats_and_logs_no_token_byte`) and `ChatPair` are written on one connection at most (not replayable), since either may have been saved: a
   connection that ends first, a `handler_error` and an answer that does not parse give `ChatEvt::ConnectUnknown` or

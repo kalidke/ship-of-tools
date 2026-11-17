@@ -229,7 +229,7 @@ pub fn border(context: &Context, bindings: &KeyBindings, width: usize) -> String
             Pane::Agent => &[Action::Paste, Action::CopySelection, Action::CopyOneLine],
             // While the channel picker is open, Enter picks and the draft's hints would mislead: only Help is named.
             Pane::Chat if context.chat_picking => &[],
-            Pane::Chat => &[Action::ChatSend, Action::ChatNewline, Action::ChatSetup, Action::ChatCopySelection],
+            Pane::Chat => &[Action::ChatSend, Action::ChatNewline, Action::ChatPostFile, Action::ChatSetup, Action::ChatCopySelection],
             _ => &[],
         }
     };

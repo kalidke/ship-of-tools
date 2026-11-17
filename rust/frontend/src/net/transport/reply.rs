@@ -133,6 +133,10 @@ pub(super) enum PendingKind {
     ChatPost {
         req: sot_protocol::ops::ChatPostReq,
     },
+    /// A `chat.post_file`: as a `chat.post`.
+    ChatPostFile {
+        req: sot_protocol::ops::ChatPostFileReq,
+    },
     /// A `chat.file`: its reply carries the picture as the frame's blob. A read: no event when its connection ends.
     ChatFile {
         req: sot_protocol::ops::ChatFileReq,
@@ -262,6 +266,10 @@ impl Drop for PendingGuard<'_> {
                     req,
                     reply: ChatReply::Done(sot_protocol::ops::ChatPostRes::Unknown),
                 }),
+                PendingKind::ChatPostFile { req } => IncomingEvt::Chat(ChatEvt::FilePosted {
+                    req,
+                    reply: ChatReply::Done(sot_protocol::ops::ChatPostFileRes::Unknown),
+                }),
                 // Written once and never again, and the daemon may have saved it before the connection ended.
                 PendingKind::ChatConnect => IncomingEvt::Chat(ChatEvt::ConnectUnknown),
                 PendingKind::ChatPair { row, channel } => IncomingEvt::Chat(ChatEvt::PairUnknown { row, channel }),
@@ -385,6 +393,7 @@ pub(super) fn handle_response_frame(
             PendingKind::ChatWatch { target } => on_chat_watch(frame, &emit, target),
             PendingKind::ChatHistory { req } => on_chat_history(frame, &emit, req),
             PendingKind::ChatPost { req } => on_chat_post(frame, &emit, req),
+            PendingKind::ChatPostFile { req } => on_chat_post_file(frame, &emit, req),
             PendingKind::ChatFile { req } => on_chat_file(frame, blob, &emit, req),
             PendingKind::ChatConnect => on_chat_connect(frame, &emit),
             PendingKind::ChatChannels => on_chat_channels(frame, &emit),

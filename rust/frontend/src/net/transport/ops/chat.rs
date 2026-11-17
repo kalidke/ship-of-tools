@@ -1,9 +1,9 @@
-//! chat.resolve, chat.watch, chat.unwatch, chat.history, chat.post, chat.file, chat.connect, chat.channels, chat.pair: the requests (send_chat: write the frame, then record its PendingKind).
+//! chat.resolve, chat.watch, chat.unwatch, chat.history, chat.post, chat.post_file, chat.file, chat.connect, chat.channels, chat.pair: the requests (send_chat: write the frame, then record its PendingKind).
 //! Their replies (on_chat_*: the reply frame becomes an `IncomingEvt::Chat`; `chat.file`'s alone carries a blob), and the `chat.changed` and `chat.status` events.
 
 use super::*;
 use sot_protocol::ops::{
-    ChatChangedEvt, ChatChannel, ChatChannelsRes, ChatCode, ChatConnectRes, ChatFileReq, ChatFileRes, ChatFileVariant, ChatHistoryReq, ChatHistoryRes, ChatPairRes, ChatPostReq,
+    ChatChangedEvt, ChatChannel, ChatChannelsRes, ChatCode, ChatConnectRes, ChatFileReq, ChatFileRes, ChatFileVariant, ChatHistoryReq, ChatHistoryRes, ChatPairRes, ChatPostFileReq, ChatPostFileRes, ChatPostReq,
     ChatPostRes, ChatRefusal, ChatResolveRes, ChatStatusEvt, ChatTarget, ChatWatchRes, MAX_CHAT_FILE, MAX_THUMB,
 };
 
@@ -25,6 +25,8 @@ pub(crate) enum ChatEvt {
     History { req: ChatHistoryReq, reply: ChatReply<ChatHistoryRes> },
     /// Never `Refused`: a refusal is `Done(ChatPostRes::Refused)`, and anything that may have posted is `Done(Unknown)`.
     Posted { req: ChatPostReq, reply: ChatReply<ChatPostRes> },
+    /// As `Posted`, for a `chat.post_file`.
+    FilePosted { req: ChatPostFileReq, reply: ChatReply<ChatPostFileRes> },
     /// Refused here, never written: the connection's daemon does not say its door posts plain text (T20), so the post was not made.
     PostNotSent { req: ChatPostReq },
     /// A `chat.connect`'s reply. It names nothing of the request, so no token is held here.
@@ -108,6 +110,16 @@ pub(crate) fn on_chat_post(frame: Frame, emit: &impl Fn(IncomingEvt), req: ChatP
         other => other,
     };
     emit(IncomingEvt::Chat(ChatEvt::Posted { req, reply }));
+}
+
+/// As `on_chat_post`: only a reply that proves the file was not shared says so.
+pub(crate) fn on_chat_post_file(frame: Frame, emit: &impl Fn(IncomingEvt), req: ChatPostFileReq) {
+    let reply = match chat_reply::<ChatPostFileRes>(frame) {
+        ChatReply::Refused(ChatCode::Other) => ChatReply::Done(ChatPostFileRes::Unknown),
+        ChatReply::Refused(code) => ChatReply::Done(ChatPostFileRes::Refused { code }),
+        other => other,
+    };
+    emit(IncomingEvt::Chat(ChatEvt::FilePosted { req, reply }));
 }
 
 /// The codec read the blob before this decode, so its length is checked here against the request's own variant (a

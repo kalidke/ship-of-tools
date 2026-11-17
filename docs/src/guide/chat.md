@@ -163,6 +163,14 @@ sent a second time on its own. A typed `<` posts as itself, and a post cannot me
 `<!channel>` arrive as plain text. A window posts only to a hub that is updated to escape text; to an older hub it says
 `the hub must be updated to post` and keeps the draft.
 
+`Primary+u` (`chat.post_file`) posts the file the preview pane shows, for the row the drawer shows, with the draft as
+its comment: once, as your own message from your Slack account (a hub that holds no user token posts nothing for you
+and shows the `post as you` screen), into the channel or thread the draft was begun in, or with no draft into the
+channel and the thread open then. It is the same file a row's figure can be: one of the row's folder, at most 16 MiB,
+never the chat's own configuration files. It waits as a post does, and only a reply that proves the share clears the
+draft; any other outcome keeps it, with the same words on the status line. With nothing in the preview, or on an older
+hub, nothing is sent and the status line says why (unmeasured against Slack itself until a person's first use).
+
 ## Selecting
 
 Press the left mouse button on a message's text and drag to select within that message: the selection stays in the message

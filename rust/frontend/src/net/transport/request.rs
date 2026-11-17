@@ -347,6 +347,9 @@ pub enum OutgoingReq {
     /// One post, written on one connection at most and never retried; posts on one connection are unordered, so the
     /// owner sends the next only after the last one's reply.
     ChatPost { req: sot_protocol::ops::ChatPostReq },
+    /// One file of the row's folder shared (`chat.post_file`), as `ChatPost`: written once at most, never retried, and the
+    /// unknown outcome when unanswered.
+    ChatPostFile { req: sot_protocol::ops::ChatPostFileReq },
     /// One picture of a channel's (`chat.file`); its reply carries the bytes. Not replayable: a read whose connection ends
     /// gets no event, and the owner asks again at `Connected`.
     ChatFile { req: sot_protocol::ops::ChatFileReq },
@@ -442,7 +445,7 @@ impl OutgoingReq {
     /// `FileUpload`, `WorkspaceCreate`, `WorkspaceDestroy`, `ToggleHidden`, `AgentSend`, `ReplInterrupt`).
     pub(crate) fn replayable(&self) -> bool {
         match self {
-            OutgoingReq::PageReply { .. } | OutgoingReq::SelectionSet { .. } | OutgoingReq::ChatPost { .. } | OutgoingReq::ChatConnect { .. } | OutgoingReq::ChatPair { .. } | OutgoingReq::ChatWatch { .. } | OutgoingReq::ChatHistory { .. } | OutgoingReq::ChatFile { .. } | OutgoingReq::ReplEval { .. } | OutgoingReq::ReplRunFile { .. } => false,
+            OutgoingReq::PageReply { .. } | OutgoingReq::SelectionSet { .. } | OutgoingReq::ChatPost { .. } | OutgoingReq::ChatPostFile { .. } | OutgoingReq::ChatConnect { .. } | OutgoingReq::ChatPair { .. } | OutgoingReq::ChatWatch { .. } | OutgoingReq::ChatHistory { .. } | OutgoingReq::ChatFile { .. } | OutgoingReq::ReplEval { .. } | OutgoingReq::ReplRunFile { .. } => false,
             OutgoingReq::ResultTree { .. }
             | OutgoingReq::TreeChildren { .. }
             | OutgoingReq::TreeRoot { .. }
@@ -556,6 +559,10 @@ pub(super) async fn send_request<W: AsyncWrite + Unpin>(
         OutgoingReq::ChatPost { req } => {
             let kind = PendingKind::ChatPost { req: req.clone() };
             send_chat(&mut tx, pending, id, op::CHAT_POST, req, Some(kind)).await?
+        }
+        OutgoingReq::ChatPostFile { req } => {
+            let kind = PendingKind::ChatPostFile { req: req.clone() };
+            send_chat(&mut tx, pending, id, op::CHAT_POST_FILE, req, Some(kind)).await?
         }
         OutgoingReq::ChatFile { req } => {
             let kind = PendingKind::ChatFile { req: req.clone() };

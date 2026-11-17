@@ -298,3 +298,46 @@ async fn a_file_read_without_its_answer_ends_with_no_event_and_is_never_written_
     assert!(matches!(outbox.recv().await, Some(OutgoingReq::ChatResolve { .. })), "only the resolve is kept");
     assert!(outbox.recv().await.is_none());
 }
+
+fn file_post_req() -> ChatPostFileReq {
+    serde_json::from_value(serde_json::json!({
+        "target": target(), "kind": "person", "name": "", "node_id": "files:fig.png", "comment": "the fit"
+    }))
+    .unwrap()
+}
+
+/// A file post is a post: a reply that proves it was not shared says so, one that may have shared it is unknown, and an
+/// older daemon's unknown-op answer is `Unsupported`. A file post waiting for its answer when its connection ends, and
+/// one still queued then, are each unknown once, and the queued one is never written.
+#[tokio::test]
+async fn a_file_post_without_its_answer_is_unknown_and_never_written_again() {
+    for (payload, want) in [
+        (serde_json::json!({ "outcome": "posted", "file": "F0FILE" }), "Done(Posted { file: \"F0FILE\", ts: None })"),
+        (serde_json::json!({ "error": "x", "code": "not_a_file" }), "Done(Refused { code: NotAFile })"),
+        (serde_json::json!({ "error": "a panic's text", "code": "handler_error" }), "Done(Unknown)"),
+        (serde_json::json!({ "unexpected": true }), "Done(Unknown)"),
+        (serde_json::json!({ "error": "unknown op: chat.post_file" }), "Unsupported"),
+    ] {
+        let mut pending = HashMap::from([(1, PendingKind::ChatPostFile { req: file_post_req() })]);
+        let shown = events(&mut pending, vec![Frame::res(1, op::CHAT_POST_FILE, payload.clone())]);
+        assert!(pending.is_empty(), "the reply consumed its entry");
+        let reply = shown[0].split("reply: ").nth(1).unwrap_or(&shown[0]);
+        assert!(shown[0].contains("node_id: \"files:fig.png\"") && reply.starts_with(want), "{payload} -> {shown:?}");
+    }
+    let (evt_tx, evt_rx) = std::sync::mpsc::channel();
+    {
+        let mut guard = PendingGuard { map: HashMap::new(), evt_tx: &evt_tx, host: "h".into() };
+        guard.insert(4, PendingKind::ChatPostFile { req: file_post_req() });
+    }
+    let (out_tx, out_rx) = outgoing_channel();
+    let mut outbox = Outbox::new(out_rx);
+    out_tx.send(OutgoingReq::ChatPostFile { req: file_post_req() }).unwrap();
+    out_tx.send(OutgoingReq::ChatResolve { row: "r".into() }).unwrap();
+    outbox.retire(&evt_tx, &"h".to_string()).await;
+    drop(out_tx);
+    let ended: Vec<String> = evt_rx.try_iter().map(|(_, e)| format!("{e:?}")).collect();
+    assert_eq!(ended.len(), 2, "{ended:?}");
+    assert!(ended.iter().all(|e| e.starts_with("Chat(FilePosted") && e.ends_with("reply: Done(Unknown) })")), "{ended:?}");
+    assert!(matches!(outbox.recv().await, Some(OutgoingReq::ChatResolve { .. })), "only the resolve is kept");
+    assert!(outbox.recv().await.is_none());
+}

@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use sot_protocol::ops::{ChatCode, ChatPostKind, ChatPostReq, ChatPostRes, ChatTarget};
+use sot_protocol::ops::{ChatCode, ChatPostFileReq, ChatPostFileRes, ChatPostKind, ChatPostReq, ChatPostRes, ChatTarget};
 use winit::keyboard::{Key, NamedKey};
 
 use super::compose::{compose_rows, Compose, Edit};
@@ -97,11 +97,16 @@ fn the_draft_keeps_its_destination_and_its_escaped_bound() {
     assert_eq!(held(&c, &r), None);
 }
 
-/// A connected drawer on row `R`, its channel `C1` resolved and watched.
+/// A connected drawer on row `R`, its channel `C1` resolved and watched, on a hub whose hello says it does not post as the
+/// person.
 fn watching() -> (ChatDrawer, Instant) {
+    watching_on(false)
+}
+
+fn watching_on(as_person: bool) -> (ChatDrawer, Instant) {
     let t0 = Instant::now();
     let mut d = ChatDrawer::default();
-    d.on_connection(&"a".to_string(), true, false, t0);
+    d.on_connection(&"a".to_string(), true, as_person, t0);
     d.tick(Some(row("R")), t0);
     let at = t0 + Duration::from_millis(200);
     d.tick(Some(row("R")), at);
@@ -567,4 +572,71 @@ fn apply_name_saves_closes_the_prompt_and_the_next_enter_posts_under_it() {
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "[trust]\nroot_prefix = \"/w\"\n\n[chat]\nname = \"Ada\"\n");
     let req = posted(d.send(Some(&row("R")), settings.chat_name.as_deref(), at).unwrap());
     assert_eq!((req.name.as_str(), req.text.as_str()), ("Ada", "hello"));
+}
+
+/// `watching`, on a hub whose hello says it posts as the person.
+fn watching_as_person() -> (ChatDrawer, Instant) {
+    watching_on(true)
+}
+
+/// The one file post `outs` holds.
+fn file_posted(outs: Vec<(String, OutgoingReq)>) -> ChatPostFileReq {
+    match outs.as_slice() {
+        [(_, OutgoingReq::ChatPostFile { req })] => req.clone(),
+        other => panic!("one chat.post_file expected, got {other:?}"),
+    }
+}
+
+/// The previewed file goes once, as the person, with the draft as its comment and into the draft's channel; it holds the
+/// one post slot, and only the reply that proves the share clears the draft. With no draft it goes to the watched channel
+/// with no comment.
+#[test]
+fn the_previewed_file_posts_once_with_the_draft_as_its_comment() {
+    let r = row("R");
+    let (mut d, at) = watching_as_person();
+    d.edit(Some(&r), Edit::Text("the fit")).unwrap();
+    let req = file_posted(d.send_file(Some(&r), Some("files:figs/fit.png"), at).unwrap());
+    assert_eq!((req.node_id.as_str(), req.comment.as_deref(), req.kind), ("files:figs/fit.png", Some("the fit"), ChatPostKind::Person));
+    assert_eq!((req.target.channel.as_str(), req.thread.as_ref(), req.name.as_str()), ("C1", None, ""));
+    assert_eq!(d.send_file(Some(&r), Some("files:figs/fit.png"), at).unwrap_err(), "posting…", "no second post");
+    assert_eq!(d.send(Some(&r), Some("tester"), at).unwrap_err(), "posting…", "nor a text post beside it");
+    assert_eq!(d.edit(Some(&r), Edit::Text("x")), Err("posting…"));
+
+    // Refused or unknown: the draft stays, with the words a text post's outcome has.
+    let answer = |d: &mut ChatDrawer, req: &ChatPostFileReq, reply| d.on_evt(&"a".to_string(), ChatEvt::FilePosted { req: req.clone(), reply }, at);
+    answer(&mut d, &req, ChatReply::Done(ChatPostFileRes::Refused { code: ChatCode::NotAFile }));
+    assert_eq!(d.take_notice().as_deref(), Some(&*format!("not posted: {}", ChatCode::NotAFile.text())));
+    assert_eq!(d.draft(), Some(("the fit", "C1")));
+    let req = file_posted(d.send_file(Some(&r), Some("files:figs/fit.png"), at).unwrap());
+    answer(&mut d, &req, ChatReply::Done(ChatPostFileRes::Unknown));
+    assert!(d.take_notice().unwrap().starts_with("may have been posted"));
+    assert_eq!(d.draft(), Some(("the fit", "C1")));
+
+    // Shared, even with no `ts`: the draft is gone and nothing is said.
+    let req = file_posted(d.send_file(Some(&r), Some("files:figs/fit.png"), at).unwrap());
+    answer(&mut d, &req, ChatReply::Done(ChatPostFileRes::Posted { file: "F0FILE".into(), ts: None }));
+    assert_eq!(d.draft(), None);
+    assert_eq!(d.take_notice(), None);
+
+    // No draft: the watched channel, and no comment.
+    let req = file_posted(d.send_file(Some(&r), Some("files:a.png"), at).unwrap());
+    assert_eq!((req.target.channel.as_str(), req.comment), ("C1", None));
+}
+
+/// A preview with no node (nothing shown) posts nothing, and neither does a hub whose hello does not say it posts as the
+/// person, nor a row with no channel to write to.
+#[test]
+fn a_preview_with_no_node_posts_nothing() {
+    let r = row("R");
+    let (mut d, at) = watching_as_person();
+    d.edit(Some(&r), Edit::Text("the fit")).unwrap();
+    assert_eq!(d.send_file(Some(&r), None, at).unwrap_err(), "not posted: the preview shows no file");
+    assert_eq!(d.send_file(None, Some("files:a.png"), at).unwrap_err(), "no row to post for");
+    assert_eq!(d.send_file(Some(&row("S")), Some("files:a.png"), at).unwrap_err(), "not posted: no channel to write to");
+    assert_eq!(d.draft(), Some(("the fit", "C1")));
+    let (mut old, at) = watching();
+    assert_eq!(old.send_file(Some(&r), Some("files:a.png"), at).unwrap_err(), "not posted: the hub must be updated to post");
+    // Nothing waits: a text post still goes.
+    old.edit(Some(&r), Edit::Text("hi")).unwrap();
+    assert!(matches!(old.send(Some(&r), Some("tester"), at).unwrap().as_slice(), [(_, OutgoingReq::ChatPost { .. })]));
 }

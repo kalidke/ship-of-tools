@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use crate::net::dial::HostKey;
 use crate::net::transport::{ChatEvt, ChatReply, OutgoingReq};
 use sot_protocol::ops::{
-    ChatChangedEvt, ChatCode, ChatHistoryReq, ChatHistoryRes, ChatPostReq, ChatPostRes, ChatService, ChatStatusEvt, ChatTarget, ChatWatchRes,
+    ChatChangedEvt, ChatCode, ChatHistoryReq, ChatHistoryRes, ChatPostFileReq, ChatPostFileRes, ChatPostReq, ChatPostRes, ChatService, ChatStatusEvt, ChatTarget, ChatWatchRes,
     ChatWatchState, ChatUpper, MAX_PAGE,
 };
 use sot_protocol::chat::{ChatRecord, Ts};
@@ -54,12 +54,43 @@ pub(super) enum Fill {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum PostShown {
     Posted(Ts),
+    /// A file was shared (Slack's answer can lack its message's `ts`).
+    Shared,
     Refused(ChatCode),
     /// The wait in seconds, and whether it is a guess.
     Limited(u64, bool),
     Unknown,
     /// Refused before it was written: the connection's daemon does not post plain text (T20).
     Outdated,
+}
+
+/// The one post in flight: a draft's text, or a file of the row's folder with the draft as its comment.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) enum Posting {
+    Text(ChatPostReq),
+    File(ChatPostFileReq),
+}
+
+impl From<ChatPostReq> for Posting {
+    fn from(req: ChatPostReq) -> Self {
+        Posting::Text(req)
+    }
+}
+
+impl Posting {
+    pub(super) fn target(&self) -> &ChatTarget {
+        match self {
+            Posting::Text(r) => &r.target,
+            Posting::File(r) => &r.target,
+        }
+    }
+
+    pub(super) fn thread(&self) -> Option<&Ts> {
+        match self {
+            Posting::Text(r) => r.thread.as_ref(),
+            Posting::File(r) => r.thread.as_ref(),
+        }
+    }
 }
 
 /// Why the older pages stopped.
@@ -227,7 +258,7 @@ pub(super) struct ChatOwner {
     /// The watches `stop` ended, newest first, each within `KEPT`: a watch of the same host and channel takes up its
     /// records and floor, shown while its snapshot is read again, as after a link's return.
     parked: Vec<Watch>,
-    posting: Option<(HostKey, ChatPostReq)>,
+    posting: Option<(HostKey, Posting)>,
     /// The outcome taken and not yet reported to the drawer (`take_report`).
     report: Option<PostShown>,
     /// When a `limited` post may be sent again, and whether that wait is a guess.
@@ -343,7 +374,8 @@ impl ChatOwner {
 
     /// Send a post, only when none is waiting for its reply. One to a host that is not connected is never written, and
     /// reads as refused.
-    pub(super) fn post(&mut self, host: HostKey, req: ChatPostReq) -> Option<Out> {
+    pub(super) fn post(&mut self, host: HostKey, req: impl Into<Posting>) -> Option<Out> {
+        let req = req.into();
         if self.posting.is_some() {
             return None;
         }
@@ -352,7 +384,10 @@ impl ChatOwner {
             return None;
         }
         self.posting = Some((host.clone(), req.clone()));
-        Some((host, OutgoingReq::ChatPost { req }))
+        Some((host, match req {
+            Posting::Text(req) => OutgoingReq::ChatPost { req },
+            Posting::File(req) => OutgoingReq::ChatPostFile { req },
+        }))
     }
 
     /// A post's outcome is taken: the drawer is owed its words, also when it equals the one before.
@@ -367,7 +402,7 @@ impl ChatOwner {
 
     /// The post waiting for its reply: its host and target row.
     pub(super) fn posting_row(&self) -> Option<(&HostKey, &str)> {
-        self.posting.as_ref().map(|(h, r)| (h, r.target.row.as_str()))
+        self.posting.as_ref().map(|(h, r)| (h, r.target().row.as_str()))
     }
 
     /// The seconds left of a `limited` wait (rounded up, never zero), and whether it is a guess.
@@ -432,8 +467,12 @@ impl ChatOwner {
                 self.on_posted(host, &req, reply, now);
                 Vec::new()
             }
+            ChatEvt::FilePosted { req, reply } => {
+                self.on_file_posted(host, &req, reply, now);
+                Vec::new()
+            }
             ChatEvt::PostNotSent { req } => {
-                if self.posting.take_if(|(h, r)| h == host && *r == req).is_some() {
+                if self.posting.take_if(|(h, r)| h == host && *r == Posting::Text(req.clone())).is_some() {
                     self.took(PostShown::Outdated);
                 }
                 Vec::new()
@@ -645,7 +684,7 @@ impl ChatOwner {
 
     /// Takes the outcome of the post waiting for this reply, and returns the row whose post the reply proves was made.
     pub(super) fn on_posted(&mut self, host: &HostKey, req: &ChatPostReq, reply: ChatReply<ChatPostRes>, now: Instant) -> Option<String> {
-        self.posting.take_if(|(h, r)| h == host && r == req)?;
+        self.posting.take_if(|(h, r)| h == host && matches!(r, Posting::Text(r) if r == req))?;
         self.mark_unsupported(host, &reply);
         let outcome = match reply {
             ChatReply::Done(ChatPostRes::Posted { ts }) => PostShown::Posted(ts),
@@ -658,6 +697,25 @@ impl ChatOwner {
             ChatReply::Done(ChatPostRes::Unknown) | ChatReply::Refused(_) => PostShown::Unknown,
         };
         let made = matches!(outcome, PostShown::Posted(_)).then(|| req.target.row.clone());
+        self.took(outcome);
+        made
+    }
+
+    /// As `on_posted`, for a file post: a share proved made is `Shared`.
+    pub(super) fn on_file_posted(&mut self, host: &HostKey, req: &ChatPostFileReq, reply: ChatReply<ChatPostFileRes>, now: Instant) -> Option<String> {
+        self.posting.take_if(|(h, r)| h == host && matches!(r, Posting::File(r) if r == req))?;
+        self.mark_unsupported(host, &reply);
+        let outcome = match reply {
+            ChatReply::Done(ChatPostFileRes::Posted { .. }) => PostShown::Shared,
+            ChatReply::Done(ChatPostFileRes::Refused { code }) => PostShown::Refused(code),
+            ChatReply::Done(ChatPostFileRes::Limited { retry_after_secs, assumed }) => {
+                self.wait_until = Some((now + Duration::from_secs(retry_after_secs), assumed));
+                PostShown::Limited(retry_after_secs, assumed)
+            }
+            ChatReply::Unsupported => PostShown::Refused(ChatCode::Unavailable),
+            ChatReply::Done(ChatPostFileRes::Unknown) | ChatReply::Refused(_) => PostShown::Unknown,
+        };
+        let made = (outcome == PostShown::Shared).then(|| req.target.row.clone());
         self.took(outcome);
         made
     }

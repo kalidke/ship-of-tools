@@ -94,6 +94,22 @@ impl State {
         self.window.request_redraw();
     }
 
+    /// `chat.post_file`: posts the file the preview shows, the row the chat shows being the preview's (both follow the selected
+    /// row), with the draft as its comment; a refusal goes to the status line.
+    pub(in crate::ui) fn send_chat_file(&mut self) {
+        let row = wanted_row(self.layout_help.chat_shown(), || self.active_result_workspace());
+        let node = self.preview_source.node_id().map(str::to_owned);
+        let mut refused = None;
+        self.with_chat(|c, now| c.send_file(row.as_ref(), node.as_deref(), now).unwrap_or_else(|words| {
+            refused = Some(words);
+            Vec::new()
+        }));
+        if let Some(words) = refused {
+            self.status.set(words);
+        }
+        self.window.request_redraw();
+    }
+
     /// The person edits the draft of the row the chat shows, read at this key; a refusal goes to the status line.
     pub(in crate::ui) fn edit_chat_draft(&mut self, edit: Edit) {
         let row = wanted_row(self.layout_help.chat_shown(), || self.active_result_workspace());
@@ -325,6 +341,10 @@ pub(in crate::ui) fn chat_key(state: &mut State, key: KeyPress<'_>, label: Strin
     if action == Some(Action::ChatSend) {
         if !event.repeat {
             state.send_chat_draft();
+        }
+    } else if action == Some(Action::ChatPostFile) {
+        if !event.repeat {
+            state.send_chat_file();
         }
     } else if action == Some(Action::ChatSetup) {
         if !event.repeat {

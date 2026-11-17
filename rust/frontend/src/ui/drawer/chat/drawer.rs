@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use sot_protocol::chat::{Ts, MAX_NAME};
 use sot_protocol::chat::slack_app_name;
-use sot_protocol::ops::{ChatChannel, ChatCode, ChatFileVariant, ChatHistoryReq, ChatPairRes, ChatPostKind, ChatPostReq, ChatPostRes, ChatResolveRes, ChatTarget, ChatUnconfigured};
+use sot_protocol::ops::{ChatChannel, ChatCode, ChatFileVariant, ChatHistoryReq, ChatPairRes, ChatPostFileReq, ChatPostFileRes, ChatPostKind, ChatPostReq, ChatPostRes, ChatResolveRes, ChatTarget, ChatUnconfigured};
 
 use crate::net::dial::HostKey;
 use crate::net::transport::{ChatEvt, ChatReply, OutgoingReq};
@@ -14,7 +14,7 @@ use crate::ui::render::quad::ScreenRect;
 
 use super::compose::{Compose, ComposeText, Edit};
 use super::connect::{Asks, Connect};
-use super::owner::{dead, ChatOwner, Fill, Out, PostShown};
+use super::owner::{dead, ChatOwner, Fill, Out, PostShown, Posting};
 use super::picker::{pair_words, Body, Pick, Picker};
 use super::pictures::ChatPictures;
 use super::row_channel::{RowChannel, Stand};
@@ -145,6 +145,7 @@ pub(super) fn never_written(req: &OutgoingReq) -> Option<ChatEvt> {
     let refused = ChatCode::Unavailable;
     Some(match req {
         OutgoingReq::ChatPost { req } => ChatEvt::Posted { req: req.clone(), reply: ChatReply::Done(ChatPostRes::Refused { code: refused }) },
+        OutgoingReq::ChatPostFile { req } => ChatEvt::FilePosted { req: req.clone(), reply: ChatReply::Done(ChatPostFileRes::Refused { code: refused }) },
         OutgoingReq::ChatPair { row, channel } => ChatEvt::Paired { row: row.clone(), channel: channel.clone(), reply: ChatReply::Refused(refused) },
         OutgoingReq::ChatChannels => ChatEvt::Channels { reply: ChatReply::Refused(refused) },
         OutgoingReq::ChatConnect { .. } => ChatEvt::Connect { reply: ChatReply::Refused(refused) },
@@ -156,7 +157,7 @@ pub(super) fn never_written(req: &OutgoingReq) -> Option<ChatEvt> {
 /// What the status line says of a post's outcome; a post made says nothing (its draft is gone).
 fn post_words(shown: &PostShown) -> Option<String> {
     Some(match shown {
-        PostShown::Posted(_) => return None,
+        PostShown::Posted(_) | PostShown::Shared => return None,
         PostShown::Refused(ChatCode::BadRequest) => "not posted: the request is not valid; check [chat] name in settings.toml".into(),
         PostShown::Refused(code) => format!("not posted: {}", code.text()),
         PostShown::Limited(secs, assumed) => wait_words(*secs, *assumed),
@@ -426,27 +427,12 @@ impl ChatDrawer {
                 outs
             }
             ChatEvt::Posted { req, reply } => {
-                // A hub that holds no token that posts as the person (never held, or Slack stopped accepting it): the Connect step
-                // takes the channel's place for the row shown, its post-as-you screen first. The draft stays the row's.
-                let shown = self.rows.row().is_some_and(|r| &r.host == host && r.workspace_id == req.target.row);
-                // A reply that comes late never replaces a Connect step that holds a pasted token (one re-paste is the cost).
-                let holds_token = self.connect().is_some_and(Connect::holds_token);
-                if shown && !holds_token && matches!(reply, ChatReply::Done(ChatPostRes::Refused { code: ChatCode::NoUserToken })) {
-                    self.open_modal(Kind::Connect(Connect::for_post(host.clone(), self.login)));
-                }
-                let mut made = None;
-                let mut outs = self.owner_outs(|o| {
-                    made = o.on_posted(host, &req, reply, now);
-                    Vec::new()
-                });
-                if let Some(row) = made {
-                    self.compose.clear(&ResultRowIdentity { host: host.clone(), workspace_id: row });
-                    // A post into the open thread: the thread is read again whole.
-                    if req.thread.as_ref().is_some_and(|p| self.thread.as_ref().is_some_and(|t| t.is(host, &req.target, p))) {
-                        outs.extend(self.restart_thread());
-                    }
-                }
-                outs
+                let no_token = matches!(reply, ChatReply::Done(ChatPostRes::Refused { code: ChatCode::NoUserToken }));
+                self.settle(host, &Posting::Text(req.clone()), no_token, |o| o.on_posted(host, &req, reply, now))
+            }
+            ChatEvt::FilePosted { req, reply } => {
+                let no_token = matches!(reply, ChatReply::Done(ChatPostFileRes::Refused { code: ChatCode::NoUserToken }));
+                self.settle(host, &Posting::File(req.clone()), no_token, |o| o.on_file_posted(host, &req, reply, now))
             }
             ChatEvt::File { req, reply } if req.variant == ChatFileVariant::Thumb => self.pictures.on_reply(host, &req, reply, now),
             // No window opens a picture yet: that is the next landings'.
@@ -484,6 +470,64 @@ impl ChatDrawer {
         let req = ChatPostReq { target: draft.dest.clone(), thread: draft.thread.clone(), kind: ChatPostKind::Person, name: name.to_string(), text: draft.text.clone() };
         let host = row.host.clone();
         Ok(self.owner_outs(|o| o.post(host, req).into_iter().collect()))
+    }
+
+    /// `chat.post_file`: posts the file the preview shows (`node`, the installed node of the row the chat shows) once, under the
+    /// person's own Slack token, with `row`'s draft as its comment, into the draft's destination, else the watched channel and
+    /// the open thread. It takes the one post slot; only a reply that proves the share clears the draft. A preview with no
+    /// node (nothing shown) posts nothing.
+    pub(in crate::ui) fn send_file(&mut self, row: Option<&ResultRowIdentity>, node: Option<&str>, now: Instant) -> Result<Vec<Out>, String> {
+        let Some(row) = row else { return Err("no row to post for".into()) };
+        let Some(node) = node else { return Err("not posted: the preview shows no file".into()) };
+        if self.owner.posting_row().is_some() {
+            return Err("posting…".into());
+        }
+        // An older hub posts a person's file as the app or not at all.
+        if self.posts_as_person.get(&row.host) == Some(&false) {
+            return Err(post_words(&PostShown::Outdated).unwrap_or_default());
+        }
+        if let Some((secs, assumed)) = self.owner.waiting(now) {
+            return Err(wait_words(secs, assumed));
+        }
+        let draft = self.compose.draft(row);
+        let (target, thread) = match draft.map(|d| (d.dest.clone(), d.thread.clone())) {
+            Some(dest) => dest,
+            None => match self.watch_for(row) {
+                Some(t) => (t.clone(), self.thread.as_ref().map(|t| t.parent_ts().clone())),
+                None => return Err("not posted: no channel to write to".into()),
+            },
+        };
+        let comment = draft.map(|d| d.text.clone()).filter(|t| !t.trim().is_empty());
+        // The name is a row's attribution; a person's share goes out under their own token and names nothing of the app.
+        let req = ChatPostFileReq { target, thread, kind: ChatPostKind::Person, name: String::new(), node_id: node.to_string(), comment };
+        let host = row.host.clone();
+        Ok(self.owner_outs(|o| o.post(host, Posting::File(req)).into_iter().collect()))
+    }
+
+    /// A post's reply, text or file, given to the owner by `settle`. A hub that holds no token that posts as the person (never
+    /// held, or Slack stopped accepting it): the Connect step takes the channel's place for the row shown, its post-as-you
+    /// screen first, and the draft stays the row's. A post proved made clears its row's draft, and one into the open thread
+    /// reads the thread again whole.
+    fn settle(&mut self, host: &HostKey, post: &Posting, no_token: bool, settle: impl FnOnce(&mut ChatOwner) -> Option<String>) -> Vec<Out> {
+        let (target, thread) = (post.target(), post.thread());
+        let shown = self.rows.row().is_some_and(|r| &r.host == host && r.workspace_id == target.row);
+        // A reply that comes late never replaces a Connect step that holds a pasted token (one re-paste is the cost).
+        let holds_token = self.connect().is_some_and(Connect::holds_token);
+        if shown && !holds_token && no_token {
+            self.open_modal(Kind::Connect(Connect::for_post(host.clone(), self.login)));
+        }
+        let mut made = None;
+        let mut outs = self.owner_outs(|o| {
+            made = settle(o);
+            Vec::new()
+        });
+        if let Some(row) = made {
+            self.compose.clear(&ResultRowIdentity { host: host.clone(), workspace_id: row });
+            if thread.is_some_and(|p| self.thread.as_ref().is_some_and(|t| t.is(host, target, p))) {
+                outs.extend(self.restart_thread());
+            }
+        }
+        outs
     }
 
     /// Opens the picker for `row` and asks for the channels: for an unmapped row, or a mapped one (which begins with `No
