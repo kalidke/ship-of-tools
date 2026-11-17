@@ -71,11 +71,10 @@ impl State {
         if let Some(words) = self.chat.take_notice() {
             self.status.set(words);
         }
-        // An opened picture is installed only while its row is still the one the chat shows.
-        if let Some((row, mime, bytes)) = self.chat.take_opened() {
+        // An opened picture goes to the bounded child only while its row is still the one the chat shows.
+        if let Some((row, bytes)) = self.chat.take_opened() {
             if wanted_row(self.layout_help.chat_shown(), || self.active_result_workspace()).as_ref() == Some(&row) {
-                self.install_chat_picture(mime, bytes);
-                self.status.set("picture shown in the preview");
+                self.draw_chat_picture(bytes);
             } else {
                 self.status.set("picture not opened: the row changed before it came");
             }

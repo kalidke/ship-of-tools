@@ -4,7 +4,7 @@
 //! version and exits 0, which the window reads as "not a drawing program".
 //!
 //! The child bounds itself before it reads a byte (`bound_self`), reads one request from stdin (`svg_wire`: the magic,
-//! a u32 job count, then per job an ask (`Ask`: a stretch to a size, or a fit to a pane, whose size the child works out) and a u64 length with that many bytes of SVG, at most `PREVIEW_BINARY_CAP` in
+//! a u32 job count, then per job an ask (`Ask`: a stretch to a size, a fit to a pane, whose size the child works out, or a chat picture's original to decode and answer as PNG fitted to `MAX_RASTER_PIXELS`) and a u64 length with that many bytes of SVG or picture, at most `PREVIEW_BINARY_CAP` in
 //! all), draws every job in order on a thread of `SVG_STACK`, and writes one reply per job to the process's stdout,
 //! taken for the reply alone before the read (`take_stdout`: descriptor 1 then leads to the null device), each written
 //! as it is whole, so a later job that crashes the child costs only itself. usvg prints a fixed warning line for some
@@ -92,6 +92,7 @@ fn read_ask(from: &mut impl Read) -> io::Result<Ask> {
     match tag {
         ASK_STRETCH => Ok(Ask::Stretch(u32()?, u32()?)),
         ASK_FIT => Ok(Ask::Fit { pane: (u32()?, u32()?), cap: u32()? }),
+        ASK_PICTURE => Ok(Ask::Picture { cap: u32()? }),
         _ => Err(invalid("an ask this child does not know")),
     }
 }
@@ -122,27 +123,72 @@ fn stray_print() {
 }
 
 fn reply(out: &mut impl Write, job: &Job) -> io::Result<()> {
-    match svg_tree(&job.svg).and_then(|tree| {
-        let (w, h) = match job.ask {
-            Ask::Stretch(w, h) => (w, h),
-            Ask::Fit { pane, cap } => svg_fit_dims((tree.size().width(), tree.size().height()), pane, cap),
-        };
-        draw(&tree, w, h)
-    }) {
+    let drawn = match job.ask {
+        Ask::Picture { cap } => {
+            return match picture(&job.svg, cap) {
+                Ok((w, h, png)) => {
+                    out.write_all(&[REPLY_PNG])?;
+                    out.write_all(&w.to_le_bytes())?;
+                    out.write_all(&h.to_le_bytes())?;
+                    out.write_all(&(png.len() as u64).to_le_bytes())?;
+                    out.write_all(&png)
+                }
+                Err(error) => error_reply(out, &error),
+            };
+        }
+        Ask::Stretch(w, h) => svg_tree(&job.svg).and_then(|tree| draw(&tree, w, h)),
+        Ask::Fit { pane, cap } => svg_tree(&job.svg).and_then(|tree| {
+            let (w, h) = svg_fit_dims((tree.size().width(), tree.size().height()), pane, cap);
+            draw(&tree, w, h)
+        }),
+    };
+    match drawn {
         Ok(pixmap) => {
             out.write_all(&[REPLY_PIXELS])?;
             out.write_all(&pixmap.width().to_le_bytes())?;
             out.write_all(&pixmap.height().to_le_bytes())?;
             out.write_all(pixmap.data())
         }
-        Err(error) => {
-            let text = format!("{error:#}");
-            let text = first_line(&text, ERROR_BYTES);
-            out.write_all(&[REPLY_ERROR])?;
-            out.write_all(&(text.len() as u16).to_le_bytes())?;
-            out.write_all(text.as_bytes())
-        }
+        Err(error) => error_reply(out, &error),
     }
+}
+
+fn error_reply(out: &mut impl Write, error: &anyhow::Error) -> io::Result<()> {
+    let text = format!("{error:#}");
+    let text = first_line(&text, ERROR_BYTES);
+    out.write_all(&[REPLY_ERROR])?;
+    out.write_all(&(text.len() as u16).to_le_bytes())?;
+    out.write_all(text.as_bytes())
+}
+
+/// A chat picture's original (`bytes`, one of wire's `PICTURE_MIMES` by its own bytes) decoded under the image crate's
+/// default `Limits` and this child's own bounds, fitted to its aspect with no side past `cap` and at most
+/// `MAX_RASTER_PIXELS`, and encoded as PNG: its size and bytes.
+fn picture(bytes: &[u8], cap: u32) -> anyhow::Result<(u32, u32, Vec<u8>)> {
+    use anyhow::Context;
+    use image::ImageEncoder;
+    let mut reader = image::ImageReader::new(io::Cursor::new(bytes)).with_guessed_format().context("not a picture")?;
+    let format = reader.format().filter(|f| sot_protocol::chat::PICTURE_MIMES.contains(&f.to_mime_type()));
+    anyhow::ensure!(format.is_some(), "not a picture the chat shows");
+    reader.limits(image::Limits::default());
+    let rgba = image::DynamicImage::from_decoder(reader.into_decoder().context("not a picture")?).context("it does not decode")?.to_rgba8();
+    let (w, h) = picture_fit(rgba.dimensions(), cap);
+    let rgba = if (w, h) == rgba.dimensions() { rgba } else { image::imageops::thumbnail(&rgba, w, h) };
+    let mut png = Vec::new();
+    image::codecs::png::PngEncoder::new_with_quality(&mut png, image::codecs::png::CompressionType::Fast, image::codecs::png::FilterType::Sub)
+        .write_image(rgba.as_raw(), w, h, image::ExtendedColorType::Rgba8)
+        .context("it does not encode")?;
+    Ok((w, h, png))
+}
+
+/// `(w, h)` scaled down, aspect kept, until no side passes `cap` and the whole is at most `MAX_RASTER_PIXELS`; never up.
+fn picture_fit((w, h): (u32, u32), cap: u32) -> (u32, u32) {
+    let (w64, h64) = (u64::from(w.max(1)), u64::from(h.max(1)));
+    let by_side = f64::from(cap.max(1)) / w64.max(h64) as f64;
+    let by_area = (MAX_RASTER_PIXELS as f64 / (w64 * h64) as f64).sqrt();
+    let by = by_side.min(by_area).min(1.0);
+    let side = |s: u64| ((s as f64 * by).floor() as u32).clamp(1, cap.max(1));
+    (side(w64), side(h64))
 }
 
 /// `text`'s first line, cut to at most `limit` bytes at a character boundary.

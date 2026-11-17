@@ -1026,7 +1026,8 @@ owned by `docs/CLAUDE.md`.
   ops, the fetch of a picture of the channel (`Api::fetch_file`, guarantee 33), a row's post of a file (the daemon's
   `chat.post_file` and `sot-fe chat post --file`), a picture's bytes across the wire (the daemon's `chat.file`,
   fe-net's `OutgoingReq::ChatFile`), and a person's post of the previewed file (`chat.post_file`,
-  `Primary+u`, under the person's own user token), and opening a picture in the preview.
+  `Primary+u`, under the person's own user token), and opening a picture in the preview (its original decoded only in the
+  window's bounded drawing child).
 - **CHAT-DELIVERY-STALL-UNTOLD** [note] A stalled delivery shows only in the daemon log while `chat.resolve` says
   `delivers: true`: a channel whose state file cannot be read (it stays off), a start read of the inboxes that fails on
   every try (an inbox that is a directory), an `ambiguous_row` or `no_row` that refuses every filing, a chat held by

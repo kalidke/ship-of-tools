@@ -184,6 +184,21 @@ impl State {
         Ok(ms)
     }
 
+    /// Frames, each with the worker's outcomes settled as the frame's upkeep settles them, until the status line no longer says a
+    /// picture is coming (the child answered, or failed), within 20 s.
+    fn witness_settle(&mut self, frames: &mut Vec<f64>, newest: &Ts, label: &str) -> Result<()> {
+        let begun = Instant::now();
+        while begun.elapsed() < std::time::Duration::from_secs(20) {
+            self.settle_svg_draws();
+            self.witness_frame(frames, newest, label)?;
+            if self.status.text() != "opening the picture…" {
+                return Ok(());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        anyhow::bail!("{label}: the picture never settled")
+    }
+
     /// Frames until the chat's scroll has come to rest: each presents, each but the last asks for the next, and the motion
     /// ends within a few lengths.
     fn witness_rest(&mut self, frames: &mut Vec<f64>, newest: &Ts, label: &str) -> Result<()> {
@@ -377,9 +392,13 @@ impl State {
         self.witness_key(Key::Character("o".into()), (true, false), Some(Action::ChatOpenImage))?;
         self.witness_pump(events, sent, &mut daemon)?;
         anyhow::ensure!(daemon.seen.originals == ["SAME"], "originals asked: {:?}", daemon.seen.originals);
-        anyhow::ensure!(self.status.text() == "picture shown in the preview", "the status line says {:?}", self.status.text());
+        // The original is with the window's own bounded child: the cursored file's late reply comes meanwhile and is dropped.
         let (active, row) = (self.selected.host().clone(), self.selected.workspace_id().clone());
         self.on_preview(active, Some("files:fig.png".into()), row, "text/plain".into(), b"the file".to_vec(), None, in_flight);
+        let begun = Instant::now();
+        self.witness_settle(&mut frames, &newest, "drawn by the child")?;
+        println!("chat-open child_ms={}", begun.elapsed().as_millis());
+        anyhow::ensure!(self.status.text() == "picture shown in the preview", "the status line says {:?}", self.status.text());
         anyhow::ensure!(self.preview_source.node_id().is_none() && self.preview_source.mime() == Some("image/png"), "the preview shows {:?} of {:?}", self.preview_source.mime(), self.preview_source.node_id());
         anyhow::ensure!(self.preview_requests.fired_target().map(str::to_owned) == fired, "the open changed the fired target");
         anyhow::ensure!(self.raster.is_shown(), "the opened picture is not the pane's raster");
@@ -406,6 +425,31 @@ impl State {
         self.witness_key(Key::Character("o".into()), (true, false), Some(Action::ChatOpenImage))?;
         self.witness_pump(events, sent, &mut daemon)?;
         anyhow::ensure!(daemon.seen.originals == ["SAME", "SAME"], "after the link's return, originals asked: {:?}", daemon.seen.originals);
+        self.witness_settle(&mut frames, &newest, "drawn again")?;
+        // The child made to fail on purpose (a stand-in for it): one that exits, one past its wall, one that answers garbage.
+        // Each is a refusal on the status line, the picture already shown stays, and the window goes on presenting frames.
+        #[cfg(unix)]
+        for (script, words) in [
+            ("exit 3", "picture not opened: the drawing ended"),
+            ("/usr/bin/printf 'SVG1'; exec /bin/sleep 30", "picture not opened: took past 1 s"),
+            (r"/usr/bin/printf 'SVG1N\001\000\000\000\001\000\000\000\004\000\000\000\000\000\000\000abcd'", "picture not opened: the drawing's reply was not what was asked"),
+        ] {
+            let bounds = crate::ui::preview::image::svg_run::Bounds { wall: std::time::Duration::from_secs(1), heap: 1 << 30, cpu: 30 };
+            let draw: crate::ui::preview::image::svg_draws::Draw = std::sync::Arc::new(move |jobs, stop| {
+                let mut command = std::process::Command::new("/bin/sh");
+                command.args(["-c", script]);
+                crate::ui::preview::image::svg_run::draw_in_child(command, jobs, &bounds, stop)
+            });
+            let real = std::mem::replace(&mut self.svg_draws, crate::ui::preview::image::svg_draws::SvgDraws::new(crate::ui::preview::image::svg_draws::QUEUED_BYTES, || {}, draw));
+            let shown = self.preview_source.generation();
+            self.witness_key(Key::Character("o".into()), (true, false), Some(Action::ChatOpenImage))?;
+            self.witness_pump(events, sent, &mut daemon)?;
+            let settled = self.witness_settle(&mut frames, &newest, script);
+            self.svg_draws = real;
+            settled?;
+            anyhow::ensure!(self.status.text().starts_with(words), "{script}: the status line says {:?}", self.status.text());
+            anyhow::ensure!(self.preview_source.generation() == shown && self.raster.is_shown(), "{script}: the shown picture changed");
+        }
         println!("chat-thumbnails tiles={} textures={made} centers={checked} cut={cut}", before.1);
         Ok(())
     }

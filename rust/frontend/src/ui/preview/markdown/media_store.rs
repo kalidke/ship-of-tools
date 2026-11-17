@@ -202,7 +202,8 @@ impl MarkdownMedia {
             Outcome::Drawn { w, h, rgba } => Settled::Drawn { w, h, rgba },
             Outcome::Refused(why) | Outcome::Ended(why) => Settled::Failed(why),
             // A `Stale` is of a generation the pane has left, and `wants_raster` asks again under the new one.
-            Outcome::Stale => Settled::Unhandled,
+            // A picture's PNG answers only a picture ask (`Ask::accepts`), which math never makes.
+            Outcome::Stale | Outcome::Picture { .. } => Settled::Unhandled,
         };
         Some((key, settled))
     }

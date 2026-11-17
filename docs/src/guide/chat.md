@@ -195,17 +195,19 @@ Slack's thumbnail has arrived; any other file stays a file line. A click on a ti
 that starts on a tile opens nothing) opens that picture in the preview pane, and `Ctrl+O` (`Cmd+O` on macOS;
 `chat.open_image`) opens the marked message's first picture. The window reads the whole picture from Slack (at most 16 MiB)
 each time it opens one; the status line says `opening the picture…` while it comes and `picture shown in the preview` when
-it is shown. It refuses, with the reason on the status line, a picture whose header says more than 40 megapixels or one that
-does not decode, an open while the link to the hub is down or on a hub too old to send pictures, and one whose link changes
-before it comes; a refused open is never made later by itself. The picture is not a project file: it has no name in the
+it is shown. It refuses, with the reason on the status line, a picture that does not decode, an open while the link to the
+hub is down or on a hub too old to send pictures, and one whose link changes before it comes; a refused open is never made
+later by itself. The picture is not a project file: it has no name in the
 files tree, and drawing, crop, the scale and opening in another program do nothing over it. Moving the cursor in the files
 tree, switching to another row, or a change to the file the cursor is on shows a file again. One picture is read at a time;
 opening another while one is on its way waits for it, and only the last one you asked for is shown.
 
-The window checks the picture by decoding it in its own process, and the preview decodes it again there. For an ordinary
-JPEG or PNG at 40 megapixels that is a fraction of a second; for some WebP and GIF files it is not bounded, and such a file
-can stall the window and use gigabytes of memory, whatever its header says. Decoding it in a separate, bounded process
-instead is planned and waits on the maintainer's word.
+The window never decodes the picture itself. It hands the file to a separate process of its own, the one that draws SVG
+files, held to 2 GiB of memory and 10 seconds; that process answers with the picture shrunk to at most 16 megapixels (its
+own shape kept), and only that is shown, so a larger picture shows at less than its full resolution. A picture it cannot
+draw within those bounds, or that ends the process, is refused with the reason on the status line and the window goes on.
+An ordinary 40-megapixel JPEG takes about half a second there, outside the window's own work, and a little more in the
+window to show.
 
 ## Mail to the row
 

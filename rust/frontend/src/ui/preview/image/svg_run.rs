@@ -45,12 +45,14 @@ pub(crate) struct Job {
     pub svg: Arc<[u8]>,
 }
 
-/// A job's end: its pixels, or the words a person reads. `Ended` is a child that hit a bound or crashed (the worker
+/// A job's end: its pixels (a picture's as PNG), or the words a person reads. `Ended` is a child that hit a bound or crashed (the worker
 /// counts these); `Refused` is anything else (the drawing's own first line of error, a bad reply, no start). `Stale`
 /// is the worker's: the job was stopped or skipped because the pane moved on, so nothing is said of it.
 #[derive(Debug, PartialEq)]
 pub(crate) enum Outcome {
     Drawn { w: u32, h: u32, rgba: Vec<u8> },
+    /// A picture ask's answer: PNG of at most `w` by `h` as its reply said, which the ask allowed.
+    Picture { w: u32, h: u32, png: Vec<u8> },
     Refused(String),
     Ended(String),
     Stale,
@@ -279,13 +281,25 @@ fn read_replies(mut from: impl Read, asks: &[Ask], tx: &Sender<Reply>) -> io::Re
         let outcome = match word::<1>(&mut from)?[0] {
             REPLY_PIXELS => {
                 let (rw, rh) = (u32::from_le_bytes(word(&mut from)?), u32::from_le_bytes(word(&mut from)?));
-                let len = (rw as u64 * rh as u64).checked_mul(4).filter(|_| ask.accepts(rw, rh));
+                let len = (rw as u64 * rh as u64).checked_mul(4).filter(|_| ask.accepts(rw, rh, false));
                 let Some(len) = len else { return Err(invalid(BAD_REPLY)) };
                 let mut rgba = Vec::new();
                 if from.by_ref().take(len).read_to_end(&mut rgba)? as u64 != len {
                     return Err(io::ErrorKind::UnexpectedEof.into());
                 }
                 Outcome::Drawn { w: rw, h: rh, rgba }
+            }
+            REPLY_PNG => {
+                let (rw, rh) = (u32::from_le_bytes(word(&mut from)?), u32::from_le_bytes(word(&mut from)?));
+                let len = u64::from_le_bytes(word(&mut from)?);
+                if !ask.accepts(rw, rh, true) || len > MAX_PICTURE_PNG {
+                    return Err(invalid(BAD_REPLY));
+                }
+                let mut png = Vec::new();
+                if from.by_ref().take(len).read_to_end(&mut png)? as u64 != len {
+                    return Err(io::ErrorKind::UnexpectedEof.into());
+                }
+                Outcome::Picture { w: rw, h: rh, png }
             }
             REPLY_ERROR => {
                 let len = u16::from_le_bytes(word(&mut from)?) as usize;

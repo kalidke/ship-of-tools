@@ -719,3 +719,71 @@ fn a_started_child_is_in_its_job_before_it_is_given_any_input() {
     started.child.kill().unwrap();
     started.child.wait().unwrap();
 }
+
+// The picture ask: a chat picture's original decoded by the child and answered as PNG. Every picture here is an ordinary one
+// the image crate's encoder makes; the failures are the child's, made on purpose by stand-ins.
+
+/// An ordinary `w` by `h` picture in `format`, a gradient made by the image crate's encoder.
+fn ordinary(w: u32, h: u32, format: image::ImageFormat) -> Vec<u8> {
+    let picture = image::RgbImage::from_fn(w, h, |x, y| image::Rgb([(x % 256) as u8, (y % 256) as u8, 128]));
+    let mut out = std::io::Cursor::new(Vec::new());
+    picture.write_to(&mut out, format).expect("encode an ordinary picture");
+    out.into_inner()
+}
+
+fn picture_job(cap: u32, bytes: Vec<u8>) -> Job {
+    Job { ask: Ask::Picture { cap }, svg: Arc::from(bytes) }
+}
+
+#[test]
+fn an_ordinary_picture_comes_back_as_png_within_its_ask() {
+    let scratch = Scratch::new();
+    let (command, bounds) = real_child(WAIT, ROOMY, &scratch);
+    let jobs = vec![
+        picture_job(16384, ordinary(64, 48, image::ImageFormat::Png)),
+        picture_job(100, ordinary(300, 200, image::ImageFormat::Jpeg)),
+        picture_job(16384, ordinary(4200, 4100, image::ImageFormat::Jpeg)),
+        picture_job(16384, b"a line of text".to_vec()),
+    ];
+    let outcomes = draw_in_child(command, jobs, &bounds, &Stop::default());
+    let size = |outcome: &Outcome| match outcome {
+        Outcome::Picture { w, h, png } => {
+            let shown = image::load_from_memory_with_format(png, image::ImageFormat::Png).expect("the reply is a PNG");
+            assert_eq!(shown.dimensions(), (*w, *h), "the PNG is the size its reply names");
+            (*w, *h)
+        }
+        other => panic!("{other:?} is no picture"),
+    };
+    use image::GenericImageView;
+    assert_eq!(size(&outcomes[0]), (64, 48), "a small picture keeps its size");
+    assert_eq!(size(&outcomes[1]), (100, 66), "no side past the cap, the aspect kept");
+    let (w, h) = size(&outcomes[2]);
+    let aspect = f64::from(w) / f64::from(h) - 4200.0 / 4100.0;
+    assert!(u64::from(w) * u64::from(h) <= MAX_RASTER_PIXELS && w < 4200 && aspect.abs() < 0.01, "{w} x {h} for 4200 x 4100");
+    assert!(matches!(&outcomes[3], Outcome::Refused(text) if text.starts_with("not a picture")), "{:?}", outcomes[3]);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_picture_child_that_fails_on_purpose_is_refused_in_words() {
+    let bounds = Bounds { wall: Duration::from_secs(1), heap: ROOMY as u64, cpu: 30 };
+    let ask = |script: &str| draw_in_child(stand_in(script), vec![picture_job(100, vec![0; 16])], &bounds, &Stop::default());
+    // It exits before it answers; it answers nothing past its wall; it answers what was not asked.
+    assert!(matches!(&ask("exit 3")[..], [Outcome::Ended(words)] if words.starts_with("the drawing ended")), "{:?}", ask("exit 3"));
+    let begun = Instant::now();
+    assert_eq!(ask("/usr/bin/printf 'SVG1'; exec /bin/sleep 30"), [ended("took past 1 s")]);
+    assert!(begun.elapsed() < Duration::from_secs(3), "{:?}", begun.elapsed());
+    // Pixels for a picture ask, a PNG larger than its cap, and a PNG length past its bound.
+    assert_eq!(ask(&format!("/usr/bin/printf '{ONE_RED_PIXEL}'")), [refused(BAD_REPLY)]);
+    assert_eq!(ask(r"/usr/bin/printf 'SVG1N\145\000\000\000\001\000\000\000\001\000\000\000\000\000\000\000X'"), [refused(BAD_REPLY)]);
+    assert_eq!(ask(r"/usr/bin/printf 'SVG1N\001\000\000\000\001\000\000\000\000\000\000\000\001\000\000\000'"), [refused(BAD_REPLY)]);
+    // The control: a PNG reply within its ask is read whole, whatever its bytes (the window reads its header before it shows it).
+    assert_eq!(
+        ask(r"/usr/bin/printf 'SVG1N\001\000\000\000\001\000\000\000\004\000\000\000\000\000\000\000abcd'"),
+        [Outcome::Picture { w: 1, h: 1, png: b"abcd".to_vec() }]
+    );
+    // A PNG reply to a pixel ask is refused.
+    let jobs = vec![job(1, 1, b"<svg/>")];
+    let command = stand_in(r"/usr/bin/printf 'SVG1N\001\000\000\000\001\000\000\000\004\000\000\000\000\000\000\000abcd'");
+    assert_eq!(draw_in_child(command, jobs, &bounds, &Stop::default()), [refused(BAD_REPLY)]);
+}

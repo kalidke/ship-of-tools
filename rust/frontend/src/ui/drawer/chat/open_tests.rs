@@ -5,13 +5,12 @@ use std::io::Cursor;
 use std::time::{Duration, Instant};
 
 use cosmic_text::FontSystem;
-use image::{ImageEncoder, ImageFormat, RgbaImage};
+use image::{ImageFormat, RgbaImage};
 use sot_protocol::chat::{ChatFile, ChatRecord};
 use sot_protocol::ops::{ChatCode, ChatFileReq, ChatFileVariant};
 
 use super::drawer::ChatDrawer;
 use super::owner::Out;
-use super::pictures::admit;
 use super::thread_tests::{body, channel, shown};
 use crate::net::transport::{ChatEvt, ChatPicture, ChatReply, OutgoingReq};
 
@@ -176,8 +175,8 @@ fn one_open_is_in_flight_and_a_late_reply_is_dropped() {
     answer(&mut d, first, png(8, 8), at);
     assert!(d.take_opened().is_none());
     let thumb = files(&answer(&mut d, next[0].clone(), png(6, 5), at), ChatFileVariant::Thumb).remove(0);
-    let (row, mime, bytes) = d.take_opened().expect("the wanted picture");
-    assert_eq!((row.host.as_str(), row.workspace_id.as_str(), mime.as_str(), bytes), ("a", "ROW1", "image/png", png(6, 5)));
+    let (row, bytes) = d.take_opened().expect("the wanted picture");
+    assert_eq!((row.host.as_str(), row.workspace_id.as_str(), bytes), ("a", "ROW1", png(6, 5)), "the original as it came, undecoded");
     assert!(d.take_opened().is_none());
     // A row change gives the wanted open up: its reply installs nothing.
     answer(&mut d, thumb, png(4, 4), at);
@@ -189,22 +188,9 @@ fn one_open_is_in_flight_and_a_late_reply_is_dropped() {
 }
 
 #[test]
-fn a_picture_over_40_megapixels_is_not_installed() {
-    // Its header says 7000 x 6000; the body is cut short, so only the header's check can say why.
-    let mut huge = Vec::new();
-    image::codecs::png::PngEncoder::new(&mut huge).write_image(&vec![0u8; 7000 * 6000], 7000, 6000, image::ExtendedColorType::L8).unwrap();
-    huge.truncate(huge.len() / 2);
-    assert_eq!(admit(&huge), Err("it is over 40 megapixels"));
-    assert_eq!(admit(b"%PDF-1.4"), Err("it is not a picture"));
-    assert_eq!(admit(&png(64, 48)), Ok("image/png"));
-    // Through the drawer: refused on the status line, nothing to install; a refusal of the hub says its code.
+fn a_refused_original_is_said_and_nothing_is_handed_on() {
     let (mut d, at, _) = figures();
     let tiles = d.tiles();
-    let req = files(&click(&mut d, center(tiles[0].rect), at), ChatFileVariant::Original).remove(0);
-    answer(&mut d, req.clone(), huge, at);
-    assert!(d.take_opened().is_none());
-    assert_eq!(d.take_notice().as_deref(), Some("picture not opened: it is over 40 megapixels"));
-    let (mut d, at, _) = figures();
     let req = files(&click(&mut d, center(tiles[0].rect), at), ChatFileVariant::Original).remove(0);
     d.on_evt(&"a".to_string(), ChatEvt::File { req, reply: ChatReply::Refused(ChatCode::TooLarge) }, at);
     assert!(d.take_opened().is_none());

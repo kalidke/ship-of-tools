@@ -75,6 +75,41 @@ impl State {
         if let Some(step) = frame.preview {
             self.apply_svg_step(step);
         }
+        if let Some(outcome) = frame.chat {
+            self.settle_chat_picture(outcome);
+        }
+    }
+
+    /// A chat picture's original as it came from the channel (`ChatDrawer::take_opened`): the window's own process never
+    /// decodes it. It goes to the worker's bounded child (`svg_run`: the SVG draw's child, heap, CPU bound and wall), which
+    /// answers PNG fitted to `MAX_RASTER_PIXELS` and the texture limit; `settle_chat_picture` installs that PNG alone.
+    /// The request generation advances at the ask, so a preview reply in flight is already stale while the child decodes.
+    pub(in crate::ui) fn draw_chat_picture(&mut self, bytes: Vec<u8>) {
+        self.preview_requests.issue_preview();
+        let cap = self.gpu.device().limits().max_texture_dimension_2d;
+        let job = super::svg_run::Job { ask: super::svg_wire::Ask::Picture { cap }, svg: bytes.into() };
+        if let Err(why) = self.svg_draws.submit(super::svg_preview::CHAT_PICTURE_KEY.into(), self.preview_source.generation(), job) {
+            self.status.set(format!("picture not opened: {why}"));
+        }
+    }
+
+    /// The child's outcome for a chat picture: its PNG is installed in the preview (`install_chat_picture`); a child that
+    /// ended at a bound, crashed or answered what was not asked is a refusal on the status line, and the window goes on; a
+    /// picture the pane moved on from is said and dropped.
+    pub(in crate::ui) fn settle_chat_picture(&mut self, outcome: super::svg_run::Outcome) {
+        use super::svg_run::Outcome;
+        match outcome {
+            Outcome::Picture { w, h, png } if is_png_of(&png, (w, h)) => {
+                self.install_chat_picture("image/png".into(), png);
+                self.status.set("picture shown in the preview");
+            }
+            Outcome::Picture { .. } => self.status.set("picture not opened: the drawing's reply was not what was asked"),
+            Outcome::Refused(why) | Outcome::Ended(why) => self.status.set(format!("picture not opened: {why}")),
+            Outcome::Stale => self.status.set("picture not opened: the preview moved on before it was drawn"),
+            // The runner takes pixels only for an ask that wants them (`Ask::accepts`), which a picture ask does not.
+            Outcome::Drawn { .. } => self.status.set("picture not opened: the drawing's reply was not what was asked"),
+        }
+        self.window.request_redraw();
     }
 
     /// A figure's SVG settled: a picture is uploaded and installed,
@@ -248,4 +283,14 @@ impl State {
         self.preview_says(format!("pixel size failed · {name}: {message}"));
         self.window.request_redraw();
     }
+}
+
+/// Whether `png` opens as a PNG of exactly `size`, the size the child's reply named and its ask allowed: its header alone is
+/// read, under `Limits` of that size, so a child's broken answer is a refusal and never the preview's blank pane.
+fn is_png_of(png: &[u8], (w, h): (u32, u32)) -> bool {
+    let mut reader = image::ImageReader::with_format(std::io::Cursor::new(png), image::ImageFormat::Png);
+    let mut limits = image::Limits::default();
+    (limits.max_image_width, limits.max_image_height) = (Some(w), Some(h));
+    reader.limits(limits);
+    reader.into_decoder().is_ok_and(|d| image::ImageDecoder::dimensions(&d) == (w, h))
 }

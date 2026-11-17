@@ -902,9 +902,10 @@ impl ChatDrawer {
         self.pictures.asks(now)
     }
 
-    /// The opened picture, checked, for State to install in the preview, once: the row it was opened for, its MIME and bytes.
-    pub(in crate::ui) fn take_opened(&mut self) -> Option<(ResultRowIdentity, String, Vec<u8>)> {
-        self.pictures.take_opened().map(|(host, workspace_id, mime, bytes)| (ResultRowIdentity { host, workspace_id }, mime, bytes))
+    /// The opened picture's original as it came, for State to hand to the window's bounded child, once: the row it was opened
+    /// for, and its bytes.
+    pub(in crate::ui) fn take_opened(&mut self) -> Option<(ResultRowIdentity, Vec<u8>)> {
+        self.pictures.take_opened().map(|(host, workspace_id, bytes)| (ResultRowIdentity { host, workspace_id }, bytes))
     }
 
     /// The chat is not shown: no record is prepared.

@@ -1,7 +1,7 @@
 //! The chat's pictures owner: the thumbnails of the image files the view places, asked for one at a time per host,
 //! decoded within bounds on the UI thread and held downscaled, at most `MAX_HELD`. It returns the requests to send and
 //! sends nothing itself; only `ChatDrawer` calls it. It also holds each held picture's texture, made at the picture's first
-//! draw and gone with its entry, and the one original the person opens in the preview, checked before State installs it.
+//! draw and gone with its entry, and the one original the person opens in the preview, until State hands it to the bounded child.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Cursor;
@@ -34,10 +34,6 @@ const MAX_ALLOC: u64 = 32 * 1024 * 1024;
 const HELD_SIDE: u32 = 360;
 /// A `failed` thumbnail is asked again at most this many times, `PACE` apart.
 const RETRIES: u8 = 3;
-/// An original opened in the preview: its pixels by its header (the daemon's own drawing bound), checked before any pixel
-/// buffer, and what its decode may allocate (the image crate's default, stated here; 16-bit RGBA at the bound is 320 MB).
-const MAX_OPEN_PIXELS: u64 = 40_000_000;
-const MAX_OPEN_ALLOC: u64 = 512 * 1024 * 1024;
 
 /// A picture's identity: the host it was read from and its record's workspace, channel and file id.
 type Key = (HostKey, String, String, String);
@@ -91,9 +87,9 @@ pub(super) struct ChatPictures {
     /// counts against its host's `MAX_IN_FLIGHT` as a thumbnail does. They differ when a newer open replaced the wanted file.
     wanted: Option<(HostKey, ChatFileReq)>,
     opening: Option<(HostKey, ChatFileReq)>,
-    /// The checked original of the wanted file: the host and row it was opened for, its MIME and bytes, until State installs
-    /// it (`take_opened`).
-    opened: Option<(HostKey, String, String, Vec<u8>)>,
+    /// The original of the wanted file as it came: the host and row it was opened for and its bytes, until State hands them
+    /// to the window's bounded child (`take_opened`). The window's own process never decodes them.
+    opened: Option<(HostKey, String, Vec<u8>)>,
 }
 
 impl Default for ChatPictures {
@@ -101,28 +97,6 @@ impl Default for ChatPictures {
         let (entries, finals, order, connected, unsupported) = (HashMap::new(), HashMap::new(), VecDeque::new(), HashSet::new(), HashSet::new());
         Self { entries, finals, order, placement: 0, connected, unsupported, decode, wanted: None, opening: None, opened: None }
     }
-}
-
-/// Reads an original once as the preview will (one of wire's `PICTURE_MIMES` by its own bytes), its header at most
-/// `MAX_OPEN_PIXELS`, decoded under `Limits` (`MAX_OPEN_ALLOC`) with a decoder's panic caught, and the pixels dropped. Its
-/// MIME, or the words of its refusal. Not a bound for every input: some WebP and GIF files are dearer than their header
-/// says and allocate outside `Limits` (the fe-ui contract, "Opening a picture").
-pub(super) fn admit(bytes: &[u8]) -> Result<&'static str, &'static str> {
-    let read = || {
-        let mut r = ImageReader::new(Cursor::new(bytes)).with_guessed_format().map_err(|_| "it is not a picture")?;
-        let mime = r.format().map(|f| f.to_mime_type()).filter(|m| PICTURE_MIMES.contains(m)).ok_or("it is not a picture")?;
-        let mut limits = Limits::default();
-        limits.max_alloc = Some(MAX_OPEN_ALLOC);
-        r.limits(limits);
-        let decoder = r.into_decoder().map_err(|_| "it does not decode")?;
-        let (w, h) = image::ImageDecoder::dimensions(&decoder);
-        if u64::from(w) * u64::from(h) > MAX_OPEN_PIXELS {
-            return Err("it is over 40 megapixels");
-        }
-        image::DynamicImage::from_decoder(decoder).map_err(|_| "it does not decode")?;
-        Ok(mime)
-    };
-    catch_unwind(AssertUnwindSafe(read)).unwrap_or(Err("it does not decode"))
 }
 
 /// Decodes a thumbnail's bytes once: one of wire's `PICTURE_MIMES` by its own bytes, under `Limits` (`MAX_SIDE`, checked
@@ -215,8 +189,8 @@ impl ChatPictures {
         self.wanted = None;
     }
 
-    /// An original's reply, taken only for the one in flight. For the file still wanted, its bytes are checked (`admit`) and
-    /// kept for State (`take_opened`), or the words of its refusal are returned; a reply for a file no longer wanted is dropped.
+    /// An original's reply, taken only for the one in flight. For the file still wanted, its bytes are kept, undecoded, for
+    /// State (`take_opened`), or the words of its refusal are returned; a reply for a file no longer wanted is dropped.
     /// Then the next asks.
     pub(super) fn on_original(&mut self, host: &HostKey, req: &ChatFileReq, reply: ChatReply<ChatPicture>, now: Instant) -> (Vec<Out>, Option<String>) {
         if self.opening.as_ref() != Some(&(host.clone(), req.clone())) {
@@ -226,13 +200,10 @@ impl ChatPictures {
         let words = if self.wanted == Some((host.clone(), req.clone())) {
             self.wanted = None;
             match reply {
-                ChatReply::Done(p) => match admit(&p.bytes) {
-                    Ok(mime) => {
-                        self.opened = Some((host.clone(), req.target.row.clone(), mime.to_string(), p.bytes));
-                        None
-                    }
-                    Err(why) => Some(format!("picture not opened: {why}")),
-                },
+                ChatReply::Done(p) => {
+                    self.opened = Some((host.clone(), req.target.row.clone(), p.bytes));
+                    None
+                }
                 ChatReply::Refused(code) => Some(format!("picture not opened: {}", code.text())),
                 ChatReply::Unsupported => {
                     self.unsupported.insert(host.clone());
@@ -246,7 +217,7 @@ impl ChatPictures {
     }
 
     /// The checked original of the wanted file, once.
-    pub(super) fn take_opened(&mut self) -> Option<(HostKey, String, String, Vec<u8>)> {
+    pub(super) fn take_opened(&mut self) -> Option<(HostKey, String, Vec<u8>)> {
         self.opened.take()
     }
 

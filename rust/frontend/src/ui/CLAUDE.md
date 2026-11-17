@@ -1415,13 +1415,29 @@ methods are `pub(super)`, so no other ui code can drop the requests they return.
   `picture shown in the preview` at the install. An open on a host whose link is down or whose daemon answered `Unsupported`
   is refused with words and nothing is kept; a link change gives up the original in flight and the one wanted, with words,
   and neither is asked again by itself (`an_open_on_a_link_that_is_down_or_an_old_hub_says_so_and_is_never_sent_later`; at
-  State, the native fixture below). A row change gives the wanted file up. The original (at most `MAX_CHAT_FILE`, 16 MiB) is
-  checked on the UI thread before it is handed over (`admit`): one of `PICTURE_MIMES` by its own bytes, its header at most 40
-  megapixels, then decoded whole under `image::Limits` and `catch_unwind` and dropped
-  (`a_picture_over_40_megapixels_is_not_installed`); a refusal is `picture not opened: ...` on the status line. Limit: that
-  check and the preview's own decode of the same bytes both run in the window's process, and for some WebP and GIF inputs
-  neither is bounded by the header or by `image::Limits`, so a hostile picture can stall the window and take gigabytes; the
-  replacement, a decode in the window's bounded child, waits on the maintainer's word. State installs the picture only while
+  State, the native fixture below). A row change gives the wanted file up. The original (at most `MAX_CHAT_FILE`, 16 MiB)
+  is never decoded in the window's process: `take_opened` hands its bytes as they came to `State::draw_chat_picture`, which
+  advances the preview's request generation (so a preview reply in flight is stale while the child works) and submits one
+  `Ask::Picture { cap }` job (`svg_wire`, the GPU's texture side as `cap`) to the drawing worker under
+  `CHAT_PICTURE_KEY`, tagged with the pane's source generation. The worker's bounded child (`svg_child`: its heap cap, CPU
+  bound, wall, one worker, kill-on-close; the SVG draws' `SVG_BOUNDS`) decodes it under the image crate's default
+  `Limits`, as one of `PICTURE_MIMES` by its own bytes, fits it to its aspect with no side past `cap` and at most
+  `MAX_RASTER_PIXELS` (16 Mpx), and answers PNG (`REPLY_PNG`: its size, then at most `MAX_PICTURE_PNG` bytes); the runner
+  takes that reply only for a picture ask and within it (`Ask::accepts`), and a picture ask only that reply. The frame's
+  upkeep routes the outcome (`settle_frame`) to `State::settle_chat_picture`: a PNG whose header is the size its reply
+  named (`is_png_of`) is installed; a child that ended at a bound or crashed, a refusal, or a reply that is not what was
+  asked is `picture not opened: ...` on the status line, the window and the shown preview unchanged; a job the pane moved
+  on from (`Stale`) says so. Tests, the child made to fail on purpose and ordinary pictures only: in the `svg_child`
+  target `an_ordinary_picture_comes_back_as_png_within_its_ask` (a PNG and JPEGs the image crate encodes, kept, fitted
+  under a cap and past 16 Mpx, and text refused) and `a_picture_child_that_fails_on_purpose_is_refused_in_words` (stand-ins
+  that exit, outlast the wall, or answer pixels, a size past the cap or a length past the bound); and the native fixture
+  below, through the real child and through stand-ins. Cost of an ordinary 40-megapixel JPEG (measured 2026-11-17 in release
+  on one Linux computer): about 520 ms in the child (its start, the decode, the fit to 5016 x 3344 and the PNG encode, 22 MB),
+  off the UI thread; then the window decodes that PNG (about 80 ms) and uploads it, and its bytes stay in the installed
+  source and the row's parked view, as any preview's do. Limits: a draw of the picture that ends at a bound counts as one of
+  the pane's generation's two strikes (`svg_draws`), so a redraw of that pane's own SVG may then be refused; an open the
+  child refuses leaves a preview reply it outdated dropped, so the pane keeps what it showed while the fired target is the
+  cursored file. State installs the picture only while
   its row is the one the chat shows (`take_opened`, `with_chat`), through `State::install_chat_picture`: `issue_preview`
   advances the generation, so a preview reply in flight is stale, never `forget_fired`, so the fired target stays, and
   `install_preview_reply` installs the bytes with no node (`InkLayer::install_preview` hides the canvas). Every reader that
@@ -1431,13 +1447,13 @@ methods are `pub(super)`, so no other ui code can drop the requests they return.
   reconnect, a `preview.changed`, a page turn) keep the fired target. A cursor move, a switch to another row or a
   `preview.changed` for the fired node shows a file again. The native fixture
   `a_chats_pictures_show_and_one_opens_in_the_preview` runs it through the window: `Primary+o` on the marked message asks
-  one original while a preview of the cursored file is in flight; the answer is the preview's source and raster, with no
-  node and the fired target as it was, and that file's late reply is dropped (red when the install does not advance the
-  generation); no region, no title and no scale prompt follow; an open cut by a link change is said, not asked again after
-  the link's return, and the next `Primary+o` asks one (red when the link change keeps the original in flight). Cost of an
-  ordinary picture at the 40-megapixel bound (measured 2026-11-16 in release on one Linux computer): the check's decode
-  about 120 ms for a JPEG and 250 ms for a PNG, then the preview's about 200 and 340 ms, both on the UI thread, before the
-  texture upload; the bytes stay in the installed source and in the row's parked view, as any preview's do. Limits: the
+  one original while a preview of the cursored file is in flight, whose late reply comes while the child works and is
+  dropped; the child's PNG is then the preview's source and raster, with no node and the fired target as it was (it prints
+  `chat-open child_ms=…`); no region, no title and no scale prompt follow; an open cut by a link change is said, not asked
+  again after the link's return, and the next `Primary+o` asks one (red when the link change keeps the original in flight);
+  and with the worker's draw replaced by a stand-in child that exits, outlasts a 1 s wall, or answers a PNG reply that is no
+  PNG, each open is a status-line refusal while frames present and the shown picture stays (red when the header check is
+  skipped). Limits: the
   press and release reach the drawer only through `mouse_input`, which no test runs (the drawer's `press_tile` and
   `release_tile` are tested).
 - The band of tiles (the plan's D9, `drawer/chat/view.rs`): each placed record that is not deleted shows its picture files
