@@ -14,7 +14,7 @@ use anyhow::Result;
 use sot_chat::api::{ApiError, Channel, Identified, JoinOutcome, TOKEN_REFUSALS};
 use sot_chat::config::{self, ConfigError, PairError, Writers};
 use sot_chat::http::{Http, Secret};
-use sot_chat::service::Service;
+use sot_chat::service::{Service, APP_TOKEN_REFUSED, BOT_TOKEN_REFUSED, WRONG_APP};
 use sot_chat::socket::SocketError;
 use sot_platform::host::env::Env;
 use sot_protocol::chat::Ts;
@@ -81,12 +81,14 @@ impl Verifier {
 }
 
 /// Why the hub's chat is off when a connect fixes it: no `chat.toml` or no secrets, secrets the load refused, a start
-/// that failed. A refused `chat.toml` is not one (a connect never rewrites it), nor is any other status; nor is a running
+/// that failed, a service that ended on its own (an app token of another app, a token Slack refused). A refused `chat.toml` is not one (a connect never rewrites it), nor is any other status; nor is a running
 /// chat that holds no user token, which only a person's post cares about (its refusal says so).
 pub(crate) fn unconfigured(status: Status) -> Option<ChatUnconfigured> {
     match status {
         Status::Refused(ConfigError::Missing) | Status::Secrets(ConfigError::Missing) => Some(ChatUnconfigured::NotConnected),
         Status::Secrets(_) => Some(ChatUnconfigured::TokensRefused),
+        Status::Failed(WRONG_APP) => Some(ChatUnconfigured::WrongApp),
+        Status::Failed(APP_TOKEN_REFUSED | BOT_TOKEN_REFUSED) => Some(ChatUnconfigured::TokensRefused),
         Status::Failed(_) => Some(ChatUnconfigured::StartFailed),
         _ => None,
     }

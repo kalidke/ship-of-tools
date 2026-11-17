@@ -179,10 +179,12 @@ pub enum ChatResolveRes {
 pub enum ChatUnconfigured {
     /// No `chat.toml` or no `chat-secrets.toml`.
     NotConnected,
-    /// The saved tokens are refused (by the load or by Slack).
+    /// The saved tokens are refused (by the load or by Slack), or Slack refused one while the chat ran.
     TokensRefused,
     /// The service failed to start.
     StartFailed,
+    /// The app-level token is another Slack app's than the bot's: the chat ended rather than take that app's events.
+    WrongApp,
     /// A reason added later.
     #[serde(other)]
     Other,

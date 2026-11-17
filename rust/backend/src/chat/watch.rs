@@ -473,8 +473,14 @@ impl Own {
             self.publish(&mut watches);
             self.drive();
         }
+        // A stop took the delivery already; a service that ended on its own did not, so its filing in flight returns here.
+        self.end_delivery().await;
         // A test's hold point, keyed by the hub's address, between the service's stop and the owner's end.
         sot_platform::hold_point_async!("chat.owner.end", Arc::as_ptr(&self.hub) as usize);
+        // A service that ended on its own turns the chat off before the owner is idle, so a reload (which waits for the
+        // owner's end) never meets the new service's start with this call. No stop will ask this owner for its delivery.
+        drop(ending);
+        self.chat.service_ended(&self.service);
         self.end();
     }
 
@@ -545,10 +551,15 @@ impl Own {
     /// The stop's first step: the delivery ends. Its filing in flight returns (bounded), its pass is dropped (its reads end
     /// with the service's API, which the stop closes next) and so is the start's read; then the stop is told.
     async fn end_mail(&mut self, done: oneshot::Sender<()>) {
+        self.end_delivery().await;
+        drop(done.send(()));
+    }
+
+    /// The delivery out of use, its filing in flight returned (bounded by `MAIL_END`).
+    async fn end_delivery(&mut self) {
         if let Some(filing) = self.mail.take().and_then(|mut m| m.filing.take()) {
             let _ = tokio::time::timeout(MAIL_END, filing).await;
         }
-        drop(done.send(()));
     }
 
     /// Ask the delivery what to do next and start it, until it has nothing to do now. A commit is not answered: the

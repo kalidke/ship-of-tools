@@ -13,7 +13,7 @@ use std::time::Duration;
 use sot_chat::config::{self, Config, ConfigError, Credentials, Reader, Resolution};
 use sot_chat::delivery::Timing;
 use sot_chat::http::Http;
-use sot_chat::service::Service;
+use sot_chat::service::{Service, APP_TOKEN_REFUSED, BOT_TOKEN_REFUSED, WRONG_APP};
 use sot_platform::host::env::Env;
 use sot_protocol::ops::{ChatCode, ChatTarget};
 use tokio::runtime::Handle;
@@ -74,7 +74,7 @@ pub(crate) enum Status {
     Refused(ConfigError),
     /// `chat-secrets.toml` is missing or refused; read only after the hub and `chat.toml` were admitted.
     Secrets(ConfigError),
-    /// The service did not start: a fixed code.
+    /// The service did not start, or ended on its own: a fixed code (`Service::ended`'s are listed in `setup::unconfigured`).
     Failed(&'static str),
     Starting,
     Running,
@@ -90,6 +90,7 @@ impl std::fmt::Display for Status {
             Status::Refused(e) => write!(f, "{}: {e}", config::CONFIG_FILE),
             Status::Secrets(ConfigError::Missing) => write!(f, "{} is missing from the config folder", config::SECRETS_FILE),
             Status::Secrets(e) => write!(f, "{}: {e}", config::SECRETS_FILE),
+            Status::Failed(code @ (WRONG_APP | APP_TOKEN_REFUSED | BOT_TOKEN_REFUSED)) => write!(f, "the chat service ended: {code}"),
             Status::Failed(code) => write!(f, "the chat service did not start: {code}"),
             Status::Starting => f.write_str("the chat service is starting"),
             Status::Running => f.write_str("the chat service is running"),
@@ -511,14 +512,17 @@ impl<L: Listener> Chat<L> {
         self.service().map(|_| ()).ok_or(ChatCode::Unavailable)
     }
 
-    /// End the start or the service, the chat then `Off(ended)`: `Stopped` for a retirement, `NotHub` for a step-down.
-    fn stop_as(&self, ended: Status) {
+    /// End the start or the service, the chat then `Off(ended)`: `Stopped` for a retirement, `NotHub` for a step-down,
+    /// `Failed(code)` for a service that ended on its own. Whether this call began the end: a chat already stopping or off
+    /// is left as it is.
+    fn stop_as(&self, ended: Status) -> bool {
         let mut phase = self.shared.lock();
         match std::mem::replace(&mut *phase, Phase::Stopping) {
             Phase::Starting(task, _) => {
                 task.abort();
                 drop(phase);
                 self.shared.set_off(ended);
+                true
             }
             Phase::Running(l) => {
                 drop(phase);
@@ -533,8 +537,12 @@ impl<L: Listener> Chat<L> {
                     Some(h) => drop(h.spawn(stop)),
                     None => unreachable!("a running service was started on a runtime"),
                 }
+                true
             }
-            other => *phase = other,
+            other => {
+                *phase = other;
+                false
+            }
         }
     }
 }
@@ -616,6 +624,9 @@ impl Chat<Service> {
         tokio::spawn(async move {
             let Some(service) = chat.running().await else { return };
             tracing::info!(status = %Status::Running, "project chat");
+            if let Some(code) = service.app_unchecked() {
+                tracing::warn!(code, "project chat: the bot's app is unknown, so no frame is held to it");
+            }
             // The mapped channels' names, looked up once in the background (`Api::channel_names`, which holds the
             // lookup to a count and a deadline): `chat.resolve` makes no Slack call and carries what the cache holds, so a
             // window's title can name the channel. A channel that got no name keeps its id, and its code is logged.
@@ -629,8 +640,21 @@ impl Chat<Service> {
             }
             if let Err(code) = chat.hub.ensure_owner(&service, &chat, &rows) {
                 tracing::warn!(?code, "project chat owner did not start");
+                // An ended service gives no `Watches`, so no owner would ever see its end.
+                chat.service_ended(&service);
             }
         })
+    }
+
+    /// A service that ended on its own (`Service::ended`) turns the chat off with its code, logged once; a service that
+    /// runs, or was stopped, changes nothing. Called by the owner as it ends and by the boot's task when no owner could
+    /// start; the stop that follows asks no owner for its delivery (the owner is gone or ending), and the lock is freed
+    /// with the service's task.
+    pub(crate) fn service_ended(&self, service: &Service) {
+        let Some(code) = service.ended() else { return };
+        if self.stop_as(Status::Failed(code)) {
+            tracing::warn!(code, "project chat: the chat service ended");
+        }
     }
 
     /// The daemon's chat as the boot makes it, and as the tests' rig makes it: begin, the boot's log line, and the
