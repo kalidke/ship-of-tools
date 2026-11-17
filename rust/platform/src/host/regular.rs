@@ -25,6 +25,11 @@ pub fn open_regular(path: &Path) -> io::Result<std::fs::File> {
     Ok(file)
 }
 
+#[cfg(test)]
+thread_local! {
+    pub(super) static ASKED_AGAIN: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
 /// The open as the system answers it.
 #[cfg(not(windows))]
 fn open_answered(options: &std::fs::OpenOptions, path: &Path) -> io::Result<std::fs::File> {
@@ -53,6 +58,9 @@ fn open_answered(options: &std::fs::OpenOptions, path: &Path) -> io::Result<std:
                 && (status == STATUS_FILE_DELETED || status == STATUS_DELETE_PENDING)
                 && Instant::now() < deadline =>
             {
+                // Probe only, never landed: this thread's refused opens that were asked again.
+                #[cfg(test)]
+                ASKED_AGAIN.with(|n| n.set(n.get() + 1));
                 crate::hold_point!("platform.regular.refused", path.display());
                 std::thread::sleep(Duration::from_millis(RETRY_STEP_MS));
             }

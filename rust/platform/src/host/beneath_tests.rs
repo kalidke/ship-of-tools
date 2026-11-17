@@ -547,7 +547,7 @@ mod last_nt {
 fn read_by_steps(path: &Path, sizes_refused: &mut u64) -> Result<Vec<u8>, (&'static str, io::Error, i32)> {
     use std::io::Read;
     last_nt::clear();
-    let file = std::fs::File::open(path).map_err(|e| ("open", e, last_nt::status()))?;
+    let file = crate::host::open_regular(path).map_err(|e| ("open", e, last_nt::status()))?;
     let size = file.metadata().map(|m| m.len() as usize).unwrap_or_else(|_| {
         *sizes_refused += 1;
         0
@@ -589,6 +589,7 @@ fn replace_in(root: &Path, writers: usize, writes: usize, readers: usize, classi
     last_nt::status();
     probe.classic_only.store(classic_only, SeqCst);
     let done = std::sync::atomic::AtomicBool::new(false);
+    let asked_again = std::sync::atomic::AtomicU64::new(0);
     let mut tally = Tally { reads: 0, refusals: Vec::new(), unanswered: 0, sizes_refused: 0, writes_refused: Vec::new(), counts: String::new() };
     std::thread::scope(|sc| {
         let writing: Vec<_> = contents
@@ -656,6 +657,7 @@ fn replace_in(root: &Path, writers: usize, writes: usize, readers: usize, classi
                             }
                         }
                     }
+                    asked_again.fetch_add(crate::host::regular::ASKED_AGAIN.with(|n| n.get()), SeqCst);
                     (reads, refusals, unanswered, sizes_refused)
                 })
             })
@@ -675,7 +677,7 @@ fn replace_in(root: &Path, writers: usize, writes: usize, readers: usize, classi
     assert_eq!(entries(root), ["f.txt"]);
     tally.counts = format!(
         "writers {writers} x {writes}, readers {readers}, classic only {classic_only}: reads {}, refused reads {}, unanswered {}, refused \
-         sizes {}, renames {}, refused rename attempts {}, fallbacks {}, refused writes {}",
+         sizes {}, renames {}, refused rename attempts {}, fallbacks {}, refused writes {}, opens asked again {}",
         tally.reads,
         tally.refusals.len(),
         tally.unanswered,
@@ -683,7 +685,8 @@ fn replace_in(root: &Path, writers: usize, writes: usize, readers: usize, classi
         probe.renamed.load(SeqCst),
         probe.refused.load(SeqCst),
         probe.fallbacks.load(SeqCst),
-        tally.writes_refused.len()
+        tally.writes_refused.len(),
+        asked_again.load(SeqCst)
     );
     tally
 }
@@ -757,7 +760,8 @@ fn probe_child_reader() {
         }
         reads += 1;
     }
-    println!("child probe: reads {reads}, refused reads {}, torn reads {torn}, refused sizes {sizes_refused}", refusals.len());
+    let again = crate::host::regular::ASKED_AGAIN.with(|n| n.get());
+    println!("child probe: reads {reads}, refused reads {}, torn reads {torn}, refused sizes {sizes_refused}, opens asked again {again}", refusals.len());
     for line in refusals {
         println!("child probe: {line}");
     }

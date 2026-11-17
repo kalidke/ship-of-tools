@@ -572,7 +572,7 @@ jobs:
         timeout-minutes: 115
         run: |
           natural() {
-            local runs=$1 reader=0 writer=0 held=0 moment=0 window=0 other=0 mine="two_writers_of_one_name|a_name_refused|probe_a_read_while"
+            local runs=$1 reader=0 writer=0 held=0 moment=0 window=0 denial=0 other=0 mine="two_writers_of_one_name|a_name_refused|a_denial_that_is_not|probe_a_read_while"
             for i in $(seq 1 "$runs"); do
               log="$RUNNER_TEMP/plat-$i.log"
               cargo test -p sot-platform --lib --locked --no-fail-fast -- --nocapture > "$log" 2>&1 || true
@@ -582,10 +582,11 @@ jobs:
               grep -q -E "write [0-9]+ answered" "$log" && writer=$((writer+1))
               grep -q -E "probe_a_read_while_the_writers_handle_is_still_on_the_name .*FAILED" "$log" && held=$((held+1))
               grep -q -E "a_name_refused_for_a_moment_is_read_once_it_answers .*FAILED" "$log" && moment=$((moment+1))
-              grep -q -E "a_name_refused_past_the_window_answers_the_refusal_and_a_folder_is_not_waited_for .*FAILED" "$log" && window=$((window+1))
+              grep -q -E "a_name_refused_past_the_window_answers_the_refusal .*FAILED" "$log" && window=$((window+1))
+              grep -q -E "a_denial_that_is_not_a_name_being_replaced_is_answered_without_asking_again .*FAILED" "$log" && denial=$((denial+1))
               if grep -E "^test .* FAILED$" "$log" | grep -v -E "$mine" | sed "s/^/run $i: other: /"; then other=$((other+1)); fi
             done
-            echo "runs=$runs read-refused-runs=$reader write-refused-runs=$writer held-handle-red=$held moment-red=$moment window-red=$window other-red-runs=$other"
+            echo "runs=$runs read-refused-runs=$reader write-refused-runs=$writer held-handle-red=$held moment-red=$moment window-red=$window denial-red=$denial other-red-runs=$other"
           }
           by_name() {
             local test=$1 runs=$2 label=$3
