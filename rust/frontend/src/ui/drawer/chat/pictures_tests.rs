@@ -7,7 +7,10 @@ use image::{ImageFormat, RgbaImage};
 use sot_protocol::chat::{ChatFile, ChatRecord, PICTURE_MIMES};
 use sot_protocol::ops::{ChatCode, ChatFileReq, ChatFileVariant, ChatTarget};
 
-use super::{decode, ChatPictures, MAX_FINAL, MAX_HELD};
+use super::{decode, fitted_in, ChatPictures, MAX_FINAL, MAX_HELD};
+use crate::ui::drawer::chat::drawer::ChatDrawer;
+use crate::ui::drawer::chat::view::Step;
+use crate::ui::render::quad::ScreenRect;
 use crate::net::dial::HostKey;
 use crate::net::transport::{ChatEvt, ChatPicture, ChatReply, OutgoingReq};
 use crate::ui::drawer::chat::owner::Out;
@@ -453,4 +456,60 @@ fn only_the_last_placement_is_asked_so_a_hidden_drawer_asks_nothing() {
     let all = answer_all(&mut p, outs, t0);
     assert!(all.iter().all(|(_, r)| r.file.starts_with('H')), "{all:?}");
     assert_eq!(all.len(), 2);
+}
+
+/// The placed tops, and each tile's file and rectangle.
+fn spots(d: &ChatDrawer) -> (Vec<f32>, Vec<(String, [f32; 4])>) {
+    (d.placed_tops(), d.tiles().into_iter().map(|t| (t.file, [t.rect.x, t.rect.y, t.rect.w, t.rect.h])).collect())
+}
+
+#[test]
+fn a_thumbnail_arriving_moves_nothing() {
+    for anchored in [false, true] {
+        let mut fonts = FontSystem::new();
+        let files = pngs(12);
+        let records: Vec<ChatRecord> = (0..6).map(|n| record(&format!("1700000{n:03}.000100"), &files[2 * n..2 * n + 2])).collect();
+        let (mut d, at) = channel(&records);
+        d.layout(&mut fonts, body(), 1.0, body());
+        if anchored {
+            d.scroll(true, Step::Page, Instant::now(), Duration::ZERO);
+            d.layout(&mut fonts, body(), 1.0, body());
+        }
+        let before = spots(&d);
+        assert!(before.1.len() >= 2, "{anchored}: tiles are placed before any thumbnail: {before:?}");
+        // Each thumbnail asked is answered, and the placed records and tiles are where they were after every reply.
+        let mut outs = d.tick(shown("ROW1"), at).0;
+        let mut answered = 0;
+        while let Some(req) = outs.iter().find_map(|(_, r)| match r {
+            OutgoingReq::ChatFile { req } => Some(req.clone()),
+            _ => None,
+        }) {
+            outs = d.on_evt(&host("a"), ChatEvt::File { req, reply: picture(4, 4) }, at);
+            d.layout(&mut fonts, body(), 1.0, body());
+            assert_eq!(spots(&d), before, "{anchored}: a thumbnail arrived");
+            answered += 1;
+        }
+        assert!(answered >= 2, "{anchored}: {answered} thumbnails answered");
+        // The held pictures are found for their tiles, a texture is tried once for each, and a refused one is not tried again.
+        let made = std::cell::Cell::new(0);
+        let mut draw = |d: &mut ChatDrawer| d.paint_thumbs(|_| { made.set(made.get() + 1); None }, |_, _, _| Ok::<(), ()>(())).unwrap();
+        draw(&mut d);
+        let first = made.get();
+        assert!(first >= 1 && first <= answered, "{anchored}: {first} textures tried for {answered} pictures");
+        draw(&mut d);
+        assert_eq!(made.get(), first, "{anchored}: a refused texture was tried again");
+    }
+}
+
+#[test]
+fn a_thumbnail_is_fitted_centered_and_never_enlarged() {
+    let tile = ScreenRect { x: 10.0, y: 20.0, w: 180.0, h: 180.0 };
+    let at = |size, want: [f32; 4]| {
+        let r = fitted_in(size, tile);
+        assert_eq!([r.x, r.y, r.w, r.h], want, "{size:?}");
+    };
+    at((360, 180), [10.0, 65.0, 180.0, 90.0]);
+    at((90, 360), [77.5, 20.0, 45.0, 180.0]);
+    at((360, 360), [10.0, 20.0, 180.0, 180.0]);
+    at((40, 20), [80.0, 100.0, 40.0, 20.0]);
 }

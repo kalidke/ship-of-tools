@@ -28,6 +28,8 @@ struct Daemon {
     seen: Seen,
     /// The hub answers `unconfigured` to a resolve until a connect is made.
     unconfigured: bool,
+    /// The newest three messages each carry two picture files, and a thumbnail is answered with a small picture.
+    figures: bool,
 }
 
 fn ts(i: u32) -> Ts {
@@ -92,7 +94,14 @@ impl Daemon {
                     page(older.into_iter().map(short).collect(), more)
                 } else {
                     self.seen.snapshots += 1;
-                    page((top.saturating_sub(19)..=top).rev().map(short).collect(), top > 20)
+                    let figured = |i: u32| {
+                        let mut r = short(i);
+                        if self.figures && i + 3 > top {
+                            r["files"] = (0..2).map(|k| serde_json::json!({ "id": format!("F{i}-{k}"), "name": "figure", "mime": "image/png", "bytes": 100, "thumbnail": true })).collect();
+                        }
+                        r
+                    };
+                    page((top.saturating_sub(19)..=top).rev().map(figured).collect(), top > 20)
                 };
                 Some(ChatEvt::History { req, reply })
             }
@@ -100,6 +109,11 @@ impl Daemon {
                 self.seen.posts.push((req.text.clone(), req.thread.as_ref().map(|t| t.as_str().to_string())));
                 let reply = ChatReply::Done(sot_protocol::ops::ChatPostRes::Posted { ts: ts(self.top + 1) });
                 Some(ChatEvt::Posted { req, reply })
+            }
+            OutgoingReq::ChatFile { req } if self.figures => {
+                let mut bytes = std::io::Cursor::new(Vec::new());
+                image::RgbaImage::from_pixel(64, 48, image::Rgba([200, 80, 60, 255])).write_to(&mut bytes, image::ImageFormat::Png).ok()?;
+                Some(ChatEvt::File { req, reply: ChatReply::Done(crate::net::transport::ChatPicture { mime: "image/png".into(), bytes: bytes.into_inner() }) })
             }
             _ => None,
         }
@@ -274,8 +288,43 @@ impl State {
         Ok(())
     }
 
+    /// The chat's pictures through the window's real frames: the tiles' boxes and the thumbnails' textures are drawn in the one
+    /// pass (every frame presents), a thumbnail's arrival moves no record or tile, and each picture shown gets a texture.
+    #[allow(dead_code, reason = "runs only inside a native State, from the window_minimized fixtures child")]
+    pub(in crate::ui) fn a_chats_thumbnails_are_drawn_and_move_nothing(&mut self) -> Result<()> {
+        self.witness_with(Self::figures_run)
+    }
+
+    fn figures_run(&mut self, host: &HostKey, events: &Sender<(HostKey, IncomingEvt)>, sent: &mut Requests) -> Result<()> {
+        let mut daemon = Daemon { host: host.clone(), top: 6, seen: Seen::default(), unconfigured: false, figures: true };
+        let mut frames = Vec::new();
+        let newest = ts(6);
+        self.witness_show(host, events)?;
+        // The resolve, the watch and the snapshot are answered; nothing is placed yet, so no thumbnail is asked.
+        self.witness_pump(events, sent, &mut daemon)?;
+        // The records and their tiles are placed and drawn before any thumbnail has arrived: a box each.
+        self.witness_frame(&mut frames, &newest, "first frame")?;
+        anyhow::ensure!(self.chat.held() == 7, "the snapshot holds {} records", self.chat.held());
+        let before = (self.chat.placed_tops(), self.chat.tiles().len());
+        anyhow::ensure!(before.1 >= 2, "{} tiles are placed before any thumbnail", before.1);
+        anyhow::ensure!(self.chat.textures() == 0, "a texture is made before its picture arrived");
+        // Each thumbnail is answered, and every frame after presents with the records and tiles where they were.
+        for _ in 0..12 {
+            self.witness_pump(events, sent, &mut daemon)?;
+            self.witness_frame(&mut frames, &newest, "a thumbnail")?;
+            anyhow::ensure!((self.chat.placed_tops(), self.chat.tiles().len()) == before, "a thumbnail's arrival moved a record or a tile");
+        }
+        let made = self.chat.textures();
+        anyhow::ensure!(made >= 1, "no thumbnail was drawn: {made} textures");
+        // A frame after all of them draws from the textures it has: none is made again.
+        self.witness_frame(&mut frames, &newest, "settled")?;
+        anyhow::ensure!(self.chat.textures() == made, "the textures changed with nothing new");
+        println!("chat-thumbnails tiles={} textures={made}", before.1);
+        Ok(())
+    }
+
     fn connect_run(&mut self, host: &HostKey, events: &Sender<(HostKey, IncomingEvt)>, sent: &mut Requests) -> Result<()> {
-        let mut daemon = Daemon { host: host.clone(), top: 3, seen: Seen::default(), unconfigured: false };
+        let mut daemon = Daemon { host: host.clone(), top: 3, seen: Seen::default(), unconfigured: false, figures: false };
         let send = |evt: IncomingEvt| events.send((host.clone(), evt)).map_err(|_| anyhow::anyhow!("the fixture's event channel closed"));
         self.witness_show(host, events)?;
         self.witness_pump(events, sent, &mut daemon)?;
@@ -308,7 +357,7 @@ impl State {
     }
 
     fn witness_run(&mut self, host: &HostKey, events: &Sender<(HostKey, IncomingEvt)>, sent: &mut Requests) -> Result<()> {
-        let mut daemon = Daemon { host: host.clone(), top: 200, seen: Seen::default(), unconfigured: false };
+        let mut daemon = Daemon { host: host.clone(), top: 200, seen: Seen::default(), unconfigured: false, figures: false };
         let mut frames = Vec::new();
         let send = |evt: IncomingEvt| events.send((host.clone(), evt)).map_err(|_| anyhow::anyhow!("the fixture's event channel closed"));
         let mut row = crate::ui::nav::ws_info("chat", "chat-session");
