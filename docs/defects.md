@@ -749,6 +749,12 @@ owned by `docs/CLAUDE.md`.
   left because the state is transient or the refusal's own status line already says why. Drawing on a PDF page is
   `DRAW-ON-PDF-PAGES`.
 - **CHAT-NAME-UNSHOWN-FOR-PERSON** [note] The drawer asks once for `[chat] name` and sends it with every person's post, but a hub that posts with the person's own token shows the person's Slack name and sends the name nowhere. The prompt serves only an older hub. Fix when no hub is older: drop the prompt and send an empty name (the daemon checks a name only for a row's post). From reading code.
+- **CHAT-LINKS-THRICE** [note] The Chat drawer's three owners each keep their own set of connected hosts
+  (`ChatOwner`, `RowChannel` and `ChatPictures` in `drawer/chat/`), all fed by `ChatDrawer::on_connection`: one link fact
+  held three times, and a later owner (opening an original, a person's file post) would add a fourth. The fix decided by
+  the pictures owner's review: the drawer holds one set of up hosts and hands it to each owner's asks; each owner keeps
+  its own `unsupported` set, which is per op. Left because the change runs through the owner's and the row channel's
+  tests, past the 30 lines it was allowed.
 
 ## distribution
 

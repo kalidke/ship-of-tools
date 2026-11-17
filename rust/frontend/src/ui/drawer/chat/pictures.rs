@@ -1,13 +1,14 @@
-//! The chat's pictures owner: the thumbnails of the image files the view places, asked for at most two at a time per host,
+//! The chat's pictures owner: the thumbnails of the image files the view places, asked for one at a time per host,
 //! decoded within bounds on the UI thread and held downscaled, at most `MAX_HELD`. It returns the requests to send and
 //! sends nothing itself; only `ChatDrawer` calls it.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Cursor;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::time::Instant;
 
-use image::{ImageFormat, ImageReader, Limits, RgbaImage};
-use sot_protocol::chat::ChatFile;
+use image::{ImageReader, Limits, RgbaImage};
+use sot_protocol::chat::{ChatFile, PICTURE_MIMES};
 use sot_protocol::ops::{ChatCode, ChatFileReq, ChatFileVariant, ChatTarget};
 
 use crate::net::dial::HostKey;
@@ -15,16 +16,16 @@ use crate::net::transport::{ChatPicture, ChatReply, OutgoingReq};
 
 use super::owner::{Out, LIMITED_PACE, PACE};
 
-/// The file types the chat shows as pictures (the plan's D8; the daemon refuses any other `not_an_image`).
-const PICTURES: [&str; 4] = ["image/png", "image/jpeg", "image/gif", "image/webp"];
-/// Thumbnail requests in flight per host.
-const MAX_IN_FLIGHT: usize = 2;
-/// The pictures held, apart from those in flight; past it the least recently placed leaves first. A frame places at most
-/// this many, so a placed picture never pushes out another placed in the same frame.
+/// Thumbnail requests in flight per host: one, so a daemon's two transfer permits (chat guarantee 32) always leave one for
+/// a row's file post while a window loads pictures.
+const MAX_IN_FLIGHT: usize = 1;
+/// The pictures held or wanted, apart from those in flight; past it the least recently placed leaves first. A frame places
+/// at most this many, so a placed picture never pushes out another placed in the same frame.
 pub(super) const MAX_HELD: usize = 64;
-/// A thumbnail's header is read first: a side past this is never decoded.
+/// The files refused for the window session; past it the oldest refusal is forgotten (and asked again if placed again).
+pub(super) const MAX_FINAL: usize = 1024;
+/// The decoder's bounds for one thumbnail: its sides, checked before any pixel buffer, and what it may allocate.
 const MAX_SIDE: u32 = 2048;
-/// What the decoder may allocate for one thumbnail.
 const MAX_ALLOC: u64 = 32 * 1024 * 1024;
 /// A held picture's long side.
 const HELD_SIDE: u32 = 360;
@@ -38,9 +39,8 @@ enum Stand {
     /// Asked for at `due` or later; `failed` is how many `failed` answers came before.
     Wanted { due: Instant, failed: u8 },
     Flight { failed: u8 },
-    Held(RgbaImage),
-    /// Refused for the window session: never asked again while it is known.
-    Final,
+    /// Drawn by the tiles, which are the next landing's: nothing reads the picture yet.
+    Held(#[allow(dead_code)] RgbaImage),
 }
 
 struct Entry {
@@ -49,32 +49,40 @@ struct Entry {
     target: ChatTarget,
     /// The placement it was last placed in (`ChatPictures::placement`).
     placed: u64,
+    /// The file's summary as last placed.
+    file: ChatFile,
 }
 
-#[derive(Default)]
 pub(super) struct ChatPictures {
     entries: HashMap<Key, Entry>,
+    /// The files refused for the window session, never asked again while known. A file whose `failed` asks ran out keeps
+    /// the summary it was placed with: placed again with another (its record's edit, such as Slack's thumbnail arriving),
+    /// it is wanted again. `order` is oldest first, for `MAX_FINAL`.
+    finals: HashMap<Key, Option<ChatFile>>,
+    order: VecDeque<Key>,
     /// The count of placements so far: the last one's entries are the ones asked for.
     placement: u64,
     connected: HashSet<HostKey>,
     /// Hosts whose daemon does not know `chat.file`; cleared when the host's link changes.
     unsupported: HashSet<HostKey>,
+    /// The decode (`decode`; a test's stand-in).
+    decode: fn(&[u8]) -> Option<RgbaImage>,
 }
 
-/// Whether a record's file is one the chat shows as a picture.
-pub(super) fn is_picture(f: &ChatFile) -> bool {
-    PICTURES.contains(&f.mime.as_str())
+impl Default for ChatPictures {
+    fn default() -> Self {
+        Self { entries: HashMap::new(), finals: HashMap::new(), order: VecDeque::new(), placement: 0, connected: HashSet::new(), unsupported: HashSet::new(), decode }
+    }
 }
 
-/// Decodes a thumbnail's bytes: one of the four formats, its header within `MAX_SIDE` before any pixel is read, the decode
-/// within `Limits`, then held downscaled to `HELD_SIDE` on its long side. `None` refuses it.
+/// Decodes a thumbnail's bytes once: one of wire's `PICTURE_MIMES` by its own bytes, under `Limits` (`MAX_SIDE`, checked
+/// before any pixel buffer, and `MAX_ALLOC` for every chunk it parses), then held downscaled to `HELD_SIDE` on its long side.
+/// `None` refuses it.
 pub(super) fn decode(bytes: &[u8]) -> Option<RgbaImage> {
-    let reader = || ImageReader::new(Cursor::new(bytes)).with_guessed_format().ok().filter(|r| matches!(r.format(), Some(ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::Gif | ImageFormat::WebP)));
-    let (w, h) = reader()?.into_dimensions().ok()?;
-    if w > MAX_SIDE || h > MAX_SIDE {
+    let mut r = ImageReader::new(Cursor::new(bytes)).with_guessed_format().ok()?;
+    if !r.format().is_some_and(|f| PICTURE_MIMES.contains(&f.to_mime_type())) {
         return None;
     }
-    let mut r = reader()?;
     let mut limits = Limits::default();
     (limits.max_image_width, limits.max_image_height, limits.max_alloc) = (Some(MAX_SIDE), Some(MAX_SIDE), Some(MAX_ALLOC));
     r.limits(limits);
@@ -89,15 +97,23 @@ pub(super) fn decode(bytes: &[u8]) -> Option<RgbaImage> {
 
 impl ChatPictures {
     /// The frame placed these records' files under `target` on `host` (no host: nothing is placed). Only their pictures are
-    /// asked for, the first `MAX_HELD` of them.
+    /// asked for, the first `MAX_HELD` of them; a refused one is skipped, unless its retries ran out and its summary changed.
     pub(super) fn place<'a>(&mut self, at: Option<(&HostKey, &ChatTarget)>, files: impl IntoIterator<Item = (&'a str, &'a str, &'a ChatFile)>, now: Instant) {
         self.placement += 1;
         let Some((host, target)) = at else { return };
-        let mine = files.into_iter().filter(|(ws, ch, f)| *ws == target.workspace && *ch == target.channel.as_str() && is_picture(f));
+        let mine = files.into_iter().filter(|(ws, ch, f)| *ws == target.workspace && *ch == target.channel.as_str() && f.is_picture());
         for (ws, ch, f) in mine.take(MAX_HELD) {
             let key = (host.clone(), ws.to_string(), ch.to_string(), f.id.clone());
-            let e = self.entries.entry(key).or_insert_with(|| Entry { stand: Stand::Wanted { due: now, failed: 0 }, target: target.clone(), placed: 0 });
-            (e.target, e.placed) = (target.clone(), self.placement);
+            match self.finals.get(&key) {
+                Some(Some(seen)) if seen != f => {
+                    self.finals.remove(&key);
+                    self.order.retain(|k| k != &key);
+                }
+                Some(_) => continue,
+                None => {}
+            }
+            let e = self.entries.entry(key).or_insert_with(|| Entry { stand: Stand::Wanted { due: now, failed: 0 }, target: target.clone(), placed: 0, file: f.clone() });
+            (e.target, e.placed, e.file) = (target.clone(), self.placement, f.clone());
         }
         self.bound();
     }
@@ -151,28 +167,47 @@ impl ChatPictures {
         outs
     }
 
-    /// A thumbnail's reply, taken only for a request in flight: decoded and held, or by its code final, asked again after
-    /// `PACE` (`failed` at most `RETRIES` times; `busy`, `unavailable`), or after `LIMITED_PACE` (`limited`). Then the next
-    /// asks.
+    /// A thumbnail's reply, taken only for a request in flight: decoded and held (a decode that fails or panics is final), or
+    /// by its code final, asked again after `PACE` (`failed` at most `RETRIES` times; `busy`, `unavailable`), or after
+    /// `LIMITED_PACE` (`limited`). Then the next asks.
     pub(super) fn on_reply(&mut self, host: &HostKey, req: &ChatFileReq, reply: ChatReply<ChatPicture>, now: Instant) -> Vec<Out> {
         let key = (host.clone(), req.target.workspace.clone(), req.target.channel.as_str().to_string(), req.file.clone());
+        let decode = self.decode;
         let Some(e) = self.entries.get_mut(&key) else { return self.asks(now) };
         let Stand::Flight { failed } = e.stand else { return self.asks(now) };
-        e.stand = match reply {
-            ChatReply::Done(p) => decode(&p.bytes).map_or(Stand::Final, Stand::Held),
-            ChatReply::Refused(ChatCode::NotAnImage | ChatCode::TooLarge | ChatCode::BadRequest) => Stand::Final,
-            ChatReply::Refused(ChatCode::Busy | ChatCode::Unavailable) => Stand::Wanted { due: now + PACE, failed },
-            ChatReply::Refused(ChatCode::Limited) => Stand::Wanted { due: now + LIMITED_PACE, failed },
-            // `failed`, and any other code: asked again, a bounded number of times.
-            ChatReply::Refused(_) if failed < RETRIES => Stand::Wanted { due: now + PACE, failed: failed + 1 },
-            ChatReply::Refused(_) => Stand::Final,
+        // `Err`: final, with the summary a changed one asks again against, for a file whose retries ran out.
+        let next = match reply {
+            ChatReply::Done(p) => catch_unwind(AssertUnwindSafe(|| decode(&p.bytes))).ok().flatten().map(Stand::Held).ok_or(None),
+            ChatReply::Refused(ChatCode::NotAnImage | ChatCode::TooLarge | ChatCode::BadRequest) => Err(None),
+            ChatReply::Refused(ChatCode::Busy | ChatCode::Unavailable) => Ok(Stand::Wanted { due: now + PACE, failed }),
+            ChatReply::Refused(ChatCode::Limited) => Ok(Stand::Wanted { due: now + LIMITED_PACE, failed }),
+            // `failed` (Slack may have no thumbnail yet), and any other code: asked again, a bounded number of times.
+            ChatReply::Refused(_) if failed < RETRIES => Ok(Stand::Wanted { due: now + PACE, failed: failed + 1 }),
+            ChatReply::Refused(_) => Err(Some(e.file.clone())),
             ChatReply::Unsupported => {
                 self.unsupported.insert(host.clone());
-                Stand::Wanted { due: now, failed }
+                Ok(Stand::Wanted { due: now, failed })
             }
         };
+        match next {
+            Ok(stand) => e.stand = stand,
+            Err(file) => self.refuse(key, file),
+        }
         self.bound();
         self.asks(now)
+    }
+
+    /// `key` is refused for the window session; past `MAX_FINAL` the oldest refusal is forgotten.
+    fn refuse(&mut self, key: Key, file: Option<ChatFile>) {
+        self.entries.remove(&key);
+        if self.finals.insert(key.clone(), file).is_none() {
+            self.order.push_back(key);
+        }
+        while self.order.len() > MAX_FINAL {
+            if let Some(old) = self.order.pop_front() {
+                self.finals.remove(&old);
+            }
+        }
     }
 
     /// A link came or went: nothing of that host is in flight, so each is wanted again, asked at once when the link is up.

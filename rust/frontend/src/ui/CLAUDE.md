@@ -1357,24 +1357,39 @@ methods are `pub(super)`, so no other ui code can drop the requests they return.
 - The pictures owner (`ChatPictures`, `drawer/chat/pictures.rs`, fields private, held by the drawer): each frame's `layout`
   hands it the files of the records the view placed (`ChatView::placed_times`), under the watch of the row the frame follows
   (a modal screen or a hidden drawer places none). It keys a picture by host, workspace, channel and file id, and asks
-  `chat.file {variant: thumb}` for the image files (PNG, JPEG, GIF, WebP; the first `MAX_HELD` a frame places) of the last
-  placement only, from `tick` and after each reply, at most two in flight per host, none on a host that is down or whose daemon
-  does not know the op, and never one held, final or in flight
-  (`pictures_tests::at_most_two_thumbnails_are_asked_per_host_and_none_twice`). A reply is decoded on the UI thread: one of
-  those four formats, its header at most 2048 x 2048 before any pixel is read, the decode under `image::Limits` (the same
-  sides, 32 MiB), held downscaled to 360 px on its long side; one that fails any of it is final
-  (`a_thumbnail_past_its_bounds_is_never_decoded_whole`). At most 64 are held apart from those in flight; past it the least
-  recently placed leaves first, and placed again it is asked again (`the_least_recently_placed_leaves_past_64`). Refusals
-  (the plan's D12): `not_an_image`, `too_large` and `bad_request` are final for the window session, a link change included;
-  `failed`, and any code not named here, is asked again 5 s later at most three times; `busy` and `unavailable` on the owner's
-  `PACE`; `limited` after `LIMITED_PACE` (30 s: the refusal carries no wait); an unsupported answer stops that host until its
-  link changes (`a_refusal_is_final_or_asked_again_by_its_code`). A link change makes that host's requests in flight wanted
+  `chat.file {variant: thumb}` for the picture files (`ChatFile::is_picture`, wire's `PICTURE_MIMES`; the first `MAX_HELD`
+  a frame places) of the last placement only (`only_the_last_placement_is_asked_so_a_hidden_drawer_asks_nothing`), from
+  `tick` and after each reply, one in flight per host, none on a host that is down or whose daemon does not know the op,
+  and never one held, refused or in flight (`pictures_tests::at_most_one_thumbnail_is_asked_per_host_and_none_twice`).
+  One in flight per host keeps one of the daemon's two transfer permits (chat guarantee 32) free for a row's
+  `sot-fe chat post --file` while one window loads pictures; two windows loading from one hub can still hold both.
+  A reply is taken only for a request in flight (`a_reply_for_a_picture_not_in_flight_changes_nothing`) and decoded on the
+  UI thread once, under `image::Limits` (sides at most 2048, checked before any pixel buffer, and 32 MiB for every chunk
+  it parses, an ICC profile's included), as one of the formats of `PICTURE_MIMES` by its own bytes
+  (`every_picture_type_is_a_format_the_decoder_reads`), held downscaled to 360 px on its long side; one that fails any of
+  it is refused (`a_thumbnail_past_its_bounds_is_never_decoded_whole`, with an 8 x 8 PNG whose profile inflates to 400 MiB,
+  which costs no more than one past the bound by a little). The decode runs under `catch_unwind`: a decoder's panic is a
+  refusal of that file, never the window's end (`a_decoder_panic_is_a_final_refusal_and_never_the_windows_end`, through a
+  seam). At most 64 are held or wanted apart from those in flight; past it the least recently placed leaves first, and
+  placed again it is asked again (`the_least_recently_placed_leaves_past_64`). Refusals (the plan's D12):
+  `not_an_image`, `too_large`, `bad_request` and a failed decode are final for the window session, a link change and
+  any pressure on the 64 included: a refused file is kept as its key alone, in its own set of at most `MAX_FINAL` (1024),
+  the oldest forgotten past it (`a_final_refusal_stays_final_past_64_and_the_refusals_have_their_own_bound`).
+  `failed` (Slack may have made no thumbnail yet), and any code not named here, is asked again 5 s later at most three
+  times; then it is refused with the file's summary as placed, and asked again when its record's edit reaches the view
+  with another summary (such as `thumbnail` set: `a_file_whose_retries_ran_out_is_asked_again_when_its_record_changes`).
+  Limit: whether Slack sends an edit when a thumbnail appears is unmeasured (the plan's LP6), so a figure whose thumbnail
+  takes longer than 15 s may stay an empty tile for the window session. `busy` and `unavailable` on the owner's `PACE`;
+  `limited` after `LIMITED_PACE` (30 s: the refusal carries no wait); an unsupported answer stops that host until its link
+  changes (`a_refusal_is_final_or_asked_again_by_its_code`). A link change makes that host's requests in flight wanted
   again, asked once the link is up, another host's left alone; a request State could not queue reads as `unavailable`
   (`never_written`); only a thumbnail's reply reaches the owner, an original's is dropped until the drawer opens one
   (`a_link_change_asks_again_what_was_in_flight`, through the drawer). `ChatDrawer::next_ask` joins the earliest ask owed
   (`ChatPictures::next_ask`: a wanted picture of the last placement on a connected host with room in flight, `None` otherwise,
-  so a host with two in flight owes no wake) to the idle loop's deadlines, so a placement's asks and a retry's go without
-  waiting for input. Limit: nothing draws a held picture yet (the tiles are the next landing's).
+  so a host with one in flight owes no wake) to the idle loop's deadlines, so a placement's asks and a retry's go without
+  waiting for input. Limits: nothing draws a held picture yet (the tiles are the next landing's); a request whose reply
+  never comes on a link that stays up holds its host's slot until the link changes; the drawer's three owners each keep
+  the connected hosts (`docs/defects.md`, CHAT-LINKS-THRICE).
 
 Limits: for admitted or never-answered watches, a link that drops more often than every 26 s never shows a gap (a refused watch is a gap at once); records of the window's page below the daemon's own set (deletions between the daemon's read and the window's) are held and never updated; the `State` routing in `ui/events.rs` (`on_chat`, `on_chat_bus_lost`, `on_chat_connection`, `tick_chat`) and `with_chat` are run by the native fixture `a_chat_of_200_messages_scrolls_posts_and_recovers` (`drawer/chat/native_fixture_tests.rs`, in `run_state_fixtures`, so only under a display: it lists a row, shows Chat, answers each request the window sends by kind and value through the window's own event queue, pages to 200 records, scrolls (the wheel through `mouse_wheel`, the window's own adapter), opens and closes a thread, takes 256 records of 8 KiB and a canvas resize, types, pastes, posts once, and sends a `Disconnected`, a `Connected` and a `bus.lost`; it asserts that every frame presents, the requests the connection carried by kind (the link's return brings one watch and one read, `bus.lost` one watch), that the REPL's draft and scroll are unchanged (this guards the events and the frames and the wheel, not the key routing) and that each frame's prepared areas hold the anchored record, and prints `chat-witness frames=… max_ms=… p95_ms=… resize_ms=…`, asserting no time; it is red with `tick_chat`'s wanted row removed and with `Pane::of_drawer(Chat)` mapped to the REPL); its keys are resolved by the real bindings under the real help context and routed by `witness_key`, a copy of the Chat branch of `drawer_pane_key`, of `chat_key` and of `scroll_line_chords`' Alt+Up branch, which skips the layers that run before them in `route_key_layers`: a winit `KeyEvent` cannot be built outside the event loop, so those three functions are not run and breaking any of them leaves the fixture green (a key press carrying its data, as the reply bar's key does, would delete the copy; not built), and neither is the window's own `Resized` event (the resize is the canvas's, the X window is not changed); `tick_chat`'s own
 choice of the shown row is among them (swapping `chat_shown()` for "the drawer is Chat", or never watching, passes the
