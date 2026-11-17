@@ -1,7 +1,8 @@
 //! The Socket Mode listener (docs/history/slack-client-plan.md, rules C11 to C13): one websocket opened through
-//! `apps.connections.open`, every envelope acknowledged before any event work, normalized events handed on through a
-//! bounded queue, one socket at a time, and a visible gap whenever anything was lost. A frame of another app than the
-//! bot's, and a refused app-level token, end it for good. No configuration, no lock, no delivery and no daemon link:
+//! `apps.connections.open`, every envelope of the bot's own app acknowledged before any event work (one of another app
+//! never is), normalized events handed on through a bounded queue, one socket at a time, and a visible gap whenever
+//! anything was lost. A frame of another app than the bot's, and an app-level token Slack refuses by its code, end it
+//! for good. No configuration, no lock, no delivery and no daemon link:
 //! the caller hands in the app `Secret` and the bot identity.
 
 use std::collections::VecDeque;
@@ -451,13 +452,14 @@ pub async fn check_app_token_for_test(http: &Http, app: Secret, base: &str) -> R
 
 /// `check_app_token` against a base: the product's from `check_app_token`, the fixture's from a test.
 pub(crate) async fn check_app_token_at(http: &Http, app: Secret, base: &str) -> Result<(), SocketError> {
-    let url = connection_url(http, &app, base).await?;
+    let url = connection_url(http, &app, base).await.map_err(|(e, _)| e)?;
     http.check_websocket(&url).map_err(SocketError::Http)
 }
 
 /// One `apps.connections.open` under the app token: the websocket URL Slack names, at most `MAX_URL` bytes, or why
-/// not. The listener's open and the setup's check make this one request.
-async fn connection_url(http: &Http, app: &Secret, base: &str) -> Result<String, SocketError> {
+/// not, and whether Slack's own answer named the token (a code of `TOKEN_REFUSALS` or `missing_scope` in its body,
+/// premise PS11), as against a bare 401 or 403. The listener's open and the setup's check make this one request.
+async fn connection_url(http: &Http, app: &Secret, base: &str) -> Result<String, (SocketError, bool)> {
     let request = Request::post(
         format!("{base}apps.connections.open"),
         READ_DEADLINE,
@@ -465,27 +467,28 @@ async fn connection_url(http: &Http, app: &Secret, base: &str) -> Result<String,
         Vec::new(),
     )
     .bearer(app.clone());
-    let response = http.send(request).await.map_err(SocketError::Http)?;
+    let response = http.send(request).await.map_err(|e| (SocketError::Http(e), false))?;
+    let v = serde_json::from_slice::<Value>(response.body()).ok();
+    let refused = v.as_ref().filter(|v| v.get("ok").and_then(Value::as_bool) == Some(false));
+    let code = refused.and_then(|v| v.get("error")).and_then(Value::as_str).unwrap_or_default();
+    let coded = crate::api::TOKEN_REFUSALS.contains(&code) || code == "missing_scope";
     match response.status() {
         200 => {}
-        401 | 403 => return Err(SocketError::Rejected),
-        _ => return Err(SocketError::Unavailable),
+        401 | 403 => return Err((SocketError::Rejected, coded)),
+        _ => return Err((SocketError::Unavailable, false)),
     }
-    let v: Value = serde_json::from_slice(response.body()).map_err(|_| SocketError::Malformed)?;
+    let v = v.ok_or((SocketError::Malformed, false))?;
     match v.get("ok").and_then(Value::as_bool) {
         Some(true) => {}
-        Some(false) => {
-            let code = v.get("error").and_then(Value::as_str).unwrap_or_default();
-            let token = crate::api::TOKEN_REFUSALS.contains(&code) || code == "missing_scope";
-            return Err(if token { SocketError::Rejected } else { SocketError::Unavailable });
-        }
-        None => return Err(SocketError::Malformed),
+        Some(false) if coded => return Err((SocketError::Rejected, true)),
+        Some(false) => return Err((SocketError::Unavailable, false)),
+        None => return Err((SocketError::Malformed, false)),
     }
     v.get("url")
         .and_then(Value::as_str)
         .filter(|u| u.len() <= MAX_URL)
         .map(String::from)
-        .ok_or(SocketError::Malformed)
+        .ok_or((SocketError::Malformed, false))
 }
 
 /// What one frame asks of the read loop.
@@ -498,15 +501,11 @@ enum Next {
     Retire,
 }
 
-/// The app a frame names, when it names one by an id: a `hello`'s `connection_info.app_id`, an event's
-/// `payload.api_app_id`.
+/// The app a frame names, when it names one by an id, whatever its type: a `hello`'s `connection_info.app_id`, any
+/// envelope's `payload.api_app_id`.
 fn named_app(frame: &Value) -> Option<&str> {
-    let at = match frame.get("type").and_then(Value::as_str) {
-        Some("hello") => "/connection_info/app_id",
-        Some("events_api") => "/payload/api_app_id",
-        _ => return None,
-    };
-    frame.pointer(at).and_then(Value::as_str).filter(|a| valid_id(a))
+    let app = frame.pointer("/connection_info/app_id").or_else(|| frame.pointer("/payload/api_app_id"));
+    app.and_then(Value::as_str).filter(|a| valid_id(a))
 }
 
 async fn stopped(stop: &mut watch::Receiver<bool>) {
@@ -546,10 +545,11 @@ impl Worker {
                         self.next_backoff(&mut backoff)
                     }
                 }
-                Err(error) => {
+                Err((error, coded)) => {
                     self.shared.state.lock().unwrap().status.error = Some(error);
-                    if error == SocketError::Rejected {
-                        // Slack named the app token bad: no later open would differ.
+                    if coded {
+                        // Slack's own answer named the app token bad: no later open would differ (PS11). A bare 401
+                        // or 403 is retried on the pace.
                         self.end.end(APP_TOKEN_REFUSED);
                         break;
                     }
@@ -580,13 +580,14 @@ impl Worker {
         }
     }
 
-    /// `apps.connections.open`, then the websocket at the URL it names, through the one destination policy.
-    async fn open(&self) -> Result<Websocket, SocketError> {
+    /// `apps.connections.open`, then the websocket at the URL it names, through the one destination policy; an error
+    /// says whether Slack's answer named the token.
+    async fn open(&self) -> Result<Websocket, (SocketError, bool)> {
         let url = connection_url(&self.http, &self.app, &self.base).await?;
         self.http
             .websocket(&url, self.timing.open)
             .await
-            .map_err(SocketError::Http)
+            .map_err(|e| (SocketError::Http(e), false))
     }
 
     /// Read until the socket ends, is asked to, or stop is set; then retire it. Whether Slack said `hello`.

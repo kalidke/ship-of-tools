@@ -655,8 +655,8 @@ async fn the_service_api_holds_the_credentials_user_token() {
 }
 
 /// A fake for a service's own ends: `auth.test` as `WS`, `bots.info` naming the app `A0OWN`, a socket whose hello names
-/// `hello_app` once `go` is raised, and `conversations.list` and `chat.postMessage` answering Slack's code `refusal`
-/// while one is set.
+/// `hello_app` once `go` is raised, and `conversations.list`, `chat.postMessage`, `conversations.join` and a file's first
+/// step answering Slack's code `refusal` while one is set (`http_403`: a bare 403 with no code).
 async fn ends_fake(
     hello_app: &'static str,
     go: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -674,8 +674,12 @@ async fn ends_fake(
                 let url = format!("wss://wss-primary.slack.com:{port}/link/?ticket=sentinel-ticket");
                 return Reply::json(&json!({"ok": true, "url": url}));
             }
-            ("/api/conversations.list" | "/api/chat.postMessage", Some(code)) => {
-                return Reply::json(&json!({"ok": false, "error": code}))
+            ("/api/conversations.list" | "/api/chat.postMessage" | "/api/conversations.join" | "/api/files.getUploadURLExternal", Some(code)) => {
+                return if code == "http_403" {
+                    Reply::Status { code: 403, headers: Vec::new(), body: b"{}".to_vec() }
+                } else {
+                    Reply::json(&json!({"ok": false, "error": code}))
+                };
             }
             ("/api/conversations.list", None) => {
                 return Reply::json(&json!({"ok": true, "channels": [], "response_metadata": {"next_cursor": ""}}))
@@ -729,7 +733,11 @@ async fn a_bot_token_refusal_ends_the_service_and_a_missing_scope_does_not() {
         *refusal.lock().unwrap() = Some("invalid_auth");
         let person = api.post("C0AAAA", None, PostKind::Person, "tester", "hi").await;
         assert_eq!(person, Ok(PostOutcome::Refused("invalid_auth".into())));
-        assert_eq!((service.ended(), service.api().is_ok()), (None, true), "a scope or a person's token ended the service");
+        // A bare 403, with no Slack code, names nothing (PS11).
+        *refusal.lock().unwrap() = Some("http_403");
+        assert_eq!(api.channels().await, Err(ApiError::Status(403)));
+        assert_eq!(api.post("C0AAAA", None, PostKind::Row, "row-a", "hi").await, Ok(PostOutcome::Refused("http_403".into())));
+        assert_eq!((service.ended(), service.api().is_ok()), (None, true), "a scope, a person's token or a bare 403 ended the service");
         *refusal.lock().unwrap() = Some("account_inactive");
         let row = api.post("C0AAAA", None, PostKind::Row, "row-a", "hi").await;
         assert_eq!(row, Ok(PostOutcome::Refused("account_inactive".into())));
@@ -811,4 +819,52 @@ async fn an_ended_service_ends_its_watches_wait_and_frees_its_lock() {
         fake.shutdown().await;
     })
     .await;
+}
+
+/// Guarantee 22's two other bot-token calls: a join and a row's file step refused with a code of `TOKEN_REFUSALS` each
+/// end the service `bot_token_refused`.
+#[tokio::test]
+async fn a_refused_join_or_file_step_ends_the_service() {
+    use crate::api::{FileOutcome, JoinOutcome, PostKind};
+    use crate::service::BOT_TOKEN_REFUSED;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::{Arc, Mutex};
+    bounded(async {
+        let dir = Scratch::new("join-file");
+        let refusal = Arc::new(Mutex::new(None));
+        let fake = ends_fake("A0OWN", Arc::new(AtomicBool::new(true)), refusal.clone()).await;
+        let service = start(&fake, &dir.0).await.expect("service");
+        *refusal.lock().unwrap() = Some("invalid_auth");
+        assert_eq!(service.api().unwrap().join("C0AAAA").await, Ok(JoinOutcome::Refused("invalid_auth".into())));
+        assert_eq!(service.ended(), Some(BOT_TOKEN_REFUSED), "a refused join");
+        service.stop(Duration::from_secs(3)).await;
+
+        *refusal.lock().unwrap() = None;
+        let service = start(&fake, &dir.0).await.expect("second");
+        let api = service.api().unwrap();
+        *refusal.lock().unwrap() = Some("token_expired");
+        let posted = api.post_file(api.transfer().unwrap(), "C0AAAA", None, PostKind::Row, "row-a", "a.png", vec![1, 2, 3], None).await;
+        assert_eq!(posted, Ok(FileOutcome::Refused("token_expired".into())));
+        assert_eq!(service.ended(), Some(BOT_TOKEN_REFUSED), "a refused file step");
+        service.stop(Duration::from_secs(3)).await;
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+/// The claim is the one arbiter between a stop and an end: once it is ended (a stop began, or an end came first), no
+/// end sets a code or replaces the first.
+#[test]
+fn an_end_after_the_claim_ended_is_no_end_and_the_first_end_stays() {
+    use crate::service::{End, ENDED, WRONG_APP};
+    use std::sync::atomic::AtomicU8;
+    use std::sync::Arc;
+    let stopped = End::new(Arc::new(AtomicU8::new(ENDED)));
+    stopped.end(WRONG_APP);
+    assert_eq!(stopped.code(), None, "an end after a stop began");
+    let claim = Arc::new(AtomicU8::new(crate::service::HELD));
+    let end = End::new(claim.clone());
+    end.end(WRONG_APP);
+    end.end("bot_token_refused");
+    assert_eq!((end.code(), claim.load(std::sync::atomic::Ordering::SeqCst)), (Some(WRONG_APP), ENDED));
 }
