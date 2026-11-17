@@ -95,6 +95,18 @@ impl Home {
         self.write(SECRETS_FILE, &format!("workspace = \"T0AAAA\"\nbot_token = \"{BOT}\"\napp_token = \"{APP}\"\nuser_token = \"{USER}\"\n"));
     }
 
+    /// The secrets file `file`'s bot token given a new end, `-<mark>`: the workspace's plan changes, so the next reload
+    /// restarts it (a reload restarts only the workspaces whose plan changed).
+    pub(crate) fn rekey(&self, file: &str, mark: &str) {
+        let path = self.config().join(file);
+        let text = std::fs::read_to_string(&path).unwrap();
+        let text: String = text
+            .lines()
+            .map(|l| if l.starts_with("bot_token") { l.trim_end().trim_end_matches('"').to_string() + "-" + mark + "\"\n" } else { l.to_string() + "\n" })
+            .collect();
+        self.write(file, &text);
+    }
+
     /// Both files, with one mapped row.
     pub(crate) fn configured(&self) -> PathBuf {
         let row = self.folder("a");
@@ -971,7 +983,7 @@ fn stops(listeners: &[Arc<Fake>]) -> Vec<usize> {
 /// The reload of a chat of fakes, which has no owner to start, under the setup lock.
 async fn reload(chat: &Arc<Chat<Fake>>) -> Status {
     let held = chat.setup().await;
-    chat.reload_then(&held, |_| {}).await;
+    chat.reload_then(&held, "T0AAAA", |_, _| {}).await;
     chat.status()
 }
 
@@ -993,7 +1005,7 @@ async fn a_reload_applies_new_tokens_and_a_new_mapping_with_no_daemon_restart() 
     let bot = BOT.replace("aaaa", "cccc");
     home.write(SECRETS_FILE, &format!("workspace = \"T0AAAA\"\nbot_token = \"{bot}\"\napp_token = \"{APP}\"\n"));
     home.chat_toml(&[a.to_string_lossy().into_owned(), b.to_string_lossy().into_owned()]);
-    chat.reload(&chat.setup().await, &rows).await;
+    chat.reload_for(&chat.setup().await, &rows, "T0AAAA").await;
     assert_eq!(chat.status(), Status::Running);
     // The first service stopped, freeing the workspace's lock: the second start took it at its first try.
     assert_eq!(first.status(), sot_chat::service::Status::Stopped);
@@ -1080,7 +1092,7 @@ async fn a_holder_of_the_setup_lock_edits_the_files_and_reloads() {
     assert_eq!(chat.status(), Status::Refused(ConfigError::Missing));
     let held = chat.setup().await;
     home.configured();
-    chat.reload_then(&held, |_| {}).await;
+    chat.reload_then(&held, "T0AAAA", |_, _| {}).await;
     assert_eq!(chat.status(), Status::Running);
     assert!(chat.setup.try_lock().is_err(), "the holder still holds the lock after its reload");
     drop(held);
@@ -1100,9 +1112,10 @@ async fn a_reload_whose_stop_outlasts_setup_wait_starts_nothing_and_says_so() {
     let (listeners, tries) = (vec![Arc::new(Fake { hang: true, ..Fake::default() }), Arc::new(Fake::default())], Arc::new(AtomicUsize::new(0)));
     let chat = begin(&home, &Observed::new(), &Registry::new(), in_turn(&listeners, &tries));
     assert_eq!(settled(&chat).await, Status::Running);
+    home.rekey(SECRETS_FILE, "cccc");
     assert_eq!(reload_within_bound(&chat).await, Status::Stopping);
     assert_eq!(tries.load(Ordering::SeqCst), 1);
-    assert!(log.text().contains("gave up waiting for the chat to stop"));
+    assert!(log.text().contains("gave up waiting for a workspace's chat to stop"));
 }
 
 #[tokio::test(start_paused = true)]
@@ -1120,8 +1133,9 @@ async fn a_reload_whose_start_outlasts_setup_wait_answers_starting_and_says_so()
     });
     let chat = begin(&home, &Observed::new(), &Registry::new(), start);
     assert_eq!(settled(&chat).await, Status::Running);
+    home.rekey(SECRETS_FILE, "cccc");
     assert_eq!(reload_within_bound(&chat).await, Status::Starting);
-    assert!(log.text().contains("stopped waiting for its start"));
+    assert!(log.text().contains("stopped waiting for a workspace's start"));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1143,6 +1157,7 @@ async fn a_retirement_during_a_reload_stops_what_it_started() {
     });
     let chat = begin(&home, &Observed::new(), &registry, start);
     assert_eq!(settled(&chat).await, Status::Running);
+    home.rekey(SECRETS_FILE, "cccc");
     assert_eq!(reload(&chat).await, Status::Stopped);
     until("the reload's service stops", || stops(&listeners) == [1, 1]).await;
     assert!(chat.service().is_none());
@@ -1155,8 +1170,12 @@ async fn two_reloads_at_once_run_one_after_the_other() {
     home.configured();
     let (listeners, tries, inflight, most) = (fakes(3), Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
     let (made, count, now, peak) = (listeners.clone(), tries.clone(), inflight.clone(), most.clone());
+    // Each start changes the bot token on disk, so the reload after it finds a changed plan and restarts.
+    let secrets = home.config().join(SECRETS_FILE);
     let start: Starter<Fake> = Box::new(move |_, _, _| {
-        let l = made[count.fetch_add(1, Ordering::SeqCst).min(2)].clone();
+        let n = count.fetch_add(1, Ordering::SeqCst);
+        let l = made[n.min(2)].clone();
+        std::fs::write(&secrets, format!("workspace = \"T0AAAA\"\nbot_token = \"{BOT}-{n}\"\napp_token = \"{APP}\"\nuser_token = \"{USER}\"\n")).unwrap();
         let (now, peak) = (now.clone(), peak.clone());
         Box::pin(async move {
             peak.fetch_max(now.fetch_add(1, Ordering::SeqCst) + 1, Ordering::SeqCst);
@@ -1199,13 +1218,15 @@ async fn one_hub_fact_watch_steps_every_workspace_down() {
     let chat = Chat::begin(&home.env, &|p| config::read_file(p), &Registry::new(), per_workspace(&a, &b), setup::Verifier::none(), FAST);
     assert_eq!(settled(&chat).await, Status::Running);
     until("both running", || chat.status_of("T0BBBB") == Status::Running).await;
-    for _ in 0..2 {
+    for mark in ["cccc", "dddd"] {
+        // The default workspace's token changes; the other's plan does not.
+        home.rekey(SECRETS_FILE, mark);
         assert_eq!(reload(&chat).await, Status::Running);
     }
     until("both running again", || chat.status_of("T0BBBB") == Status::Running).await;
     home.list("elsewhere");
     until("every workspace steps down", || chat.status_of("T0AAAA") == Status::NotHub && chat.status_of("T0BBBB") == Status::NotHub).await;
-    assert_eq!(stops(&[a, b]), [3, 3], "two reloads' stops and the step-down's, in each workspace");
+    assert_eq!(stops(&[a, b]), [3, 1], "the changed workspace's two reloads and the step-down; the kept one's step-down alone");
 }
 
 /// C5: a workspace held by another daemon waits alone, asking again, while the other runs.
@@ -1490,4 +1511,124 @@ async fn the_exported_fake_slack_answers_one_scripted_reply() {
     assert_eq!((reply.status(), reply.body()), (200, &b"scripted"[..]));
     assert_eq!(fake.seen().len(), 1);
     fake.shutdown().await;
+}
+
+/// The reload of a chat of fakes under the setup lock, waiting only for `workspace`'s start.
+async fn reload_of(chat: &Arc<Chat<Fake>>, workspace: &str) {
+    let held = chat.setup().await;
+    chat.reload_then(&held, workspace, |_, _| {}).await;
+}
+
+/// Each start's workspace counted, and a fresh listener made for each. `pending`: a workspace whose starts after its
+/// first never end; `hang`: one whose listeners' stops never end; `fail_first`: one whose first start fails.
+struct Starts {
+    tries: Mutex<std::collections::BTreeMap<String, usize>>,
+}
+
+impl Starts {
+    fn starter(this: &Arc<Starts>, pending: &'static str, hang: &'static str, fail_first: &'static str) -> Starter<Fake> {
+        let this = this.clone();
+        Box::new(move |workspace, _, _| {
+            let n = {
+                let mut tries = this.tries.lock().unwrap();
+                let n = tries.entry(workspace.to_string()).or_default();
+                *n += 1;
+                *n
+            };
+            let listener = Arc::new(Fake { hang: workspace == hang, ..Fake::default() });
+            let (never, fails) = (workspace == pending && n > 1, workspace == fail_first && n == 1);
+            Box::pin(async move {
+                if never {
+                    std::future::pending::<()>().await;
+                }
+                if fails { Err("down") } else { Ok(listener) }
+            })
+        })
+    }
+
+    fn tries(&self) -> (usize, usize) {
+        let t = self.tries.lock().unwrap();
+        (t.get("T0AAAA").copied().unwrap_or(0), t.get("T0BBBB").copied().unwrap_or(0))
+    }
+}
+
+fn starts() -> Arc<Starts> {
+    Arc::new(Starts { tries: Mutex::new(std::collections::BTreeMap::new()) })
+}
+
+/// L9 rules 1 and 2: a reload restarts a workspace only when its plan changed (its tokens, its mappings); a kept unit's
+/// service is the same object, and a reload that changes nothing starts nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reload_restarts_only_the_workspaces_whose_plan_changed() {
+    let home = two_files();
+    let s = starts();
+    let chat = Chat::begin(&home.env, &|p| config::read_file(p), &Registry::new(), Starts::starter(&s, "", "", ""), setup::Verifier::none(), HUB_CHECK);
+    assert_eq!(settled(&chat).await, Status::Running);
+    until("both running", || chat.status_of("T0BBBB") == Status::Running).await;
+    let (a, b) = (chat.service_of("T0AAAA").unwrap(), chat.service_of("T0BBBB").unwrap());
+    reload_of(&chat, "T0AAAA").await;
+    assert_eq!(s.tries(), (1, 1), "a reload that changes nothing starts nothing");
+    // B's token changes: B alone starts again.
+    home.rekey(OTHER_FILE, "cccc");
+    reload_of(&chat, "T0BBBB").await;
+    assert_eq!((s.tries(), chat.status_of("T0BBBB")), ((1, 2), Status::Running));
+    assert!(Arc::ptr_eq(&chat.service_of("T0AAAA").unwrap(), &a), "the kept workspace's service was replaced");
+    assert!(!Arc::ptr_eq(&chat.service_of("T0BBBB").unwrap(), &b));
+    assert_eq!(stops(&[a.clone(), b.clone()]), [0, 1]);
+    // A's mappings change: A alone starts again.
+    let (fa, fb) = (home.folder("a"), home.folder("b"));
+    home.chat_toml(&[fa.to_string_lossy().into_owned(), fb.to_string_lossy().into_owned()]);
+    let b2 = chat.service_of("T0BBBB").unwrap();
+    reload_of(&chat, "T0AAAA").await;
+    assert_eq!((s.tries(), chat.status_of("T0AAAA")), ((2, 2), Status::Running));
+    assert!(Arc::ptr_eq(&chat.service_of("T0BBBB").unwrap(), &b2));
+    assert_eq!(stops(&[a, b2]), [1, 0]);
+}
+
+/// L9 rule 2: a workspace whose listener is neither running nor starting is started again by any reload, its plan
+/// unchanged; the running one is kept.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reload_starts_again_a_workspace_that_is_not_running() {
+    let home = two_files();
+    let s = starts();
+    let chat = Chat::begin(&home.env, &|p| config::read_file(p), &Registry::new(), Starts::starter(&s, "", "", "T0BBBB"), setup::Verifier::none(), HUB_CHECK);
+    assert_eq!(settled(&chat).await, Status::Running);
+    until("B's start failed", || chat.status_of("T0BBBB") == Status::Failed("down")).await;
+    reload_of(&chat, "T0BBBB").await;
+    assert_eq!((s.tries(), chat.status_of("T0BBBB"), chat.status_of("T0AAAA")), ((1, 2), Status::Running, Status::Running));
+}
+
+/// L9 rule 2: one workspace's stop that never ends holds no other's reload: the other's change starts within the wait,
+/// and the stuck one is left stopping, not started again, and logged.
+#[tokio::test(start_paused = true)]
+async fn a_stuck_stop_in_one_workspace_holds_no_others_reload() {
+    let log = sot_platform::test_log::capture();
+    let home = two_files();
+    let s = starts();
+    let chat = Chat::begin(&home.env, &|p| config::read_file(p), &Registry::new(), Starts::starter(&s, "", "T0AAAA", ""), setup::Verifier::none(), HUB_CHECK);
+    assert_eq!(settled(&chat).await, Status::Running);
+    until("both running", || chat.status_of("T0BBBB") == Status::Running).await;
+    home.rekey(SECRETS_FILE, "cccc");
+    home.rekey(OTHER_FILE, "cccc");
+    tokio::time::timeout(4 * SETUP_WAIT, reload_of(&chat, "T0BBBB")).await.expect("the reload never answered");
+    assert_eq!((chat.status_of("T0AAAA"), chat.status_of("T0BBBB")), (Status::Stopping, Status::Running));
+    assert_eq!(s.tries(), (1, 2), "the stuck workspace was started again");
+    assert!(log.text().contains("gave up waiting for a workspace's chat to stop"));
+}
+
+/// L9 rule 3: a reload's answer waits only for its own workspace's start: another's start that never ends goes on, and
+/// no wait for it is given up (none was made).
+#[tokio::test(start_paused = true)]
+async fn a_reloads_answer_waits_only_for_its_own_workspace() {
+    let log = sot_platform::test_log::capture();
+    let home = two_files();
+    let s = starts();
+    let chat = Chat::begin(&home.env, &|p| config::read_file(p), &Registry::new(), Starts::starter(&s, "T0AAAA", "", ""), setup::Verifier::none(), HUB_CHECK);
+    assert_eq!(settled(&chat).await, Status::Running);
+    until("both running", || chat.status_of("T0BBBB") == Status::Running).await;
+    home.rekey(SECRETS_FILE, "cccc");
+    home.rekey(OTHER_FILE, "cccc");
+    tokio::time::timeout(4 * SETUP_WAIT, reload_of(&chat, "T0BBBB")).await.expect("the reload never answered");
+    assert_eq!((chat.status_of("T0AAAA"), chat.status_of("T0BBBB")), (Status::Starting, Status::Running));
+    assert!(!log.text().contains("stopped waiting for a workspace's start"), "the reload waited for another workspace's start");
 }

@@ -229,6 +229,12 @@ impl Config {
         self.mail_after.as_ref()
     }
 
+    /// What `workspace`'s unit runs from: `credentials` and the workspace's mappings, each with its floor (`floor`).
+    pub fn plan(&self, workspace: &str, credentials: Credentials) -> Plan {
+        let mappings = self.mappings().filter(|(_, w, _)| *w == workspace).map(|(f, _, c)| (f.to_string(), c.to_string(), self.floor(c))).collect();
+        Plan { credentials, mappings }
+    }
+
     /// The channel's floor: the later of its mapping's `mail_after` and the hub's; `None` while the hub's is unset
     /// (and for a channel no mapping holds).
     pub fn floor(&self, channel: &str) -> Option<Ts> {
@@ -391,7 +397,23 @@ pub fn resolve(config: &Result<Config, ConfigError>, folder: &str) -> Resolution
     }
 }
 
-/// The loaded `chat-secrets.toml`. Its tokens format as a mask.
+/// What one workspace's chat runs from, fixed for its life: its credentials and its mappings, each a folder, a channel and
+/// the channel's floor. A reload restarts a workspace only when its plan changed, so two plans are equal exactly when a
+/// running chat would run the same (its tokens byte for byte, its mappings in file order).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Plan {
+    pub credentials: Credentials,
+    mappings: Vec<(String, String, Option<Ts>)>,
+}
+
+impl Plan {
+    /// Each mapping: folder, channel and the channel's floor (`None`: the channel does not deliver).
+    pub fn mappings(&self) -> impl Iterator<Item = (&str, &str, Option<&Ts>)> {
+        self.mappings.iter().map(|(f, c, t)| (f.as_str(), c.as_str(), t.as_ref()))
+    }
+}
+
+/// The loaded `chat-secrets.toml`. Its tokens format as a mask, and compare by their bytes (never formatted).
 #[derive(Clone, Debug)]
 pub struct Credentials {
     pub bot: Secret,
@@ -399,6 +421,13 @@ pub struct Credentials {
     /// The person's user token, which their posts go out under. Optional, so a file written before it loads: rows post
     /// and mail runs, and a person's post waits for a connect.
     pub user: Option<Secret>,
+}
+
+impl PartialEq for Credentials {
+    fn eq(&self, other: &Credentials) -> bool {
+        let same = |a: &Secret, b: &Secret| a.expose() == b.expose();
+        same(&self.bot, &other.bot) && same(&self.app, &other.app) && self.user.as_ref().map(Secret::expose) == other.user.as_ref().map(Secret::expose)
+    }
 }
 
 /// A token of the form `prefix` (the forms platform's log masker knows) then letters, digits and hyphens (the characters platform's masker reads as one token), at most 512 bytes.

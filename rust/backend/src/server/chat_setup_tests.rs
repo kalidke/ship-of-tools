@@ -718,17 +718,19 @@ async fn resolve_says_why_a_service_ended() {
         home.configured();
         let w = world_on(home, &[public("C0PUB", true)], None, None).await;
         assert_eq!(w.services.chat.status(), Status::Running, "{ended}");
+        // The reloads below restart the workspace: its token changes.
+        w.home.rekey(SECRETS_FILE, "cccc");
         let mut conn = connect_window(w.services.clone()).await;
         let chat = w.services.chat.clone();
         match ended {
             "wrong_app" => {
                 *w.slack.bot_app.lock().unwrap() = Some("A0OWN");
                 *w.slack.hello_app.lock().unwrap() = Some("A0OTHER");
-                chat.reload(&chat.setup().await, &w.rows).await;
+                chat.reload_for(&chat.setup().await, &w.rows, "T0AAAA").await;
             }
             "app_token_refused" => {
                 *w.slack.open.lock().unwrap() = "invalid_auth";
-                chat.reload(&chat.setup().await, &w.rows).await;
+                chat.reload_for(&chat.setup().await, &w.rows, "T0AAAA").await;
             }
             _ => {
                 *w.slack.list.lock().unwrap() = "token_revoked";
@@ -1081,6 +1083,38 @@ fn two_workspaces_from_nothing_each_project_reads_and_posts_in_its_own() {
         assert_eq!(sent[0].authorization.as_deref(), Some(&*format!("Bearer {}", w.teams.user(B))));
 
         assert!(chat.hub().running_in(A) && chat.hub().running_in(B), "each workspace has its own owner");
+        // 9. Alpha moves to A's other channel: A's listener starts again, B's does not (no new `auth.test` under its bot,
+        // no new socket), and a message fed to B's socket while A restarts reaches the connection, B's watch told
+        // nothing of A's reload.
+        let (a_starts, b_starts, b_sockets) =
+            (w.teams.calls(A, "xoxb", "/auth.test").len(), w.teams.calls(B, "xoxb", "/auth.test").len(), w.teams.calls(B, "xapp", "/apps.connections.open").len());
+        conn.send(16, op::CHAT_PAIR, json!({"row": w.ids[0], "channel": "C0AAAA02"})).await;
+        w.teams.feed(B, w.teams.message(B, "C0BBBB01", 4, &stamp(4)));
+        let (mut paired, mut put_d, mut told) = (None, None, Vec::new());
+        let read = async {
+            while paired.is_none() || put_d.is_none() {
+                let (frame, _) = codec::read_frame(&mut conn.crx).await.unwrap();
+                match (frame.kind, frame.op.as_str()) {
+                    (Kind::Res, _) if frame.id == 16 => paired = Some(frame.payload),
+                    (Kind::Evt, op::CHAT_CHANGED) if frame.payload["channel"] == "C0BBBB01" => put_d = Some(frame.payload),
+                    (Kind::Evt, op::CHAT_STATUS) => told.push(frame.payload),
+                    _ => {}
+                }
+            }
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(20), read).await.expect("the pair's reply and B's message");
+        assert_eq!(paired, Some(json!({})));
+        assert_eq!(put_d.as_ref().unwrap()["put"][0]["ts"], stamp(4).as_str(), "{put_d:?}");
+        assert!(!told.iter().any(|t| t.to_string().contains("C0BBBB01")), "B's watch was told of A's reload: {told:?}");
+        until("A's new listener", || chat.status_of(A) == Status::Running && chat.hub().running_in(A)).await;
+        assert_eq!(w.teams.calls(A, "xoxb", "/auth.test").len(), a_starts + 1, "A's listener started again");
+        assert_eq!(
+            (w.teams.calls(B, "xoxb", "/auth.test").len(), w.teams.calls(B, "xapp", "/apps.connections.open").len()),
+            (b_starts, b_sockets),
+            "B's listener was restarted by A's change"
+        );
+        let ta = w.target(0, A, "C0AAAA02");
+        after_hello(&chat, &w.rows, &serde_json::from_value(ta.clone()).unwrap()).await;
         // 10. Slack revokes the first workspace's bot: alpha's read is refused, its workspace ends, and beta's goes on.
         w.teams.revoke(A);
         let history = conn.ask(14, op::CHAT_HISTORY, json!({"target": ta, "limit": 5})).await;
@@ -1101,7 +1135,7 @@ fn two_workspaces_from_nothing_each_project_reads_and_posts_in_its_own() {
         let of = |folder: &std::path::Path| mappings.iter().find(|m| m["folder"].as_str() == folder.to_str()).unwrap().clone();
         assert_eq!(of(&w.folders[0]).get("workspace"), None);
         assert_eq!(of(&w.folders[1]).get("workspace").and_then(toml::Value::as_str), Some(B));
-        seen.extend([first, second, listed, a_list, b_list, alpha, beta, put, put_b, posted, history, put_c].map(|v| v.to_string()));
+        seen.extend([first, second, listed, a_list, b_list, alpha, beta, put, put_b, posted, put_d.unwrap_or_default(), history, put_c].map(|v| v.to_string()));
     });
     holds_no_token("the daemon's log", &text, &bodies);
     for (n, reply) in seen.iter().enumerate() {

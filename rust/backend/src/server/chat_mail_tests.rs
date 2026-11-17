@@ -176,7 +176,7 @@ async fn the_owner_runs_after_a_reload_with_no_watch() {
     let chat = w.start(&w.fake).await;
     // The file now delivers: the reload's owner opens the delivery with no watch and no window.
     w.home.delivering_toml(&[w.folder.clone()]);
-    chat.reload(&chat.setup().await, &w.rows).await;
+    chat.reload_for(&chat.setup().await, &w.rows, "T0AAAA").await;
     assert_eq!(chat.status(), Status::Running);
     let target = ChatTarget { row: w.rows.list()[0].workspace_id.clone(), workspace: "T0AAAA".into(), channel: ChatChannel::try_from("C0AAAA".to_string()).unwrap() };
     super::chat_watch_tests::after_hello(&chat, &w.rows, &target).await;
@@ -402,7 +402,7 @@ async fn a_filing_in_flight_at_an_end_returns_before_a_reload_starts_the_next_se
     let reloading = tokio::spawn({
         let (chat, rows) = (chat.clone(), w.rows.clone());
         async move {
-            chat.reload(&chat.setup().await, &rows).await;
+            chat.reload_for(&chat.setup().await, &rows, "T0AAAA").await;
             chat.status()
         }
     });
@@ -685,7 +685,8 @@ struct MailTwo {
     th: TestHome,
     folders: [std::path::PathBuf; 2],
     chat: Arc<Chat>,
-    _home: Home,
+    rows: Workspaces,
+    home: Home,
 }
 
 const MA: &str = "T0AAAA";
@@ -729,7 +730,7 @@ async fn mail_two() -> MailTwo {
         let target = ChatTarget { row: row.clone(), workspace: w.into(), channel: ChatChannel::try_from(c.to_string()).unwrap() };
         super::chat_watch_tests::after_hello(&chat, &rows, &target).await;
     }
-    MailTwo { teams, th, folders: [fa, fb], chat, _home: home }
+    MailTwo { teams, th, folders: [fa, fb], chat, rows, home }
 }
 
 impl MailTwo {
@@ -796,4 +797,32 @@ async fn a_filing_waiting_behind_another_workspaces_ends_at_once_with_its_delive
     w.chat.request_stop();
     assert!(w.chat.wait_retired(LONG));
     assert!(w.inbox("beta-h").is_empty());
+}
+
+/// L9 (B2): a reload that restarts alpha's workspace (its plan changed: its secrets file now holds no user token) leaves beta's running: beta's listener is not
+/// started again, and a post fed to beta's socket while alpha restarts is filed once to beta's row.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_kept_workspaces_delivery_files_through_anothers_reload() {
+    let w = mail_two().await;
+    let (b_starts, b_sockets) = (w.teams.calls(MB, "xoxb", "/auth.test").len(), w.teams.calls(MB, "xapp", "/apps.connections.open").len());
+    let a_starts = w.teams.calls(MA, "xoxb", "/auth.test").len();
+    let no_user = format!("workspace = \"{MA}\"\nbot_token = \"{}\"\napp_token = \"{}\"\n", w.teams.bot(MA), w.teams.app_token(MA));
+    w.home.write(config::SECRETS_FILE, &no_user);
+    let reloading = tokio::spawn({
+        let (chat, rows) = (w.chat.clone(), w.rows.clone());
+        async move { chat.reload_for(&chat.setup().await, &rows, MA).await }
+    });
+    w.teams.feed(MB, w.teams.message(MB, "C0BBBB01", 2, "1700000200.000100"));
+    tokio::time::timeout(LONG, reloading).await.expect("the reload").unwrap();
+    until("beta's post filed", || w.inbox("beta-h").len() == 1).await;
+    assert_eq!(w.chat.status_of(MA), Status::Running);
+    assert_eq!(w.teams.calls(MA, "xoxb", "/auth.test").len(), a_starts + 1, "alpha started again");
+    assert_eq!(
+        (w.teams.calls(MB, "xoxb", "/auth.test").len(), w.teams.calls(MB, "xapp", "/apps.connections.open").len()),
+        (b_starts, b_sockets),
+        "beta's listener was started again by alpha's change"
+    );
+    w.chat.request_stop();
+    assert!(w.chat.wait_retired(LONG));
+    assert_eq!((w.inbox("alpha-h").len(), w.inbox("beta-h").len()), (0, 1));
 }

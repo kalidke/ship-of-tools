@@ -616,12 +616,12 @@ impl Own {
     /// The delivery for its workspace's delivering channels, whose states are read and whose records the model hands
     /// over from here on; the start's read of the inboxes begins. A channel whose state cannot be read stays off.
     fn open_mail(&self, watches: &mut Watches, tx: mpsc::Sender<Done>) -> Option<Mail> {
-        let loaded = self.chat.config();
-        let Some(Ok(config)) = loaded.as_ref() else { return None };
+        // The unit's own plan: a reload that keeps this owner's unit changes nothing it reads.
+        let plan = self.chat.plan_of(&self.workspace)?;
         let dir = sot_platform::host::state_dir::daemon_state_dir_in(&self.chat.env).join("chat");
         let (mut states, mut folders) = (Vec::new(), Vec::new());
-        for (folder, _, channel) in config.mappings().filter(|(_, w, _)| *w == self.workspace) {
-            let Some(floor) = config.floor(channel) else { continue };
+        for (folder, channel, floor) in plan.mappings() {
+            let Some(floor) = floor.cloned() else { continue };
             match sot_chat::state::State::load(&dir, &self.workspace, channel, &floor) {
                 Ok(state) if watches.deliver(channel).is_ok() => {
                     states.push((state, floor));

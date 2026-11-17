@@ -521,7 +521,9 @@ async fn a_watch_through_a_reload_is_told_and_its_next_watch_is_served_by_the_ne
     let mut conn = connect(rig.services.clone()).await;
     assert!(ok_watch(&conn.ask(2, op::CHAT_WATCH, watch(&rig.alpha, "C0AAAA")).await));
     complete(&hub, &["C0AAAA"]).await;
-    chat.reload(&chat.setup().await, &rig.rows).await;
+    // A new bot token: the workspace's plan changed, so the reload restarts it.
+    rig._home.rekey(config::SECRETS_FILE, "cccc");
+    chat.reload_for(&chat.setup().await, &rig.rows, "T0AAAA").await;
     assert_eq!(chat.status(), Status::Running);
     // The watch is told its channel needs a snapshot, as at any stop.
     let (name, payload) = conn.evt("a chat.status for the reload's stop").await;
@@ -548,10 +550,11 @@ async fn a_reload_starts_its_service_only_after_the_old_owner_ended() {
     until("the boot's owner", || hub.running()).await;
     // The old owner is held between its service's stop and its end.
     let arm = Holds::here().arm("chat.owner.end").key(Arc::as_ptr(&hub) as usize).hold(1);
+    rig._home.rekey(config::SECRETS_FILE, "cccc");
     let reloading = tokio::spawn({
         let (chat, rows) = (chat.clone(), rig.rows.clone());
         async move {
-            chat.reload(&chat.setup().await, &rows).await;
+            chat.reload_for(&chat.setup().await, &rows, "T0AAAA").await;
             chat.status()
         }
     });
@@ -939,7 +942,7 @@ async fn an_ended_service_turns_the_chat_off_with_its_code_and_frees_its_lock() 
     // The lock was freed with the listener: the next service, of the app the bot names, starts and holds it.
     *lv.hello_app.lock().unwrap() = None;
     lv.hello.add_permits(1);
-    bounded("the reload", async { chat.reload(&chat.setup().await, &rig.rows).await }).await;
+    bounded("the reload", async { chat.reload_for(&chat.setup().await, &rig.rows, "T0AAAA").await }).await;
     assert_eq!(chat.status(), Status::Running);
     after_hello(&chat, &rig.rows, &alpha_target(&rig)).await;
     assert!(ok_watch(&conn.ask(4, op::CHAT_WATCH, watch(&rig.alpha, "C0AAAA")).await));
@@ -989,7 +992,7 @@ async fn an_ended_service_no_owner_saw_is_turned_off_when_an_owner_is_started() 
     let service = chat.admit(&rows, &target).expect("the service runs");
     until("the service's end", || service.ended() == Some("wrong_app")).await;
     assert_eq!(chat.status(), Status::Running, "nothing has turned the chat off yet");
-    drop(chat.start_owner(rows.clone()));
+    drop(chat.start_owner(rows.clone(), vec!["T0AAAA".into()]));
     until("the chat off with the service's code", || chat.status() == Status::Failed("wrong_app")).await;
     assert!(!chat.hub().running());
 }
@@ -1005,7 +1008,7 @@ async fn the_boots_wait_ends_when_the_chat_is_retired_while_starting() {
     rows.insert(row("alpha", &folder));
     let never: crate::chat::Starter<sot_chat::service::Service> = Box::new(|_, _, _| Box::pin(std::future::pending()));
     let chat = Chat::begin_unowned(&home.env, &|p| config::read_file(p), &Registry::new(), never);
-    let task = chat.start_owner(rows.clone());
+    let task = chat.start_owner(rows.clone(), vec!["T0AAAA".into()]);
     tokio::task::yield_now().await;
     tokio::task::yield_now().await;
     assert!(!task.is_finished(), "the wait holds while the chat starts");

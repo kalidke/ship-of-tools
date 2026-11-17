@@ -1139,3 +1139,25 @@ fn a_secrets_file_has_one_form() {
         no_token(&format!("{e} {e:?}"), "a table's refusal");
     }
 }
+
+/// L9 rule 1: a workspace's plan is its credentials, compared by their bytes, and its own mappings with their floors, so
+/// two loads give equal plans exactly when a running chat would run the same.
+#[test]
+fn a_plan_changes_with_a_token_byte_a_mapping_or_a_floor_and_never_with_another_workspaces_mapping() {
+    let config = parse(&(chat("") + &mapping("/work/a", "C0AAAA"))).unwrap();
+    let plan = |config: &Config, secrets: &str| config.plan("T0AAAA", creds(secrets).unwrap());
+    let base = plan(&config, &secrets());
+    assert_eq!(base, plan(&config, &secrets()), "two loads of the same files");
+    assert_ne!(base, plan(&config, &secrets_with(&(bot() + "b"), &app())), "one byte of the bot token");
+    assert_ne!(base, plan(&config, &secrets_with(&bot(), &(app() + "b"))), "one byte of the app token");
+    assert_ne!(base, plan(&config, &(secrets() + &format!("user_token = \"{}\"\n", ["xoxp", "-sentinel-user-cccc"].concat()))), "a user token added");
+    let moved = parse(&(chat("") + &mapping("/work/a", "C0BBBB"))).unwrap();
+    assert_ne!(base, plan(&moved, &secrets()), "the mapping's channel");
+    let floor = "mail_after = \"1700000000.000000\"\n";
+    let delivering = parse(&(chat(floor) + &mapping("/work/a", "C0AAAA") + floor)).unwrap();
+    assert_ne!(base, plan(&delivering, &secrets()), "the channel's floor");
+    let elsewhere = parse(&(chat("") + &mapping("/work/a", "C0AAAA") + &mapping("/work/b", "C0BBBB") + "workspace = \"T0BBBB\"\n")).unwrap();
+    assert_eq!(base, plan(&elsewhere, &secrets()), "another workspace's mapping is not this plan's");
+    assert_eq!(base.mappings().collect::<Vec<_>>(), [("/work/a", "C0AAAA", None)]);
+    assert!(!format!("{base:?}").contains("sentinel"), "a plan formats no token byte");
+}

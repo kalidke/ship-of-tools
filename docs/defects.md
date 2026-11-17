@@ -1047,12 +1047,6 @@ owned by `docs/CLAUDE.md`.
 
 ## chat
 
-- **CHAT-RELOAD-RESTARTS-EVERY-WORKSPACE** [note] A reload (every `chat.connect` and every `chat.pair` that changes the
-  file) stops and starts every workspace's chat, not only the one it concerns (`Chat::reload_then`,
-  `rust/backend/src/chat.rs`): each watching window of every workspace resyncs, each delivering channel owes a pass,
-  the reply waits for every workspace's start within `SETUP_WAIT` (a failing one up to its `auth.test` deadline), and one
-  workspace's stop that outlasts `SETUP_WAIT` makes the reload start nothing. The reload per workspace is the next
-  landing of the multi-workspace plan. From the plan's re-cut, reading code; never seen.
 - **CHAT-STATUS-NAMES-NO-WORKSPACE** [note] `chat.status` names channels and no workspace, so a connection watching in
   two workspaces is told only by its own workspace's owner, and when one workspace stops it resyncs the channels of that
   workspace alone; a window watches one channel at a time, so it is never misled. From the multi-workspace plan's
@@ -1158,8 +1152,8 @@ owned by `docs/CLAUDE.md`.
   Both are the hub's own refusals and cost no Slack read (`rust/frontend/src/ui/drawer/chat/thread.rs`). Found by B5p's
   stack review, reading code and a probe; never seen.
 - **CHAT-START-FAILURE-FINAL** [note] A workspace's chat start that fails for a passing cause (no network at the daemon's
-  start, Slack down) stays failed until a reload (any `chat.connect` or changing `chat.pair` starts every workspace
-  again) or a daemon restart: only a start refused `held` is tried again (`Chat::launch`, `rust/backend/src/chat.rs`).
+  start, Slack down) stays failed until a reload (any `chat.connect` or `chat.pair` that changes the file starts
+  again every workspace that is not running) or a daemon restart: only a start refused `held` is tried again (`Chat::launch`, `rust/backend/src/chat.rs`).
   Each workspace fails alone; the others run. `chat.resolve` answers `unconfigured` (`start_failed`) for it, so a
   window can offer Connect Slack, which reloads. The fix if it is seen: a daemon retry of such a start on a pace. From
   reading code; never seen.
@@ -1218,6 +1212,8 @@ owned by `docs/CLAUDE.md`.
   probe; installer hooks (superseded, check); stop commands that match only what they stop.
 
 ## Closed
+
+- **CHAT-RELOAD-RESTARTS-EVERY-WORKSPACE** (chat) [note] closed by the landing that fixes it, 2026-11-17, from the multi-workspace plan's re-cut, reading code, never seen: a reload (every `chat.connect` and every `chat.pair` that changes the file) stopped and started every workspace's chat, so each watching window of every workspace resynced, each delivering channel owed a pass, the reply waited for every workspace's start, and one workspace's stuck stop made the reload start nothing. A reload now restarts only the workspaces whose plan (credentials and mappings) changed, whose file is gone or whose chat is not running, waits for each stop alone, and its reply waits only for its own workspace's start (chat guarantee 21).
 
 - **CHAT-ONE-WORKSPACE** (chat, fe-ui) [person] closed by the landing that fixes it, 2026-11-17, seen in use by a person on 2026-11-17 (the maintainer, with five Slack workspaces, one per group of repositories): the chat connected one Slack workspace, refused a second's tokens (`other_workspace`) and gave no way to map projects to channels in more than one. One hub now serves up to 8 workspaces, each with its own secrets file, listener, owner and mail, a failure in one stopping no other (chat guarantees 21, 30 and 31); from the Chat drawer a person connects another workspace (`Connect a Slack workspace`), the channel list shows one workspace at a time with Left and Right between them and pairs a project in the one shown, a row whose workspace failed is told which and can move to another's channel (`Ctrl+Shift+K` in the Connect step), and the connected screen names the workspace (fe-ui, the picker and the Connect step). No person has used it yet.
 

@@ -158,7 +158,7 @@ pub(crate) async fn connect(req_id: u64, payload: serde_json::Value, chat: &Arc<
         }
         return Ok(refuse(req_id, NAME, code));
     }
-    chat.reload(&held, rows).await;
+    chat.reload_for(&held, rows, &workspace).await;
     chat.remember_name(&workspace, name.clone());
     let status = chat.status_of(&workspace);
     tracing::info!(workspace, %status, "project chat: a window's connect saved the tokens and reloaded");
@@ -260,7 +260,7 @@ async fn paired(payload: serde_json::Value, chat: &Arc<Chat>, rows: &Workspaces,
     let target = channel.as_ref().map(|c| (workspace.clone(), c.as_str().to_string()));
     let changed = tokio::task::spawn_blocking(move || save(&env, &folder, target.as_ref().map(|(w, c)| (w.as_str(), c.as_str())))).await.unwrap_or(Err(ChatCode::Failed))?;
     if changed {
-        chat.reload(&setup, rows).await;
+        chat.reload_for(&setup, rows, &workspace).await;
     }
     Ok(())
 }

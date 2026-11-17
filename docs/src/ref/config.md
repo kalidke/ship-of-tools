@@ -315,8 +315,9 @@ gets a `mail_after` of the daemon's clock at that moment, so a channel's backlog
 already mapped to another folder that exists is refused, one mapped to a folder that no longer exists is taken over, and
 a `chat.toml` the daemon refuses is never rewritten. A pairing that changes nothing writes nothing. A pairing names the
 workspace of its channel (none means the one `chat.toml` names), and a channel that workspace does not hold is refused.
-Restarting the chat costs every open Chat drawer one resync; for now a pairing or a connect restarts every workspace's
-chat, not only its own.
+A pairing or a connect restarts only the workspaces whose secrets or mappings it changed (a workspace whose chat is not
+running starts again too); each restart costs the open Chat drawers of that workspace one resync, and every other
+workspace's drawers and mail go on untouched.
 
 Each file is a regular file of at most 64 KiB, and only the keys below are accepted.
 
