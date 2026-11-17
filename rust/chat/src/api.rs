@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use reqwest::Url;
 use serde_json::{json, Value};
-use sot_protocol::chat::{escape_text, post_text_fits, text_segments, ChatName, ChatRecord, Origin, TextSegment, Ts};
+use sot_protocol::chat::{escape_text, post_text_fits, text_segments, ChatName, ChatRecord, Origin, TextSegment, Ts, PICTURE_MIMES};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::time::Instant;
 
@@ -925,7 +925,7 @@ impl Api {
         if !shared_in(info, channel) {
             return Err(ApiError::BadRequest);
         }
-        if !info.get("mimetype").and_then(Value::as_str).is_some_and(|m| PICTURES.contains(&m)) {
+        if !info.get("mimetype").and_then(Value::as_str).is_some_and(|m| PICTURE_MIMES.contains(&m)) {
             return Ok(FileFetch::NotAnImage);
         }
         let url = |key: &str| info.get(key).and_then(Value::as_str).filter(|u| !u.is_empty() && u.len() <= MAX_URL);
@@ -1251,9 +1251,6 @@ impl Api {
     }
 }
 
-/// The types of file the chat shows as pictures, as `files.info`'s `mimetype` gives them.
-const PICTURES: [&str; 4] = ["image/png", "image/jpeg", "image/gif", "image/webp"];
-
 /// Whether a `files.info` file is shared in `channel`: the channel is one of its `channels` or `groups`, or a key of
 /// `shares.public` or `shares.private`.
 fn shared_in(file: &Value, channel: &str) -> bool {
@@ -1266,10 +1263,10 @@ fn shared_in(file: &Value, channel: &str) -> bool {
     listed("channels") || listed("groups") || shared("public") || shared("private")
 }
 
-/// An answer's `Content-Type` when it is one of the `PICTURES`, parameters dropped, lower case.
+/// An answer's `Content-Type` when it is one of wire's `PICTURE_MIMES`, parameters dropped, lower case.
 fn image_type(response: &Response) -> Option<String> {
     let kind = response.header("content-type")?.split(';').next()?.trim().to_ascii_lowercase();
-    PICTURES.contains(&kind.as_str()).then_some(kind)
+    PICTURE_MIMES.contains(&kind.as_str()).then_some(kind)
 }
 
 /// An `auth.test` answer's `team_id`: `Malformed` when missing or not an id.
