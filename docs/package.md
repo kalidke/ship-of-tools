@@ -174,12 +174,17 @@ earlier text of the sections above and the integration-test assignment by pass.
 ## State
 
 v0.7.0 is published (2026-11-05), and a plain install moves a computer to it; `docs/UPDATE-AGENT.md` is the one update
-procedure an agent follows, from any 0.6 or 0.7 install. v0.7.1-rc.10 (2026-11-15) is an unpublished draft, installed
-by archive by their own sessions on both window computers, where the maintainer has used it: a frame of a scroll lays
-out only the text that is new and no blank space, so a page in a large agent pane eases as the preview's does (his
-word on it: "the llmpane scroll is even better"). The hub stays on rc.7: installing there restarts the daemon, which
-ends the rows' open REPLs, and waits on his word. rc.9 (2026-11-15) put the cell panes' page back to rc.6's ease: the
-row pace rc.7 added answered a cause that was not the one seen. rc.8 (2026-11-15) carried what his use of rc.7 asked
+procedure an agent follows, from any 0.6 or 0.7 install. v0.7.1-rc.11 (2026-11-17) is an unpublished draft,
+cut on the maintainer's word from his decision card and installed by archive by their own sessions on two window
+computers and by the maintaining session on the hub, where the daemon moved off rc.7 and the rows' open REPLs ended, on
+his word; a third window computer was not reachable. It carries the chat set up from the window (the Connect step and
+the channel picker), a person's post under their own Slack user token (CHAT-PERSON-POST-NOT-ANSWERED stays open: its
+premise is unmeasured until a person's first post), a row's post of a file, pictures as tiles in the Chat drawer, a
+person's post of the previewed file, and, on Windows, the writers' turn and the reader's retry when a name is replaced;
+no person's use of it is recorded yet. rc.10 (2026-11-15) was installed by archive by their own sessions on both window
+computers, where the maintainer used it: a frame of a scroll lays out only the text that is new and no blank space, so a
+page in a large agent pane eases as the preview's does (his word on it: "the llmpane scroll is even better"). rc.9 (2026-11-15) put the cell panes' page back to rc.6's ease:
+the row pace rc.7 added answered a cause that was not the one seen. rc.8 (2026-11-15) carried what his use of rc.7 asked
 for: Claude rows start in Claude Code's classic renderer (his word: "we don't want claude fullscreen"), so the window's
 eased scroll reaches their conversation; a row's new run starts with the terminal's input modes reset; the preview's
 own messages in a box over the preview pane, held 5 s and fading, with plainer words for a refused drawing; and the
@@ -193,9 +198,11 @@ attach client that keeps reading with input around an attach never sent blind or
 unit no longer restarting forever against another daemon; two parts no test reproduced stay open
 (RELAY-SOCKET-HANG's long wait, KEYS-DROPPED-WHILE-A-ROW-ATTACHES's window warning). rc.4 (2026-11-11) carried the
 preview that follows its row, the pane's copy and the chat drawer's look (rc.3 the drawer; rc.1 and rc.2 selection and
-drawing). `main` carries 0.7.1-rc.11-dev, with what the maintainer asked of the Chat drawer on rc.10 (2026-11-15):
-Up and Down ease the view to a marked message out of view, and Left over an empty draft leaves an open thread, as the
-nav pane's Left does. The `release/0.6.6` branch is closed to all but fixes found in use. A
+drawing). `main` carries 0.7.1-rc.12-dev, with what rc.11 does not: a chat picture opens full size in the preview, its
+original decoded only in the window's bounded drawing child, which completes the figures plan. rc.11 carries what the
+maintainer asked of the Chat drawer on rc.10 (2026-11-15): Up and Down ease the view to a marked message out of view,
+and Left over an empty draft leaves an open thread, as the nav pane's Left does. The `release/0.6.6` branch is closed to
+all but fixes found in use. A
 new release candidate waits until a person has used the last one and carries everything that use found, and
 everything else known to be wrong (the maintainer, 2026-11-13: a candidate saves nothing for the next one). In
 progress is the project chat (the daemon speaks Slack itself,
@@ -219,10 +226,9 @@ thread, read whole up to 156 messages, the channel's older ones giving way to it
 it), and posting into a thread (a draft goes where it was begun, the thread read again after the person's own
 post), and selection and copy (a drag selects text inside one message, Primary+c copies it or the marked message's
 shown text, never shared with the agent), and the native witness (the real window's chat through its State under a
-virtual display), which closes B5's plan; a person's first use of the drawer waits on a release candidate and the
-hub's chat configuration. A person's post from the drawer goes out under their own Slack user token, with nothing of the app, so a responder in the channel answers it as it answers anyone (built; that Slack's message for such a post has no `bot_id` is checked at a person's first post). Setting the chat up from the window is in progress: the daemon's `chat.connect` (three tokens
+virtual display), which closes B5's plan; a person's first use of the drawer, on rc.11, waits on the hub's chat configuration. A person's post from the drawer goes out under their own Slack user token, with nothing of the app, so a responder in the channel answers it as it answers anyone (built; that Slack's message for such a post has no `bot_id` is checked at a person's first post). Setting the chat up from the window is built: the daemon's `chat.connect` (three tokens
 checked with Slack, the secrets written owner-only, the chat restarted from its files with no daemon restart),
-`chat.resolve`'s `unconfigured`, `chat.channels` and `chat.pair` have landed, and the window sends all three: the channel picker the last two (an unmapped row opens it, and so does `chat.setup`, `Primary+Shift+K`), and the Connect step `chat.connect` (a row whose hub answers `unconfigured`, or `Connect Slack again` in the picker, leads the person through making their own Slack app, named for their login, and pasting its three tokens). The drawer's Slack look is in progress, in landings: Slack's dark colors, the header (the
+`chat.resolve`'s `unconfigured`, `chat.channels` and `chat.pair` have landed, and the window sends all three: the channel picker the last two (an unmapped row opens it, and so does `chat.setup`, `Primary+Shift+K`), and the Connect step `chat.connect` (a row whose hub answers `unconfigured`, or `Connect Slack again` in the picker, leads the person through making their own Slack app, named for their login, and pasting its three tokens), and so a computer with no `hosts.toml` is its own hub for the chat. The drawer's Slack look is in progress, in landings: Slack's dark colors, the header (the
 bold name, a smaller muted 12-hour time), the badge drawn from the origin alone, the mark's band and the selection,
 an author's messages grouped under one header with a tile in a gutter, and day dividers with the time alone in the
 header and Slack's thread summary, and Slack's inline styles (bold, italic, strike and code, by the drawer's reading of
@@ -246,10 +252,10 @@ downloaded at install, and no copy is loaded into the kernel). Also in progress,
 built alongside the chat: the agent sees the person's selection (`requirements.md`, "The agent
 sees what the user selects"); its wire op, the daemon's pure check and the handler, with its replies (`shared`, `held`, `no_agent`, `not_a_window`; the file published or removed per row) and the withdrawal (the file removed at its setting connection's end and by the start-up walk) have landed; the variable naming the row's selection file in each leg's environment is built, and so are the prompt hook that prints it, the marker that says which legs carry the hook and the test of the path from a connection standing in for the window to the hook, the window's network side of the request, and the window's share of a released text selection (in rendered markdown the source lines it was rendered from; sent when it changes,
 cleared when it goes, sent again after a reconnect, each reply on the status line), and the manual says how a selection
-or a drawing reaches the agent; the done test through a window and the Codex wiring are unbuilt. Figures are in progress on the maintainer's word
-(2026-11-16), by the plan `docs/history/chat-figures-plan.md` in place of B4: a row's agent posts a file, the drawer
+or a drawing reaches the agent; the done test through a window and the Codex wiring are unbuilt. Figures, on the maintainer's word
+(2026-11-16), are built by the plan `docs/history/chat-figures-plan.md` in place of B4: a row's agent posts a file, the drawer
 shows a message's pictures and opens one in the preview, and a person posts the previewed file, all in memory, nothing
-on disk; of it, the chat's share of a file has landed (Slack's three upload steps, only the share a mutation), and so has the share's read-back (an own file share takes its origin and name from its label), wire's two ops, and a row's post of a file of its folder (`sot-fe chat post --file`, through the daemon's `chat.post_file`), which closes the first goal, and a picture's bytes from the channel to the window's network side (the daemon's `chat.file`, its bytes the reply's blob, and fe-net's request for it, bounded by its variant), and the window's pictures owner, which asks for the thumbnails of the pictures the drawer places, one at a time per hub, and holds them decoded within bounds and draws them in tiles; nothing opens one yet. Mail (B3) has landed: the filing that names its expected row
+on disk; all of it has landed: the chat's share of a file (Slack's three upload steps, only the share a mutation), and the share's read-back (an own file share takes its origin and name from its label), wire's two ops, and a row's post of a file of its folder (`sot-fe chat post --file`, through the daemon's `chat.post_file`), which closes the first goal, and a picture's bytes from the channel to the window's network side (the daemon's `chat.file`, its bytes the reply's blob, and fe-net's request for it, bounded by its variant), and the window's pictures owner, which asks for the thumbnails of the pictures the drawer places, one at a time per hub, and holds them decoded within bounds and draws them in tiles, and a person's post of the previewed file (`Primary+u`, under their own user token), and the opening of a picture in the preview (a click on a tile, or `Primary+o` on the marked message; its original decoded only in the window's bounded drawing child, never in the window's own process), which completes the plan. Mail (B3) has landed: the filing that names its expected row
 (P14), one poll's bounded batch and the one reader of a sender's lines in every inbox have landed, and so have the chat's
 owner running from the service's start (delivery can run with no window open), one bounded, marked mail body per
 channel post with its one reader, the scan read (both bounds, never a cursor; a thread continuation under a lower bound
