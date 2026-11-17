@@ -442,6 +442,31 @@ fn the_title_names_the_channel_when_the_answer_did_and_says_the_id_otherwise() {
     assert_eq!(d.title(), " chat · C1 reading… ");
 }
 
+/// A hub serving several workspaces names the row's in the title, ahead of the channel; an answer with no workspace name
+/// (one workspace, or an older daemon) leaves the title as it was, and a later answer without it takes the name away.
+#[test]
+fn the_title_names_the_workspace_when_the_hub_does() {
+    let t0 = Instant::now();
+    let at = |ms: u64| t0 + Duration::from_millis(ms);
+    let mut d = ChatDrawer::default();
+    d.on_connection(&host(), true, false, t0);
+    d.tick(wanted("R"), t0);
+    d.tick(wanted("R"), at(150));
+    let json = |extra: serde_json::Value| {
+        let mut j = serde_json::json!({ "state": "mapped", "workspace": "T1", "channel": "C1", "delivers": false, "name": "general" });
+        j.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        answer("R", j)
+    };
+    d.on_evt(&host(), json(serde_json::json!({})), at(160));
+    assert_eq!(d.title(), " chat · #general reading… ", "no workspace name: today's title");
+    d.on_evt(&host(), json(serde_json::json!({ "workspace_name": "Lab" })), at(200));
+    assert_eq!(d.title(), " chat · Lab · #general reading… ");
+    d.on_evt(&host(), json(serde_json::json!({ "workspace_name": "La\nb" })), at(210));
+    assert_eq!(d.title(), " chat · La ⏎ b · #general reading… ", "the daemon's text reaches the cells through `cell_row`");
+    d.on_evt(&host(), json(serde_json::json!({})), at(220));
+    assert_eq!(d.title(), " chat · #general reading… ");
+}
+
 /// A name belongs to the id its answer named: no other id is drawn with it.
 #[test]
 fn a_name_is_drawn_only_for_the_id_its_answer_named() {

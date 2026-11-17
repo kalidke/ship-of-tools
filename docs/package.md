@@ -209,8 +209,10 @@ drawing). `main` carries 0.7.1-rc.13-dev, with what rc.12 does not: a Socket Mod
 envelope of another app ends it unacknowledged, `wrong_app`), a token Slack refuses by its own code ends the chat's
 service instead of a retry forever (`app_token_refused`, `bot_token_refused`), the daemon turns the chat off with that
 code before a watcher is told, and the window resolves the row again and brings the Connect step, which says whose
-token it was; and the Connect step's refusal of a second workspace says the hub connects one for now. Several
-workspaces on one hub, one per project, are in progress, in landings. rc.11 carries what the
+token it was. Several Slack workspaces on one hub, one per project, are built, up to 8, on `main` and in no release
+candidate yet: a person connects each from the Chat drawer and picks a project's channel in any of them, no request
+crosses workspaces, a reload restarts only the workspaces it changes, and the drawer's title names the workspace when
+the hub serves more than one; no person's use of it is recorded. rc.11 carries what the
 maintainer asked of the Chat drawer on rc.10 (2026-11-15): Up and Down ease the view to a marked message out of view,
 and Left over an empty draft leaves an open thread, as the nav pane's Left does. The `release/0.6.6` branch is closed to
 all but fixes found in use. A

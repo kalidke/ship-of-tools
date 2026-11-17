@@ -161,7 +161,8 @@ pub struct ChatResolveReq {
 
 /// Reply to `chat.resolve`. `delivers`: mail may be delivered for the row (a `mail_after` is set). `name`: the channel's
 /// name as the daemon's cache holds it (a resolve makes no Slack call); absent, empty, too long or
-/// not a string, a reader shows the id.
+/// not a string, a reader shows the id. `workspace_name`: the mapping's Slack workspace's name, sent only while the hub
+/// serves more than one workspace, and read as `name` is.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum ChatResolveRes {
@@ -172,6 +173,8 @@ pub enum ChatResolveRes {
         delivers: bool,
         #[serde(default, deserialize_with = "channel_name", skip_serializing_if = "Option::is_none")]
         name: Option<String>,
+        #[serde(default, deserialize_with = "channel_name", skip_serializing_if = "Option::is_none")]
+        workspace_name: Option<String>,
     },
     Unmapped,
     /// The hub's chat is off for a reason a `chat.connect` fixes. `workspace`: the row's mapping's workspace, when it has

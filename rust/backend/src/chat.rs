@@ -626,6 +626,13 @@ impl<L: Listener> Chat<L> {
         Some((default, list))
     }
 
+    /// `workspace`'s last name, only while more than one workspace is admitted: a window names the workspace in its title
+    /// only when there is a choice to tell apart.
+    pub(crate) fn name_to_show(&self, workspace: &str) -> Option<String> {
+        let several = self.units().map.len() > 1;
+        several.then(|| self.names.lock().unwrap_or_else(|e| e.into_inner()).get(workspace).cloned()).flatten()
+    }
+
     /// Keeps `name` as the last one Slack gave for `workspace`, when the workspace is admitted.
     pub(crate) fn remember_name(&self, workspace: &str, name: Option<String>) {
         let admitted = self.units().plans.contains_key(workspace);

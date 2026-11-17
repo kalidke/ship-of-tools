@@ -804,7 +804,8 @@ impl ChatDrawer {
             (Stand::Mapped, Some(Fill::Gap(code))) => format!("not up to date: {}", code.map_or("no messages read yet", ChatCode::text)),
             (stand, _) => stand.words(host),
         };
-        let channel = self.owner.channel().map(|c| format!("{} ", self.rows.label(c))).unwrap_or_default();
+        let workspace = self.rows.workspace_label().map(|w| format!("{w} · ")).unwrap_or_default();
+        let channel = self.owner.channel().map(|c| format!("{workspace}{} ", self.rows.label(c))).unwrap_or_default();
         // Each phrase is its own: the thread's, then the link's and the watch's.
         let phrases: Vec<String> = self.thread.iter().map(Thread::words).chain([words]).filter(|w| !w.is_empty()).collect();
         let thread = if self.thread.is_some() { "· thread " } else { "" };

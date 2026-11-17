@@ -67,12 +67,16 @@ fn the_chat_ops_are_declared_in_the_one_table() {
 fn every_request_reply_and_event_keeps_its_shape() {
     pinned(ChatResolveReq { row: "ws-a-1".into() }, json!({"row": "ws-a-1"}));
     pinned(
-        ChatResolveRes::Mapped { workspace: "T1".into(), channel: target().channel, delivers: false, name: None },
+        ChatResolveRes::Mapped { workspace: "T1".into(), channel: target().channel, delivers: false, name: None, workspace_name: None },
         json!({"state": "mapped", "workspace": "T1", "channel": "C1", "delivers": false}),
     );
     pinned(
-        ChatResolveRes::Mapped { workspace: "T1".into(), channel: target().channel, delivers: false, name: Some("general".into()) },
+        ChatResolveRes::Mapped { workspace: "T1".into(), channel: target().channel, delivers: false, name: Some("general".into()), workspace_name: None },
         json!({"state": "mapped", "workspace": "T1", "channel": "C1", "delivers": false, "name": "general"}),
+    );
+    pinned(
+        ChatResolveRes::Mapped { workspace: "T1".into(), channel: target().channel, delivers: false, name: None, workspace_name: Some("Lab".into()) },
+        json!({"state": "mapped", "workspace": "T1", "channel": "C1", "delivers": false, "workspace_name": "Lab"}),
     );
     pinned(ChatResolveRes::Unmapped, json!({"state": "unmapped"}));
     pinned(ChatWatchReq { target: target() }, json!({"target": target_json()}));
@@ -189,6 +193,26 @@ fn the_setup_family_carries_its_workspace_and_an_older_shape_still_decodes() {
         let r: ChatConnectRes = serde_json::from_value(json!({"workspace": "T1", "name": bad})).unwrap();
         assert_eq!(r.name, None, "{bad}");
     }
+    // A mapped reply names its workspace only on a hub serving several: an older daemon's has none, a bad name reads as
+    // none and keeps the mapping, and an older reader ignores the field.
+    let mapped = |extra: Value| {
+        let mut r = json!({"state": "mapped", "workspace": "T1", "channel": "C1", "delivers": true});
+        r["workspace_name"] = extra;
+        serde_json::from_value::<ChatResolveRes>(r).unwrap()
+    };
+    let workspace_name = |r: ChatResolveRes| match r {
+        ChatResolveRes::Mapped { workspace_name, channel, .. } => {
+            assert_eq!(channel, target().channel, "the mapping survives");
+            workspace_name
+        }
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(workspace_name(mapped(json!("Lab"))), Some("Lab".into()));
+    for bad in [json!(""), json!(5), json!(null), json!("n".repeat(161))] {
+        assert_eq!(workspace_name(mapped(bad.clone())), None, "{bad}");
+    }
+    let older: ChatResolveRes = serde_json::from_value(json!({"state": "mapped", "workspace": "T1", "channel": "C1", "delivers": true})).unwrap();
+    assert_eq!(workspace_name(older), None);
     let off: ChatResolveRes = serde_json::from_value(json!({"state": "unconfigured", "reason": "not_connected"})).unwrap();
     assert_eq!(off, ChatResolveRes::Unconfigured { reason: ChatUnconfigured::NotConnected, workspace: None });
     let bad: ChatResolveRes = serde_json::from_value(json!({"state": "unconfigured", "reason": "not_connected", "workspace": "T 1"})).unwrap();
@@ -448,7 +472,7 @@ fn an_older_reader_decodes_the_named_reply_and_this_one_the_unnamed() {
     let unnamed = json!({"state": "mapped", "workspace": "T1", "channel": "C1", "delivers": true});
     assert_eq!(
         serde_json::from_value::<ChatResolveRes>(unnamed).unwrap(),
-        ChatResolveRes::Mapped { workspace: "T1".into(), channel: target().channel, delivers: true, name: None }
+        ChatResolveRes::Mapped { workspace: "T1".into(), channel: target().channel, delivers: true, name: None, workspace_name: None }
     );
 }
 

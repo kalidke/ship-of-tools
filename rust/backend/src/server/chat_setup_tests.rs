@@ -1238,6 +1238,23 @@ fn a_channel_of_another_workspace_is_no_such_channel() {
     });
 }
 
+/// C12, L11 rule 3: a mapped answer names its workspace only while more than one is admitted, so a hub with one keeps
+/// the title as it was; the name is the last one Slack gave.
+#[test]
+fn a_resolve_names_its_workspace_only_while_the_hub_serves_two() {
+    logged(|| async {
+        let w = two().await;
+        let mut conn = connect_window(w.services.clone()).await;
+        conn.ask(2, op::CHAT_CONNECT, w.connect_req(A)).await;
+        assert_eq!(conn.ask(3, op::CHAT_PAIR, json!({"row": w.ids[0], "channel": "C0AAAA01"})).await, json!({}));
+        let one = conn.ask(4, op::CHAT_RESOLVE, json!({"row": w.ids[0]})).await;
+        assert_eq!((one["state"].as_str(), one.get("workspace_name")), (Some("mapped"), None), "{one}");
+        conn.ask(5, op::CHAT_CONNECT, w.connect_req(B)).await;
+        let two = conn.ask(6, op::CHAT_RESOLVE, json!({"row": w.ids[0]})).await;
+        assert_eq!((two["state"].as_str(), two["workspace_name"].as_str()), (Some("mapped"), Some("Alpha Lab")), "{two}");
+    });
+}
+
 /// C4, L8 rule 4: a mapped row is judged by its own workspace; an unmapped one is `unconfigured` only when no workspace's
 /// listener runs, so one failed workspace never keeps a person from pairing in another.
 #[test]

@@ -29,6 +29,8 @@ struct Wanted {
     name: Option<(String, String)>,
     /// The Slack workspace the last answer named: a mapped row's, or the one an `unconfigured` answer says failed.
     workspace: Option<String>,
+    /// The workspace's name the last mapped answer carried, which the daemon sends only while the hub serves several.
+    workspace_name: Option<String>,
     /// Mapped answers with no name so far, and when the next one is asked for (`None` once the asking ended).
     nameless: usize,
     retry_at: Option<Instant>,
@@ -116,7 +118,7 @@ impl RowChannel {
     pub(super) fn tick(&mut self, wanted: Option<ResultRowIdentity>, now: Instant) -> Tick {
         let same = self.wanted.as_ref().map(|w| &w.id) == wanted.as_ref();
         if !same {
-            self.wanted = wanted.map(|id| Wanted { id, since: now, asked: false, answer: None, name: None, workspace: None, nameless: 0, retry_at: None });
+            self.wanted = wanted.map(|id| Wanted { id, since: now, asked: false, answer: None, name: None, workspace: None, workspace_name: None, nameless: 0, retry_at: None });
         }
         // Only a refusal that is neither the hub's nor the row's is asked again, after the pace.
         if let Some(w) = self.wanted.as_mut().filter(|w| matches!(w.answer, Some((Stand::Failed(_), at)) if now.duration_since(at) >= GAP_PACE)) {
@@ -187,9 +189,13 @@ impl RowChannel {
             ChatReply::Done(ChatResolveRes::Unconfigured { workspace, .. }) => workspace.clone(),
             _ => None,
         };
+        let workspace_name = match reply {
+            ChatReply::Done(ChatResolveRes::Mapped { workspace_name, .. }) => workspace_name.clone(),
+            _ => None,
+        };
         let nameless = stand == Stand::Mapped && name.is_none();
         for w in self.wanted.iter_mut() {
-            (w.answer, w.name, w.workspace) = (Some((stand, now)), name.clone(), workspace.clone());
+            (w.answer, w.name, w.workspace, w.workspace_name) = (Some((stand, now)), name.clone(), workspace.clone(), workspace_name.clone());
             w.nameless = if nameless { w.nameless + 1 } else { 0 };
             w.retry_at = nameless.then(|| NAME_RETRIES.get(w.nameless - 1).map(|d| now + *d)).flatten();
         }
@@ -202,6 +208,12 @@ impl RowChannel {
             Some((id, name)) if id == channel => format!("#{}", cell_row(name)),
             _ => channel.to_string(),
         }
+    }
+
+    /// The workspace's name for the title, when the last answer carried one: the daemon's text, so it reaches the cells
+    /// through `cell_row`.
+    pub(super) fn workspace_label(&self) -> Option<String> {
+        self.wanted.as_ref().and_then(|w| w.workspace_name.as_deref()).map(|n| cell_row(n).into_owned())
     }
 
     /// The Slack workspace the wanted row's last answer named (a mapped row's, or the failed one of an `unconfigured`).
