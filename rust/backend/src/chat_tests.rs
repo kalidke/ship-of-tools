@@ -375,6 +375,82 @@ async fn a_load_whose_secrets_hold_no_user_token_warns_once_in_fixed_words() {
     let again = begin(&home, &Observed::new(), &Registry::new(), gives(&listener));
     assert_eq!(settled(&again).await, Status::Running);
     assert_eq!(log.text().matches(warning).count(), 1, "a user token was held, and the load warned");
+
+    // Once per file: a second workspace's file without one is named in its own line.
+    home.write(OTHER_FILE, &other_secrets(false));
+    let third = begin(&home, &Observed::new(), &Registry::new(), gives(&listener));
+    assert_eq!(settled(&third).await, Status::Running);
+    let named = "chat-secrets-T0BBBB.toml holds no user token: a person's post waits for Connect Slack in the Chat drawer";
+    assert_eq!((log.text().matches(warning).count(), log.text().matches(named).count()), (1, 1));
+}
+
+/// A second workspace's secrets file, beside `chat-secrets.toml`.
+const OTHER_FILE: &str = "chat-secrets-T0BBBB.toml";
+
+/// `T0BBBB`'s secrets, its tokens built at run time and unlike `T0AAAA`'s.
+fn other_secrets(user: bool) -> String {
+    let user = if user { format!("user_token = \"{}\"\n", ["xoxp", "-7777-8888-ffff"].concat()) } else { String::new() };
+    format!("workspace = \"T0BBBB\"\nbot_token = \"{}\"\napp_token = \"{}\"\n{user}", ["xoxb", "-5555-6666-bbbb"].concat(), ["xapp", "-1-B555-6666-eeee"].concat())
+}
+
+/// A start that keeps whether the credentials it was given hold a user token (the default's do, `T0BBBB`'s here not).
+fn keeps(listener: &Arc<Fake>, given: &Arc<Mutex<Vec<bool>>>) -> Starter<Fake> {
+    let (listener, given) = (listener.clone(), given.clone());
+    Box::new(move |_, credentials, _| {
+        given.lock().unwrap().push(credentials.user.is_some());
+        let listener = listener.clone();
+        Box::pin(async move { Ok(listener) })
+    })
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_hub_with_secrets_for_two_workspaces_serves_the_files_default_and_logs_the_other() {
+    let log = sot_platform::test_log::capture();
+    let home = Home::new(Some(SELF));
+    home.configured();
+    home.write(OTHER_FILE, &other_secrets(false));
+    let (seen, listener, given) = (Observed::new(), Arc::new(Fake::default()), Arc::new(Mutex::new(Vec::new())));
+    let chat = begin(&home, &seen, &Registry::new(), keeps(&listener, &given));
+    assert_eq!(settled(&chat).await, Status::Running);
+    // Both files are read, and the one start is the file's default's, under its own token.
+    let opened = vec![home.config().join(CONFIG_FILE), home.config().join(SECRETS_FILE), home.config().join(OTHER_FILE)];
+    assert_eq!(seen.opened(), opened);
+    assert_eq!(*given.lock().unwrap(), [true], "the start was not given the default's credentials alone");
+    // The other file is logged by its name, once, and no token byte is in the log.
+    let text = log.text();
+    let line = "project chat: a secrets file of another workspace is not served";
+    assert_eq!(text.lines().filter(|l| l.contains(line) && l.contains(OTHER_FILE)).count(), 1, "the other file's line");
+    assert!(!text.contains("xox") && !text.contains("xapp") && !text.contains("5555"), "a token form in the log");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_named_files_refusal_is_not_the_defaults() {
+    let log = sot_platform::test_log::capture();
+    let home = Home::new(Some(SELF));
+    home.configured();
+    let listener = Arc::new(Fake::default());
+    // A refused named file: the default runs, and the refusal is logged by the file's name and its code.
+    home.write(OTHER_FILE, &other_secrets(true).replace("xoxb-", "xoxq-"));
+    let chat = begin(&home, &Observed::new(), &Registry::new(), gives(&listener));
+    assert_eq!(settled(&chat).await, Status::Running);
+    let text = log.text();
+    let refused = text.lines().find(|l| l.contains("a secrets file is not served")).unwrap_or_default();
+    assert!(refused.contains(OTHER_FILE) && refused.contains(ConfigError::BadToken.explain()), "the refusal's line");
+    assert!(!text.contains("xoxq") && !text.contains("5555"), "a value in the log");
+    // No `chat-secrets.toml` beside an admitted named file: the default's own absence, never the named file's state.
+    home.write(OTHER_FILE, &other_secrets(true));
+    std::fs::remove_file(home.config().join(SECRETS_FILE)).unwrap();
+    let called = Arc::new(AtomicBool::new(false));
+    let missing = begin(&home, &Observed::new(), &Registry::new(), never(&called));
+    assert_eq!(missing.status(), Status::Secrets(ConfigError::Missing));
+    // A refused `chat-secrets.toml` is its own code, whatever the named file holds.
+    home.write(SECRETS_FILE, "workspace = \"T0AAAA\"\nbot_token = \"x\"\n");
+    let refused = begin(&home, &Observed::new(), &Registry::new(), never(&called));
+    assert_eq!(refused.status(), Status::Secrets(ConfigError::BadToken));
+    home.write(OTHER_FILE, "workspace = [[[");
+    let both = begin(&home, &Observed::new(), &Registry::new(), never(&called));
+    assert_eq!(both.status(), Status::Secrets(ConfigError::BadToken));
+    assert!(!called.load(Ordering::SeqCst), "a named file started the default's chat");
 }
 
 #[tokio::test(flavor = "multi_thread")]

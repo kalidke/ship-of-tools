@@ -1,15 +1,18 @@
-//! The chat's configuration: `chat.toml` (the one workspace, its channels, the folder-to-channel mappings, an optional
-//! `mail_after`) and `chat-secrets.toml` (the workspace and its three tokens, the user token optional). Both sit in platform's config folder. Every
-//! refusal is a fixed code with a fixed explanation: a value from either file is never quoted, a key is quoted only
+//! The chat's configuration: `chat.toml` (the file's workspace, its channels, the folder-to-channel mappings, an optional
+//! `mail_after`) and the secrets, one file per workspace, each the workspace and its three tokens (the user token
+//! optional): `chat-secrets.toml` for `chat.toml`'s workspace, `chat-secrets-<id>.toml` for any other. All sit at the top
+//! of platform's config folder. Every
+//! refusal is a fixed code with a fixed explanation: a value from any file is never quoted, a key is quoted only
 //! when a table of these files accepts it (the caller says which file refused), and the library's own parse errors
 //! (which quote the source) are never formatted. Reading the secrets is its own call, so a caller that is
-//! not the hub never opens that file. The daemon's setup writes both files whole, each text one the load admits, through
+//! not the hub never opens those files. The daemon's setup writes the files whole, each text one the load admits, through
 //! an injected writer pair: `chat.toml` durably, the secrets durably and owner-only.
 
 use crate::http::Secret;
 use crate::normalize::ts_key;
 use sot_platform::host::env::Env;
 use sot_protocol::chat::Ts;
+use std::collections::BTreeMap;
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -51,7 +54,14 @@ pub fn config_dir(env: &Env) -> Option<PathBuf> {
 }
 
 pub const CONFIG_FILE: &str = "chat.toml";
+/// The secrets of `chat.toml`'s workspace, in the one form an older daemon reads.
 pub const SECRETS_FILE: &str = "chat-secrets.toml";
+/// Any other workspace's secrets file is `chat-secrets-<id>.toml`, `<id>` a Slack id.
+const NAMED_PREFIX: &str = "chat-secrets-";
+const NAMED_SUFFIX: &str = ".toml";
+
+/// The most workspaces a hub serves (wire's one copy), so the most secrets files a load opens.
+pub use sot_protocol::ops::MAX_WORKSPACES;
 
 /// Why a file was refused. A code, and where it is when that is a number: no key and no value from the file. A mapping's
 /// ordinal counts from 1 in file order; a parse failure's line counts from 1.
@@ -72,6 +82,10 @@ pub enum ConfigError {
     ChannelNotListed(usize),
     TooManyDelivering,
     MappingWithoutFloor(usize),
+    /// A `chat-secrets-<id>.toml` holds another workspace than its `<id>`, or `<id>` is `chat.toml`'s own.
+    NameNotWorkspace,
+    /// A secrets file past the first `MAX_WORKSPACES` of a load: not read.
+    TooManyWorkspaces,
 }
 
 impl ConfigError {
@@ -91,6 +105,8 @@ impl ConfigError {
             ConfigError::ChannelNotListed(_) => "a mapping names a channel that chat.toml's channels does not list",
             ConfigError::TooManyDelivering => "mail is on (mail_after is set), so at most 32 mappings are allowed",
             ConfigError::MappingWithoutFloor(_) => "mail is on (mail_after is set), so each mapping needs its own mail_after: the time the mapping was added",
+            ConfigError::NameNotWorkspace => "a chat-secrets-<id>.toml must hold the workspace <id> its name says, and chat.toml's own workspace's secrets are chat-secrets.toml",
+            ConfigError::TooManyWorkspaces => "the config folder holds secrets for more workspaces than the hub serves (8): this file is not read",
         }
     }
 
@@ -189,14 +205,16 @@ impl Config {
         Config::parse(&text(read, &dir.join(CONFIG_FILE))?, canon)
     }
 
-    /// The one configured workspace id.
+    /// The file's default workspace: its top-level `workspace`, the one a mapping without its own is in, and the one
+    /// whose secrets are `chat-secrets.toml`.
     pub fn workspace(&self) -> &str {
         &self.workspace
     }
 
-    /// The admitted mappings, each as its canonical folder and its channel.
-    pub fn mappings(&self) -> impl Iterator<Item = (&str, &str)> {
-        self.mappings.iter().map(|(f, c, _)| (f.as_str(), c.as_str()))
+    /// The admitted mappings, each as its canonical folder, its workspace and its channel. Every mapping is in the
+    /// file's workspace: one naming another is refused at load.
+    pub fn mappings(&self) -> impl Iterator<Item = (&str, &str, &str)> {
+        self.mappings.iter().map(|(f, c, _)| (f.as_str(), self.workspace.as_str(), c.as_str()))
     }
 
     /// The ordinals (from 1, in file order) of the mappings the load ignored: a folder that does not exist (or is not
@@ -421,23 +439,136 @@ pub fn user_token(s: &str) -> Result<Secret, ConfigError> {
 }
 
 impl Credentials {
-    /// Read `chat-secrets.toml` from `dir`. The only call that opens it; the workspace must be `config`'s.
-    pub fn read(dir: &Path, read: Reader, config: &Config) -> Result<Credentials, ConfigError> {
-        Credentials::parse(&text(read, &dir.join(SECRETS_FILE))?, config)
-    }
-
-    pub fn parse(text: &str, config: &Config) -> Result<Credentials, ConfigError> {
+    /// One secrets file's text: its workspace and its tokens. Which workspace the file may hold is its reader's rule.
+    pub fn parse(text: &str) -> Result<(String, Credentials), ConfigError> {
         let t = parse_table(text)?;
         only(&t, &SECRETS_KEYS)?;
-        if workspace(&t)? != config.workspace {
-            return Err(ConfigError::SecondWorkspace);
-        }
-        Ok(Credentials {
+        let workspace = workspace(&t)?;
+        let credentials = Credentials {
             bot: token(&t, "bot_token", "xoxb-")?,
             app: token(&t, "app_token", "xapp-")?,
             user: t.contains_key("user_token").then(|| token(&t, "user_token", "xoxp-")).transpose()?,
-        })
+        };
+        Ok((workspace, credentials))
     }
+}
+
+/// The name of one workspace's secrets file, one of the two shapes: `chat-secrets.toml` (`None`, `chat.toml`'s
+/// workspace) or `chat-secrets-<id>.toml`. Made only by [`Secrets::file_of`] and the listing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SecretsFile(Option<String>);
+
+impl SecretsFile {
+    pub fn name(&self) -> String {
+        self.0.as_ref().map_or_else(|| SECRETS_FILE.to_string(), |id| format!("{NAMED_PREFIX}{id}{NAMED_SUFFIX}"))
+    }
+
+    /// The `<id>` of a listed `chat-secrets-<id>.toml`; `None` for any other name (a backup, a lower-case id).
+    fn named(name: &str) -> Option<&str> {
+        let id = name.strip_prefix(NAMED_PREFIX)?.strip_suffix(NAMED_SUFFIX)?;
+        is_slack_id(id).then_some(id)
+    }
+}
+
+/// The listing's own failure, named in a refusal as the files it would have found.
+const NAMED_FILES: &str = "chat-secrets-<id>.toml";
+
+/// One load of the secrets files: each admitted or refused on its own, so one file never turns another workspace off.
+#[derive(Debug)]
+pub struct Secrets {
+    /// The admitted workspaces, in workspace order.
+    admitted: BTreeMap<String, Credentials>,
+    /// Why `chat-secrets.toml` was not admitted (`Missing` when it is absent).
+    default: Option<ConfigError>,
+    /// Each named file refused or not read, by its name, in name order.
+    refused: Vec<(String, ConfigError)>,
+}
+
+impl Secrets {
+    /// The one call that lists the config folder and opens a secrets file. `chat-secrets.toml` must hold `config`'s
+    /// workspace (`SecondWorkspace`); the folder is listed once, and each name `chat-secrets-<id>.toml` whose `<id>` is a
+    /// Slack id is opened in name order and must hold `<id>` (`NameNotWorkspace`, as is one whose `<id>` is `config`'s,
+    /// which is not opened). The load opens at most `MAX_WORKSPACES` files; a named file past them is
+    /// `TooManyWorkspaces`, not opened. A listed name that is not UTF-8 is skipped. Every open goes through `read`.
+    pub fn read(dir: &Path, read: Reader, config: &Config) -> Secrets {
+        let open = |name: &str| text(read, &dir.join(name)).and_then(|t| Credentials::parse(&t));
+        let mut s = Secrets { admitted: BTreeMap::new(), default: None, refused: Vec::new() };
+        match open(SECRETS_FILE) {
+            Ok((w, c)) if w == config.workspace => { s.admitted.insert(w, c); }
+            Ok(_) => s.default = Some(ConfigError::SecondWorkspace),
+            Err(e) => s.default = Some(e),
+        }
+        let mut named = Vec::new();
+        if named_ids(dir, &mut named).is_err() {
+            s.refused.push((NAMED_FILES.to_string(), ConfigError::Unreadable));
+        }
+        named.sort_unstable();
+        let mut opened = 1;
+        for id in named {
+            let file = SecretsFile(Some(id.clone())).name();
+            let held = if id == config.workspace {
+                Err(ConfigError::NameNotWorkspace)
+            } else if opened == MAX_WORKSPACES {
+                Err(ConfigError::TooManyWorkspaces)
+            } else {
+                opened += 1;
+                open(&file)
+            };
+            match held {
+                Ok((w, c)) if w == id => { s.admitted.insert(w, c); }
+                Ok(_) => s.refused.push((file, ConfigError::NameNotWorkspace)),
+                Err(e) => s.refused.push((file, e)),
+            }
+        }
+        s
+    }
+
+    /// The file `workspace`'s secrets are written to: `chat-secrets.toml` for `config`'s workspace, else
+    /// `chat-secrets-<workspace>.toml` (`BadId` for a workspace that is not a Slack id).
+    pub fn file_of(workspace: &str, config: &Config) -> Result<SecretsFile, ConfigError> {
+        if workspace == config.workspace {
+            Ok(SecretsFile(None))
+        } else if is_slack_id(workspace) {
+            Ok(SecretsFile(Some(workspace.to_string())))
+        } else {
+            Err(ConfigError::BadId)
+        }
+    }
+
+    /// The admitted workspaces and their credentials, in workspace order.
+    pub fn workspaces(&self) -> impl Iterator<Item = (&str, &Credentials)> {
+        self.admitted.iter().map(|(w, c)| (w.as_str(), c))
+    }
+
+    /// Takes `workspace`'s credentials out of the load.
+    pub fn take(&mut self, workspace: &str) -> Option<Credentials> {
+        self.admitted.remove(workspace)
+    }
+
+    /// Why `chat-secrets.toml` was not admitted: `Missing` when it is absent. A named file's refusal is never this.
+    pub fn default_refusal(&self) -> Option<ConfigError> {
+        self.default
+    }
+
+    /// Each named file refused or not read, by its name and its code (a value of the file never).
+    pub fn refused(&self) -> &[(String, ConfigError)] {
+        &self.refused
+    }
+}
+
+/// The `<id>`s of the `chat-secrets-<id>.toml` entries at the top of `dir`, in the listing's order; a folder that does
+/// not exist lists none, and any other failure of the listing is the `Err` (the ids found before it are kept).
+fn named_ids(dir: &Path, ids: &mut Vec<String>) -> io::Result<()> {
+    let entries = match std::fs::read_dir(dir) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        listed => listed?,
+    };
+    for entry in entries {
+        if let Some(id) = entry?.file_name().to_str().and_then(SecretsFile::named) {
+            ids.push(id.to_string());
+        }
+    }
+    Ok(())
 }
 
 /// A text the load admits whole: within `MAX_FILE` (else `Malformed`, as the read refuses it) and through `Config::parse`.
@@ -464,7 +595,9 @@ pub fn fresh(workspace: &str) -> Result<String, ConfigError> {
 /// token passes the load's own grammar before any text is made (`BadToken`), and the text is parsed back by
 /// `Credentials::parse` before it is returned.
 pub fn secrets(workspace: &str, bot: &Secret, user: &Secret, app: &Secret) -> Result<Secret, ConfigError> {
-    let config = Config::parse(&fresh(workspace)?, &|_| None)?;
+    if !is_slack_id(workspace) {
+        return Err(ConfigError::BadId);
+    }
     token_form(bot.expose(), "xoxb-")?;
     token_form(user.expose(), "xoxp-")?;
     token_form(app.expose(), "xapp-")?;
@@ -474,7 +607,9 @@ pub fn secrets(workspace: &str, bot: &Secret, user: &Secret, app: &Secret) -> Re
     t.insert("user_token".into(), user.expose().into());
     t.insert("app_token".into(), app.expose().into());
     let text = t.to_string();
-    Credentials::parse(&text, &config)?;
+    if Credentials::parse(&text)?.0 != workspace {
+        return Err(ConfigError::SecondWorkspace);
+    }
     Ok(Secret::new(text))
 }
 
@@ -567,8 +702,8 @@ pub fn pair(
 /// One whole-file write, as [`Reader`] is the one read: a test observes it, the product's are platform's.
 pub type Write<'a> = &'a dyn Fn(&Path, &[u8]) -> io::Result<()>;
 
-/// The configuration's two writes: `chat.toml` through `config`, `chat-secrets.toml` through `secrets` alone, which
-/// must leave the file owner-only.
+/// The configuration's two writes: `chat.toml` through `config`, a secrets file through `secrets` alone, which must
+/// leave the file owner-only.
 #[derive(Clone, Copy)]
 pub struct Writers<'a> {
     pub config: Write<'a>,
@@ -597,7 +732,7 @@ pub fn write_config(dir: &Path, text: &str, writers: Writers) -> io::Result<()> 
     save(dir, CONFIG_FILE, text.as_bytes(), writers.config)
 }
 
-/// Writes `chat-secrets.toml` in `dir` whole, through the private writer alone.
-pub fn write_secrets(dir: &Path, secret: &Secret, writers: Writers) -> io::Result<()> {
-    save(dir, SECRETS_FILE, secret.expose().as_bytes(), writers.secrets)
+/// Writes the secrets file `file` in `dir` whole, through the private writer alone.
+pub fn write_secrets(dir: &Path, file: &SecretsFile, secret: &Secret, writers: Writers) -> io::Result<()> {
+    save(dir, &file.name(), secret.expose().as_bytes(), writers.secrets)
 }

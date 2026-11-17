@@ -11,6 +11,8 @@ pub const MAX_PAGE_RECORDS: usize = MAX_PAGE as usize + 1;
 pub const MAX_CURSOR: usize = 1024;
 /// The most channels watched at once (the watch model's bound), so the most a status can name.
 pub const MAX_WATCHED: usize = 32;
+/// The most Slack workspaces a hub serves, so the most secrets files its load opens.
+pub const MAX_WORKSPACES: usize = 8;
 /// The longest wait a `limited` post reply can name, in seconds.
 pub const MAX_RETRY_SECS: u64 = 3600;
 /// The most channels a `chat.channels` reply lists (the daemon's list is cut at this bound and says `more`).

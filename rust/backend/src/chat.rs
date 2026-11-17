@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 use std::time::Duration;
 
-use sot_chat::config::{self, Config, ConfigError, Credentials, Reader, Resolution};
+use sot_chat::config::{self, Config, ConfigError, Credentials, Reader, Resolution, Secrets};
 use sot_chat::delivery::Timing;
 use sot_chat::http::Http;
 use sot_chat::service::Service;
@@ -258,9 +258,10 @@ pub(crate) struct Chat<L: Listener = Service> {
 }
 
 impl<L: Listener> Chat<L> {
-    /// The one load, the boot's and each reload's, and the only caller of `Config::load` and `Credentials::read`. In
-    /// order: the hub fact; `chat.toml` against the disk; `chat-secrets.toml` (the only open of it in the daemon, through
-    /// `read`); the lock folder (the comm folder's `chat/`). A missing `chat.toml` leaves the chat off and writes
+    /// The one load, the boot's and each reload's, and the only caller of `Config::load` and `Secrets::read`. In
+    /// order: the hub fact; `chat.toml` against the disk; the secrets files (the only opens of them in the daemon, through
+    /// `read`), of which the file's default workspace alone is served, each other file logged by its name; the lock
+    /// folder (the comm folder's `chat/`). A missing `chat.toml` leaves the chat off and writes
     /// nothing. A mapping needs no row: one whose folder does not exist is ignored and logged by its ordinal, and a row
     /// made later in a mapped folder is admitted at its first action.
     fn load(env: &Env, read: Reader) -> Load {
@@ -282,14 +283,27 @@ impl<L: Listener> Chat<L> {
                 let refused = Status::Refused(*e);
                 return off(Some(config), refused);
             }
-            Ok(admitted) => match Credentials::read(&dir, read, admitted) {
-                Ok(c) => c,
-                Err(e) => return off(Some(config), Status::Secrets(e)),
-            },
+            Ok(admitted) => {
+                let mut secrets = Secrets::read(&dir, read, admitted);
+                for (file, why) in secrets.refused() {
+                    tracing::warn!(file = %file, %why, "project chat: a secrets file is not served");
+                }
+                for (workspace, credentials) in secrets.workspaces() {
+                    let file = Secrets::file_of(workspace, admitted).map(|f| f.name()).unwrap_or_default();
+                    if credentials.user.is_none() {
+                        tracing::warn!("{file} holds no user token: a person's post waits for Connect Slack in the Chat drawer");
+                    }
+                    if workspace != admitted.workspace() {
+                        tracing::warn!(file = %file, "project chat: a secrets file of another workspace is not served: this daemon serves chat.toml's workspace alone");
+                    }
+                }
+                // A named file's refusal is its own workspace's, never the default's.
+                match secrets.take(admitted.workspace()) {
+                    Some(c) => c,
+                    None => return off(Some(config), Status::Secrets(secrets.default_refusal().unwrap_or(ConfigError::Missing))),
+                }
+            }
         };
-        if credentials.user.is_none() {
-            tracing::warn!("chat-secrets.toml holds no user token: a person's post waits for Connect Slack in the Chat drawer");
-        }
         // The comm folder's, not this daemon's: every daemon that files into these inboxes takes the same lock.
         let Some(locks) = crate::comm::home::chat_dir(env) else { return off(Some(config), Status::Failed("lock")) };
         Load { config: Some(config), off: Status::Stopped, start: Some((credentials, locks)) }
@@ -630,7 +644,7 @@ impl Chat<Service> {
             // lookup to a count and a deadline): `chat.resolve` makes no Slack call and carries what the cache holds, so a
             // window's title can name the channel. A channel that got no name keeps its id, and its code is logged.
             if let (Some(Ok(config)), Ok(api)) = (chat.config().as_ref(), service.api()) {
-                let channels: Vec<String> = config.mappings().map(|(_, channel)| channel.to_string()).collect();
+                let channels: Vec<String> = config.mappings().map(|(_, _, channel)| channel.to_string()).collect();
                 drop(tokio::spawn(async move {
                     for (channel, code) in api.channel_names(&channels).await {
                         tracing::warn!(code, channel, "project chat: a channel's name was not found");

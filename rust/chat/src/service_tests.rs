@@ -44,24 +44,24 @@ fn config() -> Config {
 }
 
 /// Built at run time, so no source line holds a token-shaped literal for the secret scanner.
-fn credentials(config: &Config) -> Credentials {
+fn credentials() -> Credentials {
     let text = format!(
         "workspace = \"{WS}\"\nbot_token = \"{}\"\napp_token = \"{}\"\n",
         ["xoxb", "-sentinel-bot-aaaa"].concat(),
         ["xapp", "-sentinel-app-bbbb"].concat()
     );
-    Credentials::parse(&text, config).unwrap()
+    Credentials::parse(&text).unwrap().1
 }
 
 /// `credentials` with a user token, built at run time like the others.
-fn credentials_with_user(config: &Config) -> Credentials {
+fn credentials_with_user() -> Credentials {
     let text = format!(
         "workspace = \"{WS}\"\nbot_token = \"{}\"\napp_token = \"{}\"\nuser_token = \"{}\"\n",
         ["xoxb", "-sentinel-bot-aaaa"].concat(),
         ["xapp", "-sentinel-app-bbbb"].concat(),
         ["xoxp", "-sentinel-user-cccc"].concat()
     );
-    Credentials::parse(&text, config).unwrap()
+    Credentials::parse(&text).unwrap().1
 }
 
 fn timing() -> Timing {
@@ -115,7 +115,7 @@ async fn holding_fake(team: &'static str) -> FakeSlack {
 
 async fn start(fake: &FakeSlack, dir: &std::path::Path) -> Result<Service, ServiceError> {
     let config = config();
-    Service::start_for_test(&config, credentials(&config), fake.http(), dir, fake.url("slack.com", "/api/"), timing()).await
+    Service::start_for_test(&config, credentials(), fake.http(), dir, fake.url("slack.com", "/api/"), timing()).await
 }
 
 fn calls(fake: &FakeSlack) -> usize {
@@ -311,8 +311,7 @@ async fn the_lock_is_dropped_with_the_task_before_stop_returns() {
     }
     bounded(async {
         let fake = fake(WS, |mut peer| async move { peer.ignore_until_gone().await }).await;
-        let config = config();
-        let creds = credentials(&config);
+        let creds = credentials();
         let dropped = std::sync::Arc::new(AtomicBool::new(false));
         let api = crate::api::Api::new(fake.http(), creds.bot, WS).unwrap().with_base(fake.url("slack.com", "/api/"));
         let own = api.auth_test().await.unwrap();
@@ -633,7 +632,7 @@ async fn the_service_api_holds_the_credentials_user_token() {
         let fake = holding_fake(WS).await;
         let config = config();
         let url = fake.url("slack.com", "/api/");
-        let with = Service::start_for_test(&config, credentials_with_user(&config), fake.http(), &dir.0, url.clone(), timing())
+        let with = Service::start_for_test(&config, credentials_with_user(), fake.http(), &dir.0, url.clone(), timing())
             .await
             .expect("service with a user token");
         // The person's post is made (Slack's answer is the fake's refusal) under the credentials' user token, not unsent.
@@ -642,7 +641,7 @@ async fn the_service_api_holds_the_credentials_user_token() {
         let by = fake.seen().into_iter().find(|s| s.path().ends_with("/chat.postMessage")).and_then(|s| s.authorization);
         assert_eq!(by.as_deref(), Some(&*format!("Bearer {}", ["xoxp", "-sentinel-user-cccc"].concat())), "the person's bearer");
         with.stop(Duration::from_secs(3)).await;
-        let without = Service::start_for_test(&config, credentials(&config), fake.http(), &dir.0, url, timing())
+        let without = Service::start_for_test(&config, credentials(), fake.http(), &dir.0, url, timing())
             .await
             .expect("service without one");
         let unsent = without.api().unwrap().post("C0AAAA", None, crate::api::PostKind::Person, "tester", "hi").await;
@@ -722,7 +721,7 @@ async fn a_bot_token_refusal_ends_the_service_and_a_missing_scope_does_not() {
         let config = config();
         let url = fake.url("slack.com", "/api/");
         let start_with_user = || {
-            Service::start_for_test(&config, credentials_with_user(&config), fake.http(), &dir.0, url.clone(), timing())
+            Service::start_for_test(&config, credentials_with_user(), fake.http(), &dir.0, url.clone(), timing())
         };
 
         let service = start_with_user().await.expect("service");

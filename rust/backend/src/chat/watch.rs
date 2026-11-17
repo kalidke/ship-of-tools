@@ -506,7 +506,7 @@ impl Own {
         let Some(Ok(config)) = loaded.as_ref() else { return None };
         let dir = sot_platform::host::state_dir::daemon_state_dir_in(&self.chat.env).join("chat");
         let (mut states, mut folders) = (Vec::new(), Vec::new());
-        for (folder, channel) in config.mappings() {
+        for (folder, _, channel) in config.mappings() {
             let Some(floor) = config.floor(channel) else { continue };
             match sot_chat::state::State::load(&dir, config.workspace(), channel, &floor) {
                 Ok(state) if watches.deliver(channel).is_ok() => {
