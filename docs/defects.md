@@ -534,7 +534,13 @@ owned by `docs/CLAUDE.md`.
 - **TRUST-WRITE-DROPS-SAVE** [note] The reverse of REAUTH-TRUST-LOST, by reading: `ensure_folder_trusted`
   (`agents/folder_trust.rs`) reads the account's `.claude.json`, inserts the entry and renames its copy over the file
   outside Claude Code's lock, so a Claude Code save that lands between that read and that rename is dropped (a counter, a
-  project field, or an account field). Not seen; the window is a few milliseconds.
+  project field, or an account field). Not seen; the window is a few milliseconds. The spawn now makes a second write (the layer's, agents guarantee 6), a second such window.
+- **TRUST-RESTART-MISSES-ADDED-FOLDER** [note] By reading, with the dialog's text measured (LAYER-ADD-DIR-TRUST-STOP): the
+  trust restart (`rows/run/trust_restart.rs`, through messaging's `startup_of` in `comm/wake/screen.rs`) recognizes only
+  the row's own folder-trust dialog (`Quick safety check:` with `Yes, I trust this folder`), so a layer record lost to
+  Claude Code's own save (REAUTH-TRUST-LOST) leaves the "Adding a new directory:" dialog (`Yes, add it`, footer `Enter to
+  confirm · Esc to cancel`) to a person. Rule if seen: `startup_of` also reads that dialog as `TrustDialog` (the restart's
+  scope test is still the row's root), with a real capture as its fixture; a messaging change.
 
 ## files
 
@@ -1166,6 +1172,8 @@ owned by `docs/CLAUDE.md`.
 ## Closed
 
 An item closes by moving here as one line: id, subsystem, the fixing commit or landing.
+
+- **LAYER-ADD-DIR-TRUST-STOP** (agents) [session] closed by the landing that fixes it, 2026-11-17, seen by the lab's coordinating session on Claude Code 2.1.326: every new Claude leg stopped at startup at "Adding a new directory: <comm home>/claude-layer ... Yes, add it / No, exit", because the recipe adds the layer with `--add-dir` (guarantee 7) and the spawn's trust preparation recorded only the row's folder, under the declared prefix. Measured under a throwaway configuration and a scratch layer, driven in a pseudo-terminal and never answered: no record for the layer, the dialog; a record for the layer (by its path, or by a link to it), or for a folder above it, no dialog. The spawn now also records the ready layer, wherever it lies, when a declaration is read (`folder_trust::ensure_layer_trusted`, agents guarantee 6). Open beside it: TRUST-RESTART-MISSES-ADDED-FOLDER. The run of a real row on the installed daemon is the maintainer's done test.
 
 - **CHAT-FIGURES** (chat) [feature] closed by the records commit that follows its last landing, 2026-11-17. The maintainer asked (2026-11-15) whether figures work in the project chat and whether a session can post a figure to its project's channel; neither did, and he approved the work (2026-11-16). The plan, `docs/history/chat-figures-plan.md`, is built in its ten landings: L1 the chat's share of a file (`Api::post_file`, `rust/chat/CLAUDE.md` guarantee 32; a40ca229d), L2 its read-back as its poster's (905bdcaf2), L3 wire's two ops (3b026a1e8), L4 a row's post of a file (the daemon's `chat.post_file` and `sot-fe chat post --file`; 0c1f09728, bdd4dbeee), L5 the fetch of a picture of the channel (`Api::fetch_file`, guarantee 33; d6f461d98, 5e2351570), L6 a picture's bytes across the wire (the daemon's `chat.file`, fe-net's `OutgoingReq::ChatFile`; fdd00817b), L7 the window's pictures owner (4e5538df2, d795b8210, with the follow-ups 9881723ad and fc7ed5346), L8 the band of tiles in the Chat drawer (2cbb4d18e, 36bcf5060), L9 a picture opened full size in the preview, its original decoded only in the window's bounded drawing child (214e3a7dc, f9b044f2b, ff89a0821, 1b6c26e72, fa6638d0b), and L10 a person's post of the previewed file (`Primary+u`, under the person's own user token; 6999914e1, d786127dc, d6c40ecc1). rc.11 carries L1 to L8 and L10; L9 is on main after it. No person has used the figures yet, so the in-use result of each stays unrecorded.
 

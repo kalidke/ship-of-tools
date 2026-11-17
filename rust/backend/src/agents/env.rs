@@ -252,35 +252,7 @@ pub(crate) fn account_spawn_env(
             // before this existed, and a row that will not start is
             // worse. Claude rows only -- no other agent has this dialog.
             if agent_kind == "claude" {
-                use crate::agents::folder_trust::TrustOutcome;
-                let prepared = effective_claude_trust_file(&home, &extra).and_then(|file| {
-                    crate::agents::folder_trust::mark_claude_prepared(&file);
-                    crate::agents::folder_trust::trusted_root_prefix().and_then(|prefix| {
-                        crate::agents::folder_trust::ensure_folder_trusted(
-                            &file,
-                            cwd,
-                            prefix.as_deref(),
-                        )
-                        .map(|outcome| (outcome, prefix, file))
-                    })
-                });
-                match prepared {
-                    Ok((TrustOutcome::Outside, prefix, file)) => tracing::info!(
-                        workspace_id, cwd = ?cwd, prefix = ?prefix, trust_file = ?file,
-                        outcome = ?TrustOutcome::Outside, "folder trust preparation skipped"
-                    ),
-                    Ok((TrustOutcome::NotDeclared, _, _)) => tracing::warn!(
-                        workspace_id, declaration = ?crate::agents::trust_declaration::declaration_file(),
-                        outcome = ?TrustOutcome::NotDeclared, "folder trust preparation skipped"
-                    ),
-                    Ok((outcome, _, file)) => {
-                        tracing::info!(workspace_id, cwd = ?cwd, outcome = ?outcome, trust_file = ?file, "folder trust preparation")
-                    }
-                    Err(msg) => tracing::warn!(
-                        workspace_id, cwd = ?cwd, error = %msg,
-                        "folder trust not recorded; the agent starts anyway"
-                    ),
-                }
+                prepare_claude_trust(&home, &extra, cwd, workspace_id);
             }
             Ok(extra)
         }
@@ -290,6 +262,48 @@ pub(crate) fn account_spawn_env(
                 ErrorKind::Unsupported,
                 format!("no home directory to resolve account {account:?} against"),
             ));
+        }
+    }
+}
+
+/// The folder-trust preparation of one Claude spawn: the row's folder under the declared prefix, and the ready layer
+/// folder the leg adds with `--add-dir` (Claude Code asks about an added folder with no record, and a leg cannot answer;
+/// the layer is outside the prefix, so it has its own rule, `ensure_layer_trusted`). One log line per folder.
+fn prepare_claude_trust(home: &Path, extra: &[(String, String)], cwd: &Path, workspace_id: &str) {
+    use crate::agents::folder_trust::{ensure_folder_trusted, ensure_layer_trusted, TrustOutcome};
+    let layer = crate::comm::home::comm_home(&crate::comm::Env::process()).and_then(|comm| crate::agents::layer::layer_under(&comm));
+    let prepared = effective_claude_trust_file(home, extra).and_then(|file| {
+        crate::agents::folder_trust::mark_claude_prepared(&file);
+        crate::agents::folder_trust::trusted_root_prefix().map(|prefix| (file, prefix))
+    });
+    let (file, prefix) = match prepared {
+        Ok(read) => read,
+        Err(msg) => {
+            tracing::warn!(workspace_id, cwd = ?cwd, error = %msg, "folder trust not recorded; the agent starts anyway");
+            return;
+        }
+    };
+    // The layer's own line only where a declaration is read: with none, the row's line already says so.
+    let layer = layer.filter(|_| prefix.is_some());
+    let folders = std::iter::once((cwd, false, ensure_folder_trusted(&file, cwd, prefix.as_deref())))
+        .chain(layer.as_deref().map(|layer| (layer, true, ensure_layer_trusted(&file, layer, prefix.as_deref()))));
+    for (folder, is_layer, outcome) in folders {
+        match outcome {
+            Ok(TrustOutcome::Outside) => tracing::info!(
+                workspace_id, cwd = ?folder, layer = is_layer, prefix = ?prefix, trust_file = ?file,
+                outcome = ?TrustOutcome::Outside, "folder trust preparation skipped"
+            ),
+            Ok(TrustOutcome::NotDeclared) => tracing::warn!(
+                workspace_id, declaration = ?crate::agents::trust_declaration::declaration_file(),
+                outcome = ?TrustOutcome::NotDeclared, "folder trust preparation skipped"
+            ),
+            Ok(outcome) => {
+                tracing::info!(workspace_id, cwd = ?folder, layer = is_layer, outcome = ?outcome, trust_file = ?file, "folder trust preparation")
+            }
+            Err(msg) => tracing::warn!(
+                workspace_id, cwd = ?folder, layer = is_layer, error = %msg,
+                "folder trust not recorded; the agent starts anyway"
+            ),
         }
     }
 }

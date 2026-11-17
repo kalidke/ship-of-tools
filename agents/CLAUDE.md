@@ -73,21 +73,32 @@ of each.
    (`--account default` asks for the default), and a Codex or bash row names none. Limits: the shared `settings.json`
    must not select a login, and nothing here checks it; a spawn on another computer names the caller's account there,
    and that daemon refuses it if the folder is missing.
-6. **Folder trust is recorded only under the declared prefix, and preparation never stops a row.** `sotd trust
+6. **Folder trust is recorded only under a declaration, and preparation never stops a row.** `sotd trust
    declare <absolute-prefix>` (offline, the installer calls it) writes `[trust] root_prefix` into the daemon's
    `settings.toml` by exclusive creation or one durable replace, and keeps any existing `[trust]` answer
    byte-for-byte. At each Claude spawn `ensure_folder_trusted` records `hasTrustDialogAccepted` for the working
    folder in the effective child's `.claude.json` (the named `CLAUDE_CONFIG_DIR`'s, else the inherited one, else the
    home-level file) only when the OS-resolved folder lies under the OS-resolved prefix; the key keeps the child
-   cwd's own spelling (forward slashes on Windows); an entry already accepted is not rewritten; other keys and other
+   cwd's own spelling (forward slashes on Windows); an entry already accepted is not rewritten. The same spawn records
+   the layer folder the leg adds with `--add-dir` (guarantee 7) by `ensure_layer_trusted`, when the layer is ready
+   (`layer_under`) and a declaration is read, wherever the layer lies: it is in the comm home, outside any prefix, and
+   Claude Code 2.1.326 stops at "Adding a new directory" for an added folder that has no record of its own or a
+   parent's (measured under a throwaway configuration: no record, the dialog; a record for the layer, spelled by its
+   path or by a link to it, none). With no declaration, or one that is relative or unreadable, neither folder is
+   recorded. Other keys and other
    projects are preserved; this daemon's preparations are serialized and each publishes through a temporary name of its
    own; a file it cannot read or parse is refused, never clobbered. Every preparation is one log line
-   naming its outcome: recorded, already trusted and outside at info, each with the trust file; no declaration at warn,
-   with the declaration file; a failure at warn, with its error; the agent starts whatever it says. For rows'
+   per folder (the row's, then the layer's, which says `layer=true`) naming its outcome: recorded, already trusted and
+   outside at info, each with the trust file; no declaration at warn, once, with the declaration file; a failure at
+   warn, with its error; the agent starts whatever it says. For rows'
    trust restart, `folder_trust::under_declared_prefix` answers that same scope test (one private helper both
    call), and every Claude preparation marks its trust file with an instant, in memory, that `claude_prepared_within`
    reads. Limits: preparation is
-   proved, claude's consumption of it and its no-dialog behavior are the maintainer's done test; a concurrent edit of the file by another process (claude's own) is the writer's stated limit; a `CLAUDE_CONFIG_DIR` that is relative or not UTF-8 records nothing.
+   proved, claude's consumption of it and its no-dialog behavior are the maintainer's done test (the added-folder
+   behavior above was measured on a scratch configuration with no login, so it is not a row's run);
+   the trust restart (rows' `run/trust_restart.rs`) recognizes the row's own trust dialog (`Quick safety check:`) and not
+   the added-folder one, so a layer record lost to Claude Code's own save (docs/defects.md: REAUTH-TRUST-LOST) leaves
+   that dialog to a person; a concurrent edit of the file by another process (claude's own) is the writer's stated limit; a `CLAUDE_CONFIG_DIR` that is relative or not UTF-8 records nothing.
 7. **A skill and a work-state hook exist only where a leg of the recipe runs, except four onboarding skills.** The
    installer puts every Claude skill but four under `<comm home>/claude-layer/.claude/skills/`. The four, `sot-gh-auth`,
    `sot-install`, `sot-setup` and `sot-statusline-setup` (`CLAUDE_GLOBAL_SKILLS` in `src/sources.jl`, the one list), are
@@ -109,7 +120,7 @@ of each.
    Stop) and the subagent guard serve every joined session, so they stay in the user's own settings, written by the
    installer as before, and gate themselves on a joined identity (messaging's contract); the work-state part of the Stop
    script is not separable from its mail check, so a joined session outside a row still runs it (docs/defects.md: WORK-STATE-HOOKS-READ-FILES). Limits: `--add-dir`
-   also lets the session read and write the layer folder, which the next install overwrites; a caller's own `--settings` gains the hooks by guarantee 1's shape rule, and one the rule declines is left as given,
+   also lets the session read and write the layer folder, which the next install overwrites, and Claude Code asks whether to trust an added folder that has no trust record, which a leg cannot answer, so guarantee 6 records it (with no declaration the dialog stands); a caller's own `--settings` gains the hooks by guarantee 1's shape rule, and one the rule declines is left as given,
    so that leg carries no work-state hooks (logged; its skills still load); a caller's
    `--setting-sources` without `project` keeps an added folder's skills from loading (logged, and the recipe appends the
    prompt anyway); that Claude Code loads an added folder's `.claude/skills/` is Claude Code's behavior, which no test
@@ -424,7 +435,7 @@ One test per guarantee, named for it; `cargo test -p sot-backend agents::` runs 
 | 3 | `argv::tests::resolve_claude_*`, `resolve_ccx_*`; `env::tests::agent_env_prepends_local_bin_to_path_once`; `tests/agent_exec.rs` |
 | 4 | `env::tests::capsule_supervisor_env_*` (`capsule_supervisor_env_starts_claude_in_its_classic_renderer`), `nesting_env_scrub_list_is_pinned`, `every_row_leg_names_its_selection_file`, `a_verbatim_state_folder_gives_the_plain_forward_slash_form` (Windows only), `ccx_unsets_the_nesting_markers_the_scrub_list_names`, `tests/test-ccx-launch.sh` (`--capsule` keeps the selection file, a bare `ccx` drops it), `tests/capsule_workspaces/session_env.rs` (a real row's session names its own state folder's file), `rows::spawn::detach::start_mode_tests::the_scrub_comes_before_the_rows_pairs_so_the_row_keeps_its_selection_file`, `sotd_bin_value_*`, `the_leg_never_inherits_a_sotd_bin_its_own_start_path_rejected`; `tests/agent_exec.rs` |
 | 5 | `accounts::tests::*`, `account_links::tests::*`; `tests/test-spawn-capsule-workspace.sh` ("no --account: a claude row gets the spawning session's account") |
-| 6 | `folder_trust::tests::*` (`two_preparations_never_share_a_temporary_name`, `the_restart_asks_the_scope_the_record_uses`), `trust_declaration::tests::*`, `env::trust_declaration_controls::*`, `env::trust_scope_controls::*` (`a_recorded_or_already_trusted_preparation_is_one_info_line_naming_the_file`, `a_claude_preparation_marks_its_trust_file_and_no_other_file`), `env::trust_config_controls::*`; `tests/trust_declare.rs`, `tests/trust_premises.rs` |
+| 6 | `folder_trust::tests::*` (`two_preparations_never_share_a_temporary_name`, `the_restart_asks_the_scope_the_record_uses`), `trust_declaration::tests::*`, `env::trust_declaration_controls::*`, `env::trust_scope_controls::*` (`a_recorded_or_already_trusted_preparation_is_one_info_line_naming_the_file`, `a_claude_preparation_marks_its_trust_file_and_no_other_file`), `env::trust_config_controls::*`; the layer: `folder_trust::tests::the_layer_is_recorded_wherever_it_lies_once_a_prefix_is_declared`, `the_layer_is_recorded_beside_what_the_file_already_holds`, `no_declaration_or_a_relative_one_records_no_layer`, `env::trust_scope_controls::a_declared_box_records_the_ready_layer_beside_the_row_and_an_undeclared_one_neither`, `a_layer_that_is_not_ready_is_not_recorded`; `tests/trust_declare.rs`, `tests/trust_premises.rs` |
 | 7 | `argv::tests::the_layer_rides_the_recipe_and_a_plain_claude_has_none`, `a_layer_without_the_bootstrap_skill_is_left_out_and_the_prompt_goes_with_it`, `the_layer_reaches_the_capsule_leg_the_reauth_leg_and_agent_exec`, `a_callers_settings_json_is_merged_with_the_recipes_hooks`, `layer::tests::*` (`the_selection_hook_rides_the_recipe`);
 `tests/agent_exec.rs::agent_exec_claude_carries_the_layer_when_installed`; `tests/test-hook-commands.sh` (six commands, the selection hook's among them, and a missing selection script a silent no-op); `tests/test-selection-hook.sh` (the script's rows: unset, empty, missing, a directory, an empty file, the rendering byte for byte, a path with a space, unreadable, a 1 MiB input on stdin; laid flat and executable in the staged bin); `comm/tests/test-session-start-hook.sh` (the hook's output names the handle and the handoff, exits 0 with none, prints and joins nothing with hooks off); `a_recipe_hook_the_caller_already_has_is_not_added_twice`, `a_callers_settings_of_another_shape_is_passed_as_given`; `test/layer_tests.jl`, `test/protect_tests.jl` ("the mail check and the subagent guard stay in the user's settings"). A leg that carries the layer was proved at its argv, not by running Claude Code |
 | 8 | `test/protect_tests.jl` (a person's skill, a symlinked skills folder, every configuration folder, a person's hook), `test/claude_hooks_tests.jl` (the settings retirement) |

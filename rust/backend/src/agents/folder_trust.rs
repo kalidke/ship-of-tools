@@ -113,11 +113,29 @@ pub fn ensure_folder_trusted(
     prefix: Option<&Path>,
 ) -> Result<TrustOutcome, String> {
     match scope_of(root, prefix)? {
-        Scope::Undeclared => return Ok(TrustOutcome::NotDeclared),
-        Scope::Outside => return Ok(TrustOutcome::Outside),
-        Scope::Inside => (),
+        Scope::Undeclared => Ok(TrustOutcome::NotDeclared),
+        Scope::Outside => Ok(TrustOutcome::Outside),
+        Scope::Inside => record_accepted(path, root),
     }
+}
 
+/// The record for the layer folder, which every Claude leg adds with `--add-dir` (guarantee 7): Claude Code asks about an
+/// added folder that has no record of its own or a parent's, and a leg cannot answer. The folder lies in this daemon's
+/// own comm home, never under the declared prefix, so the scope test does not apply to it; the owner's opt-in does: with
+/// no declaration nothing is recorded, as for a row's folder, and a declaration that cannot be read as one trusts nothing.
+pub(crate) fn ensure_layer_trusted(
+    path: &Path,
+    layer: &Path,
+    prefix: Option<&Path>,
+) -> Result<TrustOutcome, String> {
+    match scope_of(layer, prefix)? {
+        Scope::Undeclared => Ok(TrustOutcome::NotDeclared),
+        Scope::Outside | Scope::Inside => record_accepted(path, layer),
+    }
+}
+
+/// Marks `root` accepted in the trust file `path`, once: the part of both records after their scope is decided.
+fn record_accepted(path: &Path, root: &Path) -> Result<TrustOutcome, String> {
     let _one_at_a_time = PREPARING.lock().unwrap_or_else(|e| e.into_inner());
     let at = |e: &dyn std::fmt::Display| format!("{}: {e}", path.display());
     let existing = match std::fs::read(&path) {

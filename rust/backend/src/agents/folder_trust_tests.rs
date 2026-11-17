@@ -333,6 +333,59 @@ fn an_already_trusted_root_is_left_byte_identical() {
     assert_eq!(std::fs::read(&file).unwrap(), before, "byte-identical");
 }
 
+// ---- the layer folder a leg adds with --add-dir ----
+
+#[test]
+fn the_layer_is_recorded_wherever_it_lies_once_a_prefix_is_declared() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path();
+    let parent = declared_parent(home);
+    let layer = home.join("comm").join("claude-layer");
+    touch_dir(&layer);
+    let file = claude_trust_file(home, "");
+    assert_eq!(
+        super::ensure_folder_trusted(&file, &layer, Some(&parent)),
+        Ok(TrustOutcome::Outside),
+        "the row's rule leaves it out: it is outside the prefix"
+    );
+    assert!(!file.exists());
+
+    assert_eq!(super::ensure_layer_trusted(&file, &layer, Some(&parent)), Ok(TrustOutcome::Recorded));
+    assert_eq!(recorded_trust(&file, &layer), Some(true));
+    let before = std::fs::read(&file).unwrap();
+    assert_eq!(super::ensure_layer_trusted(&file, &layer, Some(&parent)), Ok(TrustOutcome::AlreadyTrusted));
+    assert_eq!(std::fs::read(&file).unwrap(), before, "byte-identical");
+}
+
+#[test]
+fn the_layer_is_recorded_beside_what_the_file_already_holds() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path();
+    let parent = declared_parent(home);
+    let layer = home.join("claude-layer");
+    touch_dir(&layer);
+    let file = claude_trust_file(home, "");
+    std::fs::write(&file, br#"{"numStartups":3,"projects":{"/elsewhere":{"hasTrustDialogAccepted":true,"x":1}}}"#).unwrap();
+    assert_eq!(super::ensure_layer_trusted(&file, &layer, Some(&parent)), Ok(TrustOutcome::Recorded));
+    let doc: serde_json::Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    assert_eq!(doc["numStartups"], 3);
+    assert_eq!(doc["projects"]["/elsewhere"]["x"], 1);
+    assert_eq!(recorded_trust(&file, &layer), Some(true));
+}
+
+#[test]
+fn no_declaration_or_a_relative_one_records_no_layer() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path();
+    let layer = home.join("claude-layer");
+    touch_dir(&layer);
+    let file = claude_trust_file(home, "");
+    assert_eq!(super::ensure_layer_trusted(&file, &layer, None), Ok(TrustOutcome::NotDeclared));
+    assert!(!file.exists(), "the owner's opt-in is the same for the layer as for a row's folder");
+    assert!(super::ensure_layer_trusted(&file, &layer, Some(Path::new("relative"))).is_err());
+    assert!(!file.exists());
+}
+
 /// A stand-in for what the installer writes into this box's own
 /// settings file -- built in a tempdir, so no real path from any
 /// machine appears in this repo.
