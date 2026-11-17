@@ -29,6 +29,12 @@ struct Slack {
     user: Mutex<&'static str>,
     user_team: Mutex<&'static str>,
     open: Mutex<&'static str>,
+    /// What `conversations.list` answers (a check's word, [`answer`]).
+    list: Mutex<&'static str>,
+    /// The app `bots.info` names as the bot's (`None`: the call is unknown) and the app the socket's hello names (`None`:
+    /// none).
+    bot_app: Mutex<Option<&'static str>>,
+    hello_app: Mutex<Option<&'static str>>,
     feed: tokio::sync::mpsc::UnboundedSender<Value>,
 }
 
@@ -51,7 +57,7 @@ fn channel_json((id, name, private, member): Fact) -> Value {
 /// says hello and then sends what `feed` is given.
 async fn slack() -> (FakeSlack, Arc<Slack>) {
     let (feed, rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
-    let state = Arc::new(Slack { channels: Mutex::new(Vec::new()), join: Mutex::new("ok"), auth: Mutex::new("ok"), user: Mutex::new("ok"), user_team: Mutex::new("T0AAAA"), open: Mutex::new("ok"), feed });
+    let state = Arc::new(Slack { channels: Mutex::new(Vec::new()), join: Mutex::new("ok"), auth: Mutex::new("ok"), user: Mutex::new("ok"), user_team: Mutex::new("T0AAAA"), open: Mutex::new("ok"), list: Mutex::new("ok"), bot_app: Mutex::new(None), hello_app: Mutex::new(None), feed });
     let (held, rx) = (state.clone(), Arc::new(tokio::sync::Mutex::new(rx)));
     let fake = FakeSlack::start(Identity::Trusted, move |seen, port| {
         let path = seen.path();
@@ -69,9 +75,12 @@ async fn slack() -> (FakeSlack, Arc<Slack>) {
         } else if path.ends_with("/apps.connections.open") {
             let url = format!("wss://wss-primary.slack.com:{port}/link/?ticket=sentinel-ticket");
             answer(*held.open.lock().unwrap(), Reply::json(&json!({"ok": true, "url": url})))
+        } else if path.ends_with("/bots.info") && held.bot_app.lock().unwrap().is_some() {
+            let app = held.bot_app.lock().unwrap().unwrap_or_default();
+            Reply::json(&json!({"ok": true, "bot": {"id": "B0BOT", "app_id": app}}))
         } else if path.ends_with("/conversations.list") {
             let listed: Vec<Value> = held.channels.lock().unwrap().iter().filter(|c| !c.2 || c.3).copied().map(channel_json).collect();
-            Reply::json(&json!({"ok": true, "channels": listed, "response_metadata": {"next_cursor": ""}}))
+            answer(*held.list.lock().unwrap(), Reply::json(&json!({"ok": true, "channels": listed, "response_metadata": {"next_cursor": ""}})))
         } else if path.ends_with("/conversations.info") {
             match known(&wanted) {
                 Some(c) => Reply::json(&json!({"ok": true, "channel": channel_json(c)})),
@@ -91,11 +100,15 @@ async fn slack() -> (FakeSlack, Arc<Slack>) {
         } else if path.ends_with("/users.info") {
             Reply::json(&json!({"ok": true, "user": {"profile": {"display_name": "Name"}}}))
         } else if seen.upgrade {
-            let rx = rx.clone();
+            let (rx, held) = (rx.clone(), held.clone());
             Reply::socket(move |mut peer| {
-                let rx = rx.clone();
+                let (rx, held) = (rx.clone(), held.clone());
                 async move {
-                    peer.send(&json!({"type": "hello", "num_connections": 1})).await;
+                    let mut said = json!({"type": "hello", "num_connections": 1});
+                    if let Some(app) = *held.hello_app.lock().unwrap() {
+                        said["connection_info"] = json!({"app_id": app});
+                    }
+                    peer.send(&said).await;
                     let mut rx = rx.lock().await;
                     // Until the client goes, so a reload's socket takes the feed.
                     loop {
@@ -686,6 +699,39 @@ async fn resolve_says_unconfigured_for_each_reason_a_connect_fixes() {
     let w = world(None, &[]).await;
     w.rows.remove_by_id(&w.ids[0]);
     assert_eq!(code(&resolve(w).await), "stale_row");
+}
+
+/// A service that ended on its own is off with its code, and `chat.resolve` says why: another app's token is `wrong_app`,
+/// a token Slack refused (the app's at the socket's open, the bot's on a call) is `tokens_refused`.
+#[tokio::test(flavor = "multi_thread")]
+async fn resolve_says_why_a_service_ended() {
+    for ended in ["wrong_app", "app_token_refused", "bot_token_refused"] {
+        let home = Home::new(Some(SELF));
+        home.configured();
+        let w = world_on(home, &[public("C0PUB", true)], None, None).await;
+        assert_eq!(w.services.chat.status(), Status::Running, "{ended}");
+        let mut conn = connect_window(w.services.clone()).await;
+        let chat = w.services.chat.clone();
+        match ended {
+            "wrong_app" => {
+                *w.slack.bot_app.lock().unwrap() = Some("A0OWN");
+                *w.slack.hello_app.lock().unwrap() = Some("A0OTHER");
+                chat.reload(&chat.setup().await, &w.rows).await;
+            }
+            "app_token_refused" => {
+                *w.slack.open.lock().unwrap() = "invalid_auth";
+                chat.reload(&chat.setup().await, &w.rows).await;
+            }
+            _ => {
+                *w.slack.list.lock().unwrap() = "token_revoked";
+                conn.ask(2, op::CHAT_CHANNELS, json!({})).await;
+            }
+        }
+        until(&format!("the chat off with {ended}"), || chat.status() == Status::Failed(ended)).await;
+        let reason = if ended == "wrong_app" { "wrong_app" } else { "tokens_refused" };
+        let resolved = conn.ask(3, op::CHAT_RESOLVE, json!({"row": w.ids[0]})).await;
+        assert_eq!(resolved, json!({"state": "unconfigured", "reason": reason}), "{ended}");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]

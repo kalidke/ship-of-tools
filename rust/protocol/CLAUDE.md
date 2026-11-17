@@ -135,7 +135,7 @@ name is in this crate's one op table.
     (`is_id`); `more` says the list was cut there. The decoder bounds the entries and the name, not the escaped size: a full
     list fits one frame because the daemon's names carry no control character (a quote or backslash doubles, a control
     character would be six bytes). `ChatResolveRes::Unconfigured {reason}` is the hub's chat off for a reason a connect fixes
-    (`not_connected`, `tokens_refused`, `start_failed`; a later reason reads as `other`; a hub that holds no user token says nothing here: `chat.resolve` answers a row as it always did, since a row's reply needs only the bot token, and a person's post refused `no_user_token` is what brings the window's Connect step); an older window reads the state as
+    (`not_connected`, `tokens_refused` (also a token Slack refused while the chat ran), `start_failed`, `wrong_app` (the app-level token is another Slack app's than the bot's, so the chat ended); a later reason reads as `other`, as `wrong_app` does to a window before it (`a_reason_added_later_reads_as_other`); a hub that holds no user token says nothing here: `chat.resolve` answers a row as it always did, since a row's reply needs only the bot token, and a person's post refused `no_user_token` is what brings the window's Connect step); an older window reads the state as
     `invalid`, which it shows as its no-configuration words. `chat::slack_app_manifest(name)` is the Slack app's manifest as
     JSON (the app and bot named `name`, which `chat::slack_app_name(login)` makes `Ship of Tools (<login>)`, the login cut
     so the whole is at most `MAX_APP_NAME` (35) characters, Slack's limit, or `Ship of Tools` for a blank login: each

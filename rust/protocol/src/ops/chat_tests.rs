@@ -176,12 +176,28 @@ fn an_older_reader_reads_unconfigured_as_invalid() {
         #[serde(other)]
         Invalid,
     }
-    for reason in ["not_connected", "tokens_refused", "start_failed", "from_the_future"] {
+    for reason in ["not_connected", "tokens_refused", "start_failed", "wrong_app", "from_the_future"] {
         let reply = json!({"state": "unconfigured", "reason": reason});
         assert_eq!(serde_json::from_value::<Before>(reply).unwrap(), Before::Invalid, "{reason}");
     }
     let later = json!({"state": "unconfigured", "reason": "from_the_future"});
     assert_eq!(serde_json::from_value::<ChatResolveRes>(later).unwrap(), ChatResolveRes::Unconfigured { reason: ChatUnconfigured::Other });
+}
+
+/// A reason a daemon adds reads as `other` to a window before it: `wrong_app` is the one added with an ended service.
+#[test]
+fn a_reason_added_later_reads_as_other() {
+    #[derive(Debug, PartialEq, Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    enum Before {
+        TokensRefused,
+        #[serde(other)]
+        Other,
+    }
+    for (reason, before) in [("tokens_refused", Before::TokensRefused), ("wrong_app", Before::Other), ("from_the_future", Before::Other)] {
+        assert_eq!(serde_json::from_value::<Before>(json!(reason)).unwrap(), before, "{reason}");
+    }
+    pinned(ChatResolveRes::Unconfigured { reason: ChatUnconfigured::WrongApp }, json!({"state": "unconfigured", "reason": "wrong_app"}));
 }
 
 /// A full list, each name at its bound and doubled by escaping (the daemon's names carry no control character, which

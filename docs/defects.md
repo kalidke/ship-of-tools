@@ -1038,16 +1038,17 @@ owned by `docs/CLAUDE.md`.
   there. The harm is ended: the listener learns its bot's app from `bots.info` at the start and ends for good,
   `wrong_app`, on a `hello` or an envelope of any type naming another app, that envelope not acknowledged
   (`Worker::handle`, `rust/chat/src/socket.rs`; chat guarantee 17), failing open where Slack names no app or `bots.info`
-  fails. Still to do: the daemon turns the chat off with the code and `chat.resolve` says why, and the window brings the
-  Connect step and says whose token; until then the chat answers `unavailable` and the daemon logs nothing of the end.
+  fails. The daemon now turns the chat off with the code, logs it once and `chat.resolve` says `wrong_app`. Still to do: the
+  window brings the Connect step and says whose token; until then the chat answers `unavailable`.
   From a plan's review, reading code; never seen.
 - **CHAT-REFUSED-TOKEN-RETRIED-FOREVER** [note] An `apps.connections.open` Slack refused as a bad token was retried on its
   pace forever with the service `Running`, and a bot-token read refused `token_revoked` read only as `failed` ("the chat
   request failed"), so a revoked app never led to the Connect step. The harm is ended: an open whose answer carries
   Slack's token code ends the service `app_token_refused`, a bot-token call answered with a code of `TOKEN_REFUSALS`
   ends it `bot_token_refused`, and an ended service answers as a stopped one and frees its lock (`Service::ended`,
-  `rust/chat/src/service.rs`; chat guarantees 20 and 22). A bare 401 or 403 with no code is retried, as before. Still to
-  do: the daemon and the window, as for CHAT-APP-TOKEN-OF-ANOTHER-APP; until then the daemon logs nothing of the end.
+  `rust/chat/src/service.rs`; chat guarantees 20 and 22). A bare 401 or 403 with no code is retried, as before. The daemon
+  turns the chat off with the code, logs it once and `chat.resolve` says `tokens_refused`. Still to do: the window, as for
+  CHAT-APP-TOKEN-OF-ANOTHER-APP.
   From a plan's review, reading code; never seen.
 - **CHAT-DELIVERY-STALL-UNTOLD** [note] A stalled delivery shows only in the daemon log while `chat.resolve` says
   `delivers: true`: a channel whose state file cannot be read (it stays off), a start read of the inboxes that fails on

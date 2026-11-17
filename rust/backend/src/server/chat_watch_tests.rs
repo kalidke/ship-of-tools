@@ -56,6 +56,10 @@ pub(super) struct Levers {
     /// Permits the socket takes, one, before it says hello: plenty at first, so a test closes the gate with
     /// `forget_permits` and opens it with `add_permits`.
     hello: Arc<tokio::sync::Semaphore>,
+    /// The app `bots.info` names as the bot's (unset: the call is unknown, so the bot's app is unchecked) and the app the
+    /// socket's hello names in its `connection_info` (unset: it names none).
+    bot_app: Arc<Mutex<Option<String>>>,
+    hello_app: Arc<Mutex<Option<String>>>,
 }
 
 /// A fake Slack with a live socket: `auth.test` names the workspace, history answers an empty page, a file's upload is
@@ -74,9 +78,12 @@ pub(super) async fn live() -> (FakeSlack, Levers) {
         names_hang: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         histories: Arc::new(AtomicUsize::new(0)),
         hello: Arc::new(tokio::sync::Semaphore::new(1000)),
+        bot_app: Arc::new(Mutex::new(None)),
+        hello_app: Arc::new(Mutex::new(None)),
     };
     let (mode, gate, acked, histories, hello, channel) = (lv.mode.clone(), lv.gate.clone(), lv.acked.clone(), lv.histories.clone(), lv.hello.clone(), lv.channel.clone());
     let (replies_fail, replies_failed, names_hang) = (lv.replies_fail.clone(), lv.replies_failed.clone(), lv.names_hang.clone());
+    let (bot_app, hello_app) = (lv.bot_app.clone(), lv.hello_app.clone());
     let upload = Upload::new();
     let fake = FakeSlack::start(Identity::Trusted, move |seen, port| {
         let path = seen.path();
@@ -85,6 +92,9 @@ pub(super) async fn live() -> (FakeSlack, Levers) {
         }
         if let Some(r) = upload.reply(seen, port) {
             return r;
+        }
+        if let (true, Some(app)) = (path.ends_with("/bots.info"), bot_app.lock().unwrap().clone()) {
+            return Reply::json(&json!({"ok": true, "bot": {"id": "B0BOT", "app_id": app}}));
         }
         if path.ends_with("/users.info") {
             let user = seen.param("user").unwrap_or_default();
@@ -122,12 +132,16 @@ pub(super) async fn live() -> (FakeSlack, Levers) {
             };
         }
         if seen.upgrade {
-            let (rx, acked, hello) = (rx.clone(), acked.clone(), hello.clone());
+            let (rx, acked, hello, hello_app) = (rx.clone(), acked.clone(), hello.clone(), hello_app.clone());
             return Reply::socket(move |mut peer| {
-                let (rx, acked, hello) = (rx.clone(), acked.clone(), hello.clone());
+                let (rx, acked, hello, hello_app) = (rx.clone(), acked.clone(), hello.clone(), hello_app.clone());
                 async move {
                     hello.acquire().await.unwrap().forget();
-                    peer.send(&json!({"type": "hello", "num_connections": 1})).await;
+                    let mut said = json!({"type": "hello", "num_connections": 1});
+                    if let Some(app) = hello_app.lock().unwrap().clone() {
+                        said["connection_info"] = json!({"app_id": app});
+                    }
+                    peer.send(&said).await;
                     let mut rx = rx.lock().await;
                     // Until the client goes, so a later socket (a reload's) takes the feed.
                     loop {
@@ -887,6 +901,43 @@ async fn the_running_state_is_logged_once() {
     assert!(ok_watch(&conn.ask(2, op::CHAT_WATCH, watch(&rig.alpha, "C0AAAA")).await));
     let text = log.text();
     assert_eq!(text.matches("the chat service is running").count(), 1, "{text}");
+}
+
+/// A service that ended on its own (its socket's hello names another app than the bot's) turns the chat off with the
+/// code, once, and tells its watchers as a stop does; its lock is freed, so a reload starts the next service.
+#[tokio::test(flavor = "current_thread")]
+async fn an_ended_service_turns_the_chat_off_with_its_code_and_frees_its_lock() {
+    let (fake, lv) = live().await;
+    *lv.bot_app.lock().unwrap() = Some("A0OWN".into());
+    *lv.hello_app.lock().unwrap() = Some("A0OTHER".into());
+    // The hello waits for the gate, so a watch is in place when the service ends.
+    lv.hello.forget_permits(1000);
+    let log = sot_platform::test_log::capture();
+    let rig = rig(&fake).await;
+    let (chat, hub) = (rig.services.chat.clone(), rig.services.chat.hub().clone());
+    let mut conn = connect(rig.services.clone()).await;
+    assert!(ok_watch(&conn.ask(2, op::CHAT_WATCH, watch(&rig.alpha, "C0AAAA")).await));
+    lv.hello.add_permits(1);
+    let payload = loop {
+        let (name, payload) = conn.evt("a chat.status for the end").await;
+        if name == op::CHAT_STATUS && payload["service"] != "running" {
+            break payload;
+        }
+    };
+    assert!(matches!(payload["service"].as_str(), Some("stopping" | "stopped")), "{payload}");
+    assert_eq!(payload["resync"], json!(["C0AAAA"]), "{payload}");
+    until("the chat off with the service's code", || chat.status() == Status::Failed("wrong_app")).await;
+    until("the owner's end", || !hub.running()).await;
+    let text = log.text();
+    assert_eq!(text.matches("the chat service ended").count(), 1, "{text}");
+    assert!(text.contains("wrong_app"), "{text}");
+    assert_eq!(code(&conn.ask(3, op::CHAT_WATCH, watch(&rig.alpha, "C0AAAA")).await), "unavailable");
+    // The lock was freed with the listener: the next service, of the app the bot names, starts and holds it.
+    *lv.hello_app.lock().unwrap() = None;
+    lv.hello.add_permits(1);
+    assert_eq!(bounded("the reload", async { chat.reload(&chat.setup().await, &rig.rows).await }).await, Status::Running);
+    after_hello(&chat, &rig.rows, &alpha_target(&rig)).await;
+    assert!(ok_watch(&conn.ask(4, op::CHAT_WATCH, watch(&rig.alpha, "C0AAAA")).await));
 }
 
 /// The boot's wait ends with the chat when the chat is retired while starting.
