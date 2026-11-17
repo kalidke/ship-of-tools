@@ -80,7 +80,8 @@ through the channel types below.
   0), never the generic `Event`; the window's one arm logs it and gives a lost `chat.changed` to the chat owner, which watches again; no other pane recovers from loss yet. Tests
   `reply_tests::bus_lost_evt_decodes_into_its_typed_event`.
 - The project chat is typed edges on the host's one control connection, so a remote host's chat costs no login and no
-  channel (M7, asserted inside `a_remote_host_costs_one_login_for_control_pages_and_rows`): `OutgoingReq::{ChatResolve, ChatWatch, ChatUnwatch, ChatHistory, ChatPost, ChatPostFile, ChatFile, ChatConnect, ChatWorkspaces, ChatChannels, ChatPair}`
+  channel (M7; `a_remote_host_costs_one_login_for_control_pages_and_rows` sends a resolve, a watch and a post, and the
+  others share their path): `OutgoingReq::{ChatResolve, ChatWatch, ChatUnwatch, ChatHistory, ChatPost, ChatPostFile, ChatFile, ChatConnect, ChatWorkspaces, ChatChannels, ChatPair}`
   and `IncomingEvt::Chat(ChatEvt)` (transport/ops/chat.rs). A reply carries the request it answers (the row, target,
   history query or post), and is `Done`, `Unsupported` (an older daemon's exact unknown-op answer, which ends only that
   request: `old_daemon_chat_refusal_preserves_other_requests`) or `Refused(code)` (`Other` for a code the window does not

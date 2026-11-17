@@ -9,12 +9,12 @@ is the one, with no `hosts.toml` needed. If you have several, it is the one your
 window shows the chat of that computer, and a project's chat is that of a session row on it.
 
 **Several Slack workspaces.** The chat can connect up to 8 Slack workspaces, with your own Slack app in each, and each
-project's channel is in one of them. To add a workspace, press `Ctrl+Shift+K` in the Chat drawer, choose **Connect a
+project's channel is in one of them. To add a workspace, press `Ctrl+Shift+K` (`Cmd+Shift+K` on a Mac) in the Chat drawer, choose **Connect a
 Slack workspace** at the end of the channel list, and go through the steps below with an app made in that workspace (all
 three Slack codes come from that one app). Connecting another workspace adds it and leaves the others and their projects'
 channels as they are. The channel list then shows one workspace at a time, named in its title; Left and Right move
 between them. If one workspace's Slack codes stop working, the other workspaces' projects go on, and a project whose
-channel is in the stopped workspace says which one; there, `Ctrl+Shift+K` opens the channel list of the others, to move
+channel is in the stopped workspace says which one; there, `Ctrl+Shift+K` (`Cmd+Shift+K` on a Mac) opens the channel list of the others, to move
 the project to a channel in another workspace. An older window lists and picks channels of the first workspace only; an older
 Ship of Tools on the computer that runs your agents connects one workspace, and whoever runs it there can update it.
 
@@ -87,8 +87,10 @@ yet shows the list once the drawer has the keys; press Escape to close it, and E
 - A private channel is in the list only once you have invited your app to it, and is marked `private; your Slack app is in it`.
 - If your workspace has more channels than the list holds (1,000), the list says so: paste a channel's link or ID
   (`Ctrl+V`) to pick it. A channel's link is in its details in Slack; its last part is the ID, which begins with `C` or
-  `G` and is made of capital letters and digits. A link names its workspace too, and is picked there; a link of a
-  workspace that is not connected is refused.
+  `G` and is made of capital letters and digits. The address in your browser's Slack tab
+  (`https://app.slack.com/client/T.../C...`) also names the workspace, and is picked there, or refused when that workspace
+  is not running here; the link Slack's Copy link gives (`https://<your workspace>.slack.com/archives/C...`) names it by its
+  web address alone, so it is picked in the workspace the list shows.
 - After you pick, the drawer shows the channel at once. Another project's channel cannot be picked again: it says that
   another project already uses it.
 

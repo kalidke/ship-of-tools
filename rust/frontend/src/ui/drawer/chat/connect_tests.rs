@@ -617,7 +617,7 @@ fn a_connect_reply_resolves_the_row_again_and_enter_then_opens_the_picker() {
     d.on_evt(&host(), connected("T1"), t);
     assert_eq!(resolves(&d.tick(shown("ROW1"), t).0), 1, "the reply resolves the row at once");
     assert_eq!(d.title(), " chat · connected ");
-    assert!(drawn(&d).contains("Ship of Tools is connected to the Slack workspace T1."));
+    assert!(drawn(&d).contains("Ship of Tools is connected to the Slack workspace with ID T1."));
     // Before the row's new answer, Enter says to wait; after it, Enter opens the picker and asks for the channels.
     let (outs, asks) = key(&mut d, ENTER);
     assert!(outs.is_empty() && d.in_setup());
@@ -945,8 +945,10 @@ fn no_project_word_reaches_a_screen() {
     }
 
     // What is taken out first, and why: Slack's own names and headings, a file's, a command's and a key's names a person types
-    // or finds, and the four wire texts an agent reads.
+    // or finds, the four wire texts an agent reads, and the one gloss of Slack's own word at the codes' first mention on the
+    // Connect step's first screen.
     let kept = [
+        "(Slack calls them tokens)",
         "Bot User OAuth Token", "User OAuth Token", "App-Level Tokens", "App-Level Token", "User Token Scopes", "Generate Token and Scopes",
         "`hub =`", "`sotd log-path`",
     ];
@@ -1000,7 +1002,7 @@ fn running(others: bool) -> ChatEvt {
 fn a_failed_workspaces_step_names_it_and_its_chord_opens_another_workspaces_list() {
     let (mut d, at, outs) = in_failed("tokens_refused");
     assert_eq!(outs.iter().filter(|(_, r)| matches!(r, OutgoingReq::ChatWorkspaces)).count(), 1, "the step asks which workspaces run");
-    assert!(drawn(&d).starts_with(" chat · set up Slack \nThis project's channel is in the Slack workspace TBBBB2, whose connection failed."), "{}", drawn(&d));
+    assert!(drawn(&d).starts_with(" chat · set up Slack \nThis project's channel is in the Slack workspace with ID TBBBB2, whose connection failed."), "{}", drawn(&d));
     assert!(!drawn(&d).contains("Shift+K"), "no chord before another workspace is known to run");
     assert!(key(&mut d, SETUP).0.is_empty() && d.in_setup());
     d.on_evt(&host(), running(true), at);
@@ -1069,4 +1071,55 @@ fn the_connected_screen_names_the_workspace_and_opens_its_list() {
         { "id": "TAAAA1", "name": "Alpha Lab", "running": true }, { "id": "TNEWW5", "name": "Delta Lab", "running": true } ] })).unwrap();
     let outs = d.on_evt(&host(), ChatEvt::Workspaces { reply: ChatReply::Done(res) }, t);
     assert!(matches!(outs.as_slice(), [(_, OutgoingReq::ChatChannels { workspace: Some(w) })] if w == "TNEWW5"), "{outs:?}");
+}
+
+/// Connects workspace `w`, named `name`, from the step shown: its three codes pasted and the hub's reply.
+fn connect_in_step(d: &mut ChatDrawer, w: &str, name: &str, at: Instant) {
+    for t in [bot(), user(), app()] {
+        paste(d, &t);
+    }
+    d.on_evt(&host(), ChatEvt::Connect { reply: ChatReply::Done(ChatConnectRes { workspace: w.into(), name: Some(name.into()) }) }, at);
+}
+
+/// B1b review S1: from a row whose workspace failed, a person connects another workspace (in the step, or through the
+/// moved-to list's `Connect a Slack workspace`); the row still answers `unconfigured` for the failed one, so Enter on the
+/// connected screen opens the channel list on the workspace just connected, never "press Enter again" forever. A
+/// reconnect of the failed workspace that still fails shows the step again.
+#[test]
+fn connecting_another_workspace_from_a_failed_row_opens_its_list() {
+    for through_list in [false, true] {
+        let (mut d, at, _) = in_failed("tokens_refused");
+        d.on_evt(&host(), running(true), at);
+        if through_list {
+            key(&mut d, SETUP);
+            d.on_evt(&host(), running(true), at);
+            let listed: ChatChannelsRes = serde_json::from_value(serde_json::json!({ "channels": [
+                { "id": "C1", "name": "lab-general", "private": false, "member": true } ] })).unwrap();
+            d.on_evt(&host(), ChatEvt::Channels { workspace: Some("TAAAA1".into()), reply: ChatReply::Done(listed) }, at);
+            (0..3).for_each(|_| d.picker_step(true));
+            assert!(d.picker_enter().is_empty() && d.in_setup(), "Connect a Slack workspace starts the step");
+        }
+        connect_in_step(&mut d, "TNEWW5", "Delta Lab", at);
+        assert_eq!(resolves(&d.tick(shown("ROW1"), at).0), 1, "{through_list}");
+        // Before the row's new answer, Enter says to wait.
+        assert_eq!(key(&mut d, ENTER).1.notice.as_deref(), Some("setting up the chat: press Enter again in a few seconds to choose this project's channel"));
+        d.on_evt(&host(), answer("ROW1", serde_json::json!({ "state": "unconfigured", "reason": "tokens_refused", "workspace": "TBBBB2" })), at);
+        d.tick(shown("ROW1"), at);
+        let (outs, asks) = key(&mut d, ENTER);
+        assert_eq!((lists(&outs), d.picking(), d.in_setup(), asks.notice), (1, true, false, None), "{through_list}");
+        let res = serde_json::from_value(serde_json::json!({ "default": "TAAAA1", "workspaces": [
+            { "id": "TAAAA1", "name": "Alpha Lab", "running": true }, { "id": "TNEWW5", "name": "Delta Lab", "running": true } ] })).unwrap();
+        let outs = d.on_evt(&host(), ChatEvt::Workspaces { reply: ChatReply::Done(res) }, at);
+        assert!(matches!(outs.as_slice(), [(_, OutgoingReq::ChatChannels { workspace: Some(w) })] if w == "TNEWW5"), "{through_list}: {outs:?}");
+        d.tick(shown("ROW1"), at);
+        assert!(d.picking(), "{through_list}: the row's unconfigured answer does not take the list away");
+    }
+    // The failed workspace connected again, still failing: Enter gives the step back for the row's stand.
+    let (mut d, at, _) = in_failed("tokens_refused");
+    connect_in_step(&mut d, "TBBBB2", "Beta Lab", at);
+    d.tick(shown("ROW1"), at);
+    d.on_evt(&host(), answer("ROW1", serde_json::json!({ "state": "unconfigured", "reason": "tokens_refused", "workspace": "TBBBB2" })), at);
+    key(&mut d, ENTER);
+    d.tick(shown("ROW1"), at);
+    assert!(d.in_setup() && d.title() == " chat · set up Slack ", "{}", d.title());
 }

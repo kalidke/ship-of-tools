@@ -148,7 +148,7 @@ impl Connect {
     /// Whether Ctrl+Shift+K moves the project to another workspace's channel: on the first screen, for a row whose
     /// workspace failed, while another runs.
     fn can_move(&self) -> bool {
-        self.screen == Screen::First && self.failed_in.is_some() && self.elsewhere && !self.post_as_you
+        self.screen == Screen::First && self.failed_in.is_some() && self.elsewhere
     }
 
     /// The step a person's refused post brings: the hub holds no token that posts as them, or Slack stopped accepting it.
@@ -330,7 +330,7 @@ impl Connect {
         let refused = self.refused_screen();
         let mut out: Vec<String> = self.failed.iter().filter(|_| self.screen == Screen::First).cloned().collect();
         // A row whose channel is in a workspace whose connection failed: which one, and why, before the step's own words.
-        if let (Screen::First, Some((id, wname)), false) = (&self.screen, &self.failed_in, self.post_as_you) {
+        if let (Screen::First, Some((id, wname))) = (&self.screen, &self.failed_in) {
             let w = workspace_words(id, wname.as_deref());
             out.push(match self.reason {
                 ChatUnconfigured::NotConnected => format!("This project's channel is in {w}, which Ship of Tools on {c} is not connected to."),
@@ -354,7 +354,7 @@ impl Connect {
             }
             Screen::First => {
                 out.push("This panel shows a Slack channel beside this project: you read it and post to it here. First, connect Ship of Tools to the Slack workspace the channel is in. You do this once for each Slack workspace you use, in three steps on Slack's website. Every project with a channel in that workspace then uses that connection, and each project picks its own channel afterward.".into());
-                out.push(format!("You need Slack's website open and signed in, in your web browser (the Slack desktop app is not enough). In step 1 you make {APP}. In steps 2 and 3 you copy three Slack codes from Slack: one lets Ship of Tools post as you, one lets your Slack app read and post, and one lets it see new messages as they arrive. A Slack code is a long string of letters and digits, like a password: paste it only here. A Slack code you paste here is never posted. The messages you write in the chat itself, once it is set up, are posted under your own Slack name; what your agents post goes out as your Slack app. Each person makes their own Slack app in each workspace they connect, even when a colleague already has one there: two people sharing one app each miss messages, because Slack splits the messages between them."));
+                out.push(format!("You need Slack's website open and signed in, in your web browser (the Slack desktop app is not enough). In step 1 you make {APP}. In steps 2 and 3 you copy three Slack codes (Slack calls them tokens) from Slack: one lets Ship of Tools post as you, one lets your Slack app read and post, and one lets it see new messages as they arrive. A Slack code is a long string of letters and digits, like a password: paste it only here. A Slack code you paste here is never posted. The messages you write in the chat itself, once it is set up, are posted under your own Slack name; what your agents post goes out as your Slack app. Each person makes their own Slack app in each workspace they connect, even when a colleague already has one there: two people sharing one app each miss messages, because Slack splits the messages between them."));
                 format!("Enter  start    Right  I already made my Slack app: go to step 2{away}    Esc  close")
             }
             Screen::Make => {

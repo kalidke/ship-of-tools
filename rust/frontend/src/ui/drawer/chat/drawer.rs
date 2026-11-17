@@ -318,12 +318,23 @@ impl ChatDrawer {
             let row = self.rows.row().cloned();
             outs.extend(self.open_picker_at(row.as_ref(), None, true).unwrap_or_default());
         } else if asks.done {
-            if matches!(self.rows.stand(), Stand::Mapped | Stand::Unmapped) {
-                self.close_modal();
-                let row = self.rows.row().cloned();
-                outs.extend(self.open_picker_at(row.as_ref(), connected, false).unwrap_or_default());
-            } else {
-                asks.notice = Some("setting up the chat: press Enter again in a few seconds to choose this project's channel".into());
+            let row = self.rows.row().cloned();
+            // A row whose own workspace still failed, and another workspace connected: the project moves there.
+            let elsewhere = connected.is_some() && self.rows.workspace().is_some_and(|w| Some(w) != connected.as_deref());
+            match self.rows.stand() {
+                Stand::Mapped | Stand::Unmapped => {
+                    self.close_modal();
+                    outs.extend(self.open_picker_at(row.as_ref(), connected, false).unwrap_or_default());
+                }
+                Stand::Unconfigured(_) if elsewhere => {
+                    self.close_modal();
+                    outs.extend(self.open_picker_at(row.as_ref(), connected, true).unwrap_or_default());
+                }
+                Stand::Resolving => {
+                    asks.notice = Some("setting up the chat: press Enter again in a few seconds to choose this project's channel".into());
+                }
+                // Anything else (the workspace connected still fails, the link went): the row's stand shows again.
+                _ => drop(self.close_modal()),
             }
         }
         (outs, asks)
@@ -616,11 +627,15 @@ impl ChatDrawer {
         Ok(vec![(row.host.clone(), OutgoingReq::ChatWorkspaces)])
     }
 
-    /// Left (`next` false) or Right in the picker: the previous or next workspace's channels, asked once it shows.
-    pub(in crate::ui) fn picker_move(&mut self, next: bool) -> Vec<Out> {
-        let Some(p) = self.picker_mut() else { return Vec::new() };
+    /// Left (`next` false) or Right in the picker: the previous or next workspace's channels, asked once it shows. Refused
+    /// while a pair is in flight, whose answer the shown workspace's words must still fit.
+    pub(in crate::ui) fn picker_move(&mut self, next: bool) -> Result<Vec<Out>, &'static str> {
+        if self.pair_sent.is_some() {
+            return Err("setting this project's channel…");
+        }
+        let Some(p) = self.picker_mut() else { return Ok(Vec::new()) };
         let host = p.row.host.clone();
-        p.move_by(next).map(|w| vec![(host, OutgoingReq::ChatChannels { workspace: Some(w) })]).unwrap_or_default()
+        Ok(p.move_by(next).map(|w| vec![(host, OutgoingReq::ChatChannels { workspace: Some(w) })]).unwrap_or_default())
     }
 
     /// The picker ends, and the channel's view returns.

@@ -16,11 +16,12 @@ use crate::ui::ResultRowIdentity;
 fn invite(name: &str) -> String {
     format!("in that channel in Slack, type /invite @{name}")
 }
-const GUIDE: &str = "Type to narrow the list, Up and Down to choose, Enter to pick, Esc to close. Picking a channel your Slack app is not in makes it join, \
-and Slack then shows that it joined. A private channel appears in this list once you invite your Slack app: ";
-/// The guide's first sentence while the list can move between workspaces.
-const GUIDE_SEVERAL: &str = "Type to narrow the list, Up and Down to choose, Left and Right for another Slack workspace, Enter to pick, Esc to close. \
-Picking a channel your Slack app is not in makes it join, and Slack then shows that it joined. A private channel appears in this list once you invite your Slack app: ";
+/// The guide, its keys naming Left and Right when the list can move between workspaces (`several`).
+fn guide(several: bool) -> String {
+    let moving = if several { " Left and Right for another Slack workspace," } else { "" };
+    format!("Type to narrow the list, Up and Down to choose,{moving} Enter to pick, Esc to close. Picking a channel your Slack app is not in makes it join, \
+and Slack then shows that it joined. A private channel appears in this list once you invite your Slack app: ")
+}
 /// What an older computer's picker says: whose channels these are, that its Ship of Tools connects one workspace and who can
 /// change that, and what "your Slack app" is.
 fn head_one(c: &str) -> String {
@@ -40,9 +41,13 @@ pub(super) fn workspace_label(id: &str, name: Option<&str>) -> String {
     }
 }
 
-/// A Slack workspace as a sentence names it: `the Slack workspace <name>`, its ID in place of a name none is known.
+/// A Slack workspace as a sentence names it: `the Slack workspace <name>`, or `the Slack workspace with ID <ID>` when no
+/// name is known (a workspace whose start failed since the daemon started has none).
 pub(super) fn workspace_words(id: &str, name: Option<&str>) -> String {
-    format!("the Slack workspace {}", name.map_or_else(|| id.to_string(), |n| cell_row(n).into_owned()))
+    match name {
+        Some(n) => format!("the Slack workspace {}", cell_row(n)),
+        None => format!("the Slack workspace with ID {id}"),
+    }
 }
 
 /// What Enter on an entry does. A pair names the workspace it pairs in (`None`: an older computer's one).
@@ -93,8 +98,9 @@ pub(super) struct Picker {
 
 /// The team and the channel a pasted link names: the channel is its last path segment, when it has Slack's id shape (`C` or
 /// `G`, then capitals and digits, eight characters at least), and the team the segment before it, when that has a team's
-/// (`T` or `E`, the same rule); an id alone is a channel. Any other paste (a word, a token) names nothing.
-fn link_target(text: &str) -> Option<(Option<String>, ChatChannel)> {
+/// (`T` or `E`, the same rule: the browser's `app.slack.com/client/T.../C...`; Slack's Copy link,
+/// `<domain>.slack.com/archives/C...`, names none); an id alone is a channel. Any other paste (a word, a token) names nothing.
+pub(super) fn link_target(text: &str) -> Option<(Option<String>, ChatChannel)> {
     let path = text.trim().split(['?', '#']).next()?;
     let mut segments = path.trim_end_matches('/').rsplit('/');
     let shaped = |s: &str, first: [char; 2]| s.len() >= 8 && s.starts_with(first) && s.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit());
@@ -102,11 +108,6 @@ fn link_target(text: &str) -> Option<(Option<String>, ChatChannel)> {
     let channel = shaped(segment, ['C', 'G']).then(|| ChatChannel::try_from(segment.to_string()).ok()).flatten()?;
     let team = segments.next().filter(|t| shaped(t, ['T', 'E'])).map(str::to_string);
     Some((team, channel))
-}
-
-/// The channel id a pasted link names, or none (`link_target`'s channel).
-pub(super) fn link_channel(text: &str) -> Option<ChatChannel> {
-    link_target(text).map(|(_, c)| c)
 }
 
 impl Picker {
@@ -160,6 +161,10 @@ impl Picker {
     /// list), or `None` when there is none to ask. It opens on `start` when that one runs, else on the default when it runs,
     /// else on the first running.
     pub(super) fn on_workspaces(&mut self, reply: ChatReply<ChatWorkspacesRes>) -> Option<Option<String>> {
+        // A late second answer (the picker closed and opened again) never moves a person off the list they are on.
+        if !matches!(self.places, Places::Asking) {
+            return None;
+        }
         let c = self.c();
         match reply {
             ChatReply::Done(res) => {
@@ -279,6 +284,12 @@ impl Picker {
     /// computer runs (one it is not connected to is refused, never paired elsewhere); any other paste is refused whole.
     pub(super) fn paste(&mut self, text: &str) -> Result<Pick, String> {
         let (team, channel) = link_target(text).ok_or("not pasted: that is not a Slack channel link")?;
+        // Until the workspaces are known, a link's workspace could not be told from the one shown.
+        match &self.places {
+            Places::Asking => return Err(format!("not pasted: still reading which Slack workspaces the chat on {} is connected to; paste it again in a moment", self.c())),
+            Places::Nowhere(_) => return Err(format!("not pasted: no Slack workspace is running on {} right now", self.c())),
+            _ => {}
+        }
         let workspace = match (&self.places, team) {
             (Places::Known { running, .. }, Some(team)) if running.iter().any(|w| w.id == team) => Some(team),
             (Places::Known { .. }, Some(_)) => {
@@ -358,9 +369,8 @@ impl Picker {
                 let head = if entries.is_empty() { format!("{head}\n\nno channel matches") } else { format!("{head}\n") };
                 let more = if *more { " More channels exist than are listed: paste a channel's link to pick one." } else { "" };
                 let (lead, moving) = match places {
-                    Places::Older => (GUIDE, MOVE),
-                    _ if self.several() => (GUIDE_SEVERAL, ""),
-                    _ => (GUIDE, ""),
+                    Places::Older => (guide(false), MOVE),
+                    _ => (guide(self.several()), ""),
                 };
                 (head, format!("{lead}{}.{more}{moving}", invite(&self.app)))
             }
