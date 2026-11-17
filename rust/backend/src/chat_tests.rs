@@ -11,7 +11,7 @@ pub(crate) const SELF: &str = "hub-box";
 const BOT: &str = "xoxb-1111-2222-aaaa";
 const APP: &str = "xapp-1-A111-2222-bbbb";
 /// The person's user token, split so no source line holds a token-shaped literal for the secret scanner.
-const USER: &str = concat!("xox", "p-3333-4444-dddd");
+pub(crate) const USER: &str = concat!("xox", "p-3333-4444-dddd");
 /// A bound no test relies on meeting: it only has to be long enough for a stop that finishes.
 const LONG: Duration = Duration::from_secs(60);
 

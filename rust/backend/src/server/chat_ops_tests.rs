@@ -858,16 +858,25 @@ async fn a_persons_post_slack_refuses_is_not_a_member_or_forgets_the_token() {
     assert_eq!(posts(&fake), before, "a forgotten token's next post was sent");
 }
 
-/// A person's file is refused for what it is, even from a window and even for a file that does not exist: `bad_request`
-/// before anything is read, never `not_a_file`, and nothing reaches Slack (a person's share is built with its caller).
+/// A person's file from a window is read under the rule a row's is (a file that is not there is `not_a_file`, nothing
+/// sent) and shared once under the person's own user token, steps 1 and 3 alike, never the bot's, with the comment alone.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_persons_file_post_from_a_window_is_refused_before_any_read() {
+async fn a_persons_file_post_from_a_window_goes_under_their_token_once() {
     let mode = Arc::new(AtomicU8::new(OK));
     let fake = slack(&mode).await;
     let rig = rig(&fake).await;
+    std::fs::write(rig.folders[0].join("fit.png"), PNG).unwrap();
     let mut window = connect_window(rig.services.clone()).await;
-    let reply = window.ask(2, op::CHAT_POST_FILE, file_post(&rig.alpha, "C0AAAA", "person", "tester", "files:no-such.png")).await;
-    assert_eq!((code(&reply), reply.get("outcome")), ("bad_request", None), "{reply}");
-    assert_eq!(calls(&fake), 0, "a person's file reached Slack");
-    assert!(uploads(&fake).is_empty());
+    let reply = window.ask(2, op::CHAT_POST_FILE, file_post(&rig.alpha, "C0AAAA", "person", "", "files:no-such.png")).await;
+    assert_eq!(code(&reply), "not_a_file", "{reply}");
+    assert_eq!(calls(&fake), 0, "a file that is not there reached Slack");
+    let posted = window.ask(3, op::CHAT_POST_FILE, file_post(&rig.alpha, "C0AAAA", "person", "", "files:fit.png")).await;
+    assert_eq!(posted, json!({"outcome": "posted", "file": "F0FILE", "ts": "1700000800.000100"}));
+    let seen: Vec<_> = fake.seen().into_iter().filter(|s| is_upload_call(&s.path())).collect();
+    assert_eq!(seen.len(), 3, "each step once");
+    let person = format!("Bearer {}", crate::chat::tests::USER);
+    let bearers: Vec<Option<&str>> = seen.iter().map(|s| s.authorization.as_deref()).collect();
+    assert_eq!(bearers, [Some(person.as_str()), None, Some(person.as_str())], "the person's token, never the bot's");
+    let share = seen[2].json().unwrap();
+    assert_eq!((share["initial_comment"].as_str(), share["thread_ts"].as_str()), (Some("the fit"), Some("1700000050.000000")), "{share}");
 }

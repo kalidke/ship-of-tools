@@ -840,9 +840,11 @@ impl Api {
     /// (`files.getUploadURLExternal`, under the read rules); step 2 posts the bytes to the URL it answered, with no
     /// authorization; step 3 (`files.completeUploadExternal`) is the share, the only mutation, read as a post's answer
     /// is. Its `initial_comment` is the label `<name> (<kind> via Ship of Tools)`, then `: ` and the comment when there
-    /// is one, made Slack's by `slack_text`. Input the post cannot carry is `Err` unsent; from there the result is a
-    /// `FileOutcome`, a failure before the share is never `Unknown`, and no path resends. A person's share is `Err`
-    /// unsent: it would go out under the app's token.
+    /// is one, made Slack's by `slack_text`. A person's share makes steps 1 and 3 under their own user token, never the
+    /// bot's (`Err(NoPersonToken)` unsent when none is held), its `initial_comment` the comment alone and absent without
+    /// one, and `name` neither checked nor sent; a refusal of either step that names the token forgets it, as a post's
+    /// does. Input the post cannot carry is `Err` unsent; from there the result is a `FileOutcome`, a failure before the
+    /// share is never `Unknown`, and no path resends.
     #[allow(clippy::too_many_arguments)]
     pub async fn post_file(
         &self,
@@ -865,20 +867,30 @@ impl Api {
             && file_name.len() <= MAX_FILENAME
             && !file_name.contains(|c: char| c.is_control() || c == '/' || c == '\\');
         let bytes_ok = !bytes.is_empty() && bytes.len() <= MAX_CHAT_FILE;
-        if kind != PostKind::Row || !valid_id(channel) || !author_ok(name) || !file_name_ok || !bytes_ok || comment == Some("") {
+        if !valid_id(channel) || (kind == PostKind::Row && !author_ok(name)) || !file_name_ok || !bytes_ok || comment == Some("") {
             return Err(ApiError::BadRequest);
         }
-        let label = format!("{name} ({} via Ship of Tools)", kind.word());
-        let label = slack_text(&match comment {
-            Some(c) => format!("{label}: {c}"),
-            None => label,
-        })?;
+        let comment = match kind {
+            PostKind::Row => {
+                let label = format!("{name} ({} via Ship of Tools)", kind.word());
+                Some(slack_text(&match comment {
+                    Some(c) => format!("{label}: {c}"),
+                    None => label,
+                })?)
+            }
+            PostKind::Person => comment.map(slack_text).transpose()?,
+        };
         let share_url = self.url("files.completeUploadExternal", &[])?;
+        let token = self.poster(kind)?;
         let params = [("filename", file_name.to_string()), ("length", bytes.len().to_string())];
-        let v = match self.read("files.getUploadURLExternal", &params, MAX_BODY).await {
+        let v = match self.read_as(token.clone(), "files.getUploadURLExternal", &params, MAX_BODY).await {
             Ok(v) => v,
             Err(ApiError::Limited { retry_after, assumed }) => return Ok(FileOutcome::Limited { retry_after, assumed }),
-            Err(e) => return Ok(FileOutcome::Refused(refusal(&e))),
+            Err(e) => {
+                let code = refusal(&e);
+                self.forget_if_refused(kind, &code);
+                return Ok(FileOutcome::Refused(code));
+            }
         };
         let upload_url = v.get("upload_url").and_then(Value::as_str).filter(|u| u.len() <= MAX_URL);
         let (Some(file), Some(upload_url)) = (answered_id(&v, "file_id"), upload_url) else {
@@ -897,14 +909,19 @@ impl Api {
         let mut body = json!({
             "files": [{"id": file, "title": file_name}],
             "channel_id": channel,
-            "initial_comment": label,
         });
+        if let Some(comment) = comment {
+            body["initial_comment"] = comment.into();
+        }
         if let Some(parent) = thread {
             body["thread_ts"] = parent.as_str().into();
         }
-        let share = Request::post(share_url, self.deadlines.post, JSON, body.to_string().into_bytes())
-            .bearer(self.token.clone());
-        Ok(share_outcome(self.http.send(share).await, channel))
+        let share = Request::post(share_url, self.deadlines.post, JSON, body.to_string().into_bytes()).bearer(token);
+        let outcome = share_outcome(self.http.send(share).await, channel);
+        if let FileOutcome::Refused(code) = &outcome {
+            self.forget_if_refused(kind, code);
+        }
+        Ok(outcome)
     }
 
     /// Read one picture of a channel's, under one transfer permit (guarantee 33): `files.info` for the file, which must be
@@ -1217,6 +1234,17 @@ impl Api {
         params: &[(&str, String)],
         max_body: usize,
     ) -> Result<Value, ApiError> {
+        self.read_as(self.token.clone(), method, params, max_body).await
+    }
+
+    /// `read` under `token`: a person's share reads its upload URL under the token that shares it.
+    async fn read_as(
+        &self,
+        token: Secret,
+        method: &str,
+        params: &[(&str, String)],
+        max_body: usize,
+    ) -> Result<Value, ApiError> {
         if self.closed.load(Ordering::SeqCst) {
             return Err(ApiError::Closed);
         }
@@ -1231,7 +1259,7 @@ impl Api {
         }
         let request = Request::get(self.url(method, params)?, self.deadlines.read)
             .max_body(max_body)
-            .bearer(self.token.clone());
+            .bearer(token);
         let response = self.http.send(request).await.map_err(ApiError::Http)?;
         match response.status() {
             429 => return Err(self.rate_limited(&response)),

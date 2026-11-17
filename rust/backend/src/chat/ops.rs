@@ -205,9 +205,11 @@ pub(crate) async fn post(req_id: u64, payload: serde_json::Value, chat: &Arc<Cha
     }
 }
 
-/// `chat.post_file`: one file of the row's folder shared once. In order, each refusal before anything is read or sent
-/// past it: admission, [`may_post`] (`bad_request`), a transfer permit (`busy`), the file ([`read_file`]: `not_a_file`,
-/// `too_large`), then the one `Api::post_file`, whose outcome is the reply's and is never retried.
+/// `chat.post_file`: one file of the row's folder shared once, a row's under its handle or a window's person's under their
+/// own user token. In order, each refusal before anything is read or sent past it: admission, [`may_post`]
+/// (`bad_request`), a transfer permit (`busy`), the file ([`read_file`]: `not_a_file`, `too_large`), then the one
+/// `Api::post_file` (`no_user_token` unsent for a person when none is held), whose outcome is the reply's and is never
+/// retried.
 pub(crate) async fn post_file(req_id: u64, payload: serde_json::Value, chat: &Arc<Chat>, rows: &Workspaces, window: bool) -> Result<HandlerOutput> {
     const NAME: &str = op::CHAT_POST_FILE;
     let req = match decode::<ChatPostFileReq>(payload) {
@@ -218,8 +220,7 @@ pub(crate) async fn post_file(req_id: u64, payload: serde_json::Value, chat: &Ar
         Ok(s) => s,
         Err(c) => return Ok(refuse(req_id, NAME, c)),
     };
-    // A person's file is not shared yet (it would go out under the app's token): refused before anything is read.
-    if req.kind == ChatPostKind::Person || !may_post(req.kind, &req.name, &req.target.row, rows, window) {
+    if !may_post(req.kind, &req.name, &req.target.row, rows, window) {
         return Ok(refuse(req_id, NAME, ChatCode::BadRequest));
     }
     let api = match service.api() {

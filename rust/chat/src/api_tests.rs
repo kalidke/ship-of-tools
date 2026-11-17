@@ -3025,11 +3025,9 @@ async fn with_no_person_token_a_persons_post_is_refused_unsent_and_a_refused_tok
         let bare = new_api_with(&fake, None);
         let got = bare.post("C0CHAN", None, PostKind::Person, "tester", "hi").await;
         assert_eq!(got, Err(ApiError::NoPersonToken));
-        // A person's share is refused unsent too, with or without a token: it would go out under the bot's.
-        for api in [&bare, &new_api(&fake)] {
-            let file = api.post_file(api.transfer().unwrap(), "C0CHAN", None, PostKind::Person, "tester", "a.png", PNG.to_vec(), None).await;
-            assert_eq!(file, Err(ApiError::BadRequest));
-        }
+        // So is a person's share, and the bot's token is not used for it either.
+        let file = bare.post_file(bare.transfer().unwrap(), "C0CHAN", None, PostKind::Person, "tester", "a.png", PNG.to_vec(), None).await;
+        assert_eq!(file, Err(ApiError::NoPersonToken));
         assert_eq!((posts(&fake), steps(&fake).len()), (0, 0), "no request of any kind");
         assert_eq!(ApiError::NoPersonToken.code(), "no_person_token");
         // A row's post is not the person's: it still goes out.
@@ -3066,6 +3064,56 @@ async fn with_no_person_token_a_persons_post_is_refused_unsent_and_a_refused_tok
         let got = api.post("C0REVOKED", None, PostKind::Row, "build-7", "hi").await;
         assert_eq!(got, Ok(PostOutcome::Refused("token_revoked".into())));
         assert!(held(&api).await, "a row's refusal is the bot token's");
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_persons_file_share_uses_their_token_and_carries_the_comment_alone() {
+    bounded(async {
+        let upload = Upload::new();
+        let path = upload.path().to_string();
+        let fake = FakeSlack::start(Identity::Trusted, move |seen, port| {
+            // The upload's first step for `ask-refused.png`, and the share into `C0SCOPE`, refuse the token.
+            if seen.param("filename").as_deref() == Some("ask-refused.png") {
+                return Reply::json(&json!({"ok": false, "error": "invalid_auth"}));
+            }
+            if seen.json().is_some_and(|b| b["channel_id"] == "C0SCOPE") {
+                return Reply::json(&json!({"ok": false, "error": "missing_scope"}));
+            }
+            upload.reply(seen, port).unwrap_or(Reply::Drop)
+        })
+        .await;
+        let api = new_api(&fake);
+        async fn share(api: &Api, channel: &str, thread: Option<&str>, file: &str, comment: Option<&str>) -> Result<FileOutcome, ApiError> {
+            api.post_file(api.transfer().unwrap(), channel, thread, PostKind::Person, "", file, PNG.to_vec(), comment).await
+        }
+        let posted = share(&api, "C0CHAN", Some("1700000100.000000"), "fig.png", Some("the <!channel> fit")).await;
+        assert!(matches!(posted, Ok(FileOutcome::Posted { .. })), "{posted:?}");
+        let seen = fake.seen();
+        let person = format!("Bearer {PERSON}");
+        assert_eq!(seen.iter().map(Seen::path).collect::<Vec<_>>(), [ASK, path.as_str(), SHARE]);
+        assert_eq!(seen[0].authorization.as_deref(), Some(&*person), "step 1 under the person's token");
+        assert_eq!(seen[1].authorization, None, "the upload carries no authorization");
+        assert_eq!(seen[2].authorization.as_deref(), Some(&*person), "the share under the person's token");
+        let body = seen[2].json().unwrap();
+        assert_eq!(keys(&seen[2]), ["channel_id", "files", "initial_comment", "thread_ts"]);
+        assert_eq!(body["initial_comment"], "the &lt;!channel&gt; fit", "the comment alone, escaped, with no label");
+
+        // With no comment there is no `initial_comment`.
+        let posted = share(&api, "C0CHAN", None, "fig.png", None).await;
+        assert!(matches!(posted, Ok(FileOutcome::Posted { .. })), "{posted:?}");
+        assert_eq!(keys(&fake.seen().pop().unwrap()), ["channel_id", "files"]);
+
+        // A refusal of either authorized step that names the token forgets it; the next share is refused unsent.
+        for (channel, file, code) in [("C0CHAN", "ask-refused.png", "invalid_auth"), ("C0SCOPE", "fig.png", "missing_scope")] {
+            let api = new_api(&fake);
+            assert_eq!(share(&api, channel, None, file, None).await, Ok(FileOutcome::Refused(code.into())));
+            let before = fake.seen().len();
+            assert_eq!(share(&api, "C0CHAN", None, "fig.png", None).await, Err(ApiError::NoPersonToken), "{code}");
+            assert_eq!(fake.seen().len(), before, "{code}: nothing sent");
+        }
         fake.shutdown().await;
     })
     .await;
