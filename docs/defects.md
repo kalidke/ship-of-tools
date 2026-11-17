@@ -358,6 +358,15 @@ owned by `docs/CLAUDE.md`.
 
 ## messaging
 
+- **REGISTRY-LOCK-TESTS-UNDER-LOAD** [session] Two registry lock tests failed together in one local gate run on a shared
+  Linux server (2026-11-16), at a commit that touched no messaging code, and passed when the gate ran again on the same
+  commit: `a_marker_this_process_abandoned_is_adopted_by_its_next_writer` (`comm/registry/lock_tests.rs:181`, the
+  reclaim marker not found, so the dead holder's lock was not reclaimed) and then
+  `a_zero_wait_whose_retake_fails_makes_one_step` (`:431`, the error said the record changed during the reclaim). The
+  same test process logged that the daemon's terminal child had no thread to run on (os error 11). Inferred, not
+  shown: the first test's dead holder was not judged dead under a resource the test does not own (threads or process
+  ids at that moment), and the second failed only because the first panicked with its `FAIL_REREAD` seam still set
+  (a seam a panic leaves set reaches the next test that takes the turn; that part is read from the code).
 - **WAKE-MISSED-FULLSCREEN-ROWS** [session] Three Claude rows still on Claude Code's alternate screen, their panes blank
   after the person switched his renderer setting, took no turn on mail filed to them (2026-11-15): their transcripts
   showed no `comm-poll` for over 40 minutes, while a line typed into each pane by a session (`[sot-comm] you have mail:
