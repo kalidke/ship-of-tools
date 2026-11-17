@@ -132,7 +132,8 @@ name is in this crate's one op table.
     string, at most `MAX_TOKEN` (512) bytes, its `Debug` the text `<redacted>`, no `Display` (its bytes are read by `expose`, in
     the one place that sends or checks them), so a derived `Debug` of a request that holds one prints no byte of it; a decode
     refusal names no byte either. A channel list holds at most `MAX_LISTED` (1,000) entries, a name 160 bytes, a channel an id
-    (`is_id`); `more` says the list was cut there. The decoder bounds the entries and the name, not the escaped size: a full
+    (`is_id`); `more` says the list was cut there. `MAX_WORKSPACES` (8) is the most Slack workspaces a hub serves, wire's
+    one copy, which `sot-chat` re-exports and its secrets load holds to (no message carries it yet). The decoder bounds the entries and the name, not the escaped size: a full
     list fits one frame because the daemon's names carry no control character (a quote or backslash doubles, a control
     character would be six bytes). `ChatResolveRes::Unconfigured {reason}` is the hub's chat off for a reason a connect fixes
     (`not_connected`, `tokens_refused` (also a token Slack refused while the chat ran), `start_failed`, `wrong_app` (the app-level token is another Slack app's than the bot's, so the chat ended; pinned by `the_wrong_app_reason_is_pinned_on_the_wire`); a later reason reads as `other`, as `wrong_app` does to a window that predates it (rc.11's `ChatUnconfigured` has the same `other` arm); a hub that holds no user token says nothing here: `chat.resolve` answers a row as it always did, since a row's reply needs only the bot token, and a person's post refused `no_user_token` is what brings the window's Connect step); an older window reads the state as

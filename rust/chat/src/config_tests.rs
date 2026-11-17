@@ -46,7 +46,16 @@ fn secrets() -> String {
 }
 
 fn creds(text: &str) -> Result<Credentials, ConfigError> {
-    Credentials::parse(text, &parse(&chat("")).unwrap())
+    Credentials::parse(text).map(|(_, c)| c)
+}
+
+/// Why `chat-secrets.toml` of `text` is not admitted against `chat("")`'s workspace, `None` when it is: the load's own
+/// rule, through a folder that is not on disk, so nothing is listed.
+fn default_refusal(text: &str) -> Option<ConfigError> {
+    let read = |p: &Path| -> io::Result<String> {
+        if p.ends_with(SECRETS_FILE) { Ok(text.to_string()) } else { Err(io::ErrorKind::NotFound.into()) }
+    };
+    Secrets::read(Path::new("/nowhere/sot"), &read, &parse(&chat("")).unwrap()).default_refusal()
 }
 
 #[test]
@@ -81,7 +90,7 @@ fn a_mapping_whose_folder_does_not_exist_is_ignored_and_keeps_its_channel() {
         .replace("[\"C0AAAA\", \"C0BBBB\"]", "[\"C0AAAA\", \"C0BBBB\", \"C0CCCC\"]");
     let c = parse(&text).unwrap();
     assert_eq!(c.ignored(), [1, 3]);
-    assert_eq!(c.mappings().collect::<Vec<_>>(), [("/work/b", "C0BBBB")]);
+    assert_eq!(c.mappings().collect::<Vec<_>>(), [("/work/b", "T0AAAA", "C0BBBB")]);
     assert_eq!(resolve(&Ok(c), "/work/gone"), Resolution::Unmapped);
     // The ignored mapping's channel and its written folder still count: a later entry may not take either.
     let channel = chat(&(mapping("/work/gone", "C0AAAA") + &mapping("/work/b", "C0AAAA")));
@@ -162,9 +171,11 @@ fn index(e: ConfigError) -> usize {
         E::ChannelNotListed(_) => 11,
         E::TooManyDelivering => 12,
         E::MappingWithoutFloor(_) => 13,
+        E::NameNotWorkspace => 14,
+        E::TooManyWorkspaces => 15,
     }
 }
-const VARIANTS: usize = 14;
+const VARIANTS: usize = 16;
 
 fn mapping_from(folder: &str, channel: &str, from: &str) -> String {
     format!("{}mail_after = \"{from}\"\n", mapping(folder, channel))
@@ -220,7 +231,7 @@ fn a_mappings_own_mail_after_raises_only_its_channels_floor() {
     assert_eq!(c.floor("C0BBBB"), ts("9.000000"));
     assert_eq!(c.floor("C0CCCC"), None);
     assert_eq!(c.mail_after(), ts("9.000000").as_ref());
-    assert_eq!(c.mappings().collect::<Vec<_>>(), [("/work/a", "C0AAAA"), ("/work/b", "C0BBBB")]);
+    assert_eq!(c.mappings().collect::<Vec<_>>(), [("/work/a", "T0AAAA", "C0AAAA"), ("/work/b", "T0AAAA", "C0BBBB")]);
     let text = chat(&(String::from("mail_after = \"10.000000\"\n") + &mapping_from("/work/a", "C0AAAA", "9.000000")));
     assert_eq!(parse(&text).unwrap().floor("C0AAAA"), ts("10.000000"));
     // A mapping's value with no hub's value is no floor: nothing delivers.
@@ -383,8 +394,18 @@ fn every_refusal_has_an_input_a_code_a_place_and_its_own_explanation() {
         ),
         (
             "secrets for another workspace",
-            creds(&secrets().replace("T0AAAA", "T0ZZZZ")).map(drop),
+            default_refusal(&secrets().replace("T0AAAA", "T0ZZZZ")).map_or(Ok(()), Err),
             Err(E::SecondWorkspace),
+        ),
+        (
+            "a named secrets file of another workspace than its name",
+            named_refusal(&[("chat-secrets-T0BBBB.toml", &named("T0CCCC"))], "chat-secrets-T0BBBB.toml"),
+            Err(E::NameNotWorkspace),
+        ),
+        (
+            "a named secrets file past the bound",
+            many_secrets(MAX_WORKSPACES).0.refused().first().map_or(Ok(()), |(_, e)| Err(*e)),
+            Err(E::TooManyWorkspaces),
         ),
         (
             "secrets with an unknown key",
@@ -434,6 +455,8 @@ fn every_refusal_has_an_input_a_code_a_place_and_its_own_explanation() {
         E::ChannelNotListed(2),
         E::TooManyDelivering,
         E::MappingWithoutFloor(2),
+        E::NameNotWorkspace,
+        E::TooManyWorkspaces,
     ];
     assert_eq!(codes.len(), VARIANTS);
     for (i, a) in codes.iter().enumerate() {
@@ -525,8 +548,7 @@ fn a_token_prints_no_bytes_and_a_load_error_quotes_no_secret_value() {
     }
     // Through the file call, where the reader fails with a path and a message.
     let failing: Reader = &|p| Err(io::Error::other(format!("{} sentinel-io", p.display())));
-    let e =
-        Credentials::read(Path::new("/nowhere"), failing, &parse(&chat("")).unwrap()).unwrap_err();
+    let e = Secrets::read(Path::new("/nowhere"), failing, &parse(&chat("")).unwrap()).default_refusal().unwrap();
     assert_eq!(e, E::Unreadable);
     assert!(!format!("{e} {e:?}").contains("sentinel"));
 }
@@ -556,7 +578,8 @@ fn a_sample_is_found_in_a_reference_with_either_line_ending() {
 fn the_reference_samples_are_accepted_by_the_parsers() {
     let rows = |f: &str| (f == "/path/to/project").then(|| f.to_string());
     let config = Config::parse(&sample("A `chat.toml` of one mapping:"), &rows).unwrap();
-    assert!(Credentials::parse(&sample("A `chat-secrets.toml`, with placeholder tokens:"), &config).is_ok());
+    let (workspace, _) = Credentials::parse(&sample("A `chat-secrets.toml`, with placeholder tokens:")).unwrap();
+    assert_eq!(workspace, config.workspace());
 }
 
 #[test]
@@ -599,7 +622,7 @@ fn loading_the_configuration_opens_no_secret_file() {
     let cfg = Config::load(&dir, &read, &rows).unwrap();
     assert_eq!(*opened.borrow(), vec![dir.join(CONFIG_FILE)]);
     // The secrets are opened only by their own call, and by it alone.
-    assert!(Credentials::read(&dir, &read, &cfg).is_ok());
+    assert!(Secrets::read(&dir, &read, &cfg).take("T0AAAA").is_some());
     assert_eq!(
         *opened.borrow(),
         vec![dir.join(CONFIG_FILE), dir.join(SECRETS_FILE)]
@@ -625,9 +648,11 @@ fn the_files_are_named_in_platforms_config_folder() {
 struct Scratch(PathBuf);
 
 impl Scratch {
+    /// Unique per call, so two tests of one tag never share a folder.
     fn new(name: &str) -> Scratch {
-        let dir =
-            std::env::temp_dir().join(format!("sot-chat-config-{name}-{}", std::process::id()));
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("sot-chat-config-{name}-{}-{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         Scratch(dir)
@@ -699,7 +724,8 @@ fn a_fresh_file_and_a_secrets_text_parse_back_and_format_no_token() {
     assert_eq!(fresh("T0AAAA\"\nmail_after = \"1.000000"), Err(E::BadId));
     let s = crate::config::secrets("T0AAAA", &secret(&bot()), &secret(&user()), &secret(&app())).unwrap();
     no_token(&format!("{s} {s:?} {s:#?}"), "the secrets text's formats");
-    let back = Credentials::parse(s.expose(), &c).unwrap();
+    let (workspace, back) = Credentials::parse(s.expose()).unwrap();
+    assert_eq!(workspace, "T0AAAA");
     assert_eq!((back.bot.expose(), back.app.expose()), (bot().as_str(), app().as_str()));
     assert_eq!(back.user.as_ref().map(|u| u.expose()), Some(user().as_str()));
     // Each token passes the load's grammar first: a swap, a twin, a quote, a space or a bare prefix is `BadToken`.
@@ -731,7 +757,7 @@ fn pairing_edits_one_mapping_keeps_what_it_ignores_and_returns_only_what_loads()
         mapping("/work/gone", "C0CCCC"),
         mapping("/work/a", "C0AAAA"),
     );
-    let mapped = |text: &str| Config::parse(text, &rows).unwrap().mappings().map(|(f, c)| (f.to_string(), c.to_string())).collect::<Vec<_>>();
+    let mapped = |text: &str| Config::parse(text, &rows).unwrap().mappings().map(|(f, _, c)| (f.to_string(), c.to_string())).collect::<Vec<_>>();
     let listed = |text: &str| text.parse::<toml::Table>().unwrap()["channels"].as_array().unwrap().iter().map(|v| v.as_str().unwrap().to_string()).collect::<Vec<_>>();
     let pairs = |v: &[(&str, &str)]| v.iter().map(|(f, c)| (f.to_string(), c.to_string())).collect::<Vec<_>>();
     // A new pairing: appended and listed; the ignored mapping and the unmapped listed channel stay; the comment goes.
@@ -827,7 +853,8 @@ fn the_secrets_go_through_the_private_writer_alone() {
     let s = Scratch::new("writers");
     let dir = s.0.join("made").join("sot");
     let text = crate::config::secrets("T0AAAA", &secret(&bot()), &secret(&user()), &secret(&app())).unwrap();
-    write_secrets(&dir, &text, observed).unwrap();
+    let file = Secrets::file_of("T0AAAA", &Config::parse(&fresh("T0AAAA").unwrap(), &rows).unwrap()).unwrap();
+    write_secrets(&dir, &file, &text, observed).unwrap();
     write_config(&dir, &fresh("T0AAAA").unwrap(), observed).unwrap();
     let seen = wrote.borrow();
     assert_eq!(seen.len(), 2);
@@ -837,10 +864,10 @@ fn the_secrets_go_through_the_private_writer_alone() {
     // The missing folder was made, and nothing was written into it but through the writers.
     assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
     // Platform's pair: both files load back, and the secrets file is owner-only.
-    write_secrets(&dir, &text, Writers::platform()).unwrap();
+    write_secrets(&dir, &file, &text, Writers::platform()).unwrap();
     write_config(&dir, &fresh("T0AAAA").unwrap(), Writers::platform()).unwrap();
     let c = Config::load(&dir, &read_file, &rows).unwrap();
-    assert!(Credentials::read(&dir, &read_file, &c).is_ok());
+    assert!(Secrets::read(&dir, &read_file, &c).take("T0AAAA").is_some());
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -887,4 +914,190 @@ fn a_secrets_text_holds_the_three_tokens_and_parses_back() {
     assert_eq!(t["user_token"].as_str(), Some(user().as_str()));
     let loaded = creds(text.expose()).unwrap();
     assert_eq!((loaded.bot.expose(), loaded.user.map(|u| u.expose().to_string()), loaded.app.expose()), (bot().as_str(), Some(user()), app().as_str()));
+}
+
+// The secrets files, one per workspace.
+
+/// A secrets text of workspace `ws`, with the fixtures' tokens.
+fn named(ws: &str) -> String {
+    secrets().replace("T0AAAA", ws)
+}
+
+/// A scratch config folder holding `files`, each a name and its text.
+fn folder_of(tag: &str, files: &[(&str, &str)]) -> Scratch {
+    let s = Scratch::new(tag);
+    for (name, text) in files {
+        std::fs::write(s.0.join(name), text).unwrap();
+    }
+    s
+}
+
+/// The load of `dir`'s secrets against `chat("")` (workspace `T0AAAA`), with the name of every file it opened.
+fn load_secrets(dir: &Path) -> (Secrets, Vec<String>) {
+    let opened = RefCell::new(Vec::new());
+    let read = |p: &Path| -> io::Result<String> {
+        opened.borrow_mut().push(p.file_name().unwrap().to_string_lossy().into_owned());
+        read_file(p)
+    };
+    let s = Secrets::read(dir, &read, &parse(&chat("")).unwrap());
+    (s, opened.into_inner())
+}
+
+fn ids(s: &Secrets) -> Vec<&str> {
+    s.workspaces().map(|(w, _)| w).collect()
+}
+
+/// The code the load gives the named file `name` in a folder of `files`; `Ok` when it has none.
+fn named_refusal(files: &[(&str, &str)], name: &str) -> Result<(), ConfigError> {
+    let s = folder_of("refusal", files);
+    let (secrets, _) = load_secrets(&s.0);
+    secrets.refused().iter().find(|(f, _)| f == name).map_or(Ok(()), |(_, e)| Err(*e))
+}
+
+/// A folder of `chat-secrets.toml` and `n` named files of `T0B00`, `T0B01`, ..., listed in reverse name order, loaded,
+/// with the files it opened.
+fn many_secrets(n: usize) -> (Secrets, Vec<String>) {
+    let texts: Vec<(String, String)> = (0..n).rev().map(|i| (format!("chat-secrets-T0B{i:02}.toml"), named(&format!("T0B{i:02}")))).collect();
+    let mut files: Vec<(&str, &str)> = texts.iter().map(|(f, t)| (f.as_str(), t.as_str())).collect();
+    let default = secrets();
+    files.push((SECRETS_FILE, &default));
+    let s = folder_of("many", &files);
+    load_secrets(&s.0)
+}
+
+#[test]
+fn the_secrets_files_are_listed_by_their_two_names_alone() {
+    // Every decoy holds valid secrets of the id its name suggests, so a decoy read would be admitted.
+    let long = format!("T0{}", "B".repeat(31));
+    let past = format!("chat-secrets-{long}.toml");
+    let s = folder_of(
+        "listed",
+        &[
+            (SECRETS_FILE, &secrets()),
+            ("chat-secrets-T0BBBB.toml", &named("T0BBBB")),
+            ("chat-secrets.toml~", &secrets()),
+            ("chat-secrets-T0CCCC.toml.bak", &named("T0CCCC")),
+            ("chat-secrets-t0dddd.toml", &named("T0DDDD")),
+            ("chat-secrets-T0FFFF.TOML", &named("T0FFFF")),
+            ("chat-secrets-.toml", &named("T0GGGG")),
+            (past.as_str(), &named(&long)),
+        ],
+    );
+    std::fs::create_dir(s.0.join("sub")).unwrap();
+    std::fs::write(s.0.join("sub").join("chat-secrets-T0EEEE.toml"), named("T0EEEE")).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let raw = std::ffi::OsStr::from_bytes(b"chat-secrets-T0H\xffH.toml");
+        std::fs::write(s.0.join(raw), named("T0HH")).unwrap();
+    }
+    let (secrets, opened) = load_secrets(&s.0);
+    assert_eq!(opened, [SECRETS_FILE, "chat-secrets-T0BBBB.toml"]);
+    assert_eq!(ids(&secrets), ["T0AAAA", "T0BBBB"]);
+    assert_eq!(secrets.refused(), []);
+    // A folder that is not on disk lists nothing, and is no refusal of its own.
+    let (none, _) = load_secrets(&s.0.join("absent"));
+    assert_eq!((ids(&none), none.refused(), none.default_refusal()), (vec![], &[][..], Some(E::Missing)));
+}
+
+#[test]
+fn each_secrets_file_is_admitted_or_refused_alone() {
+    let bad_token = named("T0CCCC").replace("xoxb-", "xoxq-");
+    // A refused default leaves every named file's workspace admitted, and a refused named file only itself refused.
+    let s = folder_of("alone", &[(SECRETS_FILE, "workspace = [[["), ("chat-secrets-T0BBBB.toml", &named("T0BBBB")), ("chat-secrets-T0CCCC.toml", &bad_token)]);
+    let (mut loaded, _) = load_secrets(&s.0);
+    assert_eq!(ids(&loaded), ["T0BBBB"]);
+    assert!(matches!(loaded.default_refusal(), Some(E::Malformed(_))));
+    assert_eq!(loaded.refused(), [("chat-secrets-T0CCCC.toml".to_string(), E::BadToken)]);
+    assert!(loaded.take("T0AAAA").is_none() && loaded.take("T0BBBB").is_some());
+    // A good default is admitted beside a refused named file, and no refusal is the default's.
+    let s = folder_of("alone-default", &[(SECRETS_FILE, &secrets()), ("chat-secrets-T0CCCC.toml", &bad_token)]);
+    let (mut loaded, _) = load_secrets(&s.0);
+    assert_eq!((ids(&loaded), loaded.default_refusal()), (vec!["T0AAAA"], None));
+    assert_eq!(loaded.refused().len(), 1);
+    no_token(&format!("{:?} {}", loaded.refused(), loaded.refused()[0].1), "a refusal");
+    let c = loaded.take("T0AAAA").unwrap();
+    assert_eq!((c.bot.expose(), c.app.expose()), (bot().as_str(), app().as_str()));
+}
+
+#[test]
+fn a_named_file_must_hold_its_workspace_and_the_defaults_is_chat_secrets() {
+    let s = folder_of(
+        "names",
+        &[
+            (SECRETS_FILE, &named("T0BBBB")),
+            ("chat-secrets-T0AAAA.toml", &secrets()),
+            ("chat-secrets-T0BBBB.toml", &named("T0CCCC")),
+            ("chat-secrets-T0DDDD.toml", &named("T0DDDD")),
+        ],
+    );
+    let (loaded, opened) = load_secrets(&s.0);
+    // `chat-secrets.toml` holds `chat.toml`'s workspace or none; a named file holds its own `<id>`; the default's id,
+    // named, is not opened at all.
+    assert_eq!(loaded.default_refusal(), Some(E::SecondWorkspace));
+    assert_eq!(ids(&loaded), ["T0DDDD"]);
+    assert_eq!(
+        loaded.refused(),
+        [("chat-secrets-T0AAAA.toml".to_string(), E::NameNotWorkspace), ("chat-secrets-T0BBBB.toml".to_string(), E::NameNotWorkspace)]
+    );
+    assert_eq!(opened, [SECRETS_FILE, "chat-secrets-T0BBBB.toml", "chat-secrets-T0DDDD.toml"]);
+}
+
+#[test]
+fn a_folder_of_many_secrets_files_opens_at_most_the_bound() {
+    assert_eq!(MAX_WORKSPACES, 8);
+    let (loaded, opened) = many_secrets(12);
+    // `chat-secrets.toml` and the first seven named files by name, whatever the listing's order; the rest not opened.
+    assert_eq!(opened.len(), MAX_WORKSPACES);
+    let first: Vec<String> = ["T0AAAA".to_string()].into_iter().chain((0..7).map(|i| format!("T0B{i:02}"))).collect();
+    assert_eq!(ids(&loaded), first);
+    let rest: Vec<(String, ConfigError)> = (7..12).map(|i| (format!("chat-secrets-T0B{i:02}.toml"), E::TooManyWorkspaces)).collect();
+    assert_eq!(loaded.refused(), rest);
+    assert!(E::TooManyWorkspaces.explain().contains(&MAX_WORKSPACES.to_string()));
+    // At the bound exactly, nothing is left out.
+    let (full, opened) = many_secrets(MAX_WORKSPACES - 1);
+    assert_eq!((full.workspaces().count(), full.refused().len(), opened.len()), (MAX_WORKSPACES, 0, MAX_WORKSPACES));
+}
+
+#[test]
+fn each_workspace_has_one_file_a_connect_writes() {
+    let c = parse(&chat("")).unwrap();
+    assert_eq!(Secrets::file_of("T0AAAA", &c).unwrap().name(), SECRETS_FILE);
+    assert_eq!(Secrets::file_of("T0BBBB", &c).unwrap().name(), "chat-secrets-T0BBBB.toml");
+    for bad in ["t0bbbb", "T0B/../x", "", "T0BBBB.toml"] {
+        assert_eq!(Secrets::file_of(bad, &c), Err(E::BadId), "{bad:?}");
+    }
+    // Each written through the private writer, at the folder's top, and read back as its own workspace's.
+    let s = Scratch::new("one-file");
+    for ws in ["T0AAAA", "T0BBBB"] {
+        let text = crate::config::secrets(ws, &secret(&bot()), &secret(&user()), &secret(&app())).unwrap();
+        write_secrets(&s.0, &Secrets::file_of(ws, &c).unwrap(), &text, Writers::platform()).unwrap();
+    }
+    let mut names: Vec<String> = std::fs::read_dir(&s.0).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    names.sort_unstable();
+    assert_eq!(names, ["chat-secrets-T0BBBB.toml", SECRETS_FILE]);
+    let (loaded, _) = load_secrets(&s.0);
+    assert_eq!((ids(&loaded), loaded.refused().len()), (vec!["T0AAAA", "T0BBBB"], 0));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        for name in &names {
+            assert_eq!(std::fs::metadata(s.0.join(name)).unwrap().permissions().mode() & 0o777, 0o600, "{name}");
+        }
+    }
+}
+
+#[test]
+fn a_secrets_file_has_one_form() {
+    // Today's sample parses, in its one form.
+    let (ws, _) = Credentials::parse(&sample("A `chat-secrets.toml`, with placeholder tokens:")).unwrap();
+    assert_eq!(ws, "T0EXAMPLE");
+    // A `[[workspace]]` table, of one workspace or two, and tokens beside one, are refused.
+    let table = |ws: &str| format!("[[workspace]]\nid = \"{ws}\"\nbot_token = \"{}\"\napp_token = \"{}\"\n", bot(), app());
+    let beside = format!("bot_token = \"{}\"\napp_token = \"{}\"\n{}", bot(), app(), table("T0AAAA"));
+    for text in [table("T0AAAA"), table("T0AAAA") + &table("T0BBBB"), beside] {
+        let e = creds(&text).map(drop).unwrap_err();
+        assert!(matches!(e, E::Malformed(_) | E::SecondWorkspace), "{e:?}");
+        no_token(&format!("{e} {e:?}"), "a table's refusal");
+    }
 }

@@ -1,6 +1,6 @@
 //! sot-chat: the project chat's policy. This stage holds normalization (Slack's raw message JSON into the one wire
 //! record), `http`, the one way out of the crate to the network, and `api`, the Slack Web API calls the first stage
-//! needs, and `socket`, the Socket Mode listener, and `config`, the two configuration files, and `service`, the one running listener, and `watch`, the model of the watched channels, and `mail`, one record as the body of one mail message, and `state`, a delivering channel's boundary file and filed set, and `traverse`, the recovery walk of one channel, and `delivery`, the decisions of what to file next. Only `config` and `state` call a file method (`service` takes a lock through platform).
+//! needs, and `socket`, the Socket Mode listener, and `config`, the configuration files (`chat.toml` and one secrets file per workspace), and `service`, the one running listener, and `watch`, the model of the watched channels, and `mail`, one record as the body of one mail message, and `state`, a delivering channel's boundary file and filed set, and `traverse`, the recovery walk of one channel, and `delivery`, the decisions of what to file next. Only `config` and `state` call a file method (`service` takes a lock through platform).
 
 // The fake Slack's server key is committed: a build without debug assertions (every release build) never has the feature.
 #[cfg(all(feature = "test-support", not(debug_assertions)))]

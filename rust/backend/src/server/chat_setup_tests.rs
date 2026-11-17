@@ -487,7 +487,7 @@ fn from_nothing_a_window_connects_pairs_and_reads_its_channel() {
         }
         // Through the daemon's own canonicalizer, so the spelling compared is the one the daemon writes and loads.
         let loaded = config::Config::load(&dir, &|p| config::read_file(p), &crate::chat::canon_of).unwrap();
-        assert_eq!(loaded.mappings().collect::<Vec<_>>(), [(w.folders[0].to_str().unwrap(), "C0PUB")]);
+        assert_eq!(loaded.mappings().collect::<Vec<_>>(), [(w.folders[0].to_str().unwrap(), "T0AAAA", "C0PUB")]);
         seen.extend([connected, listed, paired, watched, put].map(|v| v.to_string()));
     });
     assert!(text.contains("saved the tokens"), "the capture saw no connect");

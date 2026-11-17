@@ -276,7 +276,7 @@ other one. No port, no forward — read the actual endpoints from
 
 ## `chat.toml` and `chat-secrets.toml`
 
-The project chat's configuration, two TOML files in the config folder (`~/.config/sot` on Linux and macOS,
+The project chat's configuration, `chat.toml` and one secrets file per workspace, TOML files in the config folder (`~/.config/sot` on Linux and macOS,
 `%LOCALAPPDATA%\sot\config` on Windows). How to make the Slack app, its tokens and the IDs these files hold is in
 [Setting up Slack](../guide/chat-setup.md).
 
@@ -331,8 +331,14 @@ the user token refuses a file that holds the key, and leaves the chat off, until
 daemon never prints a token and masks one in its log, but it does not check the permissions of a file written by hand
 (the one a window's connect writes is owner-only).
 
-`chat-secrets.toml` has one form: those four top-level keys, never a `[[workspace]]` table, and one workspace. A tool
-that needs several workspaces keeps its own file at its own path.
+`chat-secrets.toml` has one form: those four top-level keys, never a `[[workspace]]` table, and one workspace, the one
+`chat.toml` names. The secrets are one file per workspace: any other workspace's are `chat-secrets-<id>.toml`, `<id>`
+its Slack id, in the same form and holding that workspace, at the top of the config folder (never in a subfolder). The
+daemon reads `chat-secrets.toml` and the files named that way (not a backup such as `chat-secrets.toml~`, nor a
+lower-case id), at most 8 files, and takes or refuses each on its own, so a refused file never stops another
+workspace; a refused file, and a named file past the eighth or named for `chat.toml`'s own workspace, is named in the
+daemon's log with its reason. For now the daemon serves `chat.toml`'s workspace alone: another workspace's file is read,
+logged as not served, and changes nothing. A tool that needs several workspaces can read the files of this form.
 
 A `chat.toml` of one mapping:
 

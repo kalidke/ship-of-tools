@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use sot_chat::api::{ApiError, Channel, Identified, JoinOutcome, TOKEN_REFUSALS};
-use sot_chat::config::{self, ConfigError, PairError, Writers};
+use sot_chat::config::{self, Config, ConfigError, PairError, Secrets, Writers};
 use sot_chat::http::{Http, Secret};
 use sot_chat::service::{Service, APP_TOKEN_REFUSED, BOT_TOKEN_REFUSED, WRONG_APP};
 use sot_chat::socket::SocketError;
@@ -172,16 +172,23 @@ type Unsaved = (ChatCode, Option<String>);
 fn save_tokens(env: &Env, workspace: &str, bot: &Secret, user: &Secret, app: &Secret) -> Result<(), Unsaved> {
     let not_saved = |why: String| (ChatCode::NotSaved, Some(why));
     let dir = config::config_dir(env).ok_or_else(|| not_saved("no config folder".into()))?;
-    let fresh = match <Chat>::load(env, &config::read_file).config {
+    // The secrets go to the file `Secrets::file_of` names against `chat.toml` as it stands, or against the fresh one for
+    // the connecting workspace when there is none (so `chat-secrets.toml`, as before).
+    let (fresh, file) = match <Chat>::load(env, &config::read_file).config {
         None => return Err((ChatCode::Unavailable, None)),
         Some(Ok(c)) if c.workspace() != workspace => return Err((ChatCode::OtherWorkspace, None)),
-        Some(Ok(_)) => None,
-        Some(Err(ConfigError::Missing)) => Some(config::fresh(workspace).map_err(|e| not_saved(format!("a fresh chat.toml: {e}")))?),
+        Some(Ok(c)) => (None, Secrets::file_of(workspace, &c)),
+        Some(Err(ConfigError::Missing)) => {
+            let text = config::fresh(workspace).map_err(|e| not_saved(format!("a fresh chat.toml: {e}")))?;
+            let file = Config::parse(&text, &|_| None).and_then(|c| Secrets::file_of(workspace, &c));
+            (Some(text), file)
+        }
         Some(Err(e)) => return Err(not_saved(format!("a refused chat.toml is left as it is: {e}"))),
     };
+    let file = file.map_err(|e| not_saved(format!("the secrets' file: {e}")))?;
     let text = config::secrets(workspace, bot, user, app).map_err(|e| not_saved(format!("the secrets' text: {e}")))?;
     let written = |e: std::io::Error| not_saved(format!("a write failed: {:?}", e.kind()));
-    config::write_secrets(&dir, &text, Writers::platform()).map_err(written)?;
+    config::write_secrets(&dir, &file, &text, Writers::platform()).map_err(written)?;
     if let Some(text) = fresh {
         config::write_config(&dir, &text, Writers::platform()).map_err(written)?;
     }
