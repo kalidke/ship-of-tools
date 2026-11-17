@@ -402,20 +402,22 @@ fn an_own_file_share_takes_its_origin_from_its_label_and_a_members_does_not() {
     let own = json!({"user": OWN_USER, "bot_id": OWN_BOT});
     let seen = |r: &ChatRecord| (r.origin, r.author.name.clone(), r.text.clone(), r.files.len());
 
-    // A row's share with its comment, a person's with none, and a name escaped as it was sent.
+    // A row's share with its comment, one with none, and a name escaped as it was sent.
     let r = share("1700000000.000100", own.clone(), "build-7 (row via Ship of Tools): the &lt;!channel&gt; fit");
     assert_eq!(seen(&r), (Origin::Row, "build-7".into(), "the &lt;!channel&gt; fit".into(), 1));
-    let r = share("1700000000.000200", own.clone(), "Ada Test (person via Ship of Tools)");
-    assert_eq!(seen(&r), (Origin::Drawer, "Ada Test".into(), String::new(), 1));
-    let r = share("1700000000.000300", own.clone(), "R&amp;D &lt;3 (person via Ship of Tools): hi");
-    assert_eq!(seen(&r), (Origin::Drawer, "R&D <3".into(), "hi".into(), 1));
+    let r = share("1700000000.000200", own.clone(), "tester Test (row via Ship of Tools)");
+    assert_eq!(seen(&r), (Origin::Row, "tester Test".into(), String::new(), 1));
+    let r = share("1700000000.000300", own.clone(), "R&amp;D &lt;3 (row via Ship of Tools): hi");
+    assert_eq!(seen(&r), (Origin::Row, "R&D <3".into(), "hi".into(), 1));
     // The first marker ends the label, so a comment that carries one is the comment.
     let r = share("1700000000.000400", own.clone(), "b (row via Ship of Tools): (person via Ship of Tools): x");
     assert_eq!(seen(&r), (Origin::Row, "b".into(), "(person via Ship of Tools): x".into(), 1));
 
-    // Not a label as sent: unescaped, with no `: ` after the marker, or with no name; each is the app's `Bot`, its text
-    // untouched.
+    // Not a label as sent: unescaped, with no `: ` after the marker, with no name, or a person's label (a person's share
+    // goes out under their own token, so an own share is never one); each is the app's `Bot`, its text untouched.
     for (i, text) in [
+        "tester Test (person via Ship of Tools)",
+        "R&amp;D &lt;3 (person via Ship of Tools): hi",
         "a <b (row via Ship of Tools): x",
         "a & b (row via Ship of Tools): x",
         "build-7 (row via Ship of Tools)x",

@@ -200,7 +200,7 @@ pub async fn handle_hello(
         takes_drawing: true,
         // Chat's door escapes a post's text (chat guarantee 12).
         posts_plain_text: true,
-        // A person's chat post goes out under their own user token (chat guarantee 12).
+        // A person's chat post and file share go out under their own user token (chat guarantees 12 and 32).
         posts_as_person: true,
     };
 

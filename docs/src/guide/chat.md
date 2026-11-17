@@ -168,8 +168,9 @@ its comment: once, as your own message from your Slack account (a hub that holds
 and shows the `post as you` screen), into the channel or thread the draft was begun in, or with no draft into the
 channel and the thread open then. It is the same file a row's figure can be: one of the row's folder, at most 16 MiB,
 never the chat's own configuration files. It waits as a post does, and only a reply that proves the share clears the
-draft; any other outcome keeps it, with the same words on the status line. With nothing in the preview, or on an older
-hub, nothing is sent and the status line says why (unmeasured against Slack itself until a person's first use).
+draft, and the status line then says `shared <name> to <channel>`; any other outcome keeps it, with the same words on
+the status line. Holding the key posts once. With nothing in the preview, on an older hub, or while the channel picker
+or the name prompt is open, nothing is sent and the status line says why (unmeasured against Slack itself until a person's first use).
 
 ## Selecting
 

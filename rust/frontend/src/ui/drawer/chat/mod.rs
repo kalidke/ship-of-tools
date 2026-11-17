@@ -335,33 +335,49 @@ pub(in crate::ui) fn picker_key(state: &mut State, key: &KeyPress<'_>, label: &s
     })
 }
 
+/// What a chord in the Chat tenant does, by its action and whether the key is held. A held key never posts, opens a screen,
+/// copies or pastes (`Held`): a held post key would otherwise post the previewed file again at every reply, since nothing
+/// it needs is used up. `None`: the chord is a draft edit or not the tenant's.
+#[derive(Debug, PartialEq)]
+pub(in crate::ui) enum ChatChord {
+    Send,
+    PostFile,
+    Setup,
+    Copy,
+    Paste,
+    Held,
+}
+
+pub(in crate::ui) fn chat_chord(action: Option<Action>, repeat: bool) -> Option<ChatChord> {
+    let chord = match action? {
+        Action::ChatSend => ChatChord::Send,
+        Action::ChatPostFile => ChatChord::PostFile,
+        Action::ChatSetup => ChatChord::Setup,
+        Action::ChatCopySelection => ChatChord::Copy,
+        Action::Paste => ChatChord::Paste,
+        _ => return None,
+    };
+    Some(if repeat { ChatChord::Held } else { chord })
+}
+
 /// A key or paste in the Chat tenant (`DrawerInput::Chat`) edits the draft, and `chat.send` posts it; whether it was taken.
 pub(in crate::ui) fn chat_key(state: &mut State, key: KeyPress<'_>, label: String) -> bool {
     let KeyPress { event, action, ctrl, alt, super_, .. } = key;
-    if action == Some(Action::ChatSend) {
-        if !event.repeat {
-            state.send_chat_draft();
+    match chat_chord(action, event.repeat) {
+        Some(ChatChord::Send) => state.send_chat_draft(),
+        Some(ChatChord::PostFile) => state.send_chat_file(),
+        Some(ChatChord::Setup) => state.open_chat_picker(),
+        Some(ChatChord::Copy) => state.status.set(copy_status(state.chat.copy_text(), |text| write_clipboard_text(text).map_err(|e| e.to_string()))),
+        Some(ChatChord::Paste) => {
+            if let Some(text) = read_clipboard_text() {
+                state.edit_chat_draft(Edit::Text(&text));
+            }
         }
-    } else if action == Some(Action::ChatPostFile) {
-        if !event.repeat {
-            state.send_chat_file();
-        }
-    } else if action == Some(Action::ChatSetup) {
-        if !event.repeat {
-            state.open_chat_picker();
-        }
-    } else if action == Some(Action::ChatCopySelection) {
-        if !event.repeat {
-            state.status.set(copy_status(state.chat.copy_text(), |text| write_clipboard_text(text).map_err(|e| e.to_string())));
-        }
-    } else if action == Some(Action::Paste) {
-        if let Some(text) = (!event.repeat).then(read_clipboard_text).flatten() {
-            state.edit_chat_draft(Edit::Text(&text));
-        }
-    } else if let Some(edit) = draft_edit(action, &event.logical_key, (ctrl, alt, super_)) {
-        state.edit_chat_draft(edit);
-    } else {
-        return false;
+        Some(ChatChord::Held) => {}
+        None => match draft_edit(action, &event.logical_key, (ctrl, alt, super_)) {
+            Some(edit) => state.edit_chat_draft(edit),
+            None => return false,
+        },
     }
     state.last_key = Some(label);
     true

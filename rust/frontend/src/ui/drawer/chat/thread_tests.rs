@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use cosmic_text::FontSystem;
 use sot_protocol::chat::{ChatRecord, Ts};
-use sot_protocol::ops::{ChatCode, ChatHistoryReq, ChatHistoryRes, ChatPostReq, ChatPostRes, ChatTarget, ChatWatchRes, ChatWatchState};
+use sot_protocol::ops::{ChatCode, ChatHistoryReq, ChatHistoryRes, ChatPostFileRes, ChatPostReq, ChatPostRes, ChatTarget, ChatWatchRes, ChatWatchState};
 
 use super::compose::{compose_rows, Edit};
 use super::drawer::ChatDrawer;
@@ -67,9 +67,14 @@ pub(super) fn channel(held: &[ChatRecord]) -> (ChatDrawer, Instant) {
 
 /// The same, with older history below the snapshot when `next` is given.
 fn channel_with(held: &[ChatRecord], next: Option<&str>) -> (ChatDrawer, Instant) {
+    channel_on(held, next, false)
+}
+
+/// The same, on a hub whose hello says (`as_person`) whether it posts as the person.
+fn channel_on(held: &[ChatRecord], next: Option<&str>, as_person: bool) -> (ChatDrawer, Instant) {
     let t0 = Instant::now();
     let mut d = ChatDrawer::default();
-    d.on_connection(&host(), true, false, t0);
+    d.on_connection(&host(), true, as_person, t0);
     d.tick(shown("ROW1"), t0);
     d.tick(shown("ROW1"), t0 + Duration::from_millis(200));
     let mapped = serde_json::json!({ "state": "mapped", "workspace": "WS1", "channel": "CH1", "delivers": false });
@@ -789,4 +794,104 @@ fn a_threads_messages_have_the_channels_rules() {
     assert!(on(&mut d, &first, page(&rs, None), at + Duration::from_secs(1)).is_empty());
     assert_eq!(rules(&mut d, &mut fonts), 2, "{}", joined(&d));
     assert_eq!(d.placed_text().len(), 4, "the parent and three replies: {}", joined(&d));
+}
+
+/// A reply to a post of either kind, as the daemon would answer it.
+#[derive(Clone, Copy, Debug)]
+enum Answer {
+    Posted,
+    Refused(ChatCode),
+    Limited,
+    Unknown,
+    Unsupported,
+}
+
+/// The one post `outs` holds, text or file, answered `answer`.
+fn answer_post(d: &mut ChatDrawer, outs: &[Out], answer: Answer, at: Instant) -> Vec<Out> {
+    let ts: Ts = serde_json::from_value(serde_json::json!("1900000000.000100")).unwrap();
+    let evt = match (outs, answer) {
+        ([(_, OutgoingReq::ChatPost { req })], a) => ChatEvt::Posted { req: req.clone(), reply: match a {
+            Answer::Posted => ChatReply::Done(ChatPostRes::Posted { ts }),
+            Answer::Refused(code) => ChatReply::Done(ChatPostRes::Refused { code }),
+            Answer::Limited => ChatReply::Done(ChatPostRes::Limited { retry_after_secs: 30, assumed: false }),
+            Answer::Unknown => ChatReply::Done(ChatPostRes::Unknown),
+            Answer::Unsupported => ChatReply::Unsupported,
+        } },
+        ([(_, OutgoingReq::ChatPostFile { req })], a) => ChatEvt::FilePosted { req: req.clone(), reply: match a {
+            Answer::Posted => ChatReply::Done(ChatPostFileRes::Posted { file: "F0FILE".into(), ts: None }),
+            Answer::Refused(code) => ChatReply::Done(ChatPostFileRes::Refused { code }),
+            Answer::Limited => ChatReply::Done(ChatPostFileRes::Limited { retry_after_secs: 30, assumed: false }),
+            Answer::Unknown => ChatReply::Done(ChatPostFileRes::Unknown),
+            Answer::Unsupported => ChatReply::Unsupported,
+        } },
+        (other, _) => panic!("one post expected, got {} requests", other.len()),
+    };
+    d.on_evt(&host(), evt, at)
+}
+
+/// One outcome table for both kinds of post, a thread open and the draft begun in it: only `posted` clears the draft and
+/// reads the thread again; `no_user_token` opens the Connect step; every other outcome keeps the draft and says why; a file's
+/// share says what went where.
+#[test]
+fn a_post_of_either_kind_settles_by_one_table() {
+    let mut fonts = FontSystem::new();
+    let held: Vec<ChatRecord> = (0..3).map(top).collect();
+    let busy = format!("not posted: {}", ChatCode::Busy.text());
+    let unavailable = format!("not posted: {}", ChatCode::Unavailable.text());
+    for file in [false, true] {
+        for answer in [Answer::Refused(ChatCode::Busy), Answer::Refused(ChatCode::NoUserToken), Answer::Limited, Answer::Unknown, Answer::Unsupported, Answer::Posted] {
+            let (mut d, at) = channel_on(&held, None, true);
+            let outs = open(&mut d, &mut fonts, &[true, true]);
+            on(&mut d, &history(&outs), page(&[], None), at);
+            d.edit(shown("ROW1").as_ref(), Edit::Text("hi")).unwrap();
+            let sent = if file { d.send_file(shown("ROW1").as_ref(), Some("files:figs/fit.png"), at) } else { d.send(shown("ROW1").as_ref(), Some("tester"), at) };
+            let outs = answer_post(&mut d, &sent.unwrap(), answer, at);
+            let case = format!("file {file}, {answer:?}");
+            let notice = d.take_notice();
+            match answer {
+                Answer::Posted => {
+                    assert!(d.draft().is_none(), "{case}");
+                    assert_eq!(history(&outs).thread.as_ref(), Some(&held[1].ts), "{case}: the thread is read again");
+                    assert_eq!(notice.as_deref(), file.then_some("shared fit.png to CH1"), "{case}");
+                }
+                other => {
+                    assert_eq!(d.draft(), Some(("hi", "CH1")), "{case}: kept");
+                    assert_eq!(reads(&outs), 0, "{case}");
+                    assert_eq!(d.in_setup(), matches!(other, Answer::Refused(ChatCode::NoUserToken)), "{case}");
+                    let words = notice.unwrap_or_default();
+                    match other {
+                        Answer::Refused(ChatCode::Busy) => assert_eq!(words, busy, "{case}"),
+                        Answer::Limited => assert!(words.contains("wait 30 s"), "{case}: {words}"),
+                        Answer::Unknown => assert!(words.starts_with("may have been posted"), "{case}: {words}"),
+                        Answer::Unsupported => assert_eq!(words, unavailable, "{case}"),
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// With no draft, the previewed file goes into the open thread; a blank draft is no comment.
+#[test]
+fn a_file_with_no_draft_goes_to_the_open_thread_and_a_blank_draft_is_no_comment() {
+    let mut fonts = FontSystem::new();
+    let held: Vec<ChatRecord> = (0..3).map(top).collect();
+    let (mut d, at) = channel_on(&held, None, true);
+    let outs = open(&mut d, &mut fonts, &[true, true]);
+    on(&mut d, &history(&outs), page(&[], None), at);
+    let req = match d.send_file(shown("ROW1").as_ref(), Some("files:a.png"), at).unwrap().as_slice() {
+        [(_, OutgoingReq::ChatPostFile { req })] => req.clone(),
+        other => panic!("one chat.post_file expected, got {} requests", other.len()),
+    };
+    assert_eq!((req.thread.as_ref(), req.comment.as_deref()), (Some(&held[1].ts), None));
+
+    let (mut d, at) = channel_on(&held, None, true);
+    d.edit(shown("ROW1").as_ref(), Edit::Text("  ")).unwrap();
+    d.edit(shown("ROW1").as_ref(), Edit::Newline).unwrap();
+    let req = match d.send_file(shown("ROW1").as_ref(), Some("files:a.png"), at).unwrap().as_slice() {
+        [(_, OutgoingReq::ChatPostFile { req })] => req.clone(),
+        other => panic!("one chat.post_file expected, got {} requests", other.len()),
+    };
+    assert_eq!((req.target.channel.as_str(), req.comment), ("CH1", None), "a blank draft is no comment");
 }

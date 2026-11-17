@@ -328,16 +328,13 @@ fn own_origin(o: &Map<String, Value>) -> Result<Option<Recovered>, ()> {
     Ok(None)
 }
 
-/// A file share's label, as `Api::post_file` sends it: the escaped `<name> (<kind> via Ship of Tools)`, alone or then
-/// `: ` and the comment. The first marker ends it, and the name must be one `post_file` accepts, escaped exactly as it
+/// A row's file share label, as `Api::post_file` sends it: the escaped `<name> (row via Ship of Tools)`, alone or then
+/// `: ` and the comment (a person's share carries no label: it goes out under their own token and reads as theirs). The first marker ends it, and the name must be one `post_file` accepts, escaped exactly as it
 /// escapes it. The origin, the name, and the text after the label. A file share takes no custom author or metadata, so
 /// this is how its origin is read, and only for a `file_share` the bot identity already marked as the app's own.
 fn share_label(text: &str) -> Option<(Recovered, &str)> {
     for (at, _) in text.match_indices(" (") {
-        let Some((kind, rest)) = ["person", "row"].into_iter().find_map(|kind| {
-            let marker = format!(" ({kind} via Ship of Tools)");
-            text[at..].strip_prefix(marker.as_str()).map(|rest| (kind, rest))
-        }) else {
+        let Some(rest) = text[at..].strip_prefix(" (row via Ship of Tools)") else {
             continue;
         };
         let comment = match rest.strip_prefix(": ") {
@@ -351,7 +348,7 @@ fn share_label(text: &str) -> Option<(Recovered, &str)> {
         if name.is_empty() || n.0 != name || escape_text(&name) != escaped {
             return None;
         }
-        return Some(((kind_origin(kind)?, n), comment));
+        return Some(((Origin::Row, n), comment));
     }
     None
 }

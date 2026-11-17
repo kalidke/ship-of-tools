@@ -375,7 +375,7 @@ fn enter_with_no_name_opens_the_prompt_and_sends_nothing_until_the_next_enter() 
     assert!(d.send(Some(&r), None, at).unwrap().is_empty(), "no post is sent");
     assert_eq!(d.asking(), Some(""));
     d.edit_name(Edit::Text("Ad")).unwrap();
-    assert!(d.send(Some(&r), None, at).unwrap().is_empty());
+    assert!(d.send(Some(&r), None, at).is_err(), "the prompt holds the drawer: no post key posts");
     assert_eq!(d.asking(), Some("Ad"), "Enter again keeps a name half typed");
 
     // Saved (apply_name's part), the next Enter posts under the name.
@@ -612,11 +612,15 @@ fn the_previewed_file_posts_once_with_the_draft_as_its_comment() {
     assert!(d.take_notice().unwrap().starts_with("may have been posted"));
     assert_eq!(d.draft(), Some(("the fit", "C1")));
 
-    // Shared, even with no `ts`: the draft is gone and nothing is said.
+    // Shared, even with no `ts`: the draft is gone, and the status line says what went where.
     let req = file_posted(d.send_file(Some(&r), Some("files:figs/fit.png"), at).unwrap());
     answer(&mut d, &req, ChatReply::Done(ChatPostFileRes::Posted { file: "F0FILE".into(), ts: None }));
     assert_eq!(d.draft(), None);
-    assert_eq!(d.take_notice(), None);
+    assert_eq!(d.take_notice().as_deref(), Some("shared fit.png to C1"));
+    // A file post's `bad_request` is the file's name, never `[chat] name`, which it does not send.
+    let req = file_posted(d.send_file(Some(&r), Some("files:a.png"), at).unwrap());
+    answer(&mut d, &req, ChatReply::Done(ChatPostFileRes::Refused { code: ChatCode::BadRequest }));
+    assert_eq!(d.take_notice().as_deref(), Some("not posted: the file's name is not one the chat can send"));
 
     // No draft: the watched channel, and no comment.
     let req = file_posted(d.send_file(Some(&r), Some("files:a.png"), at).unwrap());
@@ -639,4 +643,58 @@ fn a_preview_with_no_node_posts_nothing() {
     // Nothing waits: a text post still goes.
     old.edit(Some(&r), Edit::Text("hi")).unwrap();
     assert!(matches!(old.send(Some(&r), Some("tester"), at).unwrap().as_slice(), [(_, OutgoingReq::ChatPost { .. })]));
+}
+
+/// Neither post key posts while a screen or the name prompt holds the drawer: the picker, the prompt; both post in the plain
+/// drawer.
+#[test]
+fn no_post_key_posts_behind_the_picker_or_the_name_prompt() {
+    let r = row("R");
+    #[derive(Debug, Clone, Copy)]
+    enum Held {
+        Plain,
+        Picker,
+        Prompt,
+    }
+    for held in [Held::Plain, Held::Picker, Held::Prompt] {
+        for file in [false, true] {
+            let (mut d, at) = watching_as_person();
+            d.edit(Some(&r), Edit::Text("hi")).unwrap();
+            match held {
+                Held::Plain => {}
+                Held::Picker => {
+                    d.open_picker(Some(&r)).unwrap();
+                }
+                Held::Prompt => assert!(d.send(Some(&r), None, at).unwrap().is_empty()),
+            }
+            let sent = if file { d.send_file(Some(&r), Some("files:a.png"), at) } else { d.send(Some(&r), Some("tester"), at) };
+            match (held, sent) {
+                (Held::Plain, Ok(outs)) => assert_eq!(outs.len(), 1, "{held:?} {file}"),
+                (Held::Plain, Err(e)) => panic!("{held:?} {file}: {e}"),
+                (_, sent) => assert_eq!(sent.unwrap_err(), "not posted: close the screen open in the chat first", "{held:?} {file}"),
+            }
+        }
+    }
+}
+
+/// A held key repeats only a draft edit: every chat chord that posts, opens a screen, copies or pastes is `Held` when it
+/// repeats, and a chord that is not the tenant's is none.
+#[test]
+fn a_held_chat_chord_never_posts_again() {
+    use super::{chat_chord, ChatChord};
+    let chords = [
+        (Action::ChatSend, ChatChord::Send),
+        (Action::ChatPostFile, ChatChord::PostFile),
+        (Action::ChatSetup, ChatChord::Setup),
+        (Action::ChatCopySelection, ChatChord::Copy),
+        (Action::Paste, ChatChord::Paste),
+    ];
+    for (action, chord) in chords {
+        assert_eq!(chat_chord(Some(action), false), Some(chord), "{action:?}");
+        assert_eq!(chat_chord(Some(action), true), Some(ChatChord::Held), "{action:?} held");
+    }
+    for action in [None, Some(Action::ChatNewline), Some(Action::ChatLatest)] {
+        assert_eq!(chat_chord(action, false), None, "{action:?}");
+        assert_eq!(chat_chord(action, true), None, "{action:?} held");
+    }
 }

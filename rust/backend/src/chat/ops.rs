@@ -230,6 +230,10 @@ pub(crate) async fn post_file(req_id: u64, payload: serde_json::Value, chat: &Ar
     let Some(ws) = rows.resolve(Some(&req.target.row)) else {
         return Ok(refuse(req_id, NAME, ChatCode::StaleRow));
     };
+    // A person's post with no token held would be refused unsent by the call: so is it here, before the file is read.
+    if req.kind == ChatPostKind::Person && !api.holds_person_token() {
+        return reply(req_id, NAME, &ChatPostFileRes::Refused { code: ChatCode::NoUserToken });
+    }
     // The permit before the read: no file is read into memory without one, so `MAX_TRANSFERS` files at most are held.
     let transfer = match api.transfer() {
         Ok(t) => t,

@@ -52,6 +52,9 @@ const SHARE_LIMITED: u8 = 4;
 /// A post Slack refuses `not_in_channel`, and one it refuses `invalid_auth` (the token it was made with is dead).
 const NOT_IN_CHANNEL: u8 = 5;
 const TOKEN_GONE: u8 = 6;
+/// A file's first step refused `invalid_auth`, and its share refused `not_in_channel`.
+const ASK_TOKEN_GONE: u8 = 7;
+const SHARE_NOT_IN: u8 = 8;
 
 /// The calls a request makes. The listener's own `auth.test` and `apps.connections.open` are in the fake's record too
 /// and are not counted: they run with no admission.
@@ -80,6 +83,12 @@ pub(super) async fn slack(mode: &Arc<AtomicU8>) -> FakeSlack {
         }
         if path.ends_with("/files.getUploadURLExternal") && now == ASK_REFUSED {
             return Reply::json(&json!({"ok": false, "error": "invalid_arguments"}));
+        }
+        if path.ends_with("/files.getUploadURLExternal") && now == ASK_TOKEN_GONE {
+            return Reply::json(&json!({"ok": false, "error": "invalid_auth"}));
+        }
+        if path.ends_with("/files.completeUploadExternal") && now == SHARE_NOT_IN {
+            return Reply::json(&json!({"ok": false, "error": "not_in_channel"}));
         }
         if path == upload.path() && now == HOLD {
             return Reply::Hang;
@@ -879,4 +888,19 @@ async fn a_persons_file_post_from_a_window_goes_under_their_token_once() {
     assert_eq!(bearers, [Some(person.as_str()), None, Some(person.as_str())], "the person's token, never the bot's");
     let share = seen[2].json().unwrap();
     assert_eq!((share["initial_comment"].as_str(), share["thread_ts"].as_str()), (Some("the fit"), Some("1700000050.000000")), "{share}");
+
+    // Refusals are read as a person's: not being in the channel is `not_a_member` and keeps the token, so the next file
+    // goes; a refused token is `no_user_token` and forgotten, so the next text post and file post send nothing.
+    let refused = |code: &str| json!({"outcome": "refused", "code": code});
+    mode.store(SHARE_NOT_IN, Ordering::SeqCst);
+    assert_eq!(window.ask(4, op::CHAT_POST_FILE, file_post(&rig.alpha, "C0AAAA", "person", "", "files:fit.png")).await, refused("not_a_member"));
+    mode.store(OK, Ordering::SeqCst);
+    assert_eq!(window.ask(5, op::CHAT_POST_FILE, file_post(&rig.alpha, "C0AAAA", "person", "", "files:fit.png")).await["outcome"], "posted");
+    mode.store(ASK_TOKEN_GONE, Ordering::SeqCst);
+    assert_eq!(window.ask(6, op::CHAT_POST_FILE, file_post(&rig.alpha, "C0AAAA", "person", "", "files:fit.png")).await, refused("no_user_token"));
+    mode.store(OK, Ordering::SeqCst);
+    let before = calls(&fake);
+    assert_eq!(window.ask(7, op::CHAT_POST_FILE, file_post(&rig.alpha, "C0AAAA", "person", "", "files:fit.png")).await, refused("no_user_token"));
+    assert_eq!(window.ask(8, op::CHAT_POST, post(&rig.alpha, "C0AAAA")).await["code"], "no_user_token");
+    assert_eq!(calls(&fake), before, "a forgotten token's next posts were sent");
 }

@@ -14,7 +14,7 @@ use crate::ui::render::quad::ScreenRect;
 
 use super::compose::{Compose, ComposeText, Edit};
 use super::connect::{Asks, Connect};
-use super::owner::{dead, ChatOwner, Fill, Out, PostShown, Posting};
+use super::owner::{dead, ChatOwner, Fill, Out, PostReply, PostShown, Posting};
 use super::picker::{pair_words, Body, Pick, Picker};
 use super::pictures::ChatPictures;
 use super::row_channel::{RowChannel, Stand};
@@ -154,10 +154,13 @@ pub(super) fn never_written(req: &OutgoingReq) -> Option<ChatEvt> {
     })
 }
 
-/// What the status line says of a post's outcome; a post made says nothing (its draft is gone).
-fn post_words(shown: &PostShown) -> Option<String> {
+/// What the status line says of a post's outcome, by whether it was a file post (`file`); a post made says nothing here
+/// (its draft is gone, and a file's share is said by `settle`).
+fn post_words(shown: &PostShown, file: bool) -> Option<String> {
     Some(match shown {
-        PostShown::Posted(_) | PostShown::Shared => return None,
+        PostShown::Posted => return None,
+        // A file post sends no name: the daemon refuses a file whose name Slack cannot take.
+        PostShown::Refused(ChatCode::BadRequest) if file => "not posted: the file's name is not one the chat can send".into(),
         PostShown::Refused(ChatCode::BadRequest) => "not posted: the request is not valid; check [chat] name in settings.toml".into(),
         PostShown::Refused(code) => format!("not posted: {}", code.text()),
         PostShown::Limited(secs, assumed) => wait_words(*secs, *assumed),
@@ -426,14 +429,8 @@ impl ChatDrawer {
                 outs.extend(self.flight.send(held));
                 outs
             }
-            ChatEvt::Posted { req, reply } => {
-                let no_token = matches!(reply, ChatReply::Done(ChatPostRes::Refused { code: ChatCode::NoUserToken }));
-                self.settle(host, &Posting::Text(req.clone()), no_token, |o| o.on_posted(host, &req, reply, now))
-            }
-            ChatEvt::FilePosted { req, reply } => {
-                let no_token = matches!(reply, ChatReply::Done(ChatPostFileRes::Refused { code: ChatCode::NoUserToken }));
-                self.settle(host, &Posting::File(req.clone()), no_token, |o| o.on_file_posted(host, &req, reply, now))
-            }
+            ChatEvt::Posted { req, reply } => self.settle(host, Posting::Text(req), reply.into(), now),
+            ChatEvt::FilePosted { req, reply } => self.settle(host, Posting::File(req), reply.into(), now),
             ChatEvt::File { req, reply } if req.variant == ChatFileVariant::Thumb => self.pictures.on_reply(host, &req, reply, now),
             // No window opens a picture yet: that is the next landings'.
             ChatEvt::File { .. } => Vec::new(),
@@ -446,6 +443,7 @@ impl ChatDrawer {
     /// one (`asking`) and sends nothing. The draft stays until a reply proves the post.
     pub(in crate::ui) fn send(&mut self, row: Option<&ResultRowIdentity>, name: Option<&str>, now: Instant) -> Result<Vec<Out>, String> {
         let Some(row) = row else { return Err("no row to write for".into()) };
+        self.may_post()?;
         // Enter over an unmapped row with nothing typed asks for its channel.
         if self.modal.is_none() && self.rows.stand() == Stand::Unmapped && self.compose.draft(row).is_none_or(|d| d.text.is_empty()) {
             return self.open_picker(Some(row));
@@ -469,7 +467,16 @@ impl ChatDrawer {
         }
         let req = ChatPostReq { target: draft.dest.clone(), thread: draft.thread.clone(), kind: ChatPostKind::Person, name: name.to_string(), text: draft.text.clone() };
         let host = row.host.clone();
-        Ok(self.owner_outs(|o| o.post(host, req).into_iter().collect()))
+        Ok(self.owner_outs(|o| o.post(host, Posting::Text(req)).into_iter().collect()))
+    }
+
+    /// Whether a post key may post: not while a screen (the picker, the Connect step) or the name prompt holds the drawer,
+    /// which would post what that screen hides. `send` and `send_file` both ask it first.
+    fn may_post(&self) -> Result<(), String> {
+        match (&self.modal, &self.asking) {
+            (None, None) => Ok(()),
+            _ => Err("not posted: close the screen open in the chat first".into()),
+        }
     }
 
     /// `chat.post_file`: posts the file the preview shows (`node`, the installed node of the row the chat shows) once, under the
@@ -478,13 +485,14 @@ impl ChatDrawer {
     /// node (nothing shown) posts nothing.
     pub(in crate::ui) fn send_file(&mut self, row: Option<&ResultRowIdentity>, node: Option<&str>, now: Instant) -> Result<Vec<Out>, String> {
         let Some(row) = row else { return Err("no row to post for".into()) };
+        self.may_post()?;
         let Some(node) = node else { return Err("not posted: the preview shows no file".into()) };
         if self.owner.posting_row().is_some() {
             return Err("posting…".into());
         }
         // An older hub posts a person's file as the app or not at all.
         if self.posts_as_person.get(&row.host) == Some(&false) {
-            return Err(post_words(&PostShown::Outdated).unwrap_or_default());
+            return Err(post_words(&PostShown::Outdated, true).unwrap_or_default());
         }
         if let Some((secs, assumed)) = self.owner.waiting(now) {
             return Err(wait_words(secs, assumed));
@@ -504,27 +512,32 @@ impl ChatDrawer {
         Ok(self.owner_outs(|o| o.post(host, Posting::File(req)).into_iter().collect()))
     }
 
-    /// A post's reply, text or file, given to the owner by `settle`. A hub that holds no token that posts as the person (never
-    /// held, or Slack stopped accepting it): the Connect step takes the channel's place for the row shown, its post-as-you
-    /// screen first, and the draft stays the row's. A post proved made clears its row's draft, and one into the open thread
-    /// reads the thread again whole.
-    fn settle(&mut self, host: &HostKey, post: &Posting, no_token: bool, settle: impl FnOnce(&mut ChatOwner) -> Option<String>) -> Vec<Out> {
+    /// A post's reply, text or file alike, through the owner's one outcome table. A hub that holds no token that posts as the
+    /// person (never held, or Slack stopped accepting it): the Connect step takes the channel's place for the row shown, its
+    /// post-as-you screen first, and the draft stays the row's. A post proved made clears its row's draft, one into the open
+    /// thread reads the thread again whole, and a file's share says `shared <name> to <channel>` (its draft may have been
+    /// empty, so nothing else would show it went).
+    fn settle(&mut self, host: &HostKey, post: Posting, reply: PostReply, now: Instant) -> Vec<Out> {
         let (target, thread) = (post.target(), post.thread());
         let shown = self.rows.row().is_some_and(|r| &r.host == host && r.workspace_id == target.row);
         // A reply that comes late never replaces a Connect step that holds a pasted token (one re-paste is the cost).
         let holds_token = self.connect().is_some_and(Connect::holds_token);
-        if shown && !holds_token && no_token {
+        if shown && !holds_token && reply == PostReply::Refused(ChatCode::NoUserToken) {
             self.open_modal(Kind::Connect(Connect::for_post(host.clone(), self.login)));
         }
         let mut made = None;
         let mut outs = self.owner_outs(|o| {
-            made = settle(o);
+            made = o.on_posted(host, &post, reply, now);
             Vec::new()
         });
         if let Some(row) = made {
             self.compose.clear(&ResultRowIdentity { host: host.clone(), workspace_id: row });
             if thread.is_some_and(|p| self.thread.as_ref().is_some_and(|t| t.is(host, target, p))) {
                 outs.extend(self.restart_thread());
+            }
+            if let Posting::File(req) = &post {
+                let name = req.node_id.rsplit('/').next().unwrap_or(&req.node_id).trim_start_matches("files:");
+                self.notice = Some(format!("shared {name} to {}", self.rows.label(target.channel.as_str())));
             }
         }
         outs
@@ -1034,8 +1047,8 @@ impl ChatDrawer {
         for (host, req) in before.into_iter().flatten().filter(|b| Some(b) != self.owner.reading().as_ref() && Some(b) != self.owner.paging().as_ref()) {
             self.flight.abandon(&host, &req);
         }
-        if let Some(outcome) = self.owner.take_report() {
-            self.notice = post_words(&outcome);
+        if let Some((outcome, file)) = self.owner.take_report() {
+            self.notice = post_words(&outcome, file);
         }
         self.flight.send(outs)
     }

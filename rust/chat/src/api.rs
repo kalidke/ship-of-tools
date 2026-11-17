@@ -598,6 +598,11 @@ impl Api {
         self
     }
 
+    /// Whether a person's token is held now, so a caller refuses a person's post before it reads anything for it.
+    pub fn holds_person_token(&self) -> bool {
+        self.person.lock().unwrap().is_some()
+    }
+
     /// The token a post of `kind` goes out under: the bot's for a row, the person's for a person, and never the bot's in
     /// its place.
     fn poster(&self, kind: PostKind) -> Result<Secret, ApiError> {

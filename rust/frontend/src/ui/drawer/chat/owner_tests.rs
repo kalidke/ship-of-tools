@@ -83,12 +83,12 @@ fn a_lost_chat_bus_marks_the_state_incomplete_and_watches_again() {
 #[test]
 fn a_post_is_sent_only_after_the_last_ones_reply() {
     let mut o = complete(Instant::now());
-    assert!(o.post(host(), post_req("one")).is_some());
-    assert!(o.post(host(), post_req("two")).is_none(), "the first has no reply yet");
+    assert!(o.post(host(), Posting::Text(post_req("one"))).is_some());
+    assert!(o.post(host(), Posting::Text(post_req("two"))).is_none(), "the first has no reply yet");
     let reply = ChatReply::Done(ChatPostRes::Posted { ts: ts("1700000000.000100") });
     o.on_evt(&host(), ChatEvt::Posted { req: post_req("one"), reply }, Instant::now());
-    assert!(matches!(o.report, Some(PostShown::Posted(_))));
-    assert!(o.post(host(), post_req("two")).is_some());
+    assert!(matches!(o.report, Some(PostShown::Posted)));
+    assert!(o.post(host(), Posting::Text(post_req("two"))).is_some());
 }
 
 /// Rule 2: a status that lists the channel is answered by a watch, never by a read of its own; losses within the pace send
@@ -190,10 +190,10 @@ fn an_unreadable_chat_event_watches_again() {
 fn a_post_is_unknown_only_when_it_may_exist() {
     let now = Instant::now();
     let mut o = complete(now);
-    assert!(o.post(host(), post_req("one")).is_some());
+    assert!(o.post(host(), Posting::Text(post_req("one"))).is_some());
     o.on_connection(&host(), false, now);
     assert_eq!(o.report, Some(PostShown::Unknown), "written, and the link ended before its reply");
-    assert!(o.post(host(), post_req("two")).is_none());
+    assert!(o.post(host(), Posting::Text(post_req("two"))).is_none());
     assert_eq!(o.report, Some(PostShown::Refused(ChatCode::Unavailable)), "never written");
 }
 
@@ -203,7 +203,7 @@ fn a_post_is_unknown_only_when_it_may_exist() {
 fn a_post_not_sent_reads_as_outdated_and_frees_the_slot() {
     let mut o = ChatOwner::default();
     o.on_connection(&host(), true, Instant::now());
-    assert!(o.post(host(), post_req("one")).is_some());
+    assert!(o.post(host(), Posting::Text(post_req("one"))).is_some());
     o.on_evt(&host(), ChatEvt::PostNotSent { req: post_req("other") }, Instant::now());
     assert!(o.posting.is_some() && o.report.is_none(), "a notice for another post clears nothing");
     o.on_evt(&"b".to_string(), ChatEvt::PostNotSent { req: post_req("one") }, Instant::now());
@@ -211,14 +211,14 @@ fn a_post_not_sent_reads_as_outdated_and_frees_the_slot() {
     o.on_evt(&host(), ChatEvt::PostNotSent { req: post_req("one") }, Instant::now());
     assert_eq!(o.report, Some(PostShown::Outdated));
     assert!(o.posting.is_none());
-    assert!(o.post(host(), post_req("two")).is_some());
+    assert!(o.post(host(), Posting::Text(post_req("two"))).is_some());
 }
 
 /// Every post reply reads as what it proves, and a reply for another request changes nothing.
 #[test]
 fn a_posts_outcome_reads_as_the_reply_proves() {
     let cases: Vec<(ChatReply<ChatPostRes>, PostShown)> = vec![
-        (ChatReply::Done(ChatPostRes::Posted { ts: ts("1700000000.000100") }), PostShown::Posted(ts("1700000000.000100"))),
+        (ChatReply::Done(ChatPostRes::Posted { ts: ts("1700000000.000100") }), PostShown::Posted),
         (ChatReply::Done(ChatPostRes::Refused { code: ChatCode::Busy }), PostShown::Refused(ChatCode::Busy)),
         (ChatReply::Done(ChatPostRes::Limited { retry_after_secs: 30, assumed: true }), PostShown::Limited(30, true)),
         (ChatReply::Done(ChatPostRes::Unknown), PostShown::Unknown),
@@ -226,7 +226,7 @@ fn a_posts_outcome_reads_as_the_reply_proves() {
     ];
     for (reply, want) in cases {
         let mut o = complete(Instant::now());
-        o.post(host(), post_req("one"));
+        o.post(host(), Posting::Text(post_req("one")));
         o.on_evt(&host(), ChatEvt::Posted { req: post_req("other"), reply: ChatReply::Done(ChatPostRes::Posted { ts: ts("1.000001") }) }, Instant::now());
         assert!(o.posting.is_some() && o.report.is_none(), "a reply for another post clears nothing");
         o.on_evt(&host(), ChatEvt::Posted { req: post_req("one"), reply }, Instant::now());
@@ -617,7 +617,7 @@ fn only_the_events_of_the_read_in_flight_cover_a_snapshot() {
 fn a_post_reply_from_another_host_answers_nothing() {
     let now = Instant::now();
     let mut o = complete(now);
-    assert!(o.post(host(), post_req("one")).is_some());
+    assert!(o.post(host(), Posting::Text(post_req("one"))).is_some());
     let reply = ChatReply::Done(ChatPostRes::Posted { ts: ts("1700000000.000100") });
     o.on_evt(&"other".to_string(), ChatEvt::Posted { req: post_req("one"), reply }, now);
     assert!(o.posting.is_some() && o.report.is_none());
