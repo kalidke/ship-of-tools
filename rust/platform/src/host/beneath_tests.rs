@@ -508,19 +508,96 @@ fn an_error_at_every_step_leaves_no_temporary_file() {
     }
 }
 
-#[test]
-fn two_writers_of_one_name_each_publish_a_whole_file() {
+/// Probe only, never landed: the NT status behind this thread's last refused call (Win32 keeps it beside its own code),
+/// 0 where none was recorded.
+#[cfg(windows)]
+mod last_nt {
+    use std::ffi::c_void;
+
+    type Get = unsafe extern "system" fn() -> i32;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetModuleHandleA(name: *const u8) -> *mut c_void;
+        fn GetProcAddress(module: *mut c_void, name: *const u8) -> Option<Get>;
+    }
+
+    pub fn clear() {
+        // The status of a success: the next refusal's status is then that call's own.
+        unsafe { windows_sys::Win32::Foundation::RtlNtStatusToDosError(0) };
+    }
+
+    pub fn status() -> i32 {
+        static GET: std::sync::OnceLock<Option<Get>> = std::sync::OnceLock::new();
+        let get = GET.get_or_init(|| unsafe { GetProcAddress(GetModuleHandleA(b"ntdll.dll\0".as_ptr()), b"RtlGetLastNtStatus\0".as_ptr()) });
+        get.map_or(0, |get| unsafe { get() })
+    }
+}
+
+#[cfg(not(windows))]
+mod last_nt {
+    pub fn clear() {}
+    pub fn status() -> i32 {
+        0
+    }
+}
+
+/// Probe only: one read of `path` by the calls `std::fs::read` makes (the open, the size, the reads), saying which
+/// call was refused and the NT status behind its code. A refused size is counted and not an error, as in std.
+fn read_by_steps(path: &Path, sizes_refused: &mut u64) -> Result<Vec<u8>, (&'static str, io::Error, i32)> {
+    use std::io::Read;
+    last_nt::clear();
+    let file = std::fs::File::open(path).map_err(|e| ("open", e, last_nt::status()))?;
+    let size = file.metadata().map(|m| m.len() as usize).unwrap_or_else(|_| {
+        *sizes_refused += 1;
+        0
+    });
+    let mut bytes = Vec::with_capacity(size);
+    last_nt::clear();
+    (&file).take(u64::MAX).read_to_end(&mut bytes).map_err(|e| ("read", e, last_nt::status()))?;
+    Ok(bytes)
+}
+
+/// Probe only: what one run of writers and readers of one name saw.
+struct Tally {
+    reads: u64,
+    /// One line per refused read: the call, its code and NT status, what the writers were doing, and how soon the
+    /// name answered again.
+    refusals: Vec<String>,
+    /// A refused read that did not answer again within two seconds.
+    unanswered: u64,
+    sizes_refused: u64,
+    writes_refused: Vec<String>,
+    counts: String,
+}
+
+/// Probe only: `writers` threads each replace one name `writes` times while `readers` threads read it back to back.
+/// Every read that answers must be one writer's whole content. A refused read is asked again at once, with no sleep,
+/// until it answers or two seconds pass, and is reported with what it took.
+fn replace_under_readers(writers: usize, writes: usize, readers: usize, classic_only: bool) -> Tally {
     let (_g, root, _outside) = setup();
-    let contents: [Vec<u8>; 2] = [vec![b'a'; 64 * 1024], vec![b'b'; 48 * 1024]];
+    replace_in(&root, writers, writes, readers, classic_only)
+}
+
+/// [`replace_under_readers`] in `root`.
+fn replace_in(root: &Path, writers: usize, writes: usize, readers: usize, classic_only: bool) -> Tally {
+    use std::sync::atomic::Ordering::SeqCst;
+    let contents: Vec<Vec<u8>> = (0..writers).map(|w| vec![b'a' + w as u8; (64 - 16 * w) * 1024]).collect();
     std::fs::write(root.join("f.txt"), &contents[0]).unwrap();
+    let probe: &'static super::probe::Probe = Box::leak(Box::default());
+    // Looked up once here, so the first refusal's status is not the lookup's.
+    last_nt::status();
+    probe.classic_only.store(classic_only, SeqCst);
     let done = std::sync::atomic::AtomicBool::new(false);
+    let mut tally = Tally { reads: 0, refusals: Vec::new(), unanswered: 0, sizes_refused: 0, writes_refused: Vec::new(), counts: String::new() };
     std::thread::scope(|sc| {
-        let writers: Vec<_> = contents
+        let writing: Vec<_> = contents
             .iter()
             .map(|c| {
-                let root = &root;
                 sc.spawn(move || {
-                    for i in 0..200 {
+                    super::probe::MINE.with(|m| m.set(Some(probe)));
+                    let mut refused = Vec::new();
+                    for i in 0..writes {
                         // A refused write says how far it got and how long it took: `Written` after the retry window
                         // is the rename, refused for the whole window.
                         let (mut last, began) = (None, std::time::Instant::now());
@@ -529,41 +606,214 @@ fn two_writers_of_one_name_each_publish_a_whole_file() {
                             Ok(())
                         });
                         if let Err(e) = wrote {
-                            panic!("write {i} answered {e:?} after {:?}, its last step {last:?}", began.elapsed());
+                            refused.push(format!("write {i} answered {e:?} after {:?}, its last step {last:?}", began.elapsed()));
                         }
                     }
+                    refused
                 })
             })
             .collect();
-        let reader = sc.spawn(|| {
-            let mut reads = 0;
-            while !done.load(std::sync::atomic::Ordering::SeqCst) {
-                // Platform's own open: Windows can refuse the open of a name at the instant the name is replaced, and
-                // `open_regular` asks again. The open and the read are made one at a time, so a refusal says which
-                // call it was.
-                let read = crate::host::open_regular(&root.join("f.txt")).map_err(|e| ("open", e)).and_then(|mut file| {
-                    let mut got = Vec::new();
-                    io::Read::read_to_end(&mut file, &mut got).map(|_| got).map_err(|e| ("read", e))
-                });
-                match read {
-                    Ok(got) => {
-                        assert!(contents.iter().any(|c| *c == got), "a read of {} bytes is neither writer's", got.len());
-                        reads += 1;
+        let reading: Vec<_> = (0..readers)
+            .map(|_| {
+                sc.spawn(|| {
+                    let path = root.join("f.txt");
+                    let whole = |got: &[u8]| assert!(contents.iter().any(|c| *c == got), "a read of {} bytes is neither writer's", got.len());
+                    let (mut reads, mut refusals, mut unanswered, mut sizes_refused) = (0u64, Vec::new(), 0u64, 0u64);
+                    while !done.load(SeqCst) {
+                        let before = probe.now();
+                        match read_by_steps(&path, &mut sizes_refused) {
+                            Ok(got) => {
+                                whole(&got);
+                                reads += 1;
+                            }
+                            // A network folder may answer a stale handle for a name replaced under the read.
+                            Err((_, e, _)) if e.kind() == io::ErrorKind::StaleNetworkFileHandle => {}
+                            Err((call, e, status)) => {
+                                let (after, began) = (probe.now(), std::time::Instant::now());
+                                let (mut tries, mut others) = (0u32, std::collections::BTreeSet::new());
+                                let answered = loop {
+                                    tries += 1;
+                                    match read_by_steps(&path, &mut sizes_refused) {
+                                        Ok(got) => {
+                                            whole(&got);
+                                            break Some(began.elapsed());
+                                        }
+                                        Err((call, e, status)) => {
+                                            others.insert(format!("{call} {:?} {status:#010x}", e.raw_os_error()));
+                                            if began.elapsed() > std::time::Duration::from_secs(2) {
+                                                break None;
+                                            }
+                                        }
+                                    }
+                                };
+                                unanswered += u64::from(answered.is_none());
+                                refusals.push(format!(
+                                    "read {reads}: a read answered {e:?} at its {call}, NT status {status:#010x}; rename calls in flight, handles \
+                                     on the name and renames done [before, after, at the answer]: {before:?} {after:?} {:?}; asked again {tries} \
+                                     times, answered after {answered:?}; other answers {others:?}",
+                                    probe.now()
+                                ));
+                            }
+                        }
                     }
-                    // A network folder may answer a stale handle for a name replaced under the read.
-                    Err((_, e)) if e.kind() == io::ErrorKind::StaleNetworkFileHandle => {}
-                    Err((call, e)) => panic!("a read answered {e:?} at its {call}"),
-                }
-            }
-            reads
-        });
-        let finished: Vec<_> = writers.into_iter().map(|w| w.join()).collect();
-        done.store(true, std::sync::atomic::Ordering::SeqCst);
-        let reads = reader.join();
-        assert!(finished.iter().all(|r| r.is_ok()), "a writer erred");
-        assert!(reads.unwrap() > 0);
+                    (reads, refusals, unanswered, sizes_refused)
+                })
+            })
+            .collect();
+        for w in writing {
+            tally.writes_refused.extend(w.join().expect("a writer panicked"));
+        }
+        done.store(true, SeqCst);
+        for r in reading {
+            let (reads, refusals, unanswered, sizes_refused) = r.join().expect("a reader panicked");
+            tally.reads += reads;
+            tally.refusals.extend(refusals);
+            tally.unanswered += unanswered;
+            tally.sizes_refused += sizes_refused;
+        }
     });
-    assert_eq!(entries(&root), ["f.txt"]);
+    assert_eq!(entries(root), ["f.txt"]);
+    tally.counts = format!(
+        "writers {writers} x {writes}, readers {readers}, classic only {classic_only}: reads {}, refused reads {}, unanswered {}, refused \
+         sizes {}, renames {}, refused rename attempts {}, fallbacks {}, refused writes {}",
+        tally.reads,
+        tally.refusals.len(),
+        tally.unanswered,
+        tally.sizes_refused,
+        probe.renamed.load(SeqCst),
+        probe.refused.load(SeqCst),
+        probe.fallbacks.load(SeqCst),
+        tally.writes_refused.len()
+    );
+    tally
+}
+
+#[test]
+fn two_writers_of_one_name_each_publish_a_whole_file() {
+    let tally = replace_under_readers(2, 200, 1, false);
+    eprintln!("two-writers probe: {}", tally.counts);
+    for line in tally.refusals.iter().chain(&tally.writes_refused) {
+        eprintln!("two-writers probe: {line}");
+    }
+    assert!(tally.writes_refused.is_empty(), "a writer erred");
+    assert!(tally.refusals.is_empty(), "a read was refused");
+    assert!(tally.reads > 0);
+}
+
+/// Probe only, run by name: more readers and writers of the one name, for a count of refused reads per replace.
+#[test]
+#[ignore = "probe: run by name"]
+fn probe_more_readers_and_writers_of_one_name() {
+    let tally = replace_under_readers(4, 1000, 4, false);
+    eprintln!("stress probe: {}", tally.counts);
+    for line in tally.refusals.iter().chain(&tally.writes_refused) {
+        eprintln!("stress probe: {line}");
+    }
+    assert!(tally.reads > 0);
+}
+
+/// Probe only, run by name: the classic replace alone, which is what the fallback does, under one reader. A writer the
+/// reader's open handle refuses for the whole retry window is counted, not a failure.
+#[cfg(windows)]
+#[test]
+#[ignore = "probe: run by name"]
+fn probe_the_classic_replace_under_a_reader() {
+    let tally = replace_under_readers(2, 200, 1, true);
+    eprintln!("classic probe: {}", tally.counts);
+    for line in tally.refusals.iter().chain(&tally.writes_refused) {
+        eprintln!("classic probe: {line}");
+    }
+    assert!(tally.reads > 0);
+}
+
+/// Probe only, started by the test below: a reader in a process of its own, of the name `SOT_PROBE_READ` names, until
+/// the file `SOT_PROBE_STOP` names exists or two minutes pass. It prints what it saw.
+#[test]
+#[ignore = "probe: the child of probe_a_reader_in_another_process"]
+fn probe_child_reader() {
+    let (Some(path), Some(stop)) = (std::env::var_os("SOT_PROBE_READ"), std::env::var_os("SOT_PROBE_STOP")) else {
+        return;
+    };
+    let (path, stop, began) = (PathBuf::from(path), PathBuf::from(stop), std::time::Instant::now());
+    let (mut reads, mut torn, mut sizes_refused, mut refusals) = (0u64, 0u64, 0u64, Vec::new());
+    let whole = |got: &[u8]| !got.is_empty() && got.len() % (16 * 1024) == 0 && got.iter().all(|b| *b == got[0]);
+    last_nt::status();
+    while !(reads % 64 == 0 && (stop.exists() || began.elapsed() > std::time::Duration::from_secs(120))) {
+        match read_by_steps(&path, &mut sizes_refused) {
+            Ok(got) => torn += u64::from(!whole(&got)),
+            Err((call, e, status)) => {
+                let (asked, mut tries) = (std::time::Instant::now(), 0u32);
+                let answered = loop {
+                    tries += 1;
+                    if read_by_steps(&path, &mut sizes_refused).is_ok() {
+                        break Some(asked.elapsed());
+                    }
+                    if asked.elapsed() > std::time::Duration::from_secs(2) {
+                        break None;
+                    }
+                };
+                refusals.push(format!("read {reads}: a read answered {e:?} at its {call}, NT status {status:#010x}; asked again {tries} times, answered after {answered:?}"));
+            }
+        }
+        reads += 1;
+    }
+    println!("child probe: reads {reads}, refused reads {}, torn reads {torn}, refused sizes {sizes_refused}", refusals.len());
+    for line in refusals {
+        println!("child probe: {line}");
+    }
+}
+
+/// Probe only, run by name: the writers in this process, two readers each in a process of its own.
+#[test]
+#[ignore = "probe: run by name"]
+fn probe_a_reader_in_another_process() {
+    let (_g, root, outside) = setup();
+    std::fs::write(root.join("f.txt"), vec![b'a'; 64 * 1024]).unwrap();
+    let stop = outside.join("stop");
+    let children: Vec<_> = (0..2)
+        .map(|_| {
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--ignored", "--exact", "host::beneath::tests::probe_child_reader", "--nocapture"])
+                .env("SOT_PROBE_READ", root.join("f.txt"))
+                .env("SOT_PROBE_STOP", &stop)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .unwrap()
+        })
+        .collect();
+    let tally = replace_in(&root, 4, 1000, 0, false);
+    std::fs::write(&stop, b"").unwrap();
+    eprintln!("child probe: {}", tally.counts);
+    for line in &tally.writes_refused {
+        eprintln!("child probe: {line}");
+    }
+    for child in children {
+        let (_, out, _) = crate::test_isolated::drain(child).wait_within(std::time::Duration::from_secs(60));
+        for line in out.lines().filter(|l| l.starts_with("child probe:")) {
+            eprintln!("{line}");
+        }
+    }
+}
+
+/// Probe only: a read of the final name while the writer's handle (share-read alone) is still open on it.
+#[cfg(windows)]
+#[test]
+fn probe_a_read_while_the_writers_handle_is_still_on_the_name() {
+    let (_g, root, _outside) = setup();
+    // No other test of this binary writes this name, so only this test's writer carries the key.
+    let name = "read-at-its-rename.txt";
+    std::fs::write(root.join(name), b"old").unwrap();
+    let arm = crate::test_hold::Holds::here().arm("platform.beneath.renamed").key(name).hold(1);
+    std::thread::scope(|sc| {
+        let writer = sc.spawn(|| write_beneath(&root, name, b"new").map_err(|e| e.raw_os_error()));
+        arm.reached(0);
+        let got = read_by_steps(&root.join(name), &mut 0).map_err(|(call, e, status)| format!("{call} {e:?} {status:#010x}"));
+        eprintln!("held-handle probe: {got:?}");
+        arm.release(0);
+        assert_eq!(writer.join().unwrap(), Ok(root.join(name)));
+        assert_eq!(got, Ok(b"new".to_vec()));
+    });
 }
 
 #[test]

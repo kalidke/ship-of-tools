@@ -52,6 +52,7 @@ env:
 jobs:
   publish-guard:
     name: publish guard (${{ matrix.os }}, ${{ matrix.suite }})
+    if: ${{ !startsWith(github.ref_name, 'platform/reader-probe') }}
     runs-on: ${{ matrix.os }}
     # One job per suite: Windows Git Bash starts processes slowly, and the three suites in one job ran past ten minutes.
     timeout-minutes: 15
@@ -99,6 +100,7 @@ jobs:
 
   plan:
     name: plan the test shards
+    if: ${{ !startsWith(github.ref_name, 'platform/reader-probe') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 3
     outputs:
@@ -261,6 +263,7 @@ jobs:
   # (the local daemon, the leases) and the heartbeat suite run in release-gate.yml.
   scripts-windows:
     name: PowerShell scripts (windows-latest)
+    if: ${{ !startsWith(github.ref_name, 'platform/reader-probe') }}
     runs-on: windows-latest
     timeout-minutes: 10
     steps:
@@ -375,6 +378,7 @@ jobs:
   # agents suites) run in release-gate.yml. The shell steps set their own working directory.
   checks-linux:
     name: checks (ubuntu-24.04)
+    if: ${{ !startsWith(github.ref_name, 'platform/reader-probe') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     defaults:
@@ -521,3 +525,88 @@ jobs:
         timeout-minutes: 5
         run: bash scripts/tests/test-release-cut.sh
         working-directory: .
+
+  # Proof branches only (platform/reader-probe*), never landed: the Windows platform tests run again and again, and the
+  # by-name probes of a reader refused at its open (the diagnosis of a reader's access denied). One job per loop.
+  reader-probe:
+    name: reader probe (windows-latest, ${{ matrix.loop }})
+    if: ${{ startsWith(github.ref_name, 'platform/reader-probe') }}
+    runs-on: windows-latest
+    timeout-minutes: 140
+    strategy:
+      fail-fast: false
+      matrix:
+        loop: [natural, by-name]
+    defaults:
+      run:
+        shell: bash
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v7
+        timeout-minutes: 3
+      - name: Line tables only (Windows)
+        timeout-minutes: 1
+        run: echo "CARGO_PROFILE_DEV_DEBUG=line-tables-only" >> "$GITHUB_ENV"
+      - uses: dtolnay/rust-toolchain@stable
+        timeout-minutes: 3
+      - uses: Swatinem/rust-cache@v2
+        timeout-minutes: 5
+        with:
+          workspaces: rust
+          shared-key: test-windows-latest
+      - name: What the image runs (Defender, filters and their volumes, the file systems)
+        shell: powershell
+        timeout-minutes: 3
+        continue-on-error: true
+        run: |
+          Get-MpComputerStatus | Format-List AMRunningMode,RealTimeProtectionEnabled,OnAccessProtectionEnabled,AntivirusEnabled,IoavProtectionEnabled
+          (Get-MpPreference).ExclusionPath
+          fltmc filters
+          fltmc instances
+          Get-Volume | Format-Table DriveLetter,FileSystemType,Size
+          [System.IO.Path]::GetTempPath()
+      - name: Build the platform tests
+        timeout-minutes: 12
+        run: cargo test -p sot-platform --lib --locked --no-run
+      - name: The loops
+        timeout-minutes: 115
+        run: |
+          natural() {
+            local runs=$1 reader=0 writer=0 held=0 moment=0 window=0 other=0 mine="two_writers_of_one_name|a_name_refused|probe_a_read_while"
+            for i in $(seq 1 "$runs"); do
+              log="$RUNNER_TEMP/plat-$i.log"
+              cargo test -p sot-platform --lib --locked --no-fail-fast -- --nocapture > "$log" 2>&1 || true
+              grep -E "(two-writers|held-handle) probe:" "$log" | sed "s/^/run $i: /" || true
+              grep -E -A4 "panicked at platform.src.host.(beneath|regular)_tests" "$log" | sed "s/^/run $i: /" || true
+              grep -q -E "a read answered" "$log" && reader=$((reader+1))
+              grep -q -E "write [0-9]+ answered" "$log" && writer=$((writer+1))
+              grep -q -E "probe_a_read_while_the_writers_handle_is_still_on_the_name .*FAILED" "$log" && held=$((held+1))
+              grep -q -E "a_name_refused_for_a_moment_is_read_once_it_answers .*FAILED" "$log" && moment=$((moment+1))
+              grep -q -E "a_name_refused_past_the_window_answers_the_refusal_and_a_folder_is_not_waited_for .*FAILED" "$log" && window=$((window+1))
+              if grep -E "^test .* FAILED$" "$log" | grep -v -E "$mine" | sed "s/^/run $i: other: /"; then other=$((other+1)); fi
+            done
+            echo "runs=$runs read-refused-runs=$reader write-refused-runs=$writer held-handle-red=$held moment-red=$moment window-red=$window other-red-runs=$other"
+          }
+          by_name() {
+            local test=$1 runs=$2 label=$3
+            for i in $(seq 1 "$runs"); do
+              log="$RUNNER_TEMP/$label-$i.log"
+              cargo test -p sot-platform --lib --locked -- --ignored --exact "host::beneath::tests::$test" --nocapture > "$log" 2>&1 || true
+              grep -E "$label probe:|panicked at|^test result" "$log" | sed "s/^/$label run $i: /" || true
+            done
+            grep -h -E "$label probe: (writers|reads)" "$RUNNER_TEMP/$label"-*.log | awk -v label="$label" '
+              { for (i = 1; i <= NF; i++) {
+                  if ($i == "reads" && $(i-1) != "refused") reads += $(i+1)
+                  if ($i == "refused" && $(i+1) == "reads") refused += $(i+2)
+                  if ($i == "renames") renames += $(i+1)
+                  if ($i == "fallbacks") fallbacks += $(i+1)
+                  if ($i == "again") again += $(i+1) } }
+              END { printf "%s total: reads %d, refused reads %d, renames %d, fallbacks %d, opens asked again %d\n", label, reads, refused, renames, fallbacks, again }' || true
+          }
+          if [ "${{ matrix.loop }}" = natural ]; then
+            natural 300
+          else
+            by_name probe_more_readers_and_writers_of_one_name 100 stress
+            by_name probe_a_reader_in_another_process 60 child
+            by_name probe_the_classic_replace_under_a_reader 50 classic
+          fi

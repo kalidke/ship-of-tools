@@ -16,6 +16,46 @@ mod arm;
 
 use arm::{create_dir_beneath_at, open_followed, remove_in, write_beneath_at, write_in};
 
+/// Probe only, never landed: what the renames of a thread that names a probe did, for the test that reads them from
+/// another thread. Only the Windows arm counts.
+#[cfg(test)]
+pub(super) mod probe {
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::SeqCst};
+
+    #[derive(Default)]
+    pub struct Probe {
+        /// Rename attempts that entered the system call, and that left it.
+        pub entered: AtomicU64,
+        pub left: AtomicU64,
+        /// Attempts that renamed, and handles closed after one: their difference is the handles still on the final name.
+        pub renamed: AtomicU64,
+        pub closed: AtomicU64,
+        /// Attempts refused, and attempts that took the classic replace because the POSIX one answered it has none.
+        pub refused: AtomicU64,
+        pub fallbacks: AtomicU64,
+        /// The test asks for the classic replace alone (what the fallback does), to measure it.
+        pub classic_only: AtomicBool,
+    }
+
+    impl Probe {
+        /// Attempts in the system call, handles still on the final name, and renames done so far.
+        pub fn now(&self) -> [u64; 3] {
+            let (entered, left) = (self.entered.load(SeqCst), self.left.load(SeqCst));
+            let (renamed, closed) = (self.renamed.load(SeqCst), self.closed.load(SeqCst));
+            [entered.saturating_sub(left), renamed.saturating_sub(closed), renamed]
+        }
+    }
+
+    thread_local! {
+        pub static MINE: std::cell::Cell<Option<&'static Probe>> = const { std::cell::Cell::new(None) };
+    }
+
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub fn mine() -> Option<&'static Probe> {
+        MINE.with(|m| m.get())
+    }
+}
+
 /// The points a test may stop at, each after the step it names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Step {
