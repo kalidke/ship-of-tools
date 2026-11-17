@@ -429,7 +429,7 @@ impl State {
         let send = |evt: IncomingEvt| events.send((host.clone(), evt)).map_err(|_| anyhow::anyhow!("the fixture's event channel closed"));
         send(IncomingEvt::Disconnected { reason: "eof".into(), refused: false })?;
         self.drain_events();
-        anyhow::ensure!(self.status.text().contains("picture not opened: the link to the hub changed"), "the status line says {:?}", self.status.text());
+        anyhow::ensure!(self.status.text().contains("picture not opened: the connection to the computer that runs your agents changed"), "the status line says {:?}", self.status.text());
         send(connected())?;
         self.witness_pump(events, sent, &mut daemon)?;
         anyhow::ensure!(daemon.seen.originals == ["SAME"], "an original was asked again by itself: {:?}", daemon.seen.originals);

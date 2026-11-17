@@ -5,16 +5,23 @@
 use sot_protocol::ops::{ChatChannel, ChatChannelInfo, ChatChannelsRes, ChatCode};
 
 use super::compose::Edit;
+use super::row_channel::computer;
 use crate::net::transport::ChatReply;
 use crate::ui::chrome::{cell_row, wrap_status};
 use crate::ui::ResultRowIdentity;
 
-/// How a person invites their app (`name`, `slack_app_name`) to a channel.
+/// How a person invites their Slack app (`name`, `slack_app_name`) to a channel.
 fn invite(name: &str) -> String {
     format!("in that channel in Slack, type /invite @{name}")
 }
-const GUIDE: &str = "Type to narrow the list, Up and Down to choose, Enter to pick, Esc to close. Your app reads only the channels it is in. \
-Picking a channel it is not in makes it join; Slack then shows that your app joined. A private channel appears in this list once you invite your app: ";
+const GUIDE: &str = "Type to narrow the list, Up and Down to choose, Enter to pick, Esc to close. Picking a channel your Slack app is not in makes it join, \
+and Slack then shows that it joined. A private channel appears in this list once you invite your Slack app: ";
+/// What the listed picker's head says: whose channels these are, that one workspace is all the chat connects, and what "your Slack
+/// app" is (its first use on this screen; the marks below use it).
+const HEAD: &str = "These are the channels of your connected Slack workspace. The chat connects one Slack workspace for now, so another cannot be added yet. \
+Your Slack app (the bot that reads the channel and posts for your agents) reads only the channels it is in.";
+/// Where the guide says to read how to move the chat to another workspace.
+const MOVE: &str = " To move the chat to another workspace, see the manual page \"Setting up Slack for Ship of Tools\" (press F1, then Enter, to open the manual).";
 
 /// What Enter on an entry does.
 #[derive(Clone, Debug, PartialEq)]
@@ -22,7 +29,7 @@ pub(super) enum Pick {
     Channel(ChatChannel),
     /// The project has no channel again.
     Unpair,
-    /// New tokens for the hub: the Connect step.
+    /// Fresh Slack codes for the same Slack app: the Connect step.
     Reconnect,
 }
 
@@ -55,7 +62,7 @@ impl Picker {
     /// pick, its label and its mark.
     fn entries(&self) -> Vec<(Pick, String, &'static str)> {
         let plain = self.filter.is_empty();
-        let again = plain.then(|| (Pick::Reconnect, "Connect Slack again".to_string(), "new tokens for the hub"));
+        let again = plain.then(|| (Pick::Reconnect, "Connect Slack again".to_string(), "fresh codes for the same Slack app, not another workspace"));
         let channels = match &self.list {
             List::Listed { channels, .. } => channels,
             List::Failed(_) => return again.into_iter().collect(),
@@ -71,9 +78,9 @@ impl Picker {
         out.extend(shown.into_iter().map(|c| {
             let mark = match (c.private, c.member) {
                 (false, true) => "",
-                (false, false) => "your app joins it when you pick it",
+                (false, false) => "your Slack app joins it when you pick it",
                 // Slack lists a private channel only when the app is in it.
-                (true, _) => "private, app invited",
+                (true, _) => "private; your Slack app is in it",
             };
             (Pick::Channel(c.id.clone()), format!("#{}", cell_row(&c.name)), mark)
         }));
@@ -89,7 +96,7 @@ impl Picker {
     pub(super) fn on_channels(&mut self, reply: ChatReply<ChatChannelsRes>) {
         self.list = match reply {
             ChatReply::Done(res) => List::Listed { channels: res.channels, more: res.more },
-            ChatReply::Unsupported => List::Failed("the hub's daemon must be updated to list channels".into()),
+            ChatReply::Unsupported => List::Failed(format!("Ship of Tools on {} is too old to list channels: update it", computer(&self.row.host))),
             ChatReply::Refused(code) => List::Failed(format!("could not list the channels: {}", code.text())),
         };
         self.choice = self.home();
@@ -149,9 +156,9 @@ impl Picker {
             List::Reading => ("reading Slack's channels…".to_string(), String::new()),
             List::Failed(words) => (words.clone(), "Esc to close.".to_string()),
             List::Listed { more, .. } => {
-                let head = if entries.is_empty() { "no channel matches" } else { "" };
+                let head = if entries.is_empty() { format!("{HEAD}\n\nno channel matches") } else { HEAD.to_string() };
                 let more = if *more { " More channels exist than are listed: paste a channel's link to pick one." } else { "" };
-                (head.to_string(), format!("{GUIDE}{}.{more}", invite(&self.app)))
+                (head, format!("{GUIDE}{}.{more}{MOVE}", invite(&self.app)))
             }
         };
         Body { head, entries: entries.into_iter().map(|(_, label, mark)| (label, mark)).collect(), chosen: self.choice, guide, ..Body::default() }
@@ -167,13 +174,14 @@ pub(super) fn link_channel(text: &str) -> Option<ChatChannel> {
     shaped.then(|| ChatChannel::try_from(segment.to_string()).ok()).flatten()
 }
 
-/// The words of a refused `chat.pair` (`private`: the channel is one the list marked private; `app`: the person's app).
-pub(super) fn pair_words(reply: &ChatReply<sot_protocol::ops::ChatPairRes>, private: bool, app: &str) -> Option<String> {
+/// The words of a refused `chat.pair` (`private`: the channel is one the list marked private; `app`: the person's Slack app;
+/// `host`: the computer the chat runs on).
+pub(super) fn pair_words(reply: &ChatReply<sot_protocol::ops::ChatPairRes>, private: bool, app: &str, host: &str) -> Option<String> {
     Some(match reply {
         ChatReply::Done(_) => return None,
-        ChatReply::Unsupported => "not set: the hub's daemon must be updated to set a channel".into(),
-        ChatReply::Refused(ChatCode::NotInChannel) if private => format!("not set: the app is not in that private channel; {}, then pick it again", invite(app)),
-        ChatReply::Refused(ChatCode::NotInChannel) => format!("not set: the app could not join that channel; invite it: {}", invite(app)),
+        ChatReply::Unsupported => format!("not set: Ship of Tools on {} is too old to set a channel: update it", computer(host)),
+        ChatReply::Refused(ChatCode::NotInChannel) if private => format!("not set: your Slack app is not in that private channel; {}, then pick it again", invite(app)),
+        ChatReply::Refused(ChatCode::NotInChannel) => format!("not set: your Slack app could not join that channel; invite it: {}", invite(app)),
         ChatReply::Refused(code) => format!("not set: {}", code.text()),
     })
 }

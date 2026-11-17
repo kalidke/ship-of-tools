@@ -68,6 +68,12 @@ fn shown_lines(d: &ChatDrawer) -> Vec<String> {
     d.body().expect("a body").lines(80, 24)
 }
 
+/// The picker's rows from its first entry down, under the head that names the workspace and the Slack app.
+fn listed(d: &ChatDrawer) -> Vec<String> {
+    let entry = |l: &String| l.starts_with("> ") || l.starts_with("  #") || l.starts_with("  No channel") || l.starts_with("  Connect");
+    shown_lines(d).into_iter().skip_while(|l| !entry(l)).collect()
+}
+
 fn asks_resolve(d: &mut ChatDrawer, at: Instant) -> bool {
     d.tick(shown("ROW1"), at).0.iter().any(|(_, r)| matches!(r, OutgoingReq::ChatResolve { .. }))
 }
@@ -80,27 +86,48 @@ fn the_picker_lists_channels_by_name_with_their_marks_and_says_how_a_private_one
     assert_eq!(d.title(), " chat · choose this project's channel ");
     assert_eq!(shown_lines(&d), ["reading Slack's channels…"]);
     d.on_evt(&host(), channels_reply(false), at);
-    let lines = shown_lines(&d);
+    let lines = listed(&d);
     assert!(lines[0].starts_with("> #lab-general"), "{lines:?}");
-    assert!(lines[1].starts_with("  #lab-microscopes") && lines[1].ends_with("your app joins it when you pick it"), "{lines:?}");
-    assert!(lines[2].starts_with("  #lab-papers") && lines[2].ends_with("private, app invited"), "{lines:?}");
+    assert!(lines[1].starts_with("  #lab-microscopes") && lines[1].ends_with("your Slack app joins it when you pick it"), "{lines:?}");
+    assert!(lines[2].starts_with("  #lab-papers") && lines[2].ends_with("private; your Slack app is in it"), "{lines:?}");
     assert!(lines[3].starts_with("  #random") && lines[3].trim_end() == "  #random", "a public channel the app is in has no mark: {lines:?}");
-    let guide = lines[4..].join(" ");
+    assert!(lines[4].starts_with("  Connect Slack again") && lines[4].ends_with("fresh codes for the same Slack app, not another workspace"), "{lines:?}");
+    let guide = lines[5..].join(" ");
     assert!(guide.contains("Esc to close") && guide.contains("/invite @") && !guide.contains("paste a channel's link"), "{guide}");
+    // The head names the one connected workspace and says another cannot be added yet, and what the Slack app is.
+    let head = shown_lines(&d).join(" ");
+    assert!(head.contains("channels of your connected Slack workspace") && head.contains("one Slack workspace for now, so another cannot be added yet"), "{head}");
+    assert!(head.contains("Your Slack app (the bot that reads the channel and posts for your agents)"), "{head}");
+    assert!(guide.contains("To move the chat to another workspace, see the manual page \"Setting up Slack for Ship of Tools\""), "{guide}");
     // A list cut at the bound says to paste a link.
     d.on_evt(&host(), channels_reply(true), at);
     assert!(shown_lines(&d).join(" ").contains("paste a channel's link"));
     // A short drawer keeps the choice in view and cuts the guide, never the entries' window below three rows.
-    let rows = d.body().unwrap().lines(80, 5);
-    assert_eq!(rows.len(), 5);
+    let rows = d.body().unwrap().lines(80, 8);
+    assert_eq!(rows.len(), 8);
     assert_eq!(rows.iter().filter(|l| l.starts_with("> ")).count(), 1);
     // A read that fails says why and offers only to connect Slack again; the picker does not hide.
     let (mut d, at, _) = unmapped();
     d.on_evt(&host(), ChatEvt::Channels { reply: ChatReply::Refused(ChatCode::Unavailable) }, at);
-    assert_eq!(shown_lines(&d)[..2], ["could not list the channels: the chat is not available here", "> Connect Slack again  new tokens for the hub"]);
+    assert_eq!(shown_lines(&d)[..2], ["could not list the channels: the chat is not available here", "> Connect Slack again  fresh codes for the same Slack app, not another workspace"]);
     d.on_evt(&host(), ChatEvt::Channels { reply: ChatReply::Unsupported }, at);
-    assert_eq!(shown_lines(&d)[0], "the hub's daemon must be updated to list channels");
+    assert_eq!(shown_lines(&d)[0], "Ship of Tools on a is too old to list channels: update it");
     assert!(d.picker_enter().is_empty() && d.in_setup(), "Connect Slack again sends nothing and starts the Connect step");
+}
+
+/// The listed picker says whose channels these are, that the chat connects one Slack workspace for now, so another cannot be
+/// added yet, and where the manual says how to move it; a filter that matches nothing keeps the line and adds its own.
+#[test]
+fn the_picker_says_the_one_connected_workspace_and_that_another_cannot_be_added_yet() {
+    let (mut d, at, _) = unmapped();
+    d.on_evt(&host(), channels_reply(false), at);
+    let said = shown_lines(&d).join(" ");
+    assert!(said.contains("These are the channels of your connected Slack workspace. The chat connects one Slack workspace for now, so another cannot be added yet."), "{said}");
+    assert!(said.contains("manual page \"Setting up Slack for Ship of Tools\" (press F1, then Enter, to open the manual)"), "{said}");
+    // Typing narrows the entries and leaves the line; a filter with no match says so under it.
+    d.picker_edit(Edit::Text("zzz"));
+    let said = shown_lines(&d).join(" ");
+    assert!(said.contains("another cannot be added yet") && said.contains("no channel matches"), "{said}");
 }
 
 #[test]
@@ -109,16 +136,16 @@ fn typing_filters_and_enter_pairs_once() {
     d.on_evt(&host(), channels_reply(false), at);
     // The `#` the entries are drawn with may be typed.
     d.picker_edit(Edit::Text("#"));
-    assert!(shown_lines(&d)[0].starts_with("> #lab-general") && shown_lines(&d).len() > 4);
+    assert!(listed(&d)[0].starts_with("> #lab-general") && listed(&d).len() > 4);
     d.picker_edit(Edit::Backspace);
     d.picker_edit(Edit::Text("LAB"));
     assert_eq!(d.title(), " chat · choose this project's channel  filter: LAB ");
-    let lines = shown_lines(&d);
+    let lines = listed(&d);
     assert!(lines[0].starts_with("> #lab-general") && lines[2].starts_with("  #lab-papers") && !lines.iter().any(|l| l.contains("#random")), "{lines:?}");
     d.picker_step(true);
     d.picker_step(true);
     d.picker_step(true);
-    assert!(shown_lines(&d)[2].starts_with("> #lab-papers"), "the choice stops at the last entry");
+    assert!(listed(&d)[2].starts_with("> #lab-papers"), "the choice stops at the last entry");
     d.picker_step(false);
     // Enter sends one pair for the chosen channel; a second Enter before the reply sends nothing.
     let sent = d.picker_enter();
@@ -134,7 +161,7 @@ fn typing_filters_and_enter_pairs_once() {
     let (mut d, at, _) = unmapped();
     d.on_evt(&host(), channels_reply(false), at);
     d.picker_edit(Edit::Text("zzz"));
-    assert_eq!(shown_lines(&d)[0], "no channel matches");
+    assert!(shown_lines(&d).iter().any(|l| l == "no channel matches"));
     assert!(d.picker_enter().is_empty());
     (0..3).for_each(|_| d.picker_edit(Edit::Backspace));
     assert_eq!(d.title(), " chat · choose this project's channel ");
@@ -180,13 +207,13 @@ fn the_setup_chord_offers_no_channel_first_on_a_mapped_row() {
     let outs = d.open_picker(shown("ROW1").as_ref()).unwrap();
     assert_eq!(lists(&outs), 1);
     d.on_evt(&host(), channels_reply(false), at);
-    let lines = shown_lines(&d);
+    let lines = listed(&d);
     assert!(lines[0].starts_with("  No channel for this project") && lines[1].starts_with("> #lab-general"), "{lines:?}");
     // A narrowed list is channels alone, so typing never leaves Enter on the unpairing.
     d.picker_edit(Edit::Text("lab"));
     assert!(!shown_lines(&d).iter().any(|l| l.contains("No channel for")));
     (0..3).for_each(|_| d.picker_edit(Edit::Backspace));
-    assert!(shown_lines(&d)[1].starts_with("> #lab-general"), "the choice returns to the first channel");
+    assert!(listed(&d)[1].starts_with("> #lab-general"), "the choice returns to the first channel");
     // `No channel for this project` unpairs, and the row then stays unpicked until a person asks.
     d.picker_step(false);
     let sent = d.picker_enter();
@@ -208,15 +235,15 @@ fn the_setup_chord_offers_no_channel_first_on_a_mapped_row() {
     d.dismiss_picker();
     d.open_picker(shown("ROW1").as_ref()).unwrap();
     d.on_evt(&host(), channels_reply(false), at);
-    assert!(shown_lines(&d)[0].starts_with("> #lab-general") && !shown_lines(&d).iter().any(|l| l.contains("No channel for")));
+    assert!(listed(&d)[0].starts_with("> #lab-general") && !shown_lines(&d).iter().any(|l| l.contains("No channel for")));
     let mut off = ChatDrawer::default();
     off.tick(shown("ROW1"), at);
-    assert_eq!(off.open_picker(shown("ROW1").as_ref()).unwrap_err(), "not connected");
+    assert_eq!(off.open_picker(shown("ROW1").as_ref()).unwrap_err(), "no connection to a");
     off.on_connection(&host(), true, false, at);
     off.tick(shown("ROW1"), at + Duration::from_millis(200));
     off.on_evt(&host(), answer("ROW1", serde_json::json!({ "state": "invalid" })), at + Duration::from_millis(210));
-    assert!(off.open_picker(shown("ROW1").as_ref()).unwrap_err().starts_with("the hub has no usable chat configuration"));
-    assert_eq!(off.open_picker(None).unwrap_err(), "no row to choose a channel for");
+    assert!(off.open_picker(shown("ROW1").as_ref()).unwrap_err().starts_with("the chat on a is not set up correctly"));
+    assert_eq!(off.open_picker(None).unwrap_err(), "no project is selected to choose a channel for");
 }
 
 #[test]
@@ -238,7 +265,7 @@ fn a_pair_reply_resolves_the_row_again_and_not_in_channel_says_to_invite() {
     for (reply, said) in [
         (ChatReply::Refused(ChatCode::ChannelTaken), "not set: another project already uses that channel"),
         (ChatReply::Refused(ChatCode::NotSaved), "not set: the chat settings could not be saved"),
-        (ChatReply::Unsupported, "not set: the hub's daemon must be updated to set a channel"),
+        (ChatReply::Unsupported, "not set: Ship of Tools on a is too old to set a channel: update it"),
     ] {
         d.picker_enter();
         d.on_evt(&host(), paired("ROW1", Some("C1"), reply), at);

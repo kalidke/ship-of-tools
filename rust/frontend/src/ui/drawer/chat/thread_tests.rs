@@ -231,7 +231,7 @@ fn a_thread_is_read_whole_and_its_replies_match_by_value() {
     // A link's end keeps the thread open; its walk starts again at `Connected`, from the first page.
     on(&mut d, &req, page(&[reply_to(&parent, 0)], None), at(78));
     assert!(d.on_connection(&host(), false, false, at(80)).iter().all(|(_, r)| !matches!(r, OutgoingReq::ChatHistory { .. })));
-    assert_eq!(d.title(), " chat · CH1 · thread not connected ");
+    assert_eq!(d.title(), " chat · CH1 · thread no connection to a ");
     let outs = d.on_connection(&host(), true, false, at(81));
     let again = outs.iter().filter(|(_, r)| matches!(r, OutgoingReq::ChatHistory { req } if req.thread.is_some())).count();
     assert_eq!(again, 1, "the walk starts again");
@@ -345,7 +345,7 @@ fn thread_view_compose_and_back_keep_target() {
 
     // A link's end keeps it open.
     d.on_connection(&host(), false, false, at);
-    assert_eq!(d.title(), " chat · CH1 · thread not connected ", "the link's words stay over a thread");
+    assert_eq!(d.title(), " chat · CH1 · thread no connection to a ", "the link's words stay over a thread");
     d.on_connection(&host(), true, false, at);
     assert!(d.title().starts_with(" chat · CH1 · thread "));
 
@@ -494,12 +494,12 @@ fn the_threads_title_keeps_its_phrases_apart_and_says_an_unsupported_reply() {
     let req = history(&open(&mut d, &mut fonts, &[true]));
     on(&mut d, &req, ChatReply::Refused(ChatCode::Busy), at);
     d.on_connection(&host(), false, false, at);
-    assert_eq!(d.title(), format!(" chat · CH1 · thread the thread is not read: {} · not connected ", ChatCode::Busy.text()));
+    assert_eq!(d.title(), format!(" chat · CH1 · thread the thread is not read: {} · no connection to a ", ChatCode::Busy.text()));
     d.close_thread();
     let (mut d, at) = channel(&held);
     let req = history(&open(&mut d, &mut fonts, &[true]));
     on(&mut d, &req, ChatReply::Unsupported, at);
-    assert_eq!(d.title(), " chat · CH1 · thread this daemon has no chat: update it ");
+    assert_eq!(d.title(), " chat · CH1 · thread Ship of Tools on the computer that runs your agents has no chat: update it ");
 }
 
 /// Another host's link change leaves the thread's read alone.

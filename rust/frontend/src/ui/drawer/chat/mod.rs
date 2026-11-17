@@ -76,7 +76,7 @@ impl State {
             if wanted_row(self.layout_help.chat_shown(), || self.active_result_workspace()).as_ref() == Some(&row) {
                 self.draw_chat_picture(number, bytes);
             } else {
-                self.status.set("picture not opened: the row changed before it came");
+                self.status.set("picture not opened: you switched projects before it arrived");
             }
         }
     }

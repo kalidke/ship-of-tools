@@ -166,17 +166,17 @@ fn post_words(shown: &PostShown, file: bool) -> Option<String> {
         PostShown::Posted => return None,
         // A file post sends no name: the daemon refuses a file whose name Slack cannot take.
         PostShown::Refused(ChatCode::BadRequest) if file => "not posted: the file's name is not one the chat can send".into(),
-        PostShown::Refused(ChatCode::BadRequest) => "not posted: the request is not valid; check [chat] name in settings.toml".into(),
+        PostShown::Refused(ChatCode::BadRequest) => "not posted: the chat name is not valid; fix the name = line under [chat] in settings.toml (the settings file this window loaded)".into(),
         PostShown::Refused(code) => format!("not posted: {}", code.text()),
         PostShown::Limited(secs, assumed) => wait_words(*secs, *assumed),
         PostShown::Unknown => "may have been posted: check the channel before sending it again".into(),
-        PostShown::Outdated => "not posted: the hub must be updated to post".into(),
+        PostShown::Outdated => "not posted: update Ship of Tools on the computer that runs your agents, then post again".into(),
     })
 }
 
 /// The status line's words for a rate limit: the seconds left, with `about` when the wait is a guess.
 fn wait_words(secs: u64, assumed: bool) -> String {
-    format!("not posted: rate limited; wait {}{secs} s", if assumed { "about " } else { "" })
+    format!("not posted: Slack asked for a pause; wait {}{secs} s", if assumed { "about " } else { "" })
 }
 
 impl ChatDrawer {
@@ -309,7 +309,7 @@ impl ChatDrawer {
                 let row = self.rows.row().cloned();
                 outs.extend(self.open_picker(row.as_ref()).unwrap_or_default());
             } else {
-                asks.notice = Some("reading the hub again: press Enter in a moment".into());
+                asks.notice = Some("setting up the chat: press Enter again in a moment to choose this project's channel".into());
             }
         }
         (outs, asks)
@@ -359,7 +359,7 @@ impl ChatDrawer {
         }
         self.flight.clear(host);
         if self.pictures.on_connection(host, up, now) {
-            self.notice = Some("picture not opened: the link to the hub changed before it came".into());
+            self.notice = Some("picture not opened: the connection to the computer that runs your agents changed before it arrived".into());
         }
         let mut outs = self.owner_outs(|o| o.on_connection(host, up, now));
         if self.thread.as_ref().is_some_and(|t| t.host() == host) {
@@ -414,7 +414,7 @@ impl ChatDrawer {
                 if self.connect().is_some_and(|c| c.host() == host && c.connecting()) {
                     self.close_modal();
                 }
-                self.notice = Some("Slack may be connected: the hub did not answer before the link ended; reading it again".into());
+                self.notice = Some("Slack may be connected: the computer that runs your agents did not answer before the connection ended; checking again".into());
                 self.rows.ask_again(host);
                 Vec::new()
             }
@@ -463,7 +463,7 @@ impl ChatDrawer {
     /// blank). It needs a draft with something in it, no post waiting and no `limited` wait running; with no name it asks for
     /// one (`asking`) and sends nothing. The draft stays until a reply proves the post.
     pub(in crate::ui) fn send(&mut self, row: Option<&ResultRowIdentity>, name: Option<&str>, now: Instant) -> Result<Vec<Out>, String> {
-        let Some(row) = row else { return Err("no row to write for".into()) };
+        let Some(row) = row else { return Err("no project is selected to write to".into()) };
         self.may_post()?;
         // Enter over an unmapped row with nothing typed asks for its channel.
         if self.modal.is_none() && self.rows.stand() == Stand::Unmapped && self.compose.draft(row).is_none_or(|d| d.text.is_empty()) {
@@ -505,7 +505,7 @@ impl ChatDrawer {
     /// the open thread. It takes the one post slot; only a reply that proves the share clears the draft. A preview with no
     /// node (nothing shown) posts nothing.
     pub(in crate::ui) fn send_file(&mut self, row: Option<&ResultRowIdentity>, node: Option<&str>, now: Instant) -> Result<Vec<Out>, String> {
-        let Some(row) = row else { return Err("no row to post for".into()) };
+        let Some(row) = row else { return Err("no project is selected to post for".into()) };
         self.may_post()?;
         let Some(node) = node else { return Err("not posted: the preview shows no file".into()) };
         if self.owner.posting_row().is_some() {
@@ -568,7 +568,7 @@ impl ChatDrawer {
     /// channel for this project`). Any other stand says its words instead. The channel's view is set aside, and its thread
     /// closed (a thread's Left key would otherwise give back the channel's view under the picker).
     pub(in crate::ui) fn open_picker(&mut self, row: Option<&ResultRowIdentity>) -> Result<Vec<Out>, String> {
-        let Some(row) = row.filter(|r| self.rows.row() == Some(*r)) else { return Err("no row to choose a channel for".into()) };
+        let Some(row) = row.filter(|r| self.rows.row() == Some(*r)) else { return Err("no project is selected to choose a channel for".into()) };
         let mapped = match self.rows.stand() {
             Stand::Mapped => true,
             Stand::Unmapped => false,
@@ -654,8 +654,8 @@ impl ChatDrawer {
         let ours = self.picker().is_some_and(|p| p.sent() && &p.row.host == host && p.row.workspace_id == row);
         let private = ours && channel.is_some_and(|c| self.picker().is_some_and(|p| p.is_private(c)));
         let words = match reply {
-            Some(reply) => pair_words(reply, private, &slack_app_name(self.login)),
-            None => Some("the channel may have been set: the title shows what the hub has".into()),
+            Some(reply) => pair_words(reply, private, &slack_app_name(self.login), host),
+            None => Some("the channel may have been set: the title line of this panel shows which one".into()),
         };
         if ours {
             self.picker_mut().into_iter().for_each(Picker::paired);
@@ -701,7 +701,7 @@ impl ChatDrawer {
     pub(in crate::ui) fn edit_name(&mut self, edit: Edit) -> Result<(), &'static str> {
         let Some(name) = self.asking.as_mut() else { return Ok(()) };
         let add = match edit {
-            Edit::Text(s) if s.chars().any(char::is_control) => return Err("not pasted: a name holds no newline or other control character"),
+            Edit::Text(s) if s.chars().any(char::is_control) => return Err("not pasted: a name has no line breaks or other control characters"),
             Edit::Text(s) => s,
             Edit::Space => " ",
             Edit::Backspace => {
@@ -740,10 +740,10 @@ impl ChatDrawer {
             // The older pages are the channel's: a thread shows none of them.
             (Stand::Mapped, Some(Fill::Complete)) if self.thread.is_some() => String::new(),
             (Stand::Mapped, Some(Fill::Complete)) => self.owner.older_words().unwrap_or_default(),
-            (Stand::Mapped, Some(Fill::Gap(Some(ChatCode::Unavailable)))) => "the hub's chat service is not running: its daemon log says why".into(),
+            (Stand::Mapped, Some(Fill::Gap(Some(ChatCode::Unavailable)))) => Stand::stopped_words(host),
             // A target refused for good is asked again only at a row or link change.
             (Stand::Mapped, Some(Fill::Gap(Some(code)))) if dead(code) => code.text().into(),
-            (Stand::Mapped, Some(Fill::Gap(code))) => format!("not up to date: {}", code.map_or("no snapshot", ChatCode::text)),
+            (Stand::Mapped, Some(Fill::Gap(code))) => format!("not up to date: {}", code.map_or("no messages read yet", ChatCode::text)),
             (stand, _) => stand.words(host),
         };
         let channel = self.owner.channel().map(|c| format!("{} ", self.rows.label(c))).unwrap_or_default();
@@ -980,7 +980,7 @@ impl ChatDrawer {
     /// not yet moved). A draft begins in the watched channel only if that watch is `row`'s; a refusal is the status
     /// line's words.
     pub(in crate::ui) fn edit(&mut self, row: Option<&ResultRowIdentity>, edit: Edit) -> Result<(), &'static str> {
-        let Some(row) = row else { return Err("no row to write for") };
+        let Some(row) = row else { return Err("no project is selected to write to") };
         // A paste in the Connect step is a token: it is never typed into a draft, which Enter would post.
         if self.in_setup() {
             return Err("connect Slack first");
