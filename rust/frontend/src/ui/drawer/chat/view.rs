@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use chrono::FixedOffset;
 use cosmic_text::{Align, Attrs, Buffer, BufferLine, Color, Cursor, Family, FontSystem, Metrics, Shaping, Style, Weight};
-use sot_protocol::chat::{ChatAuthor, ChatRecord, Ts};
+use sot_protocol::chat::{ChatAuthor, ChatFile, ChatRecord, Ts};
 
 use super::owner::ts_order;
 use super::mrkdwn::{ALT, BLOCK, BOLD, CODE, FILL, ITALIC, QUOTE, STRIKE};
@@ -87,6 +87,13 @@ pub(super) const TILE_LEFT_PX: f32 = 8.0;
 const TILE_TOP_PX: f32 = 2.0;
 const STAMP_SIZE: f32 = 11.0;
 const STAMP_GAP_PX: f32 = 8.0;
+/// A record's band of pictures follows its text and meta lines, below `BAND_TOP_PX` of its own ground and above `BAND_FOOT_PX`:
+/// square tiles `THUMB_PX` a side (so a 360 px thumbnail is drawn at exactly half size) and `THUMB_GAP_PX` apart across and
+/// down, as many to a row as the text's width holds. In pixels at text scale 1.
+const THUMB_PX: f32 = 180.0;
+const THUMB_GAP_PX: f32 = 8.0;
+const BAND_TOP_PX: f32 = 4.0;
+const BAND_FOOT_PX: f32 = 6.0;
 /// The tile colors, chosen by a hash of the author's id and name.
 pub(super) const TILES: [(u8, u8, u8); 8] =
     [(0x2D, 0x9E, 0xE0), (0xE0, 0xA0, 0x2D), (0x3F, 0xA3, 0x6B), (0xC9, 0x50, 0x7B), (0x8A, 0x63, 0xD2), (0xD9, 0x69, 0x3B), (0x2F, 0xA8, 0xA8), (0x7A, 0x8B, 0x3A)];
@@ -257,6 +264,49 @@ fn line_blocks(buffer: &Buffer, flag: usize) -> Vec<(f32, f32)> {
     out
 }
 
+/// The pictures a record shows: the image files of one that is not deleted.
+fn pictures(r: &ChatRecord, deleted: bool) -> impl Iterator<Item = &ChatFile> {
+    r.files.iter().filter(move |f| !deleted && f.is_picture())
+}
+
+/// A band's tiles: the side, the tiles to a row and the band's height. They follow from the picture count, the text's
+/// width and the text scale alone, so a record's height is known before any thumbnail has arrived and an arrival moves
+/// nothing. No pictures, no band.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Geometry {
+    side: f32,
+    per_row: usize,
+    height: f32,
+}
+
+fn geometry(count: usize, width: f32, scale: f32) -> Geometry {
+    if count == 0 {
+        return Geometry { side: 0.0, per_row: 1, height: 0.0 };
+    }
+    let (side, gap) = ((THUMB_PX * scale).min(width.max(1.0)), THUMB_GAP_PX * scale);
+    let per_row = (((width + gap) / (side + gap)).floor() as usize).max(1);
+    let rows = count.div_ceil(per_row) as f32;
+    Geometry { side, per_row, height: (BAND_TOP_PX + BAND_FOOT_PX) * scale + rows * side + (rows - 1.0) * gap }
+}
+
+/// A placed record's pictures: the files it shows in its band, and where they come from.
+struct Band {
+    workspace: String,
+    channel: String,
+    files: Vec<String>,
+    geometry: Geometry,
+}
+
+/// One tile of a band, as the last layout placed it: its rectangle in the screen's pixels, whole (the body clips it), and the
+/// picture it holds a place for.
+#[derive(Clone, Debug)]
+pub(super) struct Tile {
+    pub rect: ScreenRect,
+    pub workspace: String,
+    pub channel: String,
+    pub file: String,
+}
+
 /// A buffer is shaped for its spans at a width and text scale (the floats' bits).
 type Key = (Vec<Span>, u32, u32);
 
@@ -287,8 +337,9 @@ pub(in crate::ui) struct ChatView {
     /// What those asks still owe the anchor, in pixels toward older records, spent at each frame through `settle`.
     motion: ScrollMotion,
     cache: HashMap<Key, Shaped>,
-    /// The records that reach the body, in order: buffer key, top, time, and the group's tile color when it starts one.
-    placed: Vec<(Key, f32, Ts, Option<(u8, u8, u8)>)>,
+    /// The records that reach the body, in order: buffer key, top, time, the group's tile color when it starts one, and the
+    /// band of pictures below the text (a record's height is the buffer's and the band's).
+    placed: Vec<(Key, f32, Ts, Option<(u8, u8, u8)>, Band)>,
     body: Option<ScreenRect>,
     /// The text scale of the last layout.
     scale: f32,
@@ -331,7 +382,7 @@ impl ChatView {
             let shaped = cache.entry(key.clone()).or_insert_with(|| shape(fonts, &key.0, width, scale));
             shaped.at = at;
             used.insert(at, key);
-            shaped.height
+            shaped.height + geometry(pictures(records[at].0, records[at].1).count(), width, scale).height
         };
         let count = records.len();
         // The anchor is found by its time: a record gone passes it to the nearest newer one, and a snapshot that replaced
@@ -410,7 +461,10 @@ impl ChatView {
             .map(|p| {
                 let key = used.remove(&p.index).expect("asked");
                 let tile = (cache[&key].lead > 0).then(|| tile_color(&records[p.index].0.author));
-                (key, p.top, records[p.index].0.ts.clone(), tile)
+                let (r, deleted) = records[p.index];
+                let files: Vec<String> = pictures(r, deleted).map(|f| f.id.clone()).collect();
+                let geometry = geometry(files.len(), width, scale);
+                (key, p.top, r.ts.clone(), tile, Band { workspace: r.workspace.clone(), channel: r.channel.clone(), files, geometry })
             })
             .collect();
         // A marked continuation shows its time in the gutter.
@@ -469,7 +523,7 @@ impl ChatView {
     pub(in crate::ui) fn hit(&self, at: (f32, f32)) -> Option<ChatHit> {
         let body = self.body?;
         (at.0 >= body.x && at.0 < body.x + body.w && at.1 >= body.y && at.1 < body.y + body.h).then_some(())?;
-        let line = self.placed.iter().find(|(k, top, ..)| at.1 >= body.y + top && at.1 < body.y + top + self.cache[k].height).and_then(|(key, top, ts, _)| {
+        let line = self.placed.iter().find(|(k, top, ..)| at.1 >= body.y + top && at.1 < body.y + top + self.cache[k].height).and_then(|(key, top, ts, ..)| {
             let cursor = FlowedSelection::hit(&self.lend(&self.cache[key], Some(*top)), at, true).filter(|c| c.line >= self.cache[key].lead)?;
             Some(((ts.clone(), key.clone()), cursor))
         });
@@ -597,6 +651,34 @@ impl ChatView {
         out
     }
 
+    /// The rectangles of `band`'s tiles for the record placed at `top`: whole, whether or not the body shows them.
+    fn tile_rects<'a>(&'a self, key: &Key, top: f32, band: &'a Band) -> impl Iterator<Item = ScreenRect> + 'a {
+        let body = self.body.unwrap_or(ScreenRect { x: 0.0, y: 0.0, w: 0.0, h: 0.0 });
+        let (text, scale, g) = (text_rect(body, self.scale), self.scale, band.geometry);
+        let (first, step) = (body.y + top + self.cache[key].height + BAND_TOP_PX * scale, g.side + THUMB_GAP_PX * scale);
+        (0..band.files.len()).map(move |i| ScreenRect { x: text.x + (i % g.per_row) as f32 * step, y: first + (i / g.per_row) as f32 * step, w: g.side, h: g.side })
+    }
+
+    /// The tiles of the placed records that reach the body, in placement order and then the band's: where each picture's
+    /// thumbnail is drawn.
+    pub(super) fn tiles(&self) -> Vec<Tile> {
+        let Some(body) = self.body else { return Vec::new() };
+        let mut out = Vec::new();
+        for (key, top, _, _, band) in &self.placed {
+            for (r, file) in self.tile_rects(key, *top, band).zip(&band.files) {
+                if r.y < body.y + body.h && r.y + r.h > body.y {
+                    out.push(Tile { rect: r, workspace: band.workspace.clone(), channel: band.channel.clone(), file: file.clone() });
+                }
+            }
+        }
+        out
+    }
+
+    /// The body the last layout placed the records in; none while the chat is hidden.
+    pub(super) fn body(&self) -> Option<ScreenRect> {
+        self.body
+    }
+
     /// The times of the records the last layout placed, in placement order.
     pub(super) fn placed_times(&self) -> impl Iterator<Item = &Ts> {
         self.placed.iter().map(|p| &p.2)
@@ -616,11 +698,11 @@ impl ChatView {
         // A `LOW` border one pixel wide (at the text scale) and `fill` inside it: the day pill's, and an inline code run's.
         let mut out = vec![CellQuad { x: inside.x, y: inside.y, w: inside.w, h: inside.h, color: BG }];
         let text = text_rect(body, self.scale);
-        for (i, (key, top, ts, tile)) in self.placed.iter().enumerate() {
+        for (i, (key, top, ts, tile, band)) in self.placed.iter().enumerate() {
             let shaped = &self.cache[key];
             let scale = f32::from_bits(key.2);
             let boxed = |r: ScreenRect, fill| [quad(r, LOW), quad(ScreenRect { x: r.x + scale, y: r.y + scale, w: r.w - 2.0 * scale, h: r.h - 2.0 * scale }, fill)].into_iter().flatten();
-            let all = ScreenRect { x: body.x, y: body.y + top, w: body.w, h: shaped.height };
+            let all = ScreenRect { x: body.x, y: body.y + top, w: body.w, h: shaped.height + band.geometry.height };
             let at = ScreenRect { y: all.y + shaped.day, h: all.h - shaped.day, ..all };
             // A rule across the body, gutter included, in the top pixel of every record but the first placed and one a divider
             // already separates: records abut, so it takes no height, and the band and every fill after it lie over it.
@@ -667,6 +749,11 @@ impl ChatView {
             // A badge's rectangle is its run of glyphs, which include its padding (`project`), so a wrapped line never cuts it.
             for (x, y, w, h) in flagged_runs(&shaped.buffer, |m| m & BADGE != 0) {
                 out.extend(quad(ScreenRect { x: text.x + x, y: all.y + y + h * BADGE_TOP, w, h: h * BADGE_HEIGHT }, LOW));
+            }
+            // Each picture's tile is a bordered box, held or not: a thumbnail drawn over it (`ChatDrawer::paint_thumbs`) is
+            // fitted inside it, and its arrival changes no rectangle here.
+            for r in self.tile_rects(key, *top, band) {
+                out.extend(boxed(r, BAND));
             }
         }
         out.extend(self.selection_rects().into_iter().filter_map(|r| quad(r, SELECTION)));

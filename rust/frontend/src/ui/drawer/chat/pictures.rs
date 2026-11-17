@@ -1,6 +1,7 @@
 //! The chat's pictures owner: the thumbnails of the image files the view places, asked for one at a time per host,
 //! decoded within bounds on the UI thread and held downscaled, at most `MAX_HELD`. It returns the requests to send and
-//! sends nothing itself; only `ChatDrawer` calls it.
+//! sends nothing itself; only `ChatDrawer` calls it. It also holds each held picture's texture, made at the picture's first
+//! draw and gone with its entry.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Cursor;
@@ -13,8 +14,10 @@ use sot_protocol::ops::{ChatCode, ChatFileReq, ChatFileVariant, ChatTarget};
 
 use crate::net::dial::HostKey;
 use crate::net::transport::{ChatPicture, ChatReply, OutgoingReq};
+use crate::ui::render::quad::{Quad, ScreenRect};
 
 use super::owner::{Out, LIMITED_PACE, PACE};
+use super::view::Tile;
 
 /// Thumbnail requests in flight per host: one, so a daemon's two transfer permits (chat guarantee 32) always leave one for
 /// a row's file post while a window loads pictures.
@@ -35,12 +38,24 @@ const RETRIES: u8 = 3;
 /// A picture's identity: the host it was read from and its record's workspace, channel and file id.
 type Key = (HostKey, String, String, String);
 
+/// A held picture: its pixels, and its texture once the frame that first drew it made one.
+struct Picture {
+    image: RgbaImage,
+    texture: Texture,
+}
+
+enum Texture {
+    Unmade,
+    Made(Quad),
+    /// The GPU refused it: the tile stays an empty box, and no frame tries again.
+    Failed,
+}
+
 enum Stand {
     /// Asked for at `due` or later; `failed` is how many `failed` answers came before.
     Wanted { due: Instant, failed: u8 },
     Flight { failed: u8 },
-    /// Drawn by the tiles, which are the next landing's: nothing reads the picture yet.
-    Held(#[allow(dead_code)] RgbaImage),
+    Held(Picture),
 }
 
 struct Entry {
@@ -96,6 +111,14 @@ pub(super) fn decode(bytes: &[u8]) -> Option<RgbaImage> {
     }
     let fit = |side: u32| ((u64::from(side) * u64::from(HELD_SIDE) / u64::from(long)) as u32).max(1);
     Some(image::imageops::thumbnail(&rgba, fit(rgba.width()), fit(rgba.height())))
+}
+
+/// The rectangle a picture of `size` fills in `tile`: fitted, centered and never enlarged past one picture pixel to a screen
+/// pixel.
+fn fitted_in((w, h): (u32, u32), tile: ScreenRect) -> ScreenRect {
+    let by = (tile.w / w.max(1) as f32).min(tile.h / h.max(1) as f32).min(1.0);
+    let (w, h) = (w as f32 * by, h as f32 * by);
+    ScreenRect { x: tile.x + (tile.w - w) / 2.0, y: tile.y + (tile.h - h) / 2.0, w, h }
 }
 
 impl ChatPictures {
@@ -184,7 +207,7 @@ impl ChatPictures {
         let Stand::Flight { failed } = e.stand else { return self.asks(now) };
         // `Err`: final, `true` when a thumbnail arriving in its record asks again (its retries ran out with none).
         let next = match reply {
-            ChatReply::Done(p) => catch_unwind(AssertUnwindSafe(|| decode(&p.bytes))).ok().flatten().map(Stand::Held).ok_or(false),
+            ChatReply::Done(p) => catch_unwind(AssertUnwindSafe(|| decode(&p.bytes))).ok().flatten().map(|image| Stand::Held(Picture { image, texture: Texture::Unmade })).ok_or(false),
             ChatReply::Refused(ChatCode::NotAnImage | ChatCode::TooLarge | ChatCode::BadRequest) => Err(false),
             ChatReply::Refused(ChatCode::Busy | ChatCode::Unavailable) => Ok(Stand::Wanted { due: now + PACE, failed }),
             ChatReply::Refused(ChatCode::Limited) => Ok(Stand::Wanted { due: now + LIMITED_PACE, failed }),
@@ -202,6 +225,39 @@ impl ChatPictures {
         }
         self.bound();
         self.asks(now)
+    }
+
+    /// Draws the held pictures of `tiles` (the view's, on `host`): each picture's texture is made by `make` at its first draw, and
+    /// `paint` is given it with `body` and the rectangles its tiles show it in, one call a picture, so a picture shown twice is
+    /// drawn from one texture in one call. A tile with no held picture is skipped (its box is the view's).
+    pub(super) fn draw<E>(
+        &mut self,
+        host: &HostKey,
+        tiles: Vec<Tile>,
+        body: ScreenRect,
+        make: impl Fn(&RgbaImage) -> Option<Quad>,
+        mut paint: impl FnMut(&mut Quad, ScreenRect, &[ScreenRect]) -> Result<(), E>,
+    ) -> Result<(), E> {
+        let mut shown: Vec<(Key, Vec<ScreenRect>)> = Vec::new();
+        for t in tiles {
+            let key = (host.clone(), t.workspace, t.channel, t.file);
+            let Some(Entry { stand: Stand::Held(p), .. }) = self.entries.get(&key) else { continue };
+            let fitted = fitted_in(p.image.dimensions(), t.rect);
+            match shown.iter_mut().find(|(k, _)| *k == key) {
+                Some((_, rects)) => rects.push(fitted),
+                None => shown.push((key, vec![fitted])),
+            }
+        }
+        for (key, rects) in shown {
+            let Some(Entry { stand: Stand::Held(p), .. }) = self.entries.get_mut(&key) else { continue };
+            if matches!(p.texture, Texture::Unmade) {
+                p.texture = make(&p.image).map_or(Texture::Failed, Texture::Made);
+            }
+            if let Texture::Made(quad) = &mut p.texture {
+                paint(quad, body, &rects)?;
+            }
+        }
+        Ok(())
     }
 
     /// `key` is refused for the window session; past `MAX_FINAL` the oldest refusal is forgotten.
@@ -244,9 +300,15 @@ impl ChatPictures {
     #[cfg(test)]
     pub(super) fn held(&self, host: &str, workspace: &str, channel: &str, file: &str) -> Option<&RgbaImage> {
         match self.entries.get(&(host.to_string(), workspace.to_string(), channel.to_string(), file.to_string()))?.stand {
-            Stand::Held(ref p) => Some(p),
+            Stand::Held(ref p) => Some(&p.image),
             _ => None,
         }
+    }
+
+    /// How many held pictures have a texture.
+    #[cfg(test)]
+    pub(super) fn textures(&self) -> usize {
+        self.entries.values().filter(|e| matches!(&e.stand, Stand::Held(Picture { texture: Texture::Made(_), .. }))).count()
     }
 
     /// How many pictures are held.

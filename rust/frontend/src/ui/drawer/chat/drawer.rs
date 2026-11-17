@@ -690,7 +690,7 @@ impl ChatDrawer {
         self.view.layout(fonts, &records, body, scale, now.timestamp(), *now.offset());
         // The placed records' files are the pictures wanted, under the watch of the row the frame follows.
         let at = self.rows.row().and_then(|r| Some((r.host.clone(), self.watch_for(r)?.clone())));
-        let files = self.view.placed_times().filter_map(|ts| records.iter().find(|(r, _)| &r.ts == ts)).flat_map(|(r, _)| r.files.iter().map(|f| (r.workspace.as_str(), r.channel.as_str(), f)));
+        let files = self.view.placed_times().filter_map(|ts| records.iter().find(|(r, _)| &r.ts == ts)).filter(|(_, deleted)| !deleted).flat_map(|(r, _)| r.files.iter().map(|f| (r.workspace.as_str(), r.channel.as_str(), f)));
         self.pictures.place(at.as_ref().map(|(h, t)| (h, t)), files, Instant::now());
         if self.thread.is_none() && self.modal.is_none() {
             self.owner.anchored(self.view.anchor.as_ref().map(|a| a.0.clone()));
@@ -824,6 +824,18 @@ impl ChatDrawer {
         self.view.areas()
     }
 
+    /// The frame's thumbnails, drawn over the tiles' boxes (`view::ChatView::backs`) and under the text: `paint` is called once
+    /// for each held picture the placed records show, with its texture (made by `make` at its first draw), the body to clip to and
+    /// the rectangles it is drawn in (`ChatPictures::draw`). Nothing while the chat is hidden or shows no row.
+    pub(in crate::ui) fn paint_thumbs<E>(
+        &mut self,
+        make: impl Fn(&image::RgbaImage) -> Option<crate::ui::render::quad::Quad>,
+        paint: impl FnMut(&mut crate::ui::render::quad::Quad, ScreenRect, &[ScreenRect]) -> Result<(), E>,
+    ) -> Result<(), E> {
+        let (Some(body), Some(host)) = (self.view.body(), self.rows.row().map(|r| r.host.clone())) else { return Ok(()) };
+        self.pictures.draw(&host, self.view.tiles(), body, make, paint)
+    }
+
     /// The watched channel, if `row` (host and id) is the row the frame follows: a watch is ever the followed row's, so
     /// a row the frame has not yet moved to has none.
     fn watch_for(&self, row: &ResultRowIdentity) -> Option<&ChatTarget> {
@@ -918,6 +930,23 @@ impl ChatDrawer {
     #[cfg(test)]
     pub(super) fn held(&self) -> usize {
         self.owner.records().len()
+    }
+
+    #[cfg(test)]
+    pub(super) fn placed_tops(&self) -> Vec<f32> {
+        self.view.placed_tops()
+    }
+
+    /// How many held pictures have a texture on the GPU.
+    #[cfg(test)]
+    pub(super) fn textures(&self) -> usize {
+        self.pictures.textures()
+    }
+
+    /// The tiles the last layout placed in the body.
+    #[cfg(test)]
+    pub(super) fn tiles(&self) -> Vec<super::view::Tile> {
+        self.view.tiles()
     }
 
     #[cfg(test)]

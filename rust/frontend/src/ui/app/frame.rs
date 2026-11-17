@@ -77,6 +77,7 @@ impl State {
             self.paint_figure_bands(&mut rpass, image_rect, preview_rect, &scalebar_draw, &caption_draw)?;
             self.paint_monitor_chart(&mut rpass)?;
             self.paint_repl_figures(&mut rpass)?;
+            self.paint_chat_thumbs(&mut rpass)?;
             self.paint_code_panels(&mut rpass, show_md, preview_rect, md_rect, preview_scroll_px)?;
             self.paint_text_selections(&mut rpass, llm_selection, show_md)?;
             self.paint_media_blocks(&mut rpass, preview_rect, media_paint_targets)?;

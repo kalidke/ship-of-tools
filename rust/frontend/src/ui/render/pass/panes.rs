@@ -59,6 +59,27 @@ impl State {
         )
     }
 
+    /// The Chat drawer's thumbnails: each held picture's texture in the rectangles of its tiles, clipped to the drawer's body, after
+    /// the cell backgrounds (which hold the tiles' boxes) and before the text. A picture is one `render_many`, since a
+    /// quad's vertex buffer holds one draw's rectangles.
+    pub(in crate::ui) fn paint_chat_thumbs(&mut self, rpass: &mut wgpu::RenderPass<'_>) -> Result<()> {
+        let (device, queue, pipeline) = (self.gpu.device(), self.gpu.queue(), self.brushes.pipeline());
+        let surface = (self.gpu.config().width, self.gpu.config().height);
+        let make = |image: &image::RgbaImage| Quad::from_rgba8(device, queue, pipeline, image.as_raw(), image.width(), image.height()).ok();
+        let result = self.chat.paint_thumbs(make, |quad, body, rects| {
+            // The scissor is the body cut to the surface: a rectangle past it is a validation error.
+            let (left, top) = (body.x.max(0.0).floor() as u32, body.y.max(0.0).floor() as u32);
+            let (right, bottom) = (((body.x + body.w).max(0.0).ceil() as u32).min(surface.0), ((body.y + body.h).max(0.0).ceil() as u32).min(surface.1));
+            if right <= left || bottom <= top {
+                return Ok(());
+            }
+            rpass.set_scissor_rect(left, top, right - left, bottom - top);
+            quad.render_many(device, queue, pipeline, rpass, rects, surface)
+        });
+        rpass.set_scissor_rect(0, 0, surface.0, surface.1);
+        result
+    }
+
     pub(in crate::ui) fn paint_text_selections(
         &mut self,
         mut rpass: &mut wgpu::RenderPass<'_>,

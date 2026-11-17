@@ -2104,3 +2104,160 @@ fn the_rules_move_no_line_and_are_never_selected_or_copied() {
     assert_eq!(view.marked_text().as_deref(), Some("delta line"));
     assert_eq!(view.placed_tops(), tops, "marking moves nothing");
 }
+
+/// A record of one member at `ts` with `text` and `n` files of `mime`, `P<ts>-<i>` (and one PDF, which is never a tile).
+fn with_files(ts: &str, text: &str, n: usize, mime: &str) -> ChatRecord {
+    let mut files: Vec<serde_json::Value> = (0..n).map(|i| serde_json::json!({ "id": format!("P{ts}-{i}"), "name": "figure", "mime": mime, "bytes": 100, "thumbnail": true })).collect();
+    files.push(serde_json::json!({ "id": "PDF1", "name": "paper", "mime": "application/pdf", "bytes": 100, "thumbnail": false }));
+    serde_json::from_value(serde_json::json!({ "workspace": "T1", "channel": "C1", "ts": ts, "thread_ts": ts,
+        "author": { "id": "U1", "name": "member one" }, "origin": "member", "text": text, "reply_count": 0, "files": files })).unwrap()
+}
+
+/// A record with `n` pictures.
+fn with_pictures(ts: &str, text: &str, n: usize) -> ChatRecord {
+    with_files(ts, text, n, "image/png")
+}
+
+/// The record's whole height following the newest in a tall body, at `text` pixels of text width and `scale`.
+fn height_of(r: &ChatRecord, deleted: bool, text: f32, scale: f32) -> f32 {
+    let mut fonts = FontSystem::new();
+    let mut view = ChatView::default();
+    let body = ScreenRect { x: 5.0, y: 7.0, w: GUTTER_PX * scale + text, h: 3000.0 };
+    view.layout(&mut fonts, &[(r, deleted)], body, scale, NOW, chrono::FixedOffset::east_opt(0).unwrap());
+    body.h - view.placed_tops()[0]
+}
+
+/// A record's band is its tiles' rows below its text: its height follows from the picture count, the text's width and the
+/// text scale alone, and a deleted record or a file that is no picture has none.
+#[test]
+fn a_records_band_follows_its_image_count_width_and_scale() {
+    let ts = "1700000001.000100";
+    // The same files that are no pictures give the same text and meta lines and no band, so the difference is the band.
+    let band = |n: usize, text: f32, scale: f32| height_of(&with_pictures(ts, "a figure", n), false, text, scale) - height_of(&with_files(ts, "a figure", n, "application/zip"), false, text, scale);
+    // 368 px of text holds two 180 px tiles and the 8 px between them: a row is 180, a second row adds 188, the band's
+    // ground (4 above, 6 below) is 10.
+    assert_eq!(band(0, 368.0, 1.0), 0.0, "a PDF is no tile");
+    let base = height_of(&with_files(ts, "a figure", 3, "application/zip"), false, 368.0, 1.0);
+    for (n, h) in [(1, 190.0), (2, 190.0), (3, 378.0), (4, 378.0), (5, 566.0)] {
+        assert!((band(n, 368.0, 1.0) - h).abs() < 0.01, "{n} pictures: {}", band(n, 368.0, 1.0));
+    }
+    // A text narrower than a tile makes the tile the text's width, one to a row: 145 px, three rows and two gaps.
+    assert!((band(3, 145.0, 1.0) - (10.0 + 3.0 * 145.0 + 2.0 * 8.0)).abs() < 0.01, "{}", band(3, 145.0, 1.0));
+    // Twice the scale doubles every length (the text's width is doubled with it).
+    assert!((band(3, 736.0, 2.0) - 2.0 * 378.0).abs() < 0.01, "{}", band(3, 736.0, 2.0));
+    // The record is the buffer's height and the band's, and nothing else changed.
+    assert!((height_of(&with_pictures(ts, "a figure", 3), false, 368.0, 1.0) - base - 378.0).abs() < 0.01);
+    // A deleted record shows no band, and no picture in the tiles.
+    assert!((height_of(&with_pictures(ts, "a figure", 3), true, 368.0, 1.0) - height_of(&with_files(ts, "a figure", 3, "application/zip"), true, 368.0, 1.0)).abs() < 0.01);
+    let mut fonts = FontSystem::new();
+    let mut view = ChatView::default();
+    let held = [with_pictures(ts, "a figure", 3)];
+    view.layout(&mut fonts, &[(&held[0], true)], ScreenRect { x: 0.0, y: 0.0, w: 420.0, h: 800.0 }, 1.0, NOW, chrono::FixedOffset::east_opt(0).unwrap());
+    assert!(view.tiles().is_empty());
+}
+
+/// Only the placed records' pictures have tiles, each naming its file in order, two to a row, and a tile's place is below the
+/// record's text and meta lines.
+#[test]
+fn a_tile_names_its_file_and_sits_below_the_text() {
+    let mut fonts = FontSystem::new();
+    let held = [with_pictures("1700000001.000100", "first", 3)];
+    let mut view = ChatView::default();
+    let body = ScreenRect { x: 30.0, y: 50.0, w: GUTTER_PX + 368.0, h: 800.0 };
+    view.layout(&mut fonts, &[(&held[0], false)], body, 1.0, NOW, chrono::FixedOffset::east_opt(0).unwrap());
+    let tiles = view.tiles();
+    assert_eq!(tiles.iter().map(|t| (t.workspace.as_str(), t.channel.as_str(), t.file.as_str())).collect::<Vec<_>>(),
+        [("T1", "C1", "P1700000001.000100-0"), ("T1", "C1", "P1700000001.000100-1"), ("T1", "C1", "P1700000001.000100-2")]);
+    let text_h: f32 = view.placed_buffers()[0].layout_runs().map(|r| r.line_height).sum();
+    let top = body.y + view.placed_tops()[0] + text_h + 4.0;
+    let at = |i: usize| (tiles[i].rect.x, tiles[i].rect.y);
+    assert_eq!((at(0), at(1), at(2)), ((body.x + GUTTER_PX, top), (body.x + GUTTER_PX + 188.0, top), (body.x + GUTTER_PX, top + 188.0)));
+    assert!(tiles.iter().all(|t| t.rect.w == 180.0 && t.rect.h == 180.0));
+    view.hide();
+    assert!(view.tiles().is_empty());
+}
+
+/// The band holds no text: a press in it or a drag into it selects nothing of it, the copy is the text's alone, and the
+/// mark's band covers the band's tiles.
+#[test]
+fn the_band_is_never_selected_or_copied() {
+    let mut fonts = FontSystem::new();
+    let held = [with_pictures("1700000001.000100", "alpha beta", 3)];
+    let mut view = ChatView::default();
+    // A body tall enough for the whole record.
+    let tall = ScreenRect { h: 1000.0, ..body_of_drawer() };
+    lay_in(&mut view, &mut fonts, &held, tall);
+    let tiles = view.tiles();
+    let inside = |t: &Tile| (t.rect.x + t.rect.w / 2.0, t.rect.y + t.rect.h / 2.0);
+    // A press on a tile selects nothing, and ends a selection made before it.
+    assert_eq!(selects(&mut view, &held[0].ts, 2).as_deref(), Some("alph"));
+    let hit = view.hit(inside(&tiles[0]));
+    assert!(view.press(hit), "the press ended the selection");
+    assert_eq!(view.selected_text(), None);
+    // A drag from the text into a tile ends at the record's last text line (the band is below it): the body line and the four
+    // meta lines at most.
+    let from = view.point_at(&held[0].ts, 2, 0).unwrap();
+    let hit = view.hit(from);
+    view.press(hit);
+    view.extend_drag(inside(&tiles[2]));
+    view.release();
+    let selected = view.selected_text().unwrap();
+    assert!(selected.starts_with("alpha beta") && selected.lines().count() <= 5, "{selected:?}");
+    // The marked message's copy has the text and the meta lines the record always had, nothing for the band.
+    view.mark = Some(held[0].ts.clone());
+    lay_in(&mut view, &mut fonts, &held, tall);
+    assert_eq!(view.marked_text().as_deref(), Some("alpha beta\n[file figure, 100 B]\n[file figure, 100 B]\n[file figure, 100 B]\n[file paper, 100 B]"));
+    // The mark's band covers the whole record, the tiles' rows included.
+    let quads = view.backs(DRAWER);
+    let band = of_color(&quads, BAND);
+    let marked = band.iter().find(|q| (q.x, q.w) == (body_of_drawer().x, body_of_drawer().w)).expect("the mark's band");
+    let last = tiles.last().unwrap().rect;
+    assert!(marked.y + marked.h >= last.y + last.h, "{marked:?} covers {last:?}");
+}
+
+/// Every tile lies inside the body across its width, whatever the width and scale; its box is drawn clipped to the body where a
+/// scroll cuts it, and no tile is placed outside the records that reach the body.
+#[test]
+fn every_tile_is_inside_the_body() {
+    let mut fonts = FontSystem::new();
+    let held: Vec<ChatRecord> = (0..6).map(|n| with_pictures(&format!("1700000{n:03}.000100"), &format!("message {n}"), 1 + n % 4)).collect();
+    let records: Vec<(&ChatRecord, bool)> = held.iter().map(|r| (r, false)).collect();
+    for (text, scale) in [(368.0, 1.0), (145.0, 1.0), (60.0, 1.0), (1.0, 1.0), (500.0, 1.5), (260.0, 2.0)] {
+        let body = ScreenRect { x: 30.0, y: 50.0, w: GUTTER_PX * scale + text, h: 400.0 };
+        let mut view = ChatView::default();
+        view.layout(&mut fonts, &records, body, scale, NOW, chrono::FixedOffset::east_opt(0).unwrap());
+        // Scrolled up a third so records cross the top, and following.
+        for up in [false, true] {
+            if up {
+                view.scroll(true, Step::Page, Instant::now(), Duration::ZERO);
+                view.layout(&mut fonts, &records, body, scale, NOW, chrono::FixedOffset::east_opt(0).unwrap());
+            }
+            let tiles = view.tiles();
+            // Following, the newest record's band is in the body; scrolled up, a very narrow text's tall records may leave none.
+            assert!(up || !tiles.is_empty(), "{text} at {scale}: no tile reaches the body");
+            let left = body.x + (GUTTER_PX * scale).min(body.w);
+            for t in &tiles {
+                let r = t.rect;
+                assert!(r.x >= left - 0.01 && r.x + r.w <= body.x + body.w + 0.01, "{text} at {scale}: {r:?} leaves the text's width in {body:?}");
+                assert!(r.y < body.y + body.h && r.y + r.h > body.y, "{r:?} does not reach the body");
+                assert!(r.w > 0.0 && r.h > 0.0);
+            }
+            let quads = view.backs(drawer_of(body));
+            for q in &quads[1..] {
+                assert!(q.x >= body.x - 0.01 && q.x + q.w <= body.x + body.w + 0.01 && q.y >= body.y - 0.01 && q.y + q.h <= body.y + body.h + 0.01, "{q:?} is outside {body:?}");
+            }
+            // Each tile's box is among the rectangles: its border `LOW` and the fill `BAND` inside it (a sliver of a tile cut by the body is
+            // all border).
+            for t in &tiles {
+                let (cx, cy) = (t.rect.x + t.rect.w / 2.0, t.rect.y + t.rect.h / 2.0);
+                let cut = (cx.max(body.x), cy.clamp(body.y, body.y + body.h - 0.5));
+                assert!(quads.iter().any(|q| (q.color == BAND || q.color == LOW) && q.x <= cut.0 && cut.0 <= q.x + q.w && q.y <= cut.1 && cut.1 <= q.y + q.h), "{t:?} has no box");
+            }
+        }
+    }
+}
+
+/// A drawer whose body is `body`, with the two-row foot.
+fn drawer_of(body: ScreenRect) -> ScreenRect {
+    ScreenRect { h: body.h + 44.0, ..body }
+}

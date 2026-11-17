@@ -1396,9 +1396,32 @@ methods are `pub(super)`, so no other ui code can drop the requests they return.
   (`a_link_change_asks_again_what_was_in_flight`, through the drawer). `ChatDrawer::next_ask` joins the earliest ask owed
   (`ChatPictures::next_ask`: a wanted picture of the last placement on a connected host with room in flight, `None` otherwise,
   so a host with one in flight owes no wake) to the idle loop's deadlines, so a placement's asks and a retry's go without
-  waiting for input. Limits: nothing draws a held picture yet (the tiles are the next landing's); a request whose reply
+  waiting for input. Limits: a request whose reply
   never comes on a link that stays up holds its host's slot until the link changes; the drawer's three owners each keep
   the connected hosts (`docs/defects.md`, CHAT-LINKS-THRICE).
+  Each held picture also holds its texture (`Picture`, a `Quad`), made by the frame that first draws it
+  (`ChatPictures::draw`, from `ChatDrawer::paint_thumbs`) and gone with its entry; a texture the GPU refuses is not tried
+  again (`a_thumbnail_arriving_moves_nothing` counts the attempts), and a held pixel buffer is kept beside it.
+- The band of tiles (the plan's D9, `drawer/chat/view.rs`): each placed record that is not deleted shows its picture files
+  (`ChatFile::is_picture`) as square tiles in a band below its text and meta lines, `THUMB_PX` (180) a side at text scale 1
+  with `THUMB_GAP_PX` between, as many to a row as the text's width holds (a text narrower than a tile makes the tile its
+  width), `BAND_TOP_PX` above and `BAND_FOOT_PX` below. A record's height is its buffer's and the band's, and the band's
+  follows from the picture count, the text's width and the scale alone (`geometry`), so no thumbnail's arrival moves a
+  record or a tile (`a_records_band_follows_its_image_count_width_and_scale`, `a_thumbnail_arriving_moves_nothing`, the
+  latter through the drawer with the owner answered a thumbnail at a time, anchored and following). `ChatView::tiles`
+  gives each tile that reaches the body, whole and in placement order, with its file; `backs` draws every tile's box (a
+  `LOW` border and a `BAND` fill, clipped to the body, held or not; the mark's band covers the record's whole height), so a
+  thumbnail never changes a rectangle there (`every_tile_is_inside_the_body`). The window's pass draws each held thumbnail
+  after the cell backgrounds and before the text (`State::paint_chat_thumbs`, between `paint_repl_figures` and the text
+  selections): the picture fitted and centered in its tile, never enlarged past a picture pixel to a screen pixel
+  (`a_thumbnail_is_fitted_centered_and_never_enlarged`), under a scissor of the drawer's body cut to the surface, one
+  `render_many` for each picture (a quad's vertex buffer holds one draw's rectangles, so a file shown twice is one call),
+  and the scissor restored after. The band holds no text: a press on a tile focuses the drawer and selects nothing, a drag
+  into it ends at the record's last text line, and a copy is the text's alone (`the_band_is_never_selected_or_copied`); the
+  header, lead and mark rules are as before. Limits: the textures and their draw order are pinned only by the native
+  fixture `a_chats_thumbnails_are_drawn_and_move_nothing` (every frame presents, the tiles and records stay where they were
+  as each thumbnail arrives, every picture in a tile gets a texture and none is made again); a tile cut by the body's edge
+  shows the picture cut with it; a picture has no hit yet (opening one is the next landing's).
 
 Limits: for admitted or never-answered watches, a link that drops more often than every 26 s never shows a gap (a refused watch is a gap at once); records of the window's page below the daemon's own set (deletions between the daemon's read and the window's) are held and never updated; the `State` routing in `ui/events.rs` (`on_chat`, `on_chat_bus_lost`, `on_chat_connection`, `tick_chat`) and `with_chat` are run by the native fixture `a_chat_of_200_messages_scrolls_posts_and_recovers` (`drawer/chat/native_fixture_tests.rs`, in `run_state_fixtures`, so only under a display: it lists a row, shows Chat, answers each request the window sends by kind and value through the window's own event queue, pages to 200 records, scrolls (the wheel through `mouse_wheel`, the window's own adapter), opens and closes a thread, takes 256 records of 8 KiB and a canvas resize, types, pastes, posts once, and sends a `Disconnected`, a `Connected` and a `bus.lost`; it asserts that every frame presents, the requests the connection carried by kind (the link's return brings one watch and one read, `bus.lost` one watch), that the REPL's draft and scroll are unchanged (this guards the events and the frames and the wheel, not the key routing) and that each frame's prepared areas hold the anchored record, and prints `chat-witness frames=… max_ms=… p95_ms=… resize_ms=…`, asserting no time; it is red with `tick_chat`'s wanted row removed and with `Pane::of_drawer(Chat)` mapped to the REPL); its keys are resolved by the real bindings under the real help context and routed by `witness_key`, a copy of the Chat branch of `drawer_pane_key`, of `chat_key` and of `scroll_line_chords`' Alt+Up branch, which skips the layers that run before them in `route_key_layers`: a winit `KeyEvent` cannot be built outside the event loop, so those three functions are not run and breaking any of them leaves the fixture green (a key press carrying its data, as the reply bar's key does, would delete the copy; not built), and neither is the window's own `Resized` event (the resize is the canvas's, the X window is not changed); `tick_chat`'s own
 choice of the shown row is among them (swapping `chat_shown()` for "the drawer is Chat", or never watching, passes the
