@@ -585,3 +585,12 @@ fn a_service_that_stops_while_watched_resolves_the_row_again() {
     d.tick(wanted("R"), at(510));
     assert!(d.in_setup(), "the ended service's answer brings the Connect step");
 }
+
+/// A sentence names the computer by what the window knows: this one, the host's name, or the words a person knows it by.
+#[test]
+fn a_sentence_names_the_local_a_named_and_an_unnamed_computer() {
+    use super::row_channel::computer;
+    assert_eq!(computer("local"), "this computer");
+    assert_eq!(computer("box-a"), "box-a");
+    assert_eq!(computer(""), "the computer that runs your agents");
+}

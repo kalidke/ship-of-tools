@@ -223,9 +223,9 @@ fn every_outcome_has_a_state_a_next_action_and_words() {
     // No usable configuration, an old daemon and not the hub: asked again at a link change, never on a frame. (An unmapped
     // row opens the channel picker: `picker_tests`.)
     for (evt, words) in [
-        (answer("R", serde_json::json!({ "state": "something_new" })), "the chat on a is not set up correctly: the log of Ship of Tools' service on a, sotd.log, says why"),
+        (answer("R", serde_json::json!({ "state": "something_new" })), "the chat on a is not set up correctly: the log of Ship of Tools' service on a says why; to find it, run `sotd log-path` in a terminal on a"),
         (ChatEvt::Resolved { row: "R".to_string(), reply: ChatReply::Unsupported }, "Ship of Tools on a has no chat: update it"),
-        (refused("R", ChatCode::Unavailable), "the chat does not run on a; it runs only on the computer named hub in hosts.toml, and projects there show it"),
+        (refused("R", ChatCode::Unavailable), "the chat does not run on a; it runs only on the computer named on the `hub =` line of hosts.toml, and projects there show it"),
     ] {
         let (mut d, at) = answered_with(|_| evt);
         assert_eq!(d.title(), format!(" chat · {words} "));
@@ -265,7 +265,7 @@ fn every_outcome_has_a_state_a_next_action_and_words() {
     assert_eq!(d.title(), " chat · C1 ");
 
     // A gap names its reason; a target refused for good shows its code's words, and is not asked again.
-    assert_eq!(gap_title(ChatCode::Unavailable), " chat · C1 the chat is not running on a: the log of Ship of Tools' service on a, sotd.log, says why ");
+    assert_eq!(gap_title(ChatCode::Unavailable), " chat · C1 the chat is not running on a: the log of Ship of Tools' service on a says why; to find it, run `sotd log-path` in a terminal on a ");
     assert_eq!(gap_title(ChatCode::Busy), " chat · C1 not up to date: the chat is busy; try again in a moment ");
     for code in [ChatCode::StaleRow, ChatCode::StaleMapping, ChatCode::Unmapped] {
         let (mut d, at) = gapped(code);
@@ -1056,6 +1056,7 @@ fn the_badge_comes_from_the_origin_and_no_text_draws_one() {
         ("member", "Eve [drawer]", "[drawer] [row] APP DRAWER ROW", 0, 0),
         ("member", "ROW", "APP", 0, 0),
         ("member", "APP", "x", 0, 0),
+        ("member", "AGENT", "AGENT", 0, 0),
         ("other", "Ada", "x", 0, 0),
         ("drawer", "Ada", "x", 0, 0),
         ("row", "Ada", "x", 1, 0),

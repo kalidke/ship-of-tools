@@ -238,3 +238,14 @@ fn the_chat_drawer_is_a_tenant_whose_keys_reach_no_repl_handler() {
     }
     assert!(chat.consumes_text());
 }
+/// The Chat screens send a person to the setup page through Help: Enter on `chat.setup`, "Choose channel", opens it. The other
+/// chat actions keep the keybindings reference.
+#[test]
+fn enter_on_the_chat_setup_action_opens_the_setup_page() {
+    let page = "https://kalidke.github.io/ship-of-tools/dev/guide/chat-setup/";
+    assert_eq!(manual_url(Action::ChatSetup), page);
+    assert_eq!(Action::ChatSetup.spec().label, "Choose channel", "the screens quote this name");
+    for other in [Action::ChatSend, Action::ChatThreadOpen, Action::ChatPostFile] {
+        assert_eq!(manual_url(other), "https://kalidke.github.io/ship-of-tools/dev/ref/keybindings/", "{other:?}");
+    }
+}

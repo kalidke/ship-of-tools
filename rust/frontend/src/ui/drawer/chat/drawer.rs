@@ -17,7 +17,7 @@ use super::connect::{Asks, Connect};
 use super::owner::{dead, ChatOwner, Fill, Out, PostReply, PostShown, Posting};
 use super::picker::{pair_words, Body, Pick, Picker};
 use super::pictures::ChatPictures;
-use super::row_channel::{RowChannel, Stand};
+use super::row_channel::{computer, RowChannel, Stand};
 use super::thread::Thread;
 use super::view::{ChatHit, ChatView, Step};
 use crate::ui::input::keybindings::Action;
@@ -161,7 +161,7 @@ pub(super) fn never_written(req: &OutgoingReq) -> Option<ChatEvt> {
 
 /// What the status line says of a post's outcome, by whether it was a file post (`file`); a post made says nothing here
 /// (its draft is gone, and a file's share is said by `settle`).
-fn post_words(shown: &PostShown, file: bool) -> Option<String> {
+pub(super) fn post_words(shown: &PostShown, file: bool, host: &str) -> Option<String> {
     Some(match shown {
         PostShown::Posted => return None,
         // A file post sends no name: the daemon refuses a file whose name Slack cannot take.
@@ -170,12 +170,12 @@ fn post_words(shown: &PostShown, file: bool) -> Option<String> {
         PostShown::Refused(code) => format!("not posted: {}", code.text()),
         PostShown::Limited(secs, assumed) => wait_words(*secs, *assumed),
         PostShown::Unknown => "may have been posted: check the channel before sending it again".into(),
-        PostShown::Outdated => "not posted: update Ship of Tools on the computer that runs your agents, then post again".into(),
+        PostShown::Outdated => format!("not posted: update Ship of Tools on {}, then post again", computer(host)),
     })
 }
 
 /// The status line's words for a rate limit: the seconds left, with `about` when the wait is a guess.
-fn wait_words(secs: u64, assumed: bool) -> String {
+pub(super) fn wait_words(secs: u64, assumed: bool) -> String {
     format!("not posted: Slack asked for a pause; wait {}{secs} s", if assumed { "about " } else { "" })
 }
 
@@ -309,7 +309,7 @@ impl ChatDrawer {
                 let row = self.rows.row().cloned();
                 outs.extend(self.open_picker(row.as_ref()).unwrap_or_default());
             } else {
-                asks.notice = Some("setting up the chat: press Enter again in a few seconds to choose this project's channel; if this stays after a minute, close the Chat panel and open it again".into());
+                asks.notice = Some("setting up the chat: press Enter again in a few seconds to choose this project's channel".into());
             }
         }
         (outs, asks)
@@ -359,7 +359,7 @@ impl ChatDrawer {
         }
         self.flight.clear(host);
         if self.pictures.on_connection(host, up, now) {
-            self.notice = Some("picture not opened: the connection to the computer that runs your agents changed before it arrived".into());
+            self.notice = Some(format!("picture not opened: the connection to {} changed before it arrived", computer(host)));
         }
         let mut outs = self.owner_outs(|o| o.on_connection(host, up, now));
         if self.thread.as_ref().is_some_and(|t| t.host() == host) {
@@ -414,7 +414,7 @@ impl ChatDrawer {
                 if self.connect().is_some_and(|c| c.host() == host && c.connecting()) {
                     self.close_modal();
                 }
-                self.notice = Some("Slack may be connected: the computer that runs your agents did not answer before the connection ended; checking again. If the panel still says Slack is not connected after a minute, connect Slack again".into());
+                self.notice = Some(format!("Slack may be connected: {} did not answer before the connection ended; checking again. If the panel still says Slack is not connected after a minute, connect Slack again", computer(host)));
                 self.rows.ask_again(host);
                 Vec::new()
             }
@@ -513,7 +513,7 @@ impl ChatDrawer {
         }
         // An older hub posts a person's file as the app or not at all.
         if self.posts_as_person.get(&row.host) == Some(&false) {
-            return Err(post_words(&PostShown::Outdated, true).unwrap_or_default());
+            return Err(post_words(&PostShown::Outdated, true, &row.host).unwrap_or_default());
         }
         if let Some((secs, assumed)) = self.owner.waiting(now) {
             return Err(wait_words(secs, assumed));
@@ -905,7 +905,7 @@ impl ChatDrawer {
         match self.pictures.open(&host, &target, file) {
             Ok(()) => self.notice = Some("opening the picture…".into()),
             Err(words) => {
-                self.notice = Some(words.into());
+                self.notice = Some(words);
                 return Vec::new();
             }
         }
@@ -1031,7 +1031,7 @@ impl ChatDrawer {
             None => Some(format!("to {}", self.rows.label(dest.channel.as_str()))),
         };
         let as_person = self.rows.row().and_then(|r| self.posts_as_person.get(&r.host).copied());
-        Some(ComposeText::of(draft.map(|d| d.text.as_str()), to, focused, as_person))
+        Some(ComposeText::of(draft.map(|d| d.text.as_str()), to, focused, as_person, self.rows.host()))
     }
 
     pub(in crate::ui) fn set_foot(&mut self, rows: u16) {
@@ -1125,7 +1125,7 @@ impl ChatDrawer {
             self.flight.abandon(&host, &req);
         }
         if let Some((outcome, file)) = self.owner.take_report() {
-            self.notice = post_words(&outcome, file);
+            self.notice = post_words(&outcome, file, self.rows.host());
         }
         self.flight.send(outs)
     }

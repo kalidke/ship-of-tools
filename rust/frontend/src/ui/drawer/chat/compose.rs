@@ -8,6 +8,7 @@ use sot_protocol::ops::ChatTarget;
 
 use crate::ui::chrome::{cell_lines, wrap_status};
 use crate::ui::ResultRowIdentity;
+use super::row_channel::computer;
 
 /// The draft rows of the compose block; a row naming where the draft goes (the thread, or a channel the title does not
 /// name) and how many rows are not shown follows them, when there is something to say.
@@ -97,7 +98,7 @@ pub(in crate::ui) enum ComposeText {
     /// The foot asks for the posting name: the name typed, with the cursor block while focused.
     Name(String),
     /// Nothing typed and nothing to say of the destination: what to do, and the chord that changes the project's channel.
-    Hint { focused: bool, as_person: Option<bool> },
+    Hint { focused: bool, as_person: Option<bool>, host: String },
 }
 
 /// What an empty draft shows after `> `, and under it, how the post appears and how the channel is changed (the chord is the
@@ -106,11 +107,11 @@ const PLACEHOLDER: &str = "type a message and press Enter to post it";
 /// `as_person`: what the connection's hello said of whether the daemon posts under the person's own Slack token (an older
 /// daemon's post goes out as the app, and the hint says so); `None`, with no hello read (a link down, one not up yet), the
 /// hint says nothing of the daemon.
-fn hint(as_person: Option<bool>) -> String {
+fn hint(as_person: Option<bool>, host: &str) -> String {
     let chord = if cfg!(target_os = "macos") { "Cmd+Shift+K" } else { "Ctrl+Shift+K" };
     let how = match as_person {
         Some(true) => "What you post appears in the channel as your own message, from your Slack account. ",
-        Some(false) => "Ship of Tools on the computer that runs your agents is too old to post as you, so what you post appears in the channel as a message from your Slack app, with your chat name. Update it to post as yourself. ",
+        Some(false) => return format!("Ship of Tools on {} is too old to post as you, so what you post appears in the channel as a message from your Slack app, with your chat name. Update it to post as yourself. {chord} changes this project's channel.", computer(host)),
         None => "",
     };
     format!("{how}{chord} changes this project's channel.")
@@ -120,10 +121,10 @@ fn hint(as_person: Option<bool>) -> String {
 const ASK: &str = "Your name for chat posts (saved in settings.toml): ";
 
 impl ComposeText {
-    pub(super) fn of(draft: Option<&str>, to: Option<String>, focused: bool, as_person: Option<bool>) -> Self {
+    pub(super) fn of(draft: Option<&str>, to: Option<String>, focused: bool, as_person: Option<bool>, host: &str) -> Self {
         let text = draft.unwrap_or("");
         if text.is_empty() && to.is_none() {
-            return ComposeText::Hint { focused, as_person };
+            return ComposeText::Hint { focused, as_person, host: host.to_string() };
         }
         let mut lines = cell_lines(text);
         if lines.is_empty() || text.ends_with('\n') {
@@ -148,11 +149,11 @@ impl ComposeText {
 pub(in crate::ui) fn compose_rows(text: &ComposeText, width: usize, height: usize) -> Vec<String> {
     let (lines, to) = match text {
         ComposeText::Draft { lines, to } => (lines, to),
-        ComposeText::Hint { focused, as_person } => {
+        ComposeText::Hint { focused, as_person, host } => {
             let inner = width.saturating_sub(2).max(1);
             let first = format!("{}{PLACEHOLDER}", if *focused { "█" } else { "" });
             let rows = wrap_status(&first, inner, inner).into_iter().enumerate().map(|(i, l)| format!("{}{l}", if i == 0 { "> " } else { "  " }));
-            return rows.chain(wrap_status(&hint(*as_person), width, width)).take(height).collect();
+            return rows.chain(wrap_status(&hint(*as_person, host), width, width)).take(height).collect();
         }
         ComposeText::Name(name) => {
             // The prompt and the end of the name, so the cursor stays in view.

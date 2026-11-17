@@ -59,9 +59,10 @@ pub(super) fn computer(host: &str) -> String {
     }
 }
 
-/// Where a person finds why the chat is not running: the daemon's log, named by its file and computer.
+/// Where a person finds why the chat is not running: the log of Ship of Tools' service on the computer, and the command that
+/// prints its place there (the window cannot know another computer's folder).
 fn log_words(c: &str) -> String {
-    format!("the log of Ship of Tools' service on {c}, sotd.log, says why")
+    format!("the log of Ship of Tools' service on {c} says why; to find it, run `sotd log-path` in a terminal on {c}")
 }
 
 impl Stand {
@@ -75,7 +76,7 @@ impl Stand {
             Stand::Unmapped => "no channel".into(),
             Stand::Unconfigured(_) => "Slack is not connected".into(),
             Stand::NoConfig => format!("the chat on {c} is not set up correctly: {}", log_words(&c)),
-            Stand::NotHub => format!("the chat does not run on {c}; it runs only on the computer named hub in hosts.toml, and projects there show it"),
+            Stand::NotHub => format!("the chat does not run on {c}; it runs only on the computer named on the `hub =` line of hosts.toml, and projects there show it"),
             Stand::RowGone => ChatCode::StaleRow.text().into(),
             Stand::Failed(code) => format!("the chat on {c} could not answer: {}", code.text()),
             Stand::NoChat => format!("Ship of Tools on {c} has no chat: update it"),

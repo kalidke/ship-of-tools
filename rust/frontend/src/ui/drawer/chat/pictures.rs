@@ -17,6 +17,7 @@ use crate::net::transport::{ChatPicture, ChatReply, OutgoingReq};
 use crate::ui::render::quad::{Quad, ScreenRect};
 
 use super::owner::{Out, LIMITED_PACE, PACE};
+use super::row_channel::computer;
 use super::view::Tile;
 
 /// Thumbnail requests in flight per host: one, so a daemon's two transfer permits (chat guarantee 32) always leave one for
@@ -176,12 +177,12 @@ impl ChatPictures {
     /// The person opens `file` of `target` on `host`: it becomes the one wanted, in place of any other, asked at the next
     /// `asks` once no original is in flight and its host has room. Nothing is asked twice while in flight. On a host whose link
     /// is down, or whose daemon does not know the op, nothing is kept and the words say why, so it is never sent later unasked.
-    pub(super) fn open(&mut self, host: &HostKey, target: &ChatTarget, file: &str) -> Result<(), &'static str> {
+    pub(super) fn open(&mut self, host: &HostKey, target: &ChatTarget, file: &str) -> Result<(), String> {
         if !self.connected.contains(host) {
-            return Err("picture not opened: the connection to the computer that runs your agents is down");
+            return Err(format!("picture not opened: the connection to {} is down", computer(host)));
         }
         if self.unsupported.contains(host) {
-            return Err("picture not opened: update Ship of Tools on the computer that runs your agents to open it");
+            return Err(format!("picture not opened: update Ship of Tools on {} to open it", computer(host)));
         }
         self.wanted = Some((host.clone(), ChatFileReq { target: target.clone(), file: file.to_string(), variant: ChatFileVariant::Original }));
         Ok(())
@@ -210,7 +211,7 @@ impl ChatPictures {
                 ChatReply::Refused(code) => Some(format!("picture not opened: {}", code.text())),
                 ChatReply::Unsupported => {
                     self.unsupported.insert(host.clone());
-                    Some("picture not opened: update Ship of Tools on the computer that runs your agents to open it".into())
+                    Some(format!("picture not opened: update Ship of Tools on {} to open it", computer(host)))
                 }
             }
         } else {

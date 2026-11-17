@@ -218,7 +218,7 @@ impl Connect {
     fn send(&mut self, busy: bool, asks: &mut Asks) -> Option<Out> {
         let (Some(bot), Some(user), Some(app)) = (&self.bot, &self.user, &self.app) else { return None };
         if busy {
-            asks.notice = Some("Slack is still checking the codes sent before: wait a few seconds for its answer, then press Enter again; if nothing changes after a minute, close this panel and open it again".into());
+            asks.notice = Some("Slack is still checking the codes sent before: wait a few seconds for its answer, then press Enter again".into());
             return None;
         }
         let out = (self.host.clone(), OutgoingReq::ChatConnect { bot_token: bot.clone(), user_token: user.clone(), app_token: app.clone() });
@@ -283,7 +283,7 @@ impl Connect {
         let keys = match &self.screen {
             Screen::First if refused => {
                 out.push(if self.reason == ChatUnconfigured::WrongApp {
-                    format!("The chat stopped: the \"App-Level Token\" it holds belongs to another Slack app than your Slack app (the bot that reads the channel and posts for your agents), so the chat would have received that other app's messages. Nothing is lost. To fix it, paste your own Slack app's codes: press Enter, and your list of Slack apps opens in your browser. Click {name}, then copy its three Slack codes again, as steps 2 and 3 show (they follow here).")
+                    format!("The chat stopped: the \"App-Level Token\" it holds belongs to another Slack app than your Slack app (the bot that reads the channel and posts for your agents), so the chat would have received that other app's messages. To fix it, paste your own Slack app's codes: press Enter, and your list of Slack apps opens in your browser. Click {name}, then copy its three Slack codes again, as steps 2 and 3 show (they follow here).")
                 } else if self.post_as_you {
                     format!("Ship of Tools posts your messages in Slack as you, so the people and bots in the channel see them as yours. For that it needs a Slack code from {APP}, and {c} holds none that works: it was connected before Ship of Tools posted as you, or Slack stopped accepting the one it had. Press Enter: your list of Slack apps opens in your browser. In it, click {name}. Then copy its codes again, as steps 2 and 3 show (they follow here), and paste each into this panel. If {name} is not in the list, press Left to make your Slack app again (step 1).")
                 } else {
@@ -293,7 +293,7 @@ impl Connect {
             }
             Screen::First => {
                 out.push("This panel shows a Slack channel beside this project: you read it and post to it here. First, connect Ship of Tools to your Slack workspace. You do this once, in three steps on Slack's website. Every project then uses that connection, and each project picks its own channel afterward. The chat connects one Slack workspace for now, so a second workspace cannot be added yet.".into());
-                out.push(format!("You need Slack's website open and signed in, in your web browser (the Slack desktop app is not enough). In step 1 you make {APP}. In steps 2 and 3 you copy three Slack codes from Slack: one lets Ship of Tools post as you, one lets your Slack app read and post, and one lets it see new messages as they arrive. A Slack code is a long string of letters and digits, like a password: paste it only here. What you type in this panel is posted under your own Slack name; what your agents post goes out as your Slack app. Each person makes their own Slack app, even when a colleague already has one: two people sharing one app each miss messages."));
+                out.push(format!("You need Slack's website open and signed in, in your web browser (the Slack desktop app is not enough). In step 1 you make {APP}. In steps 2 and 3 you copy three Slack codes from Slack: one lets Ship of Tools post as you, one lets your Slack app read and post, and one lets it see new messages as they arrive. A Slack code is a long string of letters and digits, like a password: paste it only here. A Slack code you paste here is never posted. The messages you write in the chat itself, once it is set up, are posted under your own Slack name; what your agents post goes out as your Slack app. Each person makes their own Slack app, even when a colleague already has one: two people sharing one app each miss messages."));
                 "Enter  start    Right  I already made my Slack app: go to step 2    Esc  close".to_string()
             }
             Screen::Make => {
@@ -333,7 +333,7 @@ impl Connect {
                 "Esc  close; the check goes on".to_string()
             }
             Screen::Connected(workspace) => {
-                out.push(format!("Ship of Tools is connected to your Slack workspace (its workspace ID is {workspace}). The chat connects one Slack workspace for now, so another cannot be added yet. Ship of Tools keeps the three codes on {c}, readable only by your account. Next, press Enter to choose this project's channel; each project picks its own."));
+                out.push(format!("Ship of Tools is connected to your Slack workspace (its workspace ID is {workspace}). Ship of Tools keeps the three codes on {c}, readable only by your account. Next, press Enter to choose this project's channel; each project picks its own."));
                 "Enter  choose this project's channel    Esc  close".to_string()
             }
         };

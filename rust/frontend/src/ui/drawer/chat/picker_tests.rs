@@ -91,25 +91,34 @@ fn the_picker_lists_channels_by_name_with_their_marks_and_says_how_a_private_one
     assert!(lines[1].starts_with("  #lab-microscopes") && lines[1].ends_with("your Slack app joins it when you pick it"), "{lines:?}");
     assert!(lines[2].starts_with("  #lab-papers") && lines[2].ends_with("private; your Slack app is in it"), "{lines:?}");
     assert!(lines[3].starts_with("  #random") && lines[3].trim_end() == "  #random", "a public channel the app is in has no mark: {lines:?}");
-    assert!(lines[4].starts_with("  Connect Slack again") && lines[4].ends_with("fresh codes for the same Slack app, not another workspace"), "{lines:?}");
+    assert!(lines[4].starts_with("  Connect Slack again") && lines[4].ends_with("connect again with new Slack codes (same workspace)"), "{lines:?}");
     let guide = lines[5..].join(" ");
     assert!(guide.contains("Esc to close") && guide.contains("/invite @") && !guide.contains("paste a channel's link"), "{guide}");
     // The head names the one connected workspace and says another cannot be added yet, and what the Slack app is.
     let head = shown_lines(&d).join(" ");
     assert!(head.contains("channels of your connected Slack workspace") && head.contains("one Slack workspace for now, so another cannot be added yet"), "{head}");
     assert!(head.contains("Your Slack app (the bot that reads the channel and posts for your agents)"), "{head}");
-    assert!(guide.contains("To move the chat to another workspace, see the manual page \"Setting up Slack for Ship of Tools\""), "{guide}");
+    assert!(guide.contains("To move the chat to another workspace, see the manual page \"Setting up Slack\": press F1, select \"Choose channel\" in the list, and press Enter"), "{guide}");
     // A list cut at the bound says to paste a link.
     d.on_evt(&host(), channels_reply(true), at);
     assert!(shown_lines(&d).join(" ").contains("paste a channel's link"));
-    // A short drawer keeps the choice in view and cuts the guide, never the entries' window below three rows.
-    let rows = d.body().unwrap().lines(80, 8);
-    assert_eq!(rows.len(), 8);
-    assert_eq!(rows.iter().filter(|l| l.starts_with("> ")).count(), 1);
+    // A short drawer keeps the choice in view and cuts the guide and then the head, never the entries' window below three rows:
+    // from four rows up, on the first entry and on the last.
+    for last in [false, true] {
+        if last {
+            (0..5).for_each(|_| d.picker_step(true));
+        }
+        for height in 4..=9 {
+            let rows = d.body().unwrap().lines(80, height);
+            assert_eq!(rows.len(), height, "last {last}, {height} rows");
+            assert_eq!(rows.iter().filter(|l| l.starts_with("> ")).count(), 1, "last {last}, {height} rows: {rows:?}");
+        }
+    }
+    (0..5).for_each(|_| d.picker_step(false));
     // A read that fails says why and offers only to connect Slack again; the picker does not hide.
     let (mut d, at, _) = unmapped();
     d.on_evt(&host(), ChatEvt::Channels { reply: ChatReply::Refused(ChatCode::Unavailable) }, at);
-    assert_eq!(shown_lines(&d)[..2], ["could not list the channels: the chat is not available here", "> Connect Slack again  fresh codes for the same Slack app, not another workspace"]);
+    assert_eq!(shown_lines(&d)[..2], ["could not list the channels: the chat is not available here", "> Connect Slack again  connect again with new Slack codes (same workspace)"]);
     d.on_evt(&host(), ChatEvt::Channels { reply: ChatReply::Unsupported }, at);
     assert_eq!(shown_lines(&d)[0], "Ship of Tools on a is too old to list channels: update it");
     assert!(d.picker_enter().is_empty() && d.in_setup(), "Connect Slack again sends nothing and starts the Connect step");
@@ -123,7 +132,7 @@ fn the_picker_says_the_one_connected_workspace_and_that_another_cannot_be_added_
     d.on_evt(&host(), channels_reply(false), at);
     let said = shown_lines(&d).join(" ");
     assert!(said.contains("These are the channels of your connected Slack workspace. The chat connects one Slack workspace for now, so another cannot be added yet."), "{said}");
-    assert!(said.contains("manual page \"Setting up Slack for Ship of Tools\" (press F1, then Enter, to open the manual)"), "{said}");
+    assert!(said.contains("manual page \"Setting up Slack\": press F1, select \"Choose channel\" in the list, and press Enter; the page opens in your browser."), "{said}");
     // Typing narrows the entries and leaves the line; a filter with no match says so under it.
     d.picker_edit(Edit::Text("zzz"));
     let said = shown_lines(&d).join(" ");

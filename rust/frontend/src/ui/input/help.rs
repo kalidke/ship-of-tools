@@ -413,6 +413,10 @@ pub fn render(frame: &mut Frame<'_>, rect: Rect, help: &Help, bindings: &KeyBind
 }
 
 pub fn manual_url(action: Action) -> &'static str {
+    // The chat screens send a person to the setup page from this action, so Enter on it opens that page.
+    if action == Action::ChatSetup {
+        return "https://kalidke.github.io/ship-of-tools/dev/guide/chat-setup/";
+    }
     match action.spec().group {
         "Image" | "Text" | "Pages" => "https://kalidke.github.io/ship-of-tools/dev/guide/previews/",
         "Julia" => "https://kalidke.github.io/ship-of-tools/dev/guide/repl/",

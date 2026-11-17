@@ -14,7 +14,7 @@ _chat_refused() {
     local code="$1" words="${2:-}"
     if [ -z "$words" ]; then
         case "$code" in
-            busy)        words="the chat service is busy" ;;
+            busy)        words="the chat is busy; try again in a moment" ;;
             bad_request) words="the request is not valid (empty or over-long text, or a name that is not this row's)" ;;
             failed)      words="the chat request failed" ;;
         esac

@@ -171,9 +171,9 @@ actions! {
     ChatThreadClose, "chat.thread_close", ["ArrowLeft"], "Close thread", "Close the open thread in the Chat drawer, as Escape does; only while the draft is empty.", "Chat", Chat;
     ChatOpenImage, "chat.open_image", ["Primary+o"], "Open picture", "Open the marked message's first picture in the preview pane; a click on a picture opens that one.", "Chat", Chat;
     ChatCopySelection, "chat.copy_selection", ["Primary+c", "Primary+Shift+c"], "Copy selection", "Copy the text selected in a Chat message, or the marked message's text when none is selected.", "Chat", Chat;
-    ChatSend, "chat.send", ["Enter"], "Post", "Post the chat draft to its channel under the name in settings.toml; the draft stays until the post is made.", "Chat", Chat;
+    ChatSend, "chat.send", ["Enter"], "Post", "Post the chat draft to its channel as you, from your Slack account (an older Ship of Tools posts it as the Slack app, under the name in settings.toml); the draft stays until the post is made.", "Chat", Chat;
     ChatPostFile, "chat.post_file", ["Primary+u"], "Post previewed file", "Post the file the preview shows to the chat channel, with the draft as its comment; the draft stays until the file is posted.", "Chat", Chat;
-    ChatSetup, "chat.setup", ["Primary+Shift+k"], "Choose channel", "Choose this project's Slack channel from a list, or set it to none; Enter picks, Escape closes.", "Chat", Chat;
+    ChatSetup, "chat.setup", ["Primary+Shift+k"], "Choose channel", "Choose this project's Slack channel from a list, or set it to none; Enter picks, Escape closes. In this Help list, Enter on this action opens the manual page Setting up Slack.", "Chat", Chat;
     ChatNewline, "chat.newline", ["Shift+Enter"], "Insert newline", "Continue the chat draft on another line.", "Chat", Chat;
     PreviewEnd, "preview.end", ["End"], "Document end", "Scroll to the end of the displayed text.", "Text", Text;
     PreviewHalfUp, "preview.half_up", ["Ctrl+u"], "Half page up", "Scroll up half a pane.", "Text", HalfScroll;

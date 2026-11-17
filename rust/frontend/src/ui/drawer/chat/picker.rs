@@ -21,7 +21,7 @@ and Slack then shows that it joined. A private channel appears in this list once
 const HEAD: &str = "These are the channels of your connected Slack workspace. The chat connects one Slack workspace for now, so another cannot be added yet. \
 Your Slack app (the bot that reads the channel and posts for your agents) reads only the channels it is in.";
 /// Where the guide says to read how to move the chat to another workspace.
-const MOVE: &str = " To move the chat to another workspace, see the manual page \"Setting up Slack for Ship of Tools\" (press F1, then Enter, to open the manual).";
+const MOVE: &str = " To move the chat to another workspace, see the manual page \"Setting up Slack\": press F1, select \"Choose channel\" in the list, and press Enter; the page opens in your browser.";
 
 /// What Enter on an entry does.
 #[derive(Clone, Debug, PartialEq)]
@@ -62,7 +62,7 @@ impl Picker {
     /// pick, its label and its mark.
     fn entries(&self) -> Vec<(Pick, String, &'static str)> {
         let plain = self.filter.is_empty();
-        let again = plain.then(|| (Pick::Reconnect, "Connect Slack again".to_string(), "fresh codes for the same Slack app, not another workspace"));
+        let again = plain.then(|| (Pick::Reconnect, "Connect Slack again".to_string(), "connect again with new Slack codes (same workspace)"));
         let channels = match &self.list {
             List::Listed { channels, .. } => channels,
             List::Failed(_) => return again.into_iter().collect(),
@@ -156,7 +156,7 @@ impl Picker {
             List::Reading => ("reading Slack's channels…".to_string(), String::new()),
             List::Failed(words) => (words.clone(), "Esc to close.".to_string()),
             List::Listed { more, .. } => {
-                let head = if entries.is_empty() { format!("{HEAD}\n\nno channel matches") } else { HEAD.to_string() };
+                let head = if entries.is_empty() { format!("{HEAD}\n\nno channel matches") } else { format!("{HEAD}\n") };
                 let more = if *more { " More channels exist than are listed: paste a channel's link to pick one." } else { "" };
                 (head, format!("{GUIDE}{}.{more}{MOVE}", invite(&self.app)))
             }
@@ -256,6 +256,9 @@ impl Body {
         let pin = wrapped(&self.pin, width);
         let room = if pin.is_empty() { height } else { height.saturating_sub(pin.len() + 1) };
         let (head, guide) = (wrapped(&self.head, width), wrapped(&self.guide, width));
+        // Over a list the head gives way after the guide: the entries keep three rows (the choice stays in view) and the row that
+        // says more is below before the head keeps any, so a short drawer shows the list and a tall one the whole head.
+        let head = if self.entries.is_empty() { head } else { head.into_iter().take(room.saturating_sub(self.entries.len().min(3) + 1)).collect() };
         let window = room.saturating_sub(head.len() + guide.len() + usize::from(!guide.is_empty())).max(3);
         let start = (self.chosen + 1).saturating_sub(window);
         let across = self.entries.iter().map(|(label, _)| label.chars().count()).max().unwrap_or(0);

@@ -1174,7 +1174,7 @@ fn a_full_store_a_refused_page_and_a_hidden_history_are_told() {
     let mut o = at_the_oldest(t0);
     assert!(asks(&mut o, now).is_some());
     o.on_evt(&host(), page_reply(&o, top_level(62..=81), true, true), now);
-    assert_eq!(o.older_words().as_deref(), Some("your Slack plan keeps no older messages"));
+    assert_eq!(o.older_words().as_deref(), Some("your Slack plan hides older messages"));
     assert_eq!(asks(&mut o, now + LIMITED_PACE), None, "the plan hides the rest");
     // A snapshot that clears the store clears the stop with it.
     replace_with(&mut o, now, snapshot_with_next(top_level(2000..=2010)));
@@ -1800,7 +1800,7 @@ fn hidden_below_62(t0: Instant) -> ChatOwner {
     let recs: Vec<_> = (62..=81).map(|i| record(&format!("{i}.000001"), "C1")).collect();
     let reply = ChatReply::Done(serde_json::from_value(serde_json::json!({ "records": recs, "next": "older", "limited": true })).unwrap());
     o.on_evt(&host(), ChatEvt::History { req, reply }, t0);
-    assert_eq!((held(&o), o.older_words().as_deref()), (40, Some("your Slack plan keeps no older messages")));
+    assert_eq!((held(&o), o.older_words().as_deref()), (40, Some("your Slack plan hides older messages")));
     o
 }
 
@@ -1811,7 +1811,7 @@ fn hidden_history_survives_a_switch_back() {
     o.stop();
     assert!(is_watch(&o.watch(host(), target("C1"), t0 + PACE)));
     snapshot_overlapping(&mut o, t0 + PACE, 82..=101);
-    assert_eq!((held(&o), o.older_words().as_deref()), (40, Some("your Slack plan keeps no older messages")));
+    assert_eq!((held(&o), o.older_words().as_deref()), (40, Some("your Slack plan hides older messages")));
 }
 
 #[test]
@@ -1821,5 +1821,5 @@ fn hidden_history_survives_a_links_return() {
     o.on_connection(&host(), false, t0 + PACE);
     assert!(is_watch(&o.on_connection(&host(), true, t0 + PACE)));
     snapshot_overlapping(&mut o, t0 + PACE, 82..=101);
-    assert_eq!((held(&o), o.older_words().as_deref()), (40, Some("your Slack plan keeps no older messages")));
+    assert_eq!((held(&o), o.older_words().as_deref()), (40, Some("your Slack plan hides older messages")));
 }

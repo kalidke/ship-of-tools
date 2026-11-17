@@ -368,7 +368,7 @@ impl ChatOwner {
     pub(super) fn older_words(&self) -> Option<String> {
         let w = self.watch.as_ref()?;
         match w.stop {
-            Some(Stop::Hides) => Some("your Slack plan keeps no older messages".into()),
+            Some(Stop::Hides) => Some("your Slack plan hides older messages".into()),
             Some(Stop::Stuck) => Some("older messages could not be read".into()),
             Some(Stop::Refused(_, code)) if w.floor.is_some() => Some(format!("older messages are not read: {}", code.text())),
             _ if w.floor.is_some() && w.records.len() >= KEPT => Some("older messages beyond the limit are not shown".into()),

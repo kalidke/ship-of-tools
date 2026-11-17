@@ -151,7 +151,7 @@ fn the_connect_step_says_each_reason_and_its_next_action() {
         let body = drawn(&d);
         assert!(body.contains("First, connect Ship of Tools to your Slack workspace"), "{reason}: the start screen");
         assert!(body.contains("Each person makes their own Slack app"), "{reason}: one app per person");
-        assert!(body.contains("What you type in this panel is posted under your own Slack name; what your agents post goes out as your Slack app."), "{reason}: whose posts are whose");
+        assert!(body.contains("A Slack code you paste here is never posted. The messages you write in the chat itself, once it is set up, are posted under your own Slack name; what your agents post goes out as your Slack app."), "{reason}: whose posts are whose");
         assert!(body.contains("Enter  start    Right  I already made my Slack app: go to step 2    Esc  close"), "{reason}");
     }
     // The refused tokens' screen names the person's own app at its first frame.
@@ -203,7 +203,7 @@ fn the_wrong_app_screen_names_the_app_and_opens_the_apps() {
     let (mut d, _) = in_step("wrong_app");
     assert_eq!(d.title(), " chat · set up Slack ");
     let body = drawn(&d).replace('\n', " ");
-    let words = format!("The chat stopped: the \"App-Level Token\" it holds belongs to another Slack app than your Slack app (the bot that reads the channel and posts for your agents), so the chat would have received that other app's messages. Nothing is lost. To fix it, paste your own Slack app's codes: press Enter, and your list of Slack apps opens in your browser. Click {NAME}, then copy its three Slack codes again, as steps 2 and 3 show (they follow here).");
+    let words = format!("The chat stopped: the \"App-Level Token\" it holds belongs to another Slack app than your Slack app (the bot that reads the channel and posts for your agents), so the chat would have received that other app's messages. To fix it, paste your own Slack app's codes: press Enter, and your list of Slack apps opens in your browser. Click {NAME}, then copy its three Slack codes again, as steps 2 and 3 show (they follow here).");
     assert!(body.contains(&words), "the wrong app's words");
     assert!(body.contains("Enter  open your Slack apps    Left  make your Slack app again    Esc  close"));
     let (_, asks) = key(&mut d, ENTER);
@@ -405,7 +405,7 @@ fn a_refused_token_goes_back_to_its_step_and_the_others_are_kept() {
     // Any other answer drops all three and says why on the first screen.
     c.answered(ChatReply::Refused(ChatCode::OtherWorkspace));
     assert_eq!(c.screen(), &Screen::First);
-    assert!(c.body().head.starts_with("Not connected: these Slack codes are for a different workspace than the one connected; the chat connects one Slack workspace for now (the manual page \"Setting up Slack for Ship of Tools\" says how to move it: press F1, then Enter)."));
+    assert!(c.body().head.starts_with("Not connected: these Slack codes are for a different workspace than the one connected; the chat connects one Slack workspace for now (the manual page \"Setting up Slack\" says how to move it: press F1, select \"Choose channel\" in the list, and press Enter)."));
     assert_eq!(c.held(), (None, None, None));
     for t in [bot(), user(), app()] {
         c.key(PASTE, Some(&t), false);
@@ -618,7 +618,7 @@ fn a_connect_reply_resolves_the_row_again_and_enter_then_opens_the_picker() {
     // Before the row's new answer, Enter says to wait; after it, Enter opens the picker and asks for the channels.
     let (outs, asks) = key(&mut d, ENTER);
     assert!(outs.is_empty() && d.in_setup());
-    assert_eq!(asks.notice.as_deref(), Some("setting up the chat: press Enter again in a few seconds to choose this project's channel; if this stays after a minute, close the Chat panel and open it again"));
+    assert_eq!(asks.notice.as_deref(), Some("setting up the chat: press Enter again in a few seconds to choose this project's channel"));
     d.on_evt(&host(), answer("ROW1", serde_json::json!({ "state": "unmapped" })), t);
     d.tick(shown("ROW1"), t);
     assert!(d.in_setup(), "the connected screen waits for the person");
@@ -638,7 +638,7 @@ fn a_connect_reply_resolves_the_row_again_and_enter_then_opens_the_picker() {
     paste(&mut d, &app());
     d.on_evt(&host(), ChatEvt::ConnectUnknown, t);
     assert!(!d.in_setup(), "an unknown outcome ends the step: the row's new answer decides what shows");
-    assert_eq!(d.take_notice().as_deref(), Some("Slack may be connected: the computer that runs your agents did not answer before the connection ended; checking again. If the panel still says Slack is not connected after a minute, connect Slack again"));
+    assert_eq!(d.take_notice().as_deref(), Some("Slack may be connected: a did not answer before the connection ended; checking again. If the panel still says Slack is not connected after a minute, connect Slack again"));
     assert_eq!(resolves(&d.tick(shown("ROW1"), t).0), 1);
 }
 
@@ -781,4 +781,134 @@ fn a_typed_character_is_neither_logged_nor_shown_while_the_keys_take_secrets() {
     assert!(logged.contains('x'));
     let enter = Key::Named(NamedKey::Enter);
     assert_eq!(key_texts(&enter, true), key_texts(&enter, false));
+}
+
+/// The project's own words never reach a screen: every text a person reads in the Chat drawer (each code's text, each `Stand`'s
+/// words at a named, the local and an unnamed computer, every Connect screen and refusal, the picker's list and failures, a
+/// refused pair, each post outcome and the foot's hints) holds none of these words. A word Slack names (its field names, its
+/// headings), a file or command a person types and a key of `hosts.toml` is removed first, and the four wire texts that say
+/// `row` stay: a row's agent reads them through `sot-fe chat`, so they keep the word an agent knows.
+#[test]
+fn no_project_word_reaches_a_screen() {
+    use super::compose::{compose_rows, ComposeText};
+    use super::drawer::{post_words, wait_words};
+    use super::owner::PostShown;
+    use super::picker::{pair_words, Picker};
+    use super::row_channel::Stand;
+    use sot_protocol::ops::ChatPairRes;
+
+    let codes = {
+        // A match with no wildcard: a code added later fails to compile here until its text is in the table.
+        let all = |c: ChatCode| match c {
+            ChatCode::Unavailable | ChatCode::Unmapped | ChatCode::StaleRow | ChatCode::StaleMapping | ChatCode::BadRequest
+            | ChatCode::TooManyWatches | ChatCode::Limited | ChatCode::Busy | ChatCode::BotTokenRefused | ChatCode::AppTokenRefused
+            | ChatCode::UserTokenRefused | ChatCode::NoUserToken | ChatCode::NotAMember | ChatCode::OtherWorkspace
+            | ChatCode::NotInChannel | ChatCode::ChannelTaken | ChatCode::NotSaved | ChatCode::NotAFile | ChatCode::TooLarge
+            | ChatCode::NotAnImage | ChatCode::Failed | ChatCode::Other => c,
+        };
+        [
+            ChatCode::Unavailable, ChatCode::Unmapped, ChatCode::StaleRow, ChatCode::StaleMapping, ChatCode::BadRequest,
+            ChatCode::TooManyWatches, ChatCode::Limited, ChatCode::Busy, ChatCode::BotTokenRefused, ChatCode::AppTokenRefused,
+            ChatCode::UserTokenRefused, ChatCode::NoUserToken, ChatCode::NotAMember, ChatCode::OtherWorkspace,
+            ChatCode::NotInChannel, ChatCode::ChannelTaken, ChatCode::NotSaved, ChatCode::NotAFile, ChatCode::TooLarge,
+            ChatCode::NotAnImage, ChatCode::Failed, ChatCode::Other,
+        ]
+        .map(all)
+    };
+    let mut said: Vec<String> = codes.iter().map(|c| c.text().to_string()).collect();
+    for host in ["a", "local", ""] {
+        let stands = [Stand::Unlisted, Stand::Offline, Stand::Resolving, Stand::Mapped, Stand::Unmapped, Stand::NoConfig, Stand::NotHub, Stand::RowGone, Stand::NoChat]
+            .into_iter()
+            .chain([Stand::Unconfigured(ChatUnconfigured::NotConnected), Stand::Failed(ChatCode::Busy)]);
+        said.extend(stands.map(|s| s.words(host)));
+        said.push(super::compose::compose_rows(&ComposeText::of(None, None, false, Some(false), host), 200, 10).join(" "));
+        said.push(post_words(&PostShown::Outdated, true, host).unwrap_or_default());
+    }
+    said.extend([wait_words(5, false), wait_words(5, true)]);
+    for shown in [PostShown::Posted, PostShown::Unknown, PostShown::Limited(3, false)] {
+        said.extend(post_words(&shown, false, "a"));
+    }
+    for code in codes {
+        said.extend(post_words(&PostShown::Refused(code), code == ChatCode::BadRequest, "a"));
+    }
+    said.push(compose_rows(&ComposeText::of(None, None, true, Some(true), "a"), 200, 10).join(" "));
+    // The Connect step: each first screen, the steps, a refused code of each kind, connecting and connected, and a post's.
+    let mut screens = Vec::new();
+    for reason in [ChatUnconfigured::NotConnected, ChatUnconfigured::TokensRefused, ChatUnconfigured::StartFailed, ChatUnconfigured::WrongApp, ChatUnconfigured::Other] {
+        let mut c = step(reason);
+        screens.push(c.title());
+        screens.push(c.body().head);
+        screens.push(c.body().pin);
+        for k in [ENTER, ENTER, RIGHT] {
+            c.key(k, None, false);
+            let b = c.body();
+            screens.extend([c.title(), b.head, b.pin]);
+        }
+        let mut c = step(reason);
+        for t in [bot(), user(), app()] {
+            c.key(PASTE, Some(&t), false);
+        }
+        screens.extend([c.title(), c.body().head, c.body().pin]);
+        for reply in [ChatReply::Refused(ChatCode::BotTokenRefused), ChatReply::Refused(ChatCode::UserTokenRefused), ChatReply::Refused(ChatCode::AppTokenRefused), ChatReply::Unsupported, ChatReply::Refused(ChatCode::OtherWorkspace)] {
+            let mut c = step(reason);
+            for t in [bot(), user(), app()] {
+                c.key(PASTE, Some(&t), false);
+            }
+            c.answered(reply);
+            screens.extend([c.title(), c.body().head, c.body().pin]);
+        }
+        let mut c = step(reason);
+        for t in [bot(), user(), app()] {
+            c.key(PASTE, Some(&t), false);
+        }
+        c.answered(ChatReply::Done(ChatConnectRes { workspace: "T1".into() }));
+        screens.extend([c.title(), c.body().head, c.body().pin]);
+        screens.push(c.key(PASTE, Some("not a code"), false).1.notice.unwrap_or_default());
+    }
+    let c = Connect::for_post(host(), LOGIN);
+    screens.extend([c.title(), c.body().head, c.body().pin]);
+    said.extend(screens);
+    // The picker: a list, a narrowed list with no match, each failure, and a refused pair.
+    let list: ChatChannelsRes = serde_json::from_value(serde_json::json!({ "channels": [
+        { "id": "C1", "name": "lab-general", "private": false, "member": true },
+        { "id": "C2", "name": "lab-papers", "private": true, "member": true },
+        { "id": "C3", "name": "lab-new", "private": false, "member": false } ], "more": true })).unwrap();
+    let mut picks = Vec::new();
+    for reply in [ChatReply::Done(list), ChatReply::Unsupported, ChatReply::Refused(ChatCode::Unavailable)] {
+        let mut p = Picker::new(shown("ROW1").unwrap(), true, NAME.to_string());
+        p.on_channels(reply);
+        picks.push(p.title());
+        picks.extend(p.body().lines(100, 40));
+        p.edit(Edit::Text("zzz"));
+        picks.extend(p.body().lines(100, 40));
+    }
+    said.extend(picks);
+    for reply in [ChatReply::Done(ChatPairRes {}), ChatReply::Unsupported, ChatReply::Refused(ChatCode::NotInChannel), ChatReply::Refused(ChatCode::ChannelTaken)] {
+        for private in [false, true] {
+            said.extend(pair_words(&reply, private, NAME, "a"));
+        }
+    }
+
+    // What is taken out first, and why: Slack's own names and headings, a file's, a command's and a key's names a person types
+    // or finds, and the four wire texts an agent reads.
+    let kept = [
+        "Bot User OAuth Token", "User OAuth Token", "App-Level Tokens", "App-Level Token", "User Token Scopes", "Generate Token and Scopes",
+        "`hub =`", "`sotd log-path`",
+    ];
+    let agent_texts = [ChatCode::Unmapped, ChatCode::StaleRow, ChatCode::StaleMapping, ChatCode::NotAFile].map(ChatCode::text);
+    let banned = ["hub", "daemon", "token", "tokens", "row", "rows", "leg", "capsule", "sotd", "drawer"];
+    let mut hits = Vec::new();
+    for text in &said {
+        let mut rest = text.clone();
+        for keep in kept.iter().chain(agent_texts.iter()) {
+            rest = rest.replace(keep, " ");
+        }
+        for word in rest.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()) {
+            if banned.contains(&word.to_lowercase().as_str()) {
+                hits.push(format!("{word:?} in {text:?}"));
+            }
+        }
+    }
+    hits.dedup();
+    assert!(hits.is_empty(), "{} project words on screens:\n{}", hits.len(), hits.join("\n"));
 }

@@ -278,7 +278,7 @@ fn compose_retains_refused_limited_and_unknown_drafts() {
     // A hub that does not post plain text: the window never wrote it, the draft is kept.
     let req = posted(d.send(Some(&r), Some("Ada"), at + Duration::from_secs(40)).unwrap());
     d.on_evt(&"a".to_string(), ChatEvt::PostNotSent { req }, at);
-    assert_eq!(d.take_notice().as_deref(), Some("not posted: update Ship of Tools on the computer that runs your agents, then post again"));
+    assert_eq!(d.take_notice().as_deref(), Some("not posted: update Ship of Tools on a, then post again"));
     assert_eq!(d.draft(), Some(("a < b", "C1")));
 
     // A reply for a post that is not waiting changes nothing; the reply that proves the post clears that draft alone.
@@ -476,18 +476,18 @@ fn the_hint_says_whether_the_post_goes_out_as_the_person_or_as_the_app_by_the_he
 fn an_empty_draft_shows_what_to_type_and_the_chord_that_changes_the_channel() {
     use super::compose::ComposeText;
     let chord = if cfg!(target_os = "macos") { "Cmd+Shift+K" } else { "Ctrl+Shift+K" };
-    let hint = |focused| compose_rows(&ComposeText::of(None, None, focused, Some(true)), 80, 10);
+    let hint = |focused| compose_rows(&ComposeText::of(None, None, focused, Some(true), "a"), 80, 10);
     assert_eq!(hint(false)[0], "> type a message and press Enter to post it");
     assert_eq!(hint(true)[0], "> █type a message and press Enter to post it");
     let said = hint(false)[1..].join(" ");
     assert_eq!(said, format!("What you post appears in the channel as your own message, from your Slack account. {chord} changes this project's channel."));
     // The prompt row comes first at any height, and a narrow drawer wraps it.
-    assert_eq!(compose_rows(&ComposeText::of(None, None, false, Some(true)), 80, 1), ["> type a message and press Enter to post it"]);
-    assert!(compose_rows(&ComposeText::of(None, None, false, Some(true)), 80, 0).is_empty());
-    assert!(compose_rows(&ComposeText::of(None, None, false, Some(true)), 20, 10).iter().all(|r| r.chars().count() <= 20));
+    assert_eq!(compose_rows(&ComposeText::of(None, None, false, Some(true), "a"), 80, 1), ["> type a message and press Enter to post it"]);
+    assert!(compose_rows(&ComposeText::of(None, None, false, Some(true), "a"), 80, 0).is_empty());
+    assert!(compose_rows(&ComposeText::of(None, None, false, Some(true), "a"), 20, 10).iter().all(|r| r.chars().count() <= 20));
     // Anything typed, or a destination to name, is the draft's own foot.
-    assert_eq!(compose_rows(&ComposeText::of(Some("hi"), None, false, Some(true)), 80, 10), ["> hi"]);
-    assert_eq!(compose_rows(&ComposeText::of(None, Some("to C1".into()), false, Some(true)), 80, 10), ["> ", "to C1"]);
+    assert_eq!(compose_rows(&ComposeText::of(Some("hi"), None, false, Some(true), "a"), 80, 10), ["> hi"]);
+    assert_eq!(compose_rows(&ComposeText::of(None, Some("to C1".into()), false, Some(true), "a"), 80, 10), ["> ", "to C1"]);
 }
 
 #[test]
@@ -639,7 +639,7 @@ fn a_preview_with_no_node_posts_nothing() {
     assert_eq!(d.send_file(Some(&row("S")), Some("files:a.png"), at).unwrap_err(), "not posted: no channel to write to");
     assert_eq!(d.draft(), Some(("the fit", "C1")));
     let (mut old, at) = watching();
-    assert_eq!(old.send_file(Some(&r), Some("files:a.png"), at).unwrap_err(), "not posted: update Ship of Tools on the computer that runs your agents, then post again");
+    assert_eq!(old.send_file(Some(&r), Some("files:a.png"), at).unwrap_err(), "not posted: update Ship of Tools on a, then post again");
     // Nothing waits: a text post still goes.
     old.edit(Some(&r), Edit::Text("hi")).unwrap();
     assert!(matches!(old.send(Some(&r), Some("tester"), at).unwrap().as_slice(), [(_, OutgoingReq::ChatPost { .. })]));
@@ -698,4 +698,11 @@ fn a_held_chat_chord_never_posts_again() {
         assert_eq!(chat_chord(action, false), None, "{action:?}");
         assert_eq!(chat_chord(action, true), None, "{action:?} held");
     }
+}
+
+/// A rate limit says Slack asked for a pause and the seconds left, with `about` while the wait is a guess.
+#[test]
+fn a_wait_says_the_pause_and_the_seconds() {
+    assert_eq!(super::drawer::wait_words(5, false), "not posted: Slack asked for a pause; wait 5 s");
+    assert_eq!(super::drawer::wait_words(5, true), "not posted: Slack asked for a pause; wait about 5 s");
 }
