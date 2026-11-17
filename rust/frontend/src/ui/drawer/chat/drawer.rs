@@ -90,7 +90,9 @@ pub(in crate::ui) struct ChatDrawer {
     compose: Compose,
     /// How many compose rows the last frame drew at the drawer's foot: the records' body is that much shorter.
     foot: u16,
-    /// The words of the last post's outcome, until the status line takes them.
+    /// The tile a left press landed on, and where: its release there opens the picture.
+    tile_pressed: Option<((f32, f32), super::view::Tile)>,
+    /// The words of the last post's or picture's outcome, until the status line takes them.
     notice: Option<String>,
     /// The name being typed at the drawer's foot, while Enter found none set: the keys edit it, not the draft.
     asking: Option<String>,
@@ -138,6 +140,9 @@ impl Modal {
         }
     }
 }
+
+/// How far a release may be from its press, in pixels each way, and still be a click on a tile.
+const CLICK_SLOP_PX: f32 = 4.0;
 
 /// What a request that could not be queued is told, as if the hub had refused it `unavailable`: a post, a pair, a channel
 /// list or a picture never written is not left waiting for a reply that cannot come (`State::with_chat` feeds it to `on_evt`).
@@ -353,7 +358,9 @@ impl ChatDrawer {
             self.close_modal();
         }
         self.flight.clear(host);
-        self.pictures.on_connection(host, up, now);
+        if self.pictures.on_connection(host, up, now) {
+            self.notice = Some("picture not opened: the link to the hub changed before it came".into());
+        }
         let mut outs = self.owner_outs(|o| o.on_connection(host, up, now));
         if self.thread.as_ref().is_some_and(|t| t.host() == host) {
             if up {
@@ -850,9 +857,20 @@ impl ChatDrawer {
         self.thread.as_ref().map_or(0, Thread::len)
     }
 
-    /// A left press at `at` on a tile opens its picture in the preview (`open`); a press anywhere else opens nothing.
-    pub(in crate::ui) fn open_at(&mut self, at: (f32, f32), now: Instant) -> Vec<Out> {
-        self.view.tile_at(at).map(|t| self.open(&t.workspace, &t.channel, &t.file, now)).unwrap_or_default()
+    /// A left press at `at`: on a tile it is kept, and its release may open the picture (`release_tile`).
+    pub(in crate::ui) fn press_tile(&mut self, at: (f32, f32)) {
+        self.tile_pressed = self.view.tile_at(at).map(|t| (at, t));
+    }
+
+    /// The left button's release at `at` opens the pressed tile's picture in the preview (`open`) when it is on that tile
+    /// still, within `CLICK_SLOP_PX` of the press: a drag that starts on a tile opens nothing.
+    pub(in crate::ui) fn release_tile(&mut self, at: (f32, f32), now: Instant) -> Vec<Out> {
+        let Some((from, t)) = self.tile_pressed.take() else { return Vec::new() };
+        let still = (at.0 - from.0).abs() <= CLICK_SLOP_PX && (at.1 - from.1).abs() <= CLICK_SLOP_PX;
+        if !still || self.view.tile_at(at).is_none_or(|u| u.file != t.file) {
+            return Vec::new();
+        }
+        self.open(&t.workspace, &t.channel, &t.file, now)
     }
 
     /// `chat.open_image`: opens the marked message's first picture; the words when there is none to open.
@@ -867,10 +885,20 @@ impl ChatDrawer {
 
     /// Asks for `file`'s original, when it is of the watched channel of the row the frame follows: it replaces any open still
     /// wanted, and only one original is in flight (`ChatPictures::open`). The reply is installed by State (`take_opened`).
+    /// The status line says `opening the picture…` while it comes, or why nothing was asked.
     fn open(&mut self, workspace: &str, channel: &str, file: &str, now: Instant) -> Vec<Out> {
-        let Some(row) = self.rows.row().cloned() else { return Vec::new() };
-        let Some(target) = self.watch_for(&row).filter(|t| t.workspace == workspace && t.channel.as_str() == channel).cloned() else { return Vec::new() };
-        self.pictures.open(&row.host, &target, file);
+        let target = self.rows.row().cloned().and_then(|row| Some((row.host.clone(), self.watch_for(&row)?.clone())));
+        let Some((host, target)) = target.filter(|(_, t)| t.workspace == workspace && t.channel.as_str() == channel) else {
+            self.notice = Some("picture not opened: its channel is no longer the one shown".into());
+            return Vec::new();
+        };
+        match self.pictures.open(&host, &target, file) {
+            Ok(()) => self.notice = Some("opening the picture…".into()),
+            Err(words) => {
+                self.notice = Some(words.into());
+                return Vec::new();
+            }
+        }
         self.pictures.asks(now)
     }
 

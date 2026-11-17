@@ -103,10 +103,10 @@ impl Default for ChatPictures {
     }
 }
 
-/// Reads an original once as the preview will (one of wire's `PICTURE_MIMES` by its own bytes), under `Limits`: its header at
-/// most `MAX_OPEN_PIXELS` before any pixel buffer, every allocation within `MAX_OPEN_ALLOC`, and a decoder's panic caught.
-/// The pixels are dropped: the preview decodes the same bytes again with the same decoder, which allocates no more and does
-/// not panic where this did not. Its MIME, or the words of its refusal.
+/// Reads an original once as the preview will (one of wire's `PICTURE_MIMES` by its own bytes), its header at most
+/// `MAX_OPEN_PIXELS`, decoded under `Limits` (`MAX_OPEN_ALLOC`) with a decoder's panic caught, and the pixels dropped. Its
+/// MIME, or the words of its refusal. Not a bound for every input: some WebP and GIF files are dearer than their header
+/// says and allocate outside `Limits` (the fe-ui contract, "Opening a picture").
 pub(super) fn admit(bytes: &[u8]) -> Result<&'static str, &'static str> {
     let read = || {
         let mut r = ImageReader::new(Cursor::new(bytes)).with_guessed_format().map_err(|_| "it is not a picture")?;
@@ -197,9 +197,17 @@ impl ChatPictures {
     }
 
     /// The person opens `file` of `target` on `host`: it becomes the one wanted, in place of any other, asked at the next
-    /// `asks` once no original is in flight and its host has room. Nothing is asked twice while in flight.
-    pub(super) fn open(&mut self, host: &HostKey, target: &ChatTarget, file: &str) {
+    /// `asks` once no original is in flight and its host has room. Nothing is asked twice while in flight. On a host whose link
+    /// is down, or whose daemon does not know the op, nothing is kept and the words say why, so it is never sent later unasked.
+    pub(super) fn open(&mut self, host: &HostKey, target: &ChatTarget, file: &str) -> Result<(), &'static str> {
+        if !self.connected.contains(host) {
+            return Err("picture not opened: the link to the hub is down");
+        }
+        if self.unsupported.contains(host) {
+            return Err("picture not opened: the hub must be updated to open it");
+        }
         self.wanted = Some((host.clone(), ChatFileReq { target: target.clone(), file: file.to_string(), variant: ChatFileVariant::Original }));
+        Ok(())
     }
 
     /// The wanted original is no one's (the row changed): a reply still coming for it is dropped.
@@ -365,22 +373,27 @@ impl ChatPictures {
         }
     }
 
-    /// A link came or went: nothing of that host is in flight, so each is wanted again, asked at once when the link is up.
-    pub(super) fn on_connection(&mut self, host: &HostKey, up: bool, now: Instant) {
+    /// A link came or went: nothing of that host is in flight, so each thumbnail is wanted again, asked at once when the link
+    /// is up; the original in flight and the one wanted are given up (whether one was wanted), never asked again unasked.
+    pub(super) fn on_connection(&mut self, host: &HostKey, up: bool, now: Instant) -> bool {
         if up {
             self.connected.insert(host.clone());
         } else {
             self.connected.remove(host);
         }
         self.unsupported.remove(host);
-        // No reply comes for an original in flight; one wanted on a link that went is given up.
+        // No reply comes for an original in flight, and one wanted across a link change is given up.
         self.opening = self.opening.take().filter(|(h, _)| h != host);
-        self.wanted = self.wanted.take().filter(|(h, _)| up || h != host);
+        let given_up = self.wanted.as_ref().is_some_and(|(h, _)| h == host);
+        if given_up {
+            self.wanted = None;
+        }
         for (_, e) in self.entries.iter_mut().filter(|(k, _)| &k.0 == host) {
             if let Stand::Flight { failed } = e.stand {
                 e.stand = Stand::Wanted { due: now, failed };
             }
         }
+        given_up
     }
 
     /// Past `MAX_HELD` entries not in flight, the least recently placed leave.

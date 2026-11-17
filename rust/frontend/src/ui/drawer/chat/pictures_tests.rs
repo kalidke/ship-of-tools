@@ -49,7 +49,7 @@ fn place(p: &mut ChatPictures, on: &str, files: &[ChatFile], now: Instant) {
 
 fn connected(hosts: &[&str], now: Instant) -> ChatPictures {
     let mut p = ChatPictures::default();
-    hosts.iter().for_each(|h| p.on_connection(&host(h), true, now));
+    hosts.iter().for_each(|h| { p.on_connection(&host(h), true, now); });
     p
 }
 

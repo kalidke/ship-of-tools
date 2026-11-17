@@ -372,9 +372,14 @@ impl State {
         let fired = self.preview_requests.fired_target().map(str::to_owned);
         self.witness_key(Key::Named(NamedKey::ArrowUp), (false, false), Some(Action::ChatMarkOlder))?;
         self.witness_frame(&mut frames, &newest, "marked")?;
+        // A preview of the cursored file is in flight when the picture is opened: its late reply must not replace the picture.
+        let in_flight = self.next_preview_gen();
         self.witness_key(Key::Character("o".into()), (true, false), Some(Action::ChatOpenImage))?;
         self.witness_pump(events, sent, &mut daemon)?;
         anyhow::ensure!(daemon.seen.originals == ["SAME"], "originals asked: {:?}", daemon.seen.originals);
+        anyhow::ensure!(self.status.text() == "picture shown in the preview", "the status line says {:?}", self.status.text());
+        let (active, row) = (self.selected.host().clone(), self.selected.workspace_id().clone());
+        self.on_preview(active, Some("files:fig.png".into()), row, "text/plain".into(), b"the file".to_vec(), None, in_flight);
         anyhow::ensure!(self.preview_source.node_id().is_none() && self.preview_source.mime() == Some("image/png"), "the preview shows {:?} of {:?}", self.preview_source.mime(), self.preview_source.node_id());
         anyhow::ensure!(self.preview_requests.fired_target().map(str::to_owned) == fired, "the open changed the fired target");
         anyhow::ensure!(self.raster.is_shown(), "the opened picture is not the pane's raster");
@@ -384,6 +389,23 @@ impl State {
         anyhow::ensure!(self.raster.roi().is_none(), "the picture's region is recorded as {:?}", self.raster.roi().map(|r| r.node_id.clone()));
         anyhow::ensure!(self.preview_pane_name().is_none(), "the pane is titled {:?} over the picture", self.preview_pane_name());
         anyhow::ensure!(!self.begin_scale_entry(), "the scale prompt opened for the fired file over the picture");
+        // An original cut by a link change is given up at State, said on the status line, and never asked again by itself;
+        // the host's one transfer is free again, so the next Primary+o asks one.
+        let asked = |sent: &mut Requests| std::iter::from_fn(|| sent.try_recv().ok()).filter(|r| matches!(r, OutgoingReq::ChatFile { req } if req.variant == sot_protocol::ops::ChatFileVariant::Original)).count();
+        self.witness_key(Key::Character("o".into()), (true, false), Some(Action::ChatOpenImage))?;
+        self.drain_events();
+        anyhow::ensure!(asked(sent) == 1, "the open was not asked");
+        anyhow::ensure!(self.status.text() == "opening the picture…", "the status line says {:?}", self.status.text());
+        let send = |evt: IncomingEvt| events.send((host.clone(), evt)).map_err(|_| anyhow::anyhow!("the fixture's event channel closed"));
+        send(IncomingEvt::Disconnected { reason: "eof".into(), refused: false })?;
+        self.drain_events();
+        anyhow::ensure!(self.status.text().contains("picture not opened: the link to the hub changed"), "the status line says {:?}", self.status.text());
+        send(connected())?;
+        self.witness_pump(events, sent, &mut daemon)?;
+        anyhow::ensure!(daemon.seen.originals == ["SAME"], "an original was asked again by itself: {:?}", daemon.seen.originals);
+        self.witness_key(Key::Character("o".into()), (true, false), Some(Action::ChatOpenImage))?;
+        self.witness_pump(events, sent, &mut daemon)?;
+        anyhow::ensure!(daemon.seen.originals == ["SAME", "SAME"], "after the link's return, originals asked: {:?}", daemon.seen.originals);
         println!("chat-thumbnails tiles={} textures={made} centers={checked} cut={cut}", before.1);
         Ok(())
     }

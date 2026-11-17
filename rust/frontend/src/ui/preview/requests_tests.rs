@@ -512,19 +512,3 @@ fn a_refused_preview_of_the_fired_node_is_marked_until_something_replaces_it() {
     requests.forget_fired();
     assert!(!requests.fired_refused(), "a first visit");
 }
-
-/// A chat picture installed from the window's own bytes (`State::install_chat_picture`) takes the next generation, as a
-/// request would: a reply in flight for the cursored file is then stale, and the fired target stays, so the cursor's next
-/// follow does not fetch the same node again while the picture shows.
-#[test]
-fn a_chat_picture_outdates_the_reply_in_flight_and_keeps_the_fired_target() {
-    let mut cx = RecordingRequests::new(Some("row"));
-    cx.requests.record_fired("files:fig.png".into());
-    let in_flight = cx.requests.issue_preview();
-    let picture = cx.requests.issue_preview();
-    assert!(picture > in_flight);
-    preview(&mut cx, "active", Some("row"), in_flight);
-    assert!(cx.events.is_empty(), "the cursored file's late reply replaced the picture");
-    assert_eq!(cx.requests.fired_target(), Some("files:fig.png"));
-    assert!(!cx.requests.page_request_pending());
-}

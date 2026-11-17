@@ -1402,36 +1402,44 @@ methods are `pub(super)`, so no other ui code can drop the requests they return.
   (`ChatPictures::draw`, from `ChatDrawer::paint_thumbs`) and gone with its entry; a texture the GPU refuses is not tried
   again (`a_thumbnail_arriving_moves_nothing` counts the attempts); the decoded pixels are held only until that first draw, which
   takes them, so a drawn picture holds its size and its texture alone.
-- Opening a picture (the plan's D10, `drawer/chat/pictures.rs` and `drawer.rs`): a left press on a tile (`ChatView::tile_at`,
-  from `State::press_chat` after the press, which selected nothing: the band holds no text) opens that file, and
-  `chat.open_image` (`Primary+o`, Chat scope) the marked message's first picture, never a deleted one's
-  (`open_tests::a_press_on_a_tile_opens_that_file_and_selects_nothing`, `the_key_opens_the_marked_messages_first_image`).
-  Only a file of the watched channel of the row the frame follows opens. The owner keeps the one file wanted, a newer open
-  replacing it, and one `chat.file {variant: original}` in flight; it counts against its host's one transfer, so it waits for
-  a thumbnail in flight and no thumbnail goes beside it, and a reply for a file no longer wanted is dropped
-  (`one_open_is_in_flight_and_a_late_reply_is_dropped`). A row change gives the wanted file up; a link change ends the one in
-  flight and, for a link that went, the wanted one. The original (at most `MAX_CHAT_FILE`, 16 MiB) is checked on the UI
-  thread before it is handed over (`admit`): one of `PICTURE_MIMES` by its own bytes, under `image::Limits` (512 MiB), its
-  header at most 40 megapixels (the daemon's drawing bound) before any pixel buffer, then decoded whole under
-  `catch_unwind` and dropped, so the preview's own decode of the same bytes allocates no more and does not panic
-  (`a_picture_over_40_megapixels_is_not_installed`); a refusal is `picture not opened: ...` on the status line. State
-  installs it only while its row is the one the chat shows (`take_opened`, `with_chat`), through
-  `State::install_chat_picture`: `issue_preview` advances the generation, so a preview reply in flight is stale, never
-  `forget_fired`, so the fired target stays (`requests_tests::a_chat_picture_outdates_the_reply_in_flight_and_keeps_the_fired_target`),
-  and `install_preview_reply` installs the bytes with no node (`InkLayer::install_preview` hides the canvas). Every reader that
+- Opening a picture (the plan's D10, `drawer/chat/pictures.rs` and `drawer.rs`): a left press on a tile is kept
+  (`ChatDrawer::press_tile`, from `State::press_chat` after the press, which selected nothing: the band holds no text) and
+  its release on that tile within `CLICK_SLOP_PX` opens it (`release_tile`, from `State::release_chat`), so a drag that
+  starts on a tile opens nothing (`open_tests::a_drag_that_starts_on_a_tile_opens_nothing`); `chat.open_image` (`Primary+o`,
+  Chat scope) opens the marked message's first picture, never a deleted one's
+  (`a_press_on_a_tile_opens_that_file_and_selects_nothing`, `the_key_opens_the_marked_messages_first_image`). Only a file
+  of the watched channel of the row the frame follows opens. The owner keeps the one file wanted, a newer open replacing it,
+  and one `chat.file {variant: original}` in flight; it counts against its host's one transfer, so it waits for a thumbnail
+  in flight and no thumbnail goes beside it, and a reply for a file no longer wanted is dropped
+  (`one_open_is_in_flight_and_a_late_reply_is_dropped`). The status line says `opening the picture…` at the ask and
+  `picture shown in the preview` at the install. An open on a host whose link is down or whose daemon answered `Unsupported`
+  is refused with words and nothing is kept; a link change gives up the original in flight and the one wanted, with words,
+  and neither is asked again by itself (`an_open_on_a_link_that_is_down_or_an_old_hub_says_so_and_is_never_sent_later`; at
+  State, the native fixture below). A row change gives the wanted file up. The original (at most `MAX_CHAT_FILE`, 16 MiB) is
+  checked on the UI thread before it is handed over (`admit`): one of `PICTURE_MIMES` by its own bytes, its header at most 40
+  megapixels, then decoded whole under `image::Limits` and `catch_unwind` and dropped
+  (`a_picture_over_40_megapixels_is_not_installed`); a refusal is `picture not opened: ...` on the status line. Limit: that
+  check and the preview's own decode of the same bytes both run in the window's process, and for some WebP and GIF inputs
+  neither is bounded by the header or by `image::Limits`, so a hostile picture can stall the window and take gigabytes; the
+  replacement, a decode in the window's bounded child, waits on the maintainer's word. State installs the picture only while
+  its row is the one the chat shows (`take_opened`, `with_chat`), through `State::install_chat_picture`: `issue_preview`
+  advances the generation, so a preview reply in flight is stale, never `forget_fired`, so the fired target stays, and
+  `install_preview_reply` installs the bytes with no node (`InkLayer::install_preview` hides the canvas). Every reader that
   acts on what is shown reads `State::shown_target`, the fired target unless the pane shows bytes with no node: the visible
   region (the crop and its paste to the agent, fe-state, the saved view's record and restore), the scale prompt, the title,
   the caption, the editor and the page re-raster; so over a chat picture they act on nothing, while the refetches (a
-  reconnect, a `preview.changed`, a page turn) keep the fired target (the native fixture asserts no region, no title and no
-  scale prompt after the open). A cursor move, a switch to another row or a `preview.changed` for the fired node shows a file again.
-  The native fixture `a_chats_pictures_show_and_one_opens_in_the_preview` runs it through the window: `Primary+o` on the
-  marked message asks one original, and the answer is the preview's source and raster, with no node and the fired target
-  as it was. Cost, at the 40-megapixel bound (measured 2026-11-16 in release on one Linux computer): the check's decode
-  about 120 ms for a JPEG and 250 ms for a PNG, then the preview's about 200 and 340 ms, both on the UI thread; the
-  check holds the decoded pixels (up to 320 MB for 16-bit RGBA) until it drops them, then the preview holds its decode
-  and its RGBA copy (up to 480 MB) while it makes the texture, and the bytes stay in the installed source and in the row's
-  parked view, as any preview's do. Limits: the press reaches `press_chat` only through `mouse_input`, which no test runs
-  (the drawer's `open_at` is tested).
+  reconnect, a `preview.changed`, a page turn) keep the fired target. A cursor move, a switch to another row or a
+  `preview.changed` for the fired node shows a file again. The native fixture
+  `a_chats_pictures_show_and_one_opens_in_the_preview` runs it through the window: `Primary+o` on the marked message asks
+  one original while a preview of the cursored file is in flight; the answer is the preview's source and raster, with no
+  node and the fired target as it was, and that file's late reply is dropped (red when the install does not advance the
+  generation); no region, no title and no scale prompt follow; an open cut by a link change is said, not asked again after
+  the link's return, and the next `Primary+o` asks one (red when the link change keeps the original in flight). Cost of an
+  ordinary picture at the 40-megapixel bound (measured 2026-11-16 in release on one Linux computer): the check's decode
+  about 120 ms for a JPEG and 250 ms for a PNG, then the preview's about 200 and 340 ms, both on the UI thread, before the
+  texture upload; the bytes stay in the installed source and in the row's parked view, as any preview's do. Limits: the
+  press and release reach the drawer only through `mouse_input`, which no test runs (the drawer's `press_tile` and
+  `release_tile` are tested).
 - The band of tiles (the plan's D9, `drawer/chat/view.rs`): each placed record that is not deleted shows its picture files
   (`ChatFile::is_picture`) as square tiles in a band below its text and meta lines, `THUMB_PX` (180) a side at text scale 1
   with `THUMB_GAP_PX` between, as many to a row as the text's width holds (a text narrower than a tile makes the tile its

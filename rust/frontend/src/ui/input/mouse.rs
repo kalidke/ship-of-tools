@@ -34,7 +34,7 @@ pub(in crate::ui) fn mouse_input(state: &mut State, event_loop: &ActiveEventLoop
             dismissed
         },
         press_selections,
-        |state| { state.agent_pane.release(); state.shaped.release(); state.chat.release(); state.ink_released(); },
+        |state| { state.agent_pane.release(); state.shaped.release(); state.release_chat(); state.ink_released(); },
         |state, down| state.ink_right(down));
 }
 
@@ -82,12 +82,11 @@ impl SelectionContext for State {
         self.chat.hit(self.pointer.at_px())
     }
     fn press_chat(&mut self, hit: Option<ChatHit>) {
-        let opens = hit.is_some();
+        let in_body = hit.is_some();
         if self.chat.press(hit) { self.window.request_redraw(); }
-        // A press on a picture's tile opens it in the preview; it selected nothing above (the band holds no text).
-        if opens {
-            let at = self.pointer.at_px();
-            self.with_chat(|c, now| c.open_at(at, now));
+        // A press on a picture's tile is kept (it selected nothing above: the band holds no text); its release opens it.
+        if in_body {
+            self.chat.press_tile(self.pointer.at_px());
         }
     }
 }

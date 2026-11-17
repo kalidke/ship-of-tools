@@ -75,8 +75,18 @@ impl State {
         if let Some((row, mime, bytes)) = self.chat.take_opened() {
             if wanted_row(self.layout_help.chat_shown(), || self.active_result_workspace()).as_ref() == Some(&row) {
                 self.install_chat_picture(mime, bytes);
+                self.status.set("picture shown in the preview");
+            } else {
+                self.status.set("picture not opened: the row changed before it came");
             }
         }
+    }
+
+    /// The left button's release: ends the chat's drag, and opens the picture of a tile pressed and released in place.
+    pub(in crate::ui) fn release_chat(&mut self) {
+        self.chat.release();
+        let at = self.pointer.at_px();
+        self.with_chat(|c, now| c.release_tile(at, now));
     }
 
     /// `chat.open_image`: opens the marked message's first picture in the preview; the status line says why when it cannot.
