@@ -1352,6 +1352,7 @@ async fn identify_answers_the_tokens_workspace_and_no_error_carries_a_token() {
                     bot_id: Some(OWN_BOT.into()),
                     app_id: None,
                 },
+                name: None,
             }
         );
         let ok = fake.seen();
@@ -3167,6 +3168,51 @@ async fn the_bots_app_is_read_at_start_and_a_failure_leaves_it_unknown() {
         let before = calls(&fake, "bots.info");
         assert_eq!(botless.bot_app().await, Err(ApiError::NoIdentity));
         assert_eq!(calls(&fake, "bots.info"), before, "a bot with no id was asked about");
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+/// L5 rule 3: `auth.test`'s `team` is the workspace's name, kept by the client and answered by `identify`; absent, not a
+/// string, empty, past `MAX_NAME`, or nothing but a control character reads as no name.
+#[tokio::test]
+async fn the_workspaces_name_comes_from_auth_test_and_a_bad_one_is_none() {
+    bounded(async {
+        let long = "n".repeat(crate::normalize::MAX_NAME + 1);
+        let fake = FakeSlack::start(Identity::Trusted, move |seen, _| {
+            let team = match seen.path().split('/').nth(2).unwrap_or_default() {
+                "named" => json!("Alpha Lab"),
+                "spaced" => json!("  Alpha\u{7}Lab "),
+                "empty" => json!(""),
+                "control" => json!("\u{1}"),
+                "long" => json!(long),
+                "number" => json!(5),
+                _ => Value::Null,
+            };
+            let mut v = json!({"ok": true, "team_id": WS, "user_id": OWN_USER, "bot_id": OWN_BOT});
+            if !team.is_null() {
+                v["team"] = team;
+            }
+            Reply::json(&v)
+        })
+        .await;
+        for (mode, name) in [
+            ("named", Some("Alpha Lab")),
+            ("spaced", Some("AlphaLab")),
+            ("empty", None),
+            ("control", None),
+            ("long", None),
+            ("number", None),
+            ("absent", None),
+        ] {
+            let base = fake.url("slack.com", &format!("/api/{mode}/"));
+            let api = Api::new(fake.http(), Secret::new(TOKEN), WS).unwrap().with_base(base.clone());
+            assert_eq!(api.workspace_name(), None, "no name before auth.test");
+            api.auth_test().await.unwrap();
+            assert_eq!(api.workspace_name().as_deref(), name, "{mode}");
+            let id = identify_at(&fake.http(), Secret::new(TOKEN), base).await.unwrap();
+            assert_eq!(id.name.as_deref(), name, "identify, {mode}");
+        }
         fake.shutdown().await;
     })
     .await;

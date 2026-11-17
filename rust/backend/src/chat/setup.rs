@@ -1,7 +1,9 @@
-//! The window's setup ops: `chat.connect`, which checks three tokens with Slack, saves them and reloads the chat from its
-//! files with no daemon restart; `chat.channels`, the picker's list; and `chat.pair`, which maps a row's folder to a
-//! channel or unmaps it, rewrites `chat.toml` and reloads. All three are jobs, taken from a window's connection only (a
-//! row's agent has no use for them, and no token goes on a command line). The edit of a file and the reload that follows
+//! The window's setup ops: `chat.connect`, which checks three tokens with Slack, saves them as their workspace's secrets
+//! (adding a workspace, or giving one new tokens) and reloads the chat from its files with no daemon restart;
+//! `chat.channels`, the picker's list of one workspace; `chat.pair`, which maps a row's folder to a channel of one
+//! workspace or unmaps it, rewrites `chat.toml` and reloads; and `chat.workspaces`, the connected workspaces. The first
+//! three are jobs taken from a window's connection only (a row's agent has no use for them, and no token goes on a
+//! command line); `chat.workspaces` is a read any connection may make. The edit of a file and the reload that follows
 //! it hold the setup lock together, so two windows' pairings and a connect never lose one another's change. A token is a
 //! `Secret` from its decode on: no log line, reply or error here carries a byte of one, and no request payload is
 //! logged.
@@ -20,7 +22,7 @@ use sot_platform::host::env::Env;
 use sot_protocol::chat::Ts;
 use sot_protocol::ops::{
     op, ChatChannel, ChatChannelInfo, ChatChannelsReq, ChatChannelsRes, ChatCode, ChatConnectReq, ChatConnectRes, ChatPairReq,
-    ChatPairRes, ChatUnconfigured,
+    ChatPairRes, ChatUnconfigured, ChatWorkspaceInfo, ChatWorkspacesReq, ChatWorkspacesRes, MAX_WORKSPACES,
 };
 use sot_protocol::reply::HandlerOutput;
 
@@ -103,7 +105,7 @@ pub(crate) async fn connect(req_id: u64, payload: serde_json::Value, chat: &Arc<
         (true, Ok(r)) => r,
         _ => return Ok(refuse(req_id, NAME, ChatCode::BadRequest)),
     };
-    if chat.shared.closed_now() {
+    if chat.closed_now() {
         return Ok(refuse(req_id, NAME, ChatCode::Unavailable));
     }
     let env = chat.env.clone();
@@ -117,8 +119,8 @@ pub(crate) async fn connect(req_id: u64, payload: serde_json::Value, chat: &Arc<
     let Ok(app) = config::app_token(req.app_token.expose()) else { return Ok(refuse(req_id, NAME, ChatCode::AppTokenRefused)) };
     drop(req);
     // Only Slack's answers that name the token refuse it; a rate limit, an outage or a transport failure is `failed`.
-    let workspace = match (chat.verify.identify)(bot.clone()).await {
-        Ok(id) => id.workspace,
+    let (workspace, name) = match (chat.verify.identify)(bot.clone()).await {
+        Ok(id) => (id.workspace, id.name),
         Err(ApiError::Slack(code)) if TOKEN_REFUSALS.contains(&code.as_str()) => return Ok(refuse(req_id, NAME, ChatCode::BotTokenRefused)),
         Err(e) => {
             tracing::warn!(code = e.code(), "project chat: a connect could not check the bot token");
@@ -145,7 +147,7 @@ pub(crate) async fn connect(req_id: u64, payload: serde_json::Value, chat: &Arc<
     }
     let held = chat.setup().await;
     // A retirement that began while Slack was asked: nothing is written for a daemon that is going away.
-    if chat.shared.closed_now() {
+    if chat.closed_now() {
         return Ok(refuse(req_id, NAME, ChatCode::Unavailable));
     }
     let (env, named) = (chat.env.clone(), workspace.clone());
@@ -156,7 +158,9 @@ pub(crate) async fn connect(req_id: u64, payload: serde_json::Value, chat: &Arc<
         }
         return Ok(refuse(req_id, NAME, code));
     }
-    let status = chat.reload(&held, rows).await;
+    chat.reload(&held, rows).await;
+    chat.remember_name(&workspace, name);
+    let status = chat.status_of(&workspace);
     tracing::info!(workspace, %status, "project chat: a window's connect saved the tokens and reloaded");
     reply(req_id, NAME, &ChatConnectRes { workspace })
 }
@@ -166,21 +170,28 @@ pub(crate) async fn connect(req_id: u64, payload: serde_json::Value, chat: &Arc<
 type Unsaved = (ChatCode, Option<String>);
 
 /// The connect's writes, the caller holding the setup lock: `chat.toml` as the one load reads it now decides (a
-/// topology that no longer names this computer is `unavailable`), then the secrets, then a fresh `chat.toml` if there
-/// was none. It logs nothing of its own: it runs on the blocking pool, and its reason goes back to the caller (the one load it makes
-/// can log its fixed warnings: an ignored mapping, secrets with no user token).
+/// topology that no longer names this computer is `unavailable`), then the workspace's one secrets file, then a fresh
+/// `chat.toml` if there was none. The secrets go to `Secrets::file_of`'s name against `chat.toml`'s workspace (the
+/// file's default's to `chat-secrets.toml`, any other's to `chat-secrets-<id>.toml`), or to `chat-secrets.toml` when
+/// there was no `chat.toml` and this workspace becomes its default; an existing `chat.toml` is left byte for byte. A
+/// workspace with no secrets file yet is `too_many_workspaces`, nothing written, when the folder already lists
+/// `MAX_WORKSPACES - 1` named files beside the default's: a new name sorting before a served one would push that one past
+/// the load's bound. It logs nothing of its own: it runs on the blocking pool, and its reason goes back to the caller
+/// (the one load it makes can log its fixed warnings: an ignored mapping, secrets with no user token).
 fn save_tokens(env: &Env, workspace: &str, bot: &Secret, user: &Secret, app: &Secret) -> Result<(), Unsaved> {
     let not_saved = |why: String| (ChatCode::NotSaved, Some(why));
     let dir = config::config_dir(env).ok_or_else(|| not_saved("no config folder".into()))?;
-    let fresh = match <Chat>::load(env, &config::read_file).config {
+    let load = <Chat>::load(env, &config::read_file);
+    let (fresh, default) = match load.config {
         None => return Err((ChatCode::Unavailable, None)),
-        Some(Ok(c)) if c.workspace() != workspace => return Err((ChatCode::OtherWorkspace, None)),
-        Some(Ok(_)) => None,
-        Some(Err(ConfigError::Missing)) => Some(config::fresh(workspace).map_err(|e| not_saved(format!("a fresh chat.toml: {e}")))?),
+        Some(Ok(c)) => (None, c.workspace().to_string()),
+        Some(Err(ConfigError::Missing)) => (Some(config::fresh(workspace).map_err(|e| not_saved(format!("a fresh chat.toml: {e}")))?), workspace.to_string()),
         Some(Err(e)) => return Err(not_saved(format!("a refused chat.toml is left as it is: {e}"))),
     };
-    // The workspace is `chat.toml`'s, as it stands or fresh, so its secrets are the default's file.
-    let file = Secrets::file_of(workspace, workspace).map_err(|e| not_saved(format!("the secrets' file: {e}")))?;
+    if workspace != default && !load.named.iter().any(|w| w == workspace) && load.named.len() >= MAX_WORKSPACES - 1 {
+        return Err((ChatCode::TooManyWorkspaces, None));
+    }
+    let file = Secrets::file_of(workspace, &default).map_err(|e| not_saved(format!("the secrets' file: {e}")))?;
     let text = config::secrets(workspace, bot, user, app).map_err(|e| not_saved(format!("the secrets' text: {e}")))?;
     let written = |e: std::io::Error| not_saved(format!("a write failed: {:?}", e.kind()));
     config::write_secrets(&dir, &file, &text, Writers::platform()).map_err(written)?;
@@ -190,15 +201,18 @@ fn save_tokens(env: &Env, workspace: &str, bot: &Secret, user: &Secret, app: &Se
     Ok(())
 }
 
-/// `chat.channels`: the channels the app can see, with whether it is in each; the daemon's own list, whole or an error.
+/// `chat.channels`: the channels the app of the request's workspace (absent: `chat.toml`'s) can see, with whether it is in
+/// each; the daemon's own list, whole or an error. A workspace whose listener does not run is `unavailable`.
 pub(crate) async fn channels(req_id: u64, payload: serde_json::Value, chat: &Arc<Chat>, window: bool) -> Result<HandlerOutput> {
     const NAME: &str = op::CHAT_CHANNELS;
     let listed = async {
         if !window {
             return Err(ChatCode::BadRequest);
         }
-        decode::<ChatChannelsReq>(payload)?;
-        let api = chat.service().ok_or(ChatCode::Unavailable)?.api().map_err(|_| ChatCode::Unavailable)?;
+        let req = decode::<ChatChannelsReq>(payload)?;
+        // The request's workspace, else `chat.toml`'s (C4), fixed whatever runs.
+        let workspace = req.workspace.or_else(|| chat.default_workspace()).ok_or(ChatCode::Unavailable)?;
+        let api = chat.service_of(&workspace).ok_or(ChatCode::Unavailable)?.api().map_err(|_| ChatCode::Unavailable)?;
         let list = api.channels().await.map_err(|e| code_of(&e))?;
         // An entry whose id the wire refuses is left out, as the call leaves out one with no id.
         let channels = list.channels.into_iter().filter_map(info).collect();
@@ -214,9 +228,10 @@ fn info(c: Channel) -> Option<ChatChannelInfo> {
     Some(ChatChannelInfo { id: ChatChannel::try_from(c.id).ok()?, name: c.name, private: c.private, member: c.member })
 }
 
-/// `chat.pair`: the row's folder paired with `channel`, or unpaired when there is none. In order: a window's connection;
-/// the row, admitted as an action is but with no mapping needed; for a channel, that the app is in it (joined here when
-/// it is public and the app can join); then, under the setup lock, the edit of the file as it stands now and, only when
+/// `chat.pair`: the row's folder paired with `channel` of the request's workspace (absent: `chat.toml`'s), or unpaired when
+/// there is none. In order: a window's connection; the row, admitted as an action is but with no mapping needed, against
+/// that workspace's running service; for a channel, that the workspace's app is in it (joined here when it is public and
+/// the app can join; a channel the workspace does not hold is `no_such_channel`); then, under the setup lock, the edit of the file as it stands now and, only when
 /// it changed, its write and the reload. The reply comes after the reload's wait. Slack's calls come before the lock, so
 /// a slow one never holds up another window's setup.
 pub(crate) async fn pair(req_id: u64, payload: serde_json::Value, chat: &Arc<Chat>, rows: &Workspaces, window: bool) -> Result<HandlerOutput> {
@@ -232,15 +247,18 @@ async fn paired(payload: serde_json::Value, chat: &Arc<Chat>, rows: &Workspaces,
         return Err(ChatCode::BadRequest);
     }
     let req = decode::<ChatPairReq>(payload)?;
+    // The request's workspace, else `chat.toml`'s (C4), fixed whatever runs.
+    let workspace = req.workspace.clone().or_else(|| chat.default_workspace()).ok_or(ChatCode::Unavailable)?;
     // Admission canonicalizes the row's folder on the shared home, which can block.
-    let (held, row) = (chat.clone(), rows.clone());
-    let (service, fact) = tokio::task::spawn_blocking(move || held.admit_row(&row, &req.row)).await.unwrap_or(Err(ChatCode::Failed))?;
+    let (held, row, ws) = (chat.clone(), rows.clone(), workspace.clone());
+    let (service, fact) = tokio::task::spawn_blocking(move || held.admit_row(&row, &req.row, &ws)).await.unwrap_or(Err(ChatCode::Failed))?;
     if let Some(channel) = &req.channel {
         in_channel(&service, channel.as_str()).await?;
     }
     let setup = chat.setup().await;
     let (env, folder, channel) = (chat.env.clone(), fact.canonical.to_string_lossy().into_owned(), req.channel);
-    let changed = tokio::task::spawn_blocking(move || save(&env, &folder, channel.as_ref().map(ChatChannel::as_str))).await.unwrap_or(Err(ChatCode::Failed))?;
+    let target = channel.as_ref().map(|c| (workspace.clone(), c.as_str().to_string()));
+    let changed = tokio::task::spawn_blocking(move || save(&env, &folder, target.as_ref().map(|(w, c)| (w.as_str(), c.as_str())))).await.unwrap_or(Err(ChatCode::Failed))?;
     if changed {
         chat.reload(&setup, rows).await;
     }
@@ -253,7 +271,11 @@ async fn paired(payload: serde_json::Value, chat: &Arc<Chat>, rows: &Workspaces,
 /// acknowledgement is settled by reading the channel again, never sent twice.
 async fn in_channel(service: &Arc<Service>, channel: &str) -> Result<(), ChatCode> {
     let api = service.api().map_err(|_| ChatCode::Unavailable)?;
-    let facts = api.channel(channel).await.map_err(|e| code_of(&e))?;
+    // Slack's `channel_not_found` to this workspace's app: the channel is another workspace's, or none (PS9).
+    let facts = api.channel(channel).await.map_err(|e| match &e {
+        ApiError::Slack(code) if code == "channel_not_found" => ChatCode::NoSuchChannel,
+        _ => code_of(&e),
+    })?;
     if facts.member {
         return Ok(());
     }
@@ -276,7 +298,7 @@ async fn in_channel(service: &Arc<Service>, channel: &str) -> Result<(), ChatCod
 /// not the boot's injected reader, which is the boot's alone), so the text edited is the text the reload will load, a hand
 /// edit made since the start included. A text the load refuses is `not_saved` and never rewritten; a pairing that
 /// changes nothing writes nothing (`false`), and a new mapping in a delivering file takes the clock's now for its floor.
-fn save(env: &Env, folder: &str, channel: Option<&str>) -> Result<bool, ChatCode> {
+fn save(env: &Env, folder: &str, target: Option<(&str, &str)>) -> Result<bool, ChatCode> {
     if !is_hub(env) {
         return Err(ChatCode::Unavailable);
     }
@@ -286,7 +308,7 @@ fn save(env: &Env, folder: &str, channel: Option<&str>) -> Result<bool, ChatCode
     };
     let dir = config::config_dir(env).ok_or_else(|| not_saved(&"no config folder"))?;
     let text = config::read_file(&dir.join(config::CONFIG_FILE)).map_err(|e| not_saved(&e.kind()))?;
-    match config::pair(&text, folder, channel, Some(now()), &canon_of) {
+    match config::pair(&text, folder, target, Some(now()), &canon_of) {
         Ok(None) => Ok(false),
         Ok(Some(edited)) => {
             config::write_config(&dir, &edited, Writers::platform()).map_err(|e| not_saved(&e.kind()))?;
@@ -301,4 +323,19 @@ fn save(env: &Env, folder: &str, channel: Option<&str>) -> Result<bool, ChatCode
 fn now() -> Ts {
     let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
     Ts::parse(&format!("{}.{:06}", t.as_secs(), t.subsec_micros())).expect("seconds and six digits are a timestamp")
+}
+
+/// `chat.workspaces`: `chat.toml`'s workspace and every connected (admitted) workspace, each with its last name and
+/// whether its chat runs, ordered by name with the id breaking a tie, at most `MAX_WORKSPACES`. A read of memory that
+/// makes no Slack call; a daemon with no admitted `chat.toml` is `unavailable`.
+pub(crate) async fn workspaces(req_id: u64, payload: serde_json::Value, chat: &Arc<Chat>) -> Result<HandlerOutput> {
+    const NAME: &str = op::CHAT_WORKSPACES;
+    if let Err(code) = decode::<ChatWorkspacesReq>(payload) {
+        return Ok(refuse(req_id, NAME, code));
+    }
+    let Some((default, list)) = chat.workspaces() else { return Ok(refuse(req_id, NAME, ChatCode::Unavailable)) };
+    let mut workspaces: Vec<ChatWorkspaceInfo> = list.into_iter().map(|(id, name, running)| ChatWorkspaceInfo { id, name, running }).collect();
+    workspaces.sort_by(|a, b| (a.name.as_deref().unwrap_or(&a.id), &a.id).cmp(&(b.name.as_deref().unwrap_or(&b.id), &b.id)));
+    workspaces.truncate(MAX_WORKSPACES);
+    reply(req_id, NAME, &ChatWorkspacesRes { default, workspaces })
 }

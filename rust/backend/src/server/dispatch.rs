@@ -354,6 +354,8 @@ async fn serve(frame: Frame, shared: &Shared) -> Result<HandlerOutput> {
         op::CHAT_CONNECT => crate::chat::setup::connect(req_id, payload, chat, workspaces, shared.window).await,
         op::CHAT_CHANNELS => crate::chat::setup::channels(req_id, payload, chat, shared.window).await,
         op::CHAT_PAIR => crate::chat::setup::pair(req_id, payload, chat, workspaces, shared.window).await,
+        // A read of memory, any connection's, a job as the others are.
+        op::CHAT_WORKSPACES => crate::chat::setup::workspaces(req_id, payload, chat).await,
         other => {
             tracing::warn!(op = %other, "unknown op");
             let payload = serde_json::json!({ "error": format!("unknown op: {other}") });

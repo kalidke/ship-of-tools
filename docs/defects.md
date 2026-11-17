@@ -1029,7 +1029,30 @@ owned by `docs/CLAUDE.md`.
   (`other_workspace`, `rust/backend/src/chat/setup.rs`). A person with several workspaces, one per group of
   repositories, cannot map projects to channels in more than one; the maintainer met it on 2026-11-17 with five. Until
   that day neither the guide nor the connect step said so; the setup guide now does. Wanted: several workspaces on one
-  hub, each project's channel in its own workspace, each connected from the window. A plan is being written.
+  hub, each project's channel in its own workspace, each connected from the window. The daemon's half is built: up to 8
+  workspaces, each with its own secrets file, listener, owner and mail, a mapping naming its workspace, a connect that
+  adds a workspace, `chat.workspaces`, and `chat.channels` and `chat.pair` naming theirs (chat guarantees 21, 30 and 31).
+  Open until the window's half: its channel list shows and pairs the default workspace alone, so a project's channel in
+  another workspace is set by hand (`docs/src/guide/chat-setup.md`).
+- **CHAT-RELOAD-RESTARTS-EVERY-WORKSPACE** [note] A reload (every `chat.connect` and every `chat.pair` that changes the
+  file) stops and starts every workspace's chat, not only the one it concerns (`Chat::reload_then`,
+  `rust/backend/src/chat.rs`): each watching window of every workspace resyncs, each delivering channel owes a pass,
+  the reply waits for every workspace's start within `SETUP_WAIT` (a failing one up to its `auth.test` deadline), and one
+  workspace's stop that outlasts `SETUP_WAIT` makes the reload start nothing. The reload per workspace is the next
+  landing of the multi-workspace plan. From the plan's re-cut, reading code; never seen.
+- **CHAT-STATUS-NAMES-NO-WORKSPACE** [note] `chat.status` names channels and no workspace, so a connection watching in
+  two workspaces is told only by its own workspace's owner, and when one workspace stops it resyncs the channels of that
+  workspace alone; a window watches one channel at a time, so it is never misled. From the multi-workspace plan's
+  review, reading code; never seen.
+- **CHAT-ROLLBACK-SEVERAL-WORKSPACES** [note] A daemon from before several workspaces reads `chat-secrets.toml` alone and
+  refuses a `chat.toml` whose mapping names another workspace (`SecondWorkspace`), so a hub rolled back with several
+  workspaces mapped has its chat off, with that line in its log, until the newer daemon returns; nothing is lost, and
+  while one workspace is connected every file the daemon writes is one an older daemon loads. From the plan's review,
+  reading code; never seen.
+- **CHAT-OLDER-WINDOW-ONE-WORKSPACE** [note] A window that does not name a workspace (every window until the window's half
+  of several workspaces is built) lists channels and pairs in the workspace `chat.toml` names alone; after connecting a
+  second workspace, its connected screen's Enter opens the first workspace's list. From the plan's review, reading code;
+  never seen.
 - **CHAT-CONNECT-ANSWERS-CONNECTED-WHATEVER-THE-RELOAD-DID** [note] `chat.connect` replies `{workspace}` once the tokens are
   saved and the reload's wait ended, and logs and discards the reload's status (`rust/backend/src/chat/setup.rs`), so a
   person who pastes another Slack app's token (or one Slack then refuses) sees the Connected screen, and the chat ends
@@ -1121,9 +1144,10 @@ owned by `docs/CLAUDE.md`.
   (`stale_row`, `unmapped`) is asked again every 5 seconds where the channel's owner waits for a row or link change.
   Both are the hub's own refusals and cost no Slack read (`rust/frontend/src/ui/drawer/chat/thread.rs`). Found by B5p's
   stack review, reading code and a probe; never seen.
-- **CHAT-START-FAILURE-FINAL** [note] A chat start that fails for a passing cause (no network at the daemon's start,
-  Slack down) stays failed until a `chat.connect` or a daemon restart: only a start refused `held` is tried again
-  (`Chat::launch`, `rust/backend/src/chat.rs`). `chat.resolve` answers `unconfigured` (`start_failed`) for it, so a
+- **CHAT-START-FAILURE-FINAL** [note] A workspace's chat start that fails for a passing cause (no network at the daemon's
+  start, Slack down) stays failed until a reload (any `chat.connect` or changing `chat.pair` starts every workspace
+  again) or a daemon restart: only a start refused `held` is tried again (`Chat::launch`, `rust/backend/src/chat.rs`).
+  Each workspace fails alone; the others run. `chat.resolve` answers `unconfigured` (`start_failed`) for it, so a
   window can offer Connect Slack, which reloads. The fix if it is seen: a daemon retry of such a start on a pace. From
   reading code; never seen.
 - **CHAT-PERSON-POST-NOT-ANSWERED** [person] A post from the Chat drawer reached Slack as the app's own message: a

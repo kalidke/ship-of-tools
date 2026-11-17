@@ -403,7 +403,7 @@ where
 {
     use crate::chat::watch::Evt;
     match evt {
-        Ok(Evt::Changed(e)) if conn.watches(e.channel.as_str()) => {
+        Ok(Evt::Changed(e)) if conn.watches(&e.workspace, e.channel.as_str()) => {
             write_frame_to(tx, &Frame::evt(op::CHAT_CHANGED, serde_json::to_value(e)?), None).await?;
             Ok(true)
         }

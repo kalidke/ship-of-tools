@@ -1,4 +1,4 @@
-//! The chat service: the one running listener for the one configured workspace, its Slack API, a status and a bounded
+//! The chat service: the one running listener for one workspace, its Slack API, a status and a bounded
 //! stop. The workspace's lock is taken before any socket opens or any call is made, and it is owned by the listener's
 //! task, so it is released only when no listener can still be running. A service also ends on its own, for good, when
 //! its tokens are refused or its socket is another app's (`End`).
@@ -14,8 +14,8 @@ use tokio::sync::watch;
 use sot_platform::host::lock_supervisor;
 use sot_platform::Error as PlatformError;
 
-use crate::api::{Api, ApiError};
-use crate::config::{Config, Credentials};
+use crate::api::{Api, ApiError, Transfers};
+use crate::config::Credentials;
 use crate::http::{Http, Secret};
 use crate::socket::{self, Gap, Socket, SocketError, Taken, Timing, Waiter, BASE};
 use crate::watch::Watches;
@@ -134,6 +134,8 @@ pub struct Service {
     end: Arc<End>,
     /// Why the bot's app is unknown, so no frame's app is checked (`app_unchecked`).
     unchecked: Option<&'static str>,
+    /// Why the person's user token was dropped at the start (`person_dropped`).
+    dropped: Option<&'static str>,
 }
 
 /// The lock file's name: built from the validated workspace id alone.
@@ -142,17 +144,19 @@ fn lock_name(workspace: &str) -> String {
 }
 
 impl Service {
-    /// Take the workspace's lock in `dir` (a private folder the caller owns), then read the bot's identity and its app,
-    /// then listen. A second service for the workspace is `Held` before any socket opens or any call is made. Opens no
+    /// Take `workspace`'s lock in `dir` (a private folder the caller owns), then read the bot's identity and its app and
+    /// check the person's user token, then listen. A second service for the workspace is `Held` before any socket opens or
+    /// any call is made. Its file transfers draw on `transfers`, which the caller shares among its services. Opens no
     /// secret file: the caller reads `Credentials`.
     pub async fn start(
-        config: &Config,
+        workspace: &str,
         credentials: Credentials,
         http: Http,
         dir: &Path,
+        transfers: Transfers,
     ) -> Result<Service, ServiceError> {
-        let (app, api) = Service::api_of(config, credentials, &http)?;
-        Service::launch(config.workspace(), app, api, http, dir, BASE.into(), Timing::PRODUCT).await
+        let (app, api) = Service::api_of(workspace, credentials, &http)?;
+        Service::launch(workspace, app, api.with_transfers(transfers), http, dir, BASE.into(), Timing::PRODUCT).await
     }
 
     /// `start` against the fixture's base URL (`FakeSlack::url("slack.com", "/api/")`), with the product's timing.
@@ -160,32 +164,34 @@ impl Service {
     /// `Http::new` still refuses every host that is not Slack's and every port but 443.
     #[cfg(any(test, feature = "test-support"))]
     pub async fn start_at(
-        config: &Config,
+        workspace: &str,
         credentials: Credentials,
         http: Http,
         dir: &Path,
         base: String,
+        transfers: Transfers,
     ) -> Result<Service, ServiceError> {
-        Service::start_for_test(config, credentials, http, dir, base, Timing::PRODUCT).await
+        Service::start_for_test(workspace, credentials, http, dir, base, Timing::PRODUCT, transfers).await
     }
 
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) async fn start_for_test(
-        config: &Config,
+        workspace: &str,
         credentials: Credentials,
         http: Http,
         dir: &Path,
         base: String,
         timing: Timing,
+        transfers: Transfers,
     ) -> Result<Service, ServiceError> {
-        let (app, api) = Service::api_of(config, credentials, &http)?;
-        Service::launch(config.workspace(), app, api.with_base(base.clone()), http, dir, base, timing).await
+        let (app, api) = Service::api_of(workspace, credentials, &http)?;
+        Service::launch(workspace, app, api.with_base(base.clone()).with_transfers(transfers), http, dir, base, timing).await
     }
 
     /// The one place the credentials become an `Api` (the bot's token and the person's), and the app-level token left
     /// for the listener. The product's start and the test's both go through it.
-    fn api_of(config: &Config, credentials: Credentials, http: &Http) -> Result<(Secret, Api), ServiceError> {
-        let api = Api::new(http.clone(), credentials.bot, config.workspace())
+    fn api_of(workspace: &str, credentials: Credentials, http: &Http) -> Result<(Secret, Api), ServiceError> {
+        let api = Api::new(http.clone(), credentials.bot, workspace)
             .map_err(ServiceError::Api)?
             .with_person(credentials.user);
         Ok((credentials.app, api))
@@ -223,9 +229,26 @@ impl Service {
             }
             Err(e) => Some(e.code()),
         };
+        let dropped = api.check_person().await;
         let socket =
             Socket::launch(http, app, own, workspace, base, timing, Box::new(lock), end.clone()).map_err(ServiceError::Socket)?;
-        Ok(Service { api: Arc::new(api), phase: Mutex::new(Phase::Running(socket)), claim, end, unchecked })
+        Ok(Service { api: Arc::new(api), phase: Mutex::new(Phase::Running(socket)), claim, end, unchecked, dropped })
+    }
+
+    /// The workspace this service serves.
+    pub fn workspace(&self) -> &str {
+        self.api.workspace()
+    }
+
+    /// The workspace's name as the start's `auth.test` gave it, whether the service still runs or not.
+    pub fn workspace_name(&self) -> Option<String> {
+        self.api.workspace_name()
+    }
+
+    /// Why the person's user token was dropped at the start, a fixed code (`user_token_other_workspace`,
+    /// `user_token_refused`), for the daemon to log; `None` when it is held or none was given.
+    pub fn person_dropped(&self) -> Option<&'static str> {
+        self.dropped
     }
 
     /// The first end this service came to on its own (`WRONG_APP`, `APP_TOKEN_REFUSED`, `BOT_TOKEN_REFUSED`), for
@@ -344,7 +367,7 @@ impl Service {
     pub(crate) fn inert(api: Arc<Api>) -> Service {
         let claim = Arc::new(AtomicU8::new(FREE));
         let end = End::new(claim.clone());
-        Service { api, phase: Mutex::new(Phase::Running(Socket::inert())), claim, end, unchecked: None }
+        Service { api, phase: Mutex::new(Phase::Running(Socket::inert())), claim, end, unchecked: None, dropped: None }
     }
 
     #[cfg(test)]

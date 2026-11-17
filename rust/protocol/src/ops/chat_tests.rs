@@ -57,6 +57,7 @@ fn the_chat_ops_are_declared_in_the_one_table() {
         "chat.connect",
         "chat.channels",
         "chat.pair",
+        "chat.workspaces",
     ] {
         assert!(op::ALL.contains(&name), "{name} is not in op::ALL");
     }
@@ -126,7 +127,19 @@ fn every_request_reply_and_event_keeps_its_shape() {
         json!({"bot_token": "xoxb-a1a1", "user_token": "xoxp-a1a1", "app_token": "xapp-a1a1"}),
     );
     pinned(ChatConnectRes { workspace: "T1".into() }, json!({"workspace": "T1"}));
-    pinned(ChatChannelsReq {}, json!({}));
+    pinned(ChatChannelsReq { workspace: None }, json!({}));
+    pinned(ChatChannelsReq { workspace: Some("T1".into()) }, json!({"workspace": "T1"}));
+    pinned(ChatWorkspacesReq {}, json!({}));
+    pinned(
+        ChatWorkspacesRes {
+            default: "T1".into(),
+            workspaces: vec![
+                ChatWorkspaceInfo { id: "T1".into(), name: Some("Alpha".into()), running: true },
+                ChatWorkspaceInfo { id: "T2".into(), name: None, running: false },
+            ],
+        },
+        json!({"default": "T1", "workspaces": [{"id": "T1", "name": "Alpha", "running": true}, {"id": "T2", "running": false}]}),
+    );
     pinned(
         ChatChannelsRes {
             channels: vec![ChatChannelInfo { id: channel("C1"), name: "general".into(), private: false, member: true }],
@@ -135,12 +148,55 @@ fn every_request_reply_and_event_keeps_its_shape() {
         json!({"channels": [{"id": "C1", "name": "general", "private": false, "member": true}], "more": true}),
     );
     pinned(ChatChannelsRes { channels: vec![], more: false }, json!({"channels": []}));
-    pinned(ChatPairReq { row: "ws-a-1".into(), channel: Some(channel("C1")) }, json!({"row": "ws-a-1", "channel": "C1"}));
-    pinned(ChatPairReq { row: "ws-a-1".into(), channel: None }, json!({"row": "ws-a-1", "channel": null}));
+    pinned(ChatPairReq { row: "ws-a-1".into(), workspace: None, channel: Some(channel("C1")) }, json!({"row": "ws-a-1", "channel": "C1"}));
+    pinned(ChatPairReq { row: "ws-a-1".into(), workspace: None, channel: None }, json!({"row": "ws-a-1", "channel": null}));
+    pinned(
+        ChatPairReq { row: "ws-a-1".into(), workspace: Some("T2".into()), channel: Some(channel("C1")) },
+        json!({"row": "ws-a-1", "workspace": "T2", "channel": "C1"}),
+    );
     pinned(ChatPairRes {}, json!({}));
 }
 
 /// An absent channel unpairs as a null one does.
+/// The setup requests name their workspace or none: the last release's payloads, frozen here, decode with none (the
+/// file's workspace), a present one is an id within its bound, and a payload naming one decodes in an older reader's
+/// shape, which ignores the field it does not know.
+#[test]
+fn the_setup_family_carries_its_workspace_and_an_older_shape_still_decodes() {
+    let channels: ChatChannelsReq = serde_json::from_value(json!({})).unwrap();
+    let pair: ChatPairReq = serde_json::from_value(json!({"row": "r", "channel": "C1"})).unwrap();
+    assert_eq!((channels.workspace, pair.workspace), (None, None));
+    let null: ChatPairReq = serde_json::from_value(json!({"row": "r", "workspace": null})).unwrap();
+    assert_eq!(null.workspace, None);
+    for bad in [json!(""), json!("T 1"), json!(5), json!("T".repeat(65))] {
+        assert!(serde_json::from_value::<ChatChannelsReq>(json!({"workspace": bad})).is_err(), "{bad}");
+        assert!(serde_json::from_value::<ChatPairReq>(json!({"row": "r", "workspace": bad})).is_err(), "{bad}");
+    }
+    #[derive(serde::Deserialize)]
+    struct OlderPair {
+        #[allow(dead_code)]
+        row: String,
+        channel: Option<ChatChannel>,
+    }
+    let older: OlderPair = serde_json::from_value(json!({"row": "r", "workspace": "T2", "channel": "C1"})).unwrap();
+    assert_eq!(older.channel, Some(channel("C1")));
+}
+
+/// C13: a workspace list is cosmetic for its reader: past `MAX_WORKSPACES` it stops at the bound, an entry it cannot
+/// read is skipped, and neither refuses the reply; a name that is not one reads as none.
+#[test]
+fn a_workspace_list_past_its_bound_or_with_a_bad_entry_still_decodes() {
+    let entry = |i: usize| json!({"id": format!("T{i}"), "name": format!("w{i}"), "running": true});
+    let long: Vec<Value> = (0..MAX_WORKSPACES + 3).map(entry).collect();
+    let res: ChatWorkspacesRes = serde_json::from_value(json!({"default": "T0", "workspaces": long})).unwrap();
+    assert_eq!(res.workspaces.len(), MAX_WORKSPACES);
+    assert_eq!(res.workspaces[0].id, "T0");
+    let mixed = json!({"default": "T0", "workspaces": [{"id": "not an id", "running": true}, {"running": true}, 7, {"id": "T1", "name": 5, "running": false}]});
+    let res: ChatWorkspacesRes = serde_json::from_value(mixed).unwrap();
+    assert_eq!(res.workspaces, [ChatWorkspaceInfo { id: "T1".into(), name: None, running: false }]);
+    assert!(serde_json::from_value::<ChatWorkspacesRes>(json!({"workspaces": []})).is_err(), "a reply names its default");
+}
+
 #[test]
 fn a_pair_with_no_channel_key_unpairs() {
     let req: ChatPairReq = serde_json::from_value(json!({"row": "r"})).unwrap();
@@ -432,7 +488,9 @@ fn every_code_has_its_one_text() {
         (ChatCode::UserTokenRefused, "Slack refused the \"User OAuth Token\""),
         (ChatCode::NoUserToken, "no Slack code that posts as you is saved; open the channel list (Ctrl+Shift+K, or Cmd+Shift+K on a Mac) and choose Connect Slack again"),
         (ChatCode::NotAMember, "you are not in that channel in Slack; join it there first"),
-        (ChatCode::OtherWorkspace, "these Slack codes are for a different workspace than the one connected; the chat connects one Slack workspace for now (the manual page \"Setting up Slack\" says how to move it: press F1, select \"Choose channel\" in the list, and press Enter)"),
+        (ChatCode::OtherWorkspace, "these Slack codes are for another Slack workspace, and Ship of Tools on the computer that runs your agents is too old to connect more than one: whoever runs Ship of Tools there can update it"),
+        (ChatCode::TooManyWorkspaces, "the computer that runs your agents already holds 8 Slack workspaces, the most it can: to add another, remove one workspace's file chat-secrets-<id>.toml (<id> is that workspace's ID) from Ship of Tools' settings folder there, ~/.config/sot on Linux and macOS or %LOCALAPPDATA%\\sot\\config on Windows"),
+        (ChatCode::NoSuchChannel, "that channel is not in this Slack workspace"),
         (ChatCode::NotInChannel, "your Slack app is not in that channel"),
         (ChatCode::ChannelTaken, "another project already uses that channel"),
         (ChatCode::NotSaved, "the chat settings could not be saved"),
@@ -445,7 +503,7 @@ fn every_code_has_its_one_text() {
     for (code, words) in table {
         assert_eq!(code.text(), words, "{code:?}");
     }
-    for code in ["bot_token_refused", "app_token_refused", "user_token_refused", "no_user_token", "not_a_member", "other_workspace", "not_in_channel", "channel_taken", "not_saved", "not_a_file", "too_large", "not_an_image"] {
+    for code in ["bot_token_refused", "app_token_refused", "user_token_refused", "no_user_token", "not_a_member", "other_workspace", "not_in_channel", "channel_taken", "not_saved", "not_a_file", "too_large", "not_an_image", "too_many_workspaces", "no_such_channel"] {
         let r: ChatRefusal = serde_json::from_value(json!({"error": "text", "code": code})).unwrap();
         assert_ne!(r.code, Some(ChatCode::Other), "{code} is a code of this reader");
     }

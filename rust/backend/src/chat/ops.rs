@@ -97,9 +97,17 @@ pub(crate) async fn resolve(req_id: u64, payload: serde_json::Value, chat: &Arc<
     let (held, rows) = (chat.clone(), rows.clone());
     let resolved = tokio::task::spawn_blocking(move || held.resolve(&rows, &req.row)).await;
     let resolved = resolved.unwrap_or(Err(ChatCode::Failed));
-    // After the hub fact and the row, before the mapping: a chat a connect would fix says so.
-    // A daemon that is not the hub is off as `NotHub`, which no connect fixes, so it never reads as unconfigured here.
-    if let (Ok(_), Some(reason)) = (&resolved, super::setup::unconfigured(chat.status())) {
+    // After the hub fact and the row: a chat a connect would fix says so. A mapped row is judged by its own workspace;
+    // an unmapped one only when no workspace's listener runs (with the default's reason), so one workspace whose tokens
+    // failed never keeps a person from pairing in another (C4); a refused `chat.toml` stays `invalid`. A daemon that is
+    // not the hub is off as `NotHub`, which no connect fixes, so it never reads as unconfigured here.
+    let judged = match &resolved {
+        Ok((Resolution::Mapped { workspace, .. }, _)) => Some(chat.status_of(workspace)),
+        Ok((Resolution::Unmapped, _)) if chat.any_running() => None,
+        Ok(_) => Some(chat.status()),
+        Err(_) => None,
+    };
+    if let Some(reason) = judged.and_then(super::setup::unconfigured) {
         return reply(req_id, NAME, &ChatResolveRes::Unconfigured { reason });
     }
     match resolved {
@@ -110,7 +118,7 @@ pub(crate) async fn resolve(req_id: u64, payload: serde_json::Value, chat: &Arc<
         Ok((Resolution::Mapped { workspace, channel, .. }, delivers)) => match ChatChannel::try_from(channel) {
             Ok(channel) => {
                 // The cache alone: a resolve makes no Slack call, and a name not yet found leaves the id.
-                let name = chat.service().and_then(|s| s.api().ok()).and_then(|api| api.cached_name(channel.as_str()));
+                let name = chat.service_of(&workspace).and_then(|s| s.api().ok()).and_then(|api| api.cached_name(channel.as_str()));
                 reply(req_id, NAME, &ChatResolveRes::Mapped { workspace, channel, delivers, name })
             }
             Err(_) => reply(req_id, NAME, &ChatResolveRes::Invalid),
@@ -383,11 +391,11 @@ pub(crate) async fn watch(req_id: u64, payload: serde_json::Value, chat: &Arc<Ch
         Ok(r) => r,
         Err(c) => return Ok(refuse(req_id, NAME, c)),
     };
-    let channel = req.target.channel.as_str().to_string();
+    let (workspace, channel) = (req.target.workspace.clone(), req.target.channel.as_str().to_string());
     let service = match admitted(chat, rows, req.target.clone()).await {
         Ok(s) => s,
         Err(c) => {
-            conn.release(&channel);
+            conn.release(&workspace, &channel);
             return Ok(refuse(req_id, NAME, c));
         }
     };
@@ -397,18 +405,19 @@ pub(crate) async fn watch(req_id: u64, payload: serde_json::Value, chat: &Arc<Ch
     }
 }
 
-/// `chat.unwatch`: ends this connection's watch of the channel and no other's. It needs a running service and no
-/// current row (`Chat::admit_unwatch`): refusing it for a stale one would keep the slot.
+/// `chat.unwatch`: ends this connection's watch of the target's channel of its workspace and no other's. It needs that
+/// workspace's running service and no current row (`Chat::admit_unwatch`): refusing it for a stale one would keep the
+/// slot.
 pub(crate) async fn unwatch(req_id: u64, payload: serde_json::Value, chat: &Arc<Chat>, conn: &Conn) -> Result<HandlerOutput> {
     const NAME: &str = op::CHAT_UNWATCH;
     let req = match decode::<ChatUnwatchReq>(payload) {
         Ok(r) => r,
         Err(c) => return Ok(refuse(req_id, NAME, c)),
     };
-    if let Err(c) = chat.admit_unwatch() {
+    if let Err(c) = chat.admit_unwatch(&req.target.workspace) {
         return Ok(refuse(req_id, NAME, c));
     }
-    conn.release(req.target.channel.as_str());
+    conn.release(&req.target.workspace, req.target.channel.as_str());
     reply(req_id, NAME, &ChatUnwatchRes {})
 }
 

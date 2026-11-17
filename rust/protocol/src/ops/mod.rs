@@ -520,6 +520,9 @@ pub mod op {
     pub const CHAT_CHANNELS: &str = "chat.channels";
     /// Map a row's folder to a channel, or unmap it: [`crate::ops::ChatPairReq`], reply [`crate::ops::ChatPairRes`].
     pub const CHAT_PAIR: &str = "chat.pair";
+    /// The Slack workspaces the hub is connected to: [`crate::ops::ChatWorkspacesReq`], reply
+    /// [`crate::ops::ChatWorkspacesRes`].
+    pub const CHAT_WORKSPACES: &str = "chat.workspaces";
 
     /// A window shares, or clears, the text selected in a previewed project file with the row's agent
     /// (`ops/selection.rs`): [`crate::ops::SelectionSetReq`], reply [`crate::ops::SelectionSetRes`].

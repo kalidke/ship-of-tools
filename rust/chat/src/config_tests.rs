@@ -479,9 +479,7 @@ fn every_refusal_has_an_input_a_code_a_place_and_its_own_explanation() {
 }
 
 #[test]
-fn a_second_workspace_in_the_file_or_a_mapping_is_refused_at_load() {
-    let second_in_mapping = chat(&(mapping("/work/a", "C0AAAA") + "workspace = \"T0ZZZZ\"\n"));
-    assert_eq!(parse(&second_in_mapping).unwrap_err(), E::SecondWorkspace);
+fn a_second_workspace_as_the_files_own_is_refused_at_load() {
     let table = "channels = []\n[workspace]\nid = \"T0AAAA\"\n";
     assert_eq!(parse(table).unwrap_err(), E::SecondWorkspace);
     // A mapping may repeat the one workspace.
@@ -497,6 +495,51 @@ fn a_second_workspace_in_the_file_or_a_mapping_is_refused_at_load() {
         parse(&chat("mail_after = 5\n")).unwrap_err(),
         E::Malformed(None)
     );
+}
+
+/// C3: a mapping names any workspace with its own key, and without one it is in the file's; `resolve` answers the
+/// mapping's.
+#[test]
+fn a_mapping_names_its_own_workspace_and_without_the_key_is_the_files() {
+    let text = chat(&(mapping("/work/a", "C0AAAA") + &mapping("/work/b", "C0BBBB") + "workspace = \"T0ZZZZ\"\n"));
+    let c = parse(&text).unwrap();
+    assert_eq!(c.workspace(), "T0AAAA");
+    assert_eq!(c.mappings().collect::<Vec<_>>(), [("/work/a", "T0AAAA", "C0AAAA"), ("/work/b", "T0ZZZZ", "C0BBBB")]);
+    let (a, b) = (crate::config::resolve(&Ok(c), "/work/b"), crate::config::resolve(&parse(&text), "/work/a"));
+    assert!(matches!(&a, Resolution::Mapped { workspace, channel, .. } if workspace == "T0ZZZZ" && channel == "C0BBBB"), "{a:?}");
+    assert!(matches!(&b, Resolution::Mapped { workspace, .. } if workspace == "T0AAAA"), "{b:?}");
+    let bad = chat(&(mapping("/work/a", "C0AAAA") + "workspace = \"t0zzzz\"\n"));
+    assert_eq!(parse(&bad).unwrap_err(), E::BadId, "a mapping's workspace is a Slack id");
+}
+
+/// A channel id is mapped once in the file, whatever the workspaces of its mappings (a Slack Connect channel may carry
+/// one id in two workspaces, PS3).
+#[test]
+fn a_channel_id_is_mapped_once_whatever_its_workspace() {
+    let text = chat(&(mapping("/work/a", "C0AAAA") + &mapping("/work/b", "C0AAAA") + "workspace = \"T0ZZZZ\"\n"));
+    assert_eq!(parse(&text).unwrap_err(), E::ChannelRepeated(2));
+}
+
+/// A pairing in another workspace than the file's writes that mapping's `workspace` key, one in the file's writes none,
+/// and the folder's channel picked again in another workspace is a change, never "nothing changes" (S7).
+#[test]
+fn pairing_in_another_workspace_writes_its_workspace_key_and_in_the_files_none() {
+    let key = |text: &str, folder: &str| -> Option<String> {
+        let t: toml::Table = text.parse().unwrap();
+        t["mapping"].as_array().unwrap().iter().find(|m| m["folder"].as_str() == Some(folder)).unwrap().get("workspace").map(|w| w.as_str().unwrap().to_string())
+    };
+    let start = chat(&mapping("/work/a", "C0AAAA"));
+    let other = pair(&start, "/work/b", Some(("T0ZZZZ", "C0BBBB")), None, &rows).unwrap().unwrap();
+    assert_eq!(key(&other, "/work/b").as_deref(), Some("T0ZZZZ"));
+    assert_eq!(key(&other, "/work/a"), None, "a mapping in the file's workspace carries no key");
+    assert!(matches!(crate::config::resolve(&parse(&other), "/work/b"), Resolution::Mapped { workspace, .. } if workspace == "T0ZZZZ"));
+    // The same pair again changes nothing; the same channel in the file's workspace is a change, and writes no key.
+    assert_eq!(pair(&other, "/work/b", Some(("T0ZZZZ", "C0BBBB")), None, &rows), Ok(None));
+    let back = pair(&other, "/work/b", Some(("T0AAAA", "C0BBBB")), None, &rows).unwrap().expect("another workspace is a change");
+    assert_eq!(key(&back, "/work/b"), None);
+    // A channel another existing folder maps, in any workspace, is taken.
+    assert_eq!(pair(&other, "/work/a", Some(("T0AAAA", "C0BBBB")), None, &rows), Err(PairError::ChannelTaken));
+    assert_eq!(pair(&other, "/work/a", Some(("T0bad", "C0CCCC")), None, &rows), Err(PairError::Config(E::BadId)));
 }
 
 #[test]
@@ -751,7 +794,7 @@ fn a_fresh_file_and_a_secrets_text_parse_back_and_format_no_token() {
 
 #[test]
 fn pairing_edits_one_mapping_keeps_what_it_ignores_and_returns_only_what_loads() {
-    let pair = |text: &str, folder: &str, channel: Option<&str>| pair(text, folder, channel, None, &rows);
+    let pair = |text: &str, folder: &str, channel: Option<&str>| pair(text, folder, channel.map(|c| ("T0AAAA", c)), None, &rows);
     // A hand-written file: a comment, a listed channel no mapping holds, a mapping whose folder is gone, and a mapping.
     let hand = format!(
         "# the lab's chat\nworkspace = \"T0AAAA\"\nchannels = [\"C0AAAA\", \"C0CCCC\", \"C0EEEE\"]\n{}{}",
@@ -812,12 +855,12 @@ fn a_refused_file_is_never_rewritten() {
         chat("extra = 1\n"),
         chat(&mapping("/work/a", "C0ZZZZ")),
         chat(&(mapping("/work/a", "C0AAAA") + &mapping("/link/a", "C0BBBB"))),
-        chat(&(mapping("/work/a", "C0AAAA") + "workspace = \"T0ZZZZ\"\n")),
+        chat(&(mapping("/work/a", "C0AAAA") + "workspace = \"t0zzzz\"\n")),
         chat(&("mail_after = \"5.000000\"\n".to_string() + &mapping("/work/a", "C0AAAA"))),
     ] {
         let code = Config::parse(&text, &rows).unwrap_err();
         for channel in [Some("C0BBBB"), None] {
-            assert_eq!(pair(&text, "/work/a", channel, None, &rows), Err(PairError::Config(code)));
+            assert_eq!(pair(&text, "/work/a", channel.map(|c| ("T0AAAA", c)), None, &rows), Err(PairError::Config(code)));
         }
     }
 }
@@ -826,16 +869,16 @@ fn a_refused_file_is_never_rewritten() {
 fn a_delivering_files_new_mapping_carries_the_floor_it_is_given() {
     let ts = |s: &str| sot_protocol::chat::Ts::parse(s).unwrap();
     let text = chat(&(String::from("mail_after = \"5.000000\"\n") + &mapping_from("/work/a", "C0AAAA", "6.000000")));
-    let new = pair(&text, "/work/b", Some("C0BBBB"), Some(ts("9.000000")), &rows).unwrap().unwrap();
+    let new = pair(&text, "/work/b", Some(("T0AAAA", "C0BBBB")), Some(ts("9.000000")), &rows).unwrap().unwrap();
     let c = Config::parse(&new, &rows).unwrap();
     assert_eq!(c.floor("C0BBBB"), Some(ts("9.000000")));
     // The other mapping keeps its own floor, never the new one's, and the hub's stays.
     assert_eq!(c.floor("C0AAAA"), Some(ts("6.000000")));
     assert_eq!(c.mail_after(), Some(&ts("5.000000")));
     // With no floor the edit is refused by the load's own rule.
-    assert_eq!(pair(&text, "/work/b", Some("C0BBBB"), None, &rows), Err(PairError::Config(E::MappingWithoutFloor(2))));
+    assert_eq!(pair(&text, "/work/b", Some(("T0AAAA", "C0BBBB")), None, &rows), Err(PairError::Config(E::MappingWithoutFloor(2))));
     // A file that is not delivering takes no floor on the new mapping.
-    let plain = pair(&chat(""), "/work/b", Some("C0BBBB"), Some(ts("9.000000")), &rows).unwrap().unwrap();
+    let plain = pair(&chat(""), "/work/b", Some(("T0AAAA", "C0BBBB")), Some(ts("9.000000")), &rows).unwrap().unwrap();
     assert!(!plain.contains("mail_after"));
 }
 
@@ -1043,6 +1086,8 @@ fn a_named_file_must_hold_its_workspace_and_the_defaults_is_chat_secrets() {
         [("chat-secrets-T0AAAA.toml".to_string(), E::NameNotWorkspace), ("chat-secrets-T0BBBB.toml".to_string(), E::NameNotWorkspace)]
     );
     assert_eq!(opened, [SECRETS_FILE, "chat-secrets-T0BBBB.toml", "chat-secrets-T0DDDD.toml"]);
+    // The default's id, named, takes no place among the named files.
+    assert_eq!(loaded.named(), ["T0BBBB", "T0DDDD"]);
 }
 
 #[test]
@@ -1058,6 +1103,8 @@ fn a_folder_of_many_secrets_files_opens_at_most_the_bound() {
     let rest = (7..12).map(|i| (format!("chat-secrets-T0B{i:02}.toml"), E::TooManyWorkspaces));
     assert_eq!(loaded.refused(), garbage.into_iter().chain(rest).collect::<Vec<_>>());
     assert!(E::TooManyWorkspaces.explain().contains(&MAX_WORKSPACES.to_string()));
+    // Every listed named file is named, opened or not, refused or not: the files a new one would sort among.
+    assert_eq!(loaded.named(), (0..12).map(|i| format!("T0B{i:02}")).collect::<Vec<_>>());
     // At the bound exactly, nothing is left out.
     let (full, opened) = many_secrets(MAX_WORKSPACES - 1);
     assert_eq!((full.workspaces().count(), full.refused().len(), opened.len()), (MAX_WORKSPACES - 3, 3, MAX_WORKSPACES));

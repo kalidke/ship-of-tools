@@ -7,7 +7,8 @@ use std::time::Duration;
 
 use serde_json::json;
 
-use crate::config::{Config, Credentials};
+use crate::api::Transfers;
+use crate::config::Credentials;
 use crate::fake_slack::{eventually, FakeSlack, Identity, Reply, WsPeer};
 use crate::service::{Service, ServiceError, Status};
 use crate::socket::Timing;
@@ -39,9 +40,6 @@ impl Drop for Scratch {
     }
 }
 
-fn config() -> Config {
-    Config::parse(&format!("workspace = \"{WS}\"\nchannels = [\"C0AAAA\"]\n"), &|_| None).unwrap()
-}
 
 /// Built at run time, so no source line holds a token-shaped literal for the secret scanner.
 fn credentials() -> Credentials {
@@ -114,8 +112,7 @@ async fn holding_fake(team: &'static str) -> FakeSlack {
 }
 
 async fn start(fake: &FakeSlack, dir: &std::path::Path) -> Result<Service, ServiceError> {
-    let config = config();
-    Service::start_for_test(&config, credentials(), fake.http(), dir, fake.url("slack.com", "/api/"), timing()).await
+    Service::start_for_test(WS, credentials(), fake.http(), dir, fake.url("slack.com", "/api/"), timing(), Transfers::new()).await
 }
 
 fn calls(fake: &FakeSlack) -> usize {
@@ -630,9 +627,8 @@ async fn the_service_api_holds_the_credentials_user_token() {
     bounded(async {
         let dir = Scratch::new("person");
         let fake = holding_fake(WS).await;
-        let config = config();
         let url = fake.url("slack.com", "/api/");
-        let with = Service::start_for_test(&config, credentials_with_user(), fake.http(), &dir.0, url.clone(), timing())
+        let with = Service::start_for_test(WS, credentials_with_user(), fake.http(), &dir.0, url.clone(), timing(), Transfers::new())
             .await
             .expect("service with a user token");
         // The person's post is made (Slack's answer is the fake's refusal) under the credentials' user token, not unsent.
@@ -641,7 +637,7 @@ async fn the_service_api_holds_the_credentials_user_token() {
         let by = fake.seen().into_iter().find(|s| s.path().ends_with("/chat.postMessage")).and_then(|s| s.authorization);
         assert_eq!(by.as_deref(), Some(&*format!("Bearer {}", ["xoxp", "-sentinel-user-cccc"].concat())), "the person's bearer");
         with.stop(Duration::from_secs(3)).await;
-        let without = Service::start_for_test(&config, credentials(), fake.http(), &dir.0, url, timing())
+        let without = Service::start_for_test(WS, credentials(), fake.http(), &dir.0, url, timing(), Transfers::new())
             .await
             .expect("service without one");
         let unsent = without.api().unwrap().post("C0AAAA", None, crate::api::PostKind::Person, "tester", "hi").await;
@@ -718,10 +714,9 @@ async fn a_bot_token_refusal_ends_the_service_and_a_missing_scope_does_not() {
         // The socket says hello at once, as the bot's own app, so a stop's close is answered.
         let (go, refusal) = (Arc::new(AtomicBool::new(true)), Arc::new(Mutex::new(None)));
         let fake = ends_fake("A0OWN", go.clone(), refusal.clone()).await;
-        let config = config();
         let url = fake.url("slack.com", "/api/");
         let start_with_user = || {
-            Service::start_for_test(&config, credentials_with_user(), fake.http(), &dir.0, url.clone(), timing())
+            Service::start_for_test(WS, credentials_with_user(), fake.http(), &dir.0, url.clone(), timing(), Transfers::new())
         };
 
         let service = start_with_user().await.expect("service");
@@ -866,4 +861,62 @@ fn an_end_after_the_claim_ended_is_no_end_and_the_first_end_stays() {
     end.end(WRONG_APP);
     end.end("bot_token_refused");
     assert_eq!((end.code(), claim.load(std::sync::atomic::Ordering::SeqCst)), (Some(WRONG_APP), ENDED));
+}
+
+/// A service of workspace `w` of `teams`, with these tokens' texts and transfer permits.
+async fn team_service(teams: &crate::fake_slack::Teams, w: &str, user: &str, dir: &std::path::Path, transfers: Transfers) -> Service {
+    let text = format!("workspace = \"{w}\"\nbot_token = \"{}\"\napp_token = \"{}\"\nuser_token = \"{user}\"\n", teams.bot(w), teams.app_token(w));
+    let credentials = Credentials::parse(&text).unwrap().1;
+    let fake = teams.fake();
+    Service::start_for_test(w, credentials, fake.http(), dir, fake.url("slack.com", "/api/"), timing(), transfers).await.expect("a service")
+}
+
+/// C9, L5 rule 2: services given one `Transfers` share its two permits, so two transfers held in one make the other's
+/// `busy`; a service given its own permits is not held by them.
+#[tokio::test]
+async fn two_services_share_the_transfer_permits_they_are_given() {
+    bounded(async {
+        let teams = crate::fake_slack::Teams::start(&[("T0AAAA", "Alpha"), ("T0BBBB", "Beta"), ("T0CCCC", "Gamma")]).await;
+        let dir = Scratch::new("transfers");
+        let shared = Transfers::new();
+        let a = team_service(&teams, "T0AAAA", &teams.user("T0AAAA"), &dir.0, shared.clone()).await;
+        let b = team_service(&teams, "T0BBBB", &teams.user("T0BBBB"), &dir.0, shared).await;
+        let c = team_service(&teams, "T0CCCC", &teams.user("T0CCCC"), &dir.0, Transfers::new()).await;
+        let held = [a.api().unwrap().transfer().unwrap(), a.api().unwrap().transfer().unwrap()];
+        assert_eq!(b.api().unwrap().transfer().err(), Some(crate::api::ApiError::Http(crate::http::HttpError::Busy)), "another workspace's service took a third permit");
+        assert!(c.api().unwrap().transfer().is_ok(), "a service with its own permits was held by another's");
+        drop(held);
+        assert!(b.api().unwrap().transfer().is_ok(), "a freed permit is the other service's too");
+        for s in [&a, &b, &c] {
+            s.stop(Duration::from_secs(3)).await;
+        }
+    })
+    .await;
+}
+
+/// L5 rule 4: at its start a service checks the person's user token once; one of another workspace, or one Slack refuses
+/// as a token, is dropped (a person's post is then refused unsent) with its code; one of its own workspace is kept.
+#[tokio::test]
+async fn a_user_token_of_another_workspace_is_dropped_at_start() {
+    use crate::api::{ApiError, PostKind};
+    bounded(async {
+        let teams = crate::fake_slack::Teams::start(&[("T0AAAA", "Alpha"), ("T0BBBB", "Beta")]).await;
+        teams.channels("T0AAAA", &[("C0AAAA01", "one", false, true)]);
+        let dir = Scratch::new("person-check");
+        let own = team_service(&teams, "T0AAAA", &teams.user("T0AAAA"), &dir.0, Transfers::new()).await;
+        assert_eq!(own.person_dropped(), None);
+        assert!(own.api().unwrap().holds_person_token());
+        own.stop(Duration::from_secs(3)).await;
+        let unknown = ["xoxp", "-", "T0ZZZZ", "-", "1234"].concat();
+        for (user, code) in [(teams.user("T0BBBB"), "user_token_other_workspace"), (unknown, "user_token_refused")] {
+            let service = team_service(&teams, "T0AAAA", &user, &dir.0, Transfers::new()).await;
+            assert_eq!(service.person_dropped(), Some(code));
+            let api = service.api().unwrap();
+            assert!(!api.holds_person_token());
+            assert_eq!(api.post("C0AAAA01", None, PostKind::Person, "tester", "hi").await, Err(ApiError::NoPersonToken));
+            service.stop(Duration::from_secs(3)).await;
+        }
+        assert!(teams.calls("T0BBBB", "xoxp", "/chat.postMessage").is_empty(), "a post went out under another workspace's token");
+    })
+    .await;
 }

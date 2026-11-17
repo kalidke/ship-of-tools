@@ -117,7 +117,8 @@ name is in this crate's one op table.
     set the chat up (below). `target` is
     `{row, workspace, channel}`: the canonical row and the expected pair, rechecked by the daemon (resolve alone names the row
     only). A `mapped` resolve reply may carry `name`, the channel's name (public or private, as the channel is mapped; from the daemon's cache, whose names are already cleaned and at most 160 bytes), absent when the daemon does not know it and from a daemon before it (a reader then shows the id); a reader before it ignores the field, and this reader takes a `name` that is empty, over 160 bytes or not a string as no name with the reply still `mapped`, since a cosmetic field is never a reason to refuse the mapping (tests `chat_tests.rs`: `every_request_reply_and_event_keeps_its_shape`, `an_older_reader_decodes_the_named_reply_and_this_one_the_unnamed`, `a_name_that_is_too_long_or_not_a_string_reads_as_no_name`). A refusal is the standard error payload whose `code` is a `ChatCode` (`unavailable`, `unmapped`, `stale_row`,
-    `stale_mapping`, `bad_request`, `too_many_watches`, `limited`, `busy`, `failed`, and the setup family's `bot_token_refused`, `app_token_refused`, `other_workspace`, `not_in_channel`, `channel_taken`, `not_saved`, and the file pair's `not_a_file`, `too_large`, `not_an_image`; a later code reads as `other`; `ChatCode::text` is the one fixed text of a code, the refusal's `error` and what a window shows for it, except `unavailable`, which a window words itself: not the hub, or the hub's service not running), never
+    `stale_mapping`, `bad_request`, `too_many_watches`, `limited`, `busy`, `failed`, and the setup family's `bot_token_refused`, `app_token_refused`, `other_workspace` (an older daemon's, which serves one workspace),
+    `too_many_workspaces`, `no_such_channel`, `not_in_channel`, `channel_taken`, `not_saved`, and the file pair's `not_a_file`, `too_large`, `not_an_image`; a later code reads as `other`; `ChatCode::text` is the one fixed text of a code, the refusal's `error` and what a window shows for it, except `unavailable`, which a window words itself: not the hub, or the hub's service not running), never
     Slack's or a library's text; a post's reply is `posted`, `refused`, `limited` or `unknown`. Bounds a decoder enforces:
     a channel id is 1 to 64 of letters, digits, `_`, `-`; a row 256 bytes, a workspace 64; a post's text 8 KiB and name 160; a
     cursor 1 KiB; `limit` 1 to 20; a page or a `chat.changed` list at most 21 and a status 32 channels (a list stops at its
@@ -127,13 +128,21 @@ name is in this crate's one op table.
     watch `state` as `other` (a snapshot is owed), a resolve `state` as `invalid`, a record's `origin` as `other` (never the
     app's own post, and one record never spoils its page), a post `outcome` as `unknown` (the post may exist; never resent).
     **The setup family** (so a person sets the chat up from the window): `chat.connect {bot_token, user_token?, app_token}` (the user token `xoxp-` is what a person's post goes out under; it is defaulted and left out when `None`, so an older window's two-token connect decodes, and the daemon refuses it `bad_request`) answers
-    `{workspace}`, `chat.channels {}` answers `{channels: [{id, name, private, member}], more}`, and `chat.pair {row, channel?}`
-    answers `{}` (an absent or null `channel` unpairs the row's folder). A token field is a `ChatToken`: serialized as its
+    `{workspace}`, `chat.channels {workspace?}` answers `{channels: [{id, name, private, member}], more}`, `chat.pair {row,
+    workspace?, channel?}` answers `{}` (an absent or null `channel` unpairs the row's folder), and `chat.workspaces {}` (a
+    read, any connection's) answers `{default, workspaces: [{id, name?, running}]}`. A request's `workspace` is an id
+    within 64 bytes when present, defaulted and left out when `None` (absent: `chat.toml`'s workspace, so an older window's
+    request means what it always did, and an older daemon ignores the field); `workspaces` holds at most `MAX_WORKSPACES`
+    entries, and a reader keeps the first `MAX_WORKSPACES` it can read and skips the rest and any entry it cannot read, never
+    refusing the reply, and reads a `name` as the resolve's `name` is read (tests `chat_tests.rs`:
+    `the_setup_family_carries_its_workspace_and_an_older_shape_still_decodes`,
+    `a_workspace_list_past_its_bound_or_with_a_bad_entry_still_decodes`). No hello flag: a newer window learns a daemon
+    serves several workspaces from `chat.workspaces` answering, and an older daemon answers it as an unknown op. A token field is a `ChatToken`: serialized as its
     string, at most `MAX_TOKEN` (512) bytes, its `Debug` the text `<redacted>`, no `Display` (its bytes are read by `expose`, in
     the one place that sends or checks them), so a derived `Debug` of a request that holds one prints no byte of it; a decode
     refusal names no byte either. A channel list holds at most `MAX_LISTED` (1,000) entries, a name 160 bytes, a channel an id
     (`is_id`); `more` says the list was cut there. `MAX_WORKSPACES` (8) is the most Slack workspaces a hub serves, wire's
-    one copy, which `sot-chat` re-exports and its secrets load holds to (no message carries it yet). The decoder bounds the entries and the name, not the escaped size: a full
+    one copy, which `sot-chat` holds its secrets load and a connect to and `chat.workspaces`' reader holds its list to. The decoder bounds the entries and the name, not the escaped size: a full
     list fits one frame because the daemon's names carry no control character (a quote or backslash doubles, a control
     character would be six bytes). `ChatResolveRes::Unconfigured {reason}` is the hub's chat off for a reason a connect fixes
     (`not_connected`, `tokens_refused` (also a token Slack refused while the chat ran), `start_failed`, `wrong_app` (the app-level token is another Slack app's than the bot's, so the chat ended; pinned by `the_wrong_app_reason_is_pinned_on_the_wire`); a later reason reads as `other`, as `wrong_app` does to a window that predates it (rc.11's `ChatUnconfigured` has the same `other` arm); a hub that holds no user token says nothing here: `chat.resolve` answers a row as it always did, since a row's reply needs only the bot token, and a person's post refused `no_user_token` is what brings the window's Connect step); an older window reads the state as

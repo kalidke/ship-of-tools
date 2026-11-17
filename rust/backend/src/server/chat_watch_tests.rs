@@ -228,7 +228,7 @@ fn complete<'a>(hub: &'a Arc<Hub>, channels: &'a [impl AsRef<str>]) -> impl Futu
     let at = std::panic::Location::caller();
     async move {
         let probe = hub.connect();
-        until(&format!("the snapshots (waited at {at})"), || channels.iter().all(|c| probe.conn.state(c.as_ref()) == ChatWatchState::Complete)).await;
+        until(&format!("the snapshots (waited at {at})"), || channels.iter().all(|c| probe.conn.state("T0AAAA", c.as_ref()) == ChatWatchState::Complete)).await;
     }
 }
 
@@ -929,7 +929,7 @@ async fn an_ended_service_turns_the_chat_off_with_its_code_and_frees_its_lock() 
     until("the chat off with the service's code", || chat.status() == Status::Failed("wrong_app")).await;
     until("the owner's end", || !hub.running()).await;
     let text = log.text();
-    assert_eq!(text.matches("the chat service ended").count(), 1, "{text}");
+    assert_eq!(text.matches("a workspace's chat service ended").count(), 1, "{text}");
     assert!(text.contains("wrong_app"), "{text}");
     assert_eq!(code(&conn.ask(3, op::CHAT_WATCH, watch(&rig.alpha, "C0AAAA")).await), "unavailable");
     // The lock was freed with the listener: the next service, of the app the bot names, starts and holds it.

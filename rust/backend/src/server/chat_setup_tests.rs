@@ -468,7 +468,7 @@ fn from_nothing_a_window_connects_pairs_and_reads_its_channel() {
         assert!(matches!(watched["state"].as_str(), Some("pending" | "complete")), "{watched}");
         let hub = chat.hub().clone();
         let probe = hub.connect();
-        until("the snapshot", || probe.conn.state("C0PUB") == sot_protocol::ops::ChatWatchState::Complete).await;
+        until("the snapshot", || probe.conn.state("T0AAAA", "C0PUB") == sot_protocol::ops::ChatWatchState::Complete).await;
         w.slack.feed.send(message("C0PUB", 1)).unwrap();
         let put = loop {
             let (frame, _) = codec::read_frame(&mut conn.crx).await.unwrap();
@@ -651,14 +651,21 @@ async fn a_connect_whose_start_fails_is_saved_and_resolve_says_start_failed() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_connect_naming_another_workspace_is_refused() {
+async fn a_connect_of_another_workspace_adds_it() {
     let home = Home::new(Some(SELF));
     home.write(CONFIG_FILE, "workspace = \"T0OTHER\"\nchannels = []\n");
     let w = world_on(home, &[], None, None).await;
     let before = files(&w.home);
     let mut conn = connect_window(w.services.clone()).await;
-    assert_eq!(code(&conn.ask(2, op::CHAT_CONNECT, connect_req(&bot("1"), &app("1"))).await), "other_workspace");
-    assert_eq!(files(&w.home), before);
+    let (b, u, a) = (bot("1"), user("1"), app("1"));
+    assert_eq!(conn.ask(2, op::CHAT_CONNECT, connect_with(&b, &u, &a)).await, json!({"workspace": "T0AAAA"}));
+    // `chat.toml` and every file that was there are as they were; the new workspace's tokens are its own file.
+    let after = files(&w.home);
+    let named = "chat-secrets-T0AAAA.toml";
+    assert_eq!(after.iter().filter(|(n, _)| n != named).collect::<Vec<_>>(), before.iter().collect::<Vec<_>>());
+    let t: toml::Table = std::fs::read_to_string(w.home.config().join(named)).unwrap().parse().unwrap();
+    assert_eq!((t.len(), t["workspace"].as_str(), t["bot_token"].as_str()), (4, Some("T0AAAA"), Some(&*b)));
+    assert_eq!(w.services.chat.status_of("T0AAAA"), Status::Running);
     // A chat.toml the load refuses is never rewritten from the window.
     w.home.write(CONFIG_FILE, "workspace = [[[");
     let before = files(&w.home);
@@ -870,7 +877,7 @@ fn a_window_connects_three_tokens_and_its_post_goes_out_as_the_person() {
         assert!(matches!(watched["state"].as_str(), Some("pending" | "complete")), "{watched}");
         let hub = chat.hub().clone();
         let probe = hub.connect();
-        until("the snapshot", || probe.conn.state("C0PUB") == sot_protocol::ops::ChatWatchState::Complete).await;
+        until("the snapshot", || probe.conn.state("T0AAAA", "C0PUB") == sot_protocol::ops::ChatWatchState::Complete).await;
 
         // A person's post: one `chat.postMessage` under the user token, with the channel and the text and nothing else.
         let person = json!({"target": w.target(0, "C0PUB"), "kind": "person", "name": "tester", "text": "hello"});
@@ -915,4 +922,292 @@ fn a_window_connects_three_tokens_and_its_post_goes_out_as_the_person() {
     for (n, reply) in seen.iter().enumerate() {
         holds_no_token(&format!("reply or event {n}"), reply, &bodies);
     }
+}
+
+// ---- several workspaces ----
+
+/// A hub with no chat file, rows alpha and beta in two folders, and one fake answering two workspaces by bearer.
+struct Two {
+    home: Home,
+    teams: sot_chat::fake_slack::Teams,
+    services: Services,
+    rows: Workspaces,
+    ids: [String; 2],
+    folders: [std::path::PathBuf; 2],
+    _root: tempfile::TempDir,
+}
+
+const A: &str = "T0AAAA";
+const B: &str = "T0BBBB";
+
+async fn two() -> Two {
+    let teams = sot_chat::fake_slack::Teams::start(&[(A, "Alpha Lab"), (B, "Beta Lab")]).await;
+    teams.channels(A, &[("C0AAAA01", "alpha-one", false, true), ("C0AAAA02", "alpha-two", false, true)]);
+    teams.channels(B, &[("C0BBBB01", "beta-one", false, false)]);
+    let home = Home::new(Some(SELF));
+    let folders = [home.folder("a"), home.folder("b")];
+    let rows = Workspaces::new();
+    let ids = [rows.insert(row("alpha", &folders[0])).workspace_id.clone(), rows.insert(row("beta", &folders[1])).workspace_id.clone()];
+    let chat = Chat::boot(&home.env, &rows, &|p| config::read_file(p), &Registry::new(), starter(teams.fake()), Verifier::at(teams.fake()), HUB_CHECK, Timing::PRODUCT);
+    running(&chat).await;
+    let root = tempfile::tempdir().unwrap();
+    let mut services = Services::for_test("t", root.path());
+    services.chat = chat;
+    services.workspaces = rows.clone();
+    Two { home, teams, services, rows, ids, folders, _root: root }
+}
+
+impl Two {
+    fn connect_req(&self, w: &str) -> Value {
+        connect_with(&self.teams.bot(w), &self.teams.user(w), &self.teams.app_token(w))
+    }
+
+    fn target(&self, row: usize, workspace: &str, channel: &str) -> Value {
+        json!({"row": self.ids[row], "workspace": workspace, "channel": channel})
+    }
+
+    /// A secrets file holds exactly the four keys, with workspace `w`'s tokens.
+    fn holds(&self, file: &str, w: &str) -> bool {
+        let t: toml::Table = std::fs::read_to_string(self.home.config().join(file)).unwrap().parse().unwrap();
+        t.len() == 4
+            && t["workspace"].as_str() == Some(w)
+            && t["bot_token"].as_str() == Some(&*self.teams.bot(w))
+            && t["user_token"].as_str() == Some(&*self.teams.user(w))
+            && t["app_token"].as_str() == Some(&*self.teams.app_token(w))
+    }
+
+    #[cfg(unix)]
+    fn owner_only(&self, file: &str) -> bool {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(self.home.config().join(file)).unwrap().permissions().mode() & 0o077 == 0
+    }
+}
+
+/// The next `chat.changed` on `conn` for `channel`, past every other frame.
+async fn changed_in(conn: &mut Conn, channel: &str) -> Value {
+    let wait = async {
+        loop {
+            let (frame, _) = codec::read_frame(&mut conn.crx).await.unwrap();
+            if frame.kind == Kind::Evt && frame.op == op::CHAT_CHANGED && frame.payload["channel"] == channel {
+                return frame.payload;
+            }
+        }
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(10), wait).await.expect("a chat.changed for the channel")
+}
+
+/// The plan's done test, the daemon's half: from a hub with no chat file, a window connects two workspaces, each
+/// project pairs a channel in its own, reads its own workspace's socket and posts under its own workspace's token; a
+/// token Slack revokes in one stops that one alone; no reply, event or log line holds a token's bytes.
+#[test]
+fn two_workspaces_from_nothing_each_project_reads_and_posts_in_its_own() {
+    let mut seen: Vec<String> = Vec::new();
+    let mut bodies = Vec::new();
+    let text = logged(|| async {
+        let w = two().await;
+        bodies.extend(w.teams.bodies());
+        let mut conn = connect_window(w.services.clone()).await;
+
+        // 2. The first workspace: today's two files.
+        let first = conn.ask(2, op::CHAT_CONNECT, w.connect_req(A)).await;
+        assert_eq!(first, json!({"workspace": A}));
+        assert!(w.holds(SECRETS_FILE, A), "chat-secrets.toml holds the first workspace's four keys");
+        #[cfg(unix)]
+        assert!(w.owner_only(SECRETS_FILE));
+        assert_eq!(std::fs::read_to_string(w.home.config().join(CONFIG_FILE)).unwrap(), config::fresh(A).unwrap());
+        let before = files(&w.home);
+
+        // 3. The second: its own file, and the first two byte for byte.
+        let second = conn.ask(3, op::CHAT_CONNECT, w.connect_req(B)).await;
+        assert_eq!(second, json!({"workspace": B}), "a second workspace is added");
+        let named = format!("chat-secrets-{B}.toml");
+        let after = files(&w.home);
+        assert_eq!(after.iter().filter(|(n, _)| n != &named).collect::<Vec<_>>(), before.iter().collect::<Vec<_>>(), "the first workspace's files are as they were");
+        assert!(w.holds(&named, B));
+        #[cfg(unix)]
+        assert!(w.owner_only(&named));
+
+        // 4. The workspaces, by name; each list is its own workspace's.
+        let listed = conn.ask(4, op::CHAT_WORKSPACES, json!({})).await;
+        assert_eq!(
+            listed,
+            json!({"default": A, "workspaces": [{"id": A, "name": "Alpha Lab", "running": true}, {"id": B, "name": "Beta Lab", "running": true}]})
+        );
+        let a_list = conn.ask(5, op::CHAT_CHANNELS, json!({})).await;
+        let b_list = conn.ask(6, op::CHAT_CHANNELS, json!({"workspace": B})).await;
+        let ids = |v: &Value| v["channels"].as_array().unwrap().iter().map(|c| c["id"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+        assert_eq!((ids(&a_list), ids(&b_list)), (vec!["C0AAAA01".to_string(), "C0AAAA02".into()], vec!["C0BBBB01".to_string()]));
+
+        // 5. Each project pairs in its own workspace.
+        assert_eq!(conn.ask(7, op::CHAT_PAIR, json!({"row": w.ids[0], "channel": "C0AAAA01"})).await, json!({}));
+        assert_eq!(conn.ask(8, op::CHAT_PAIR, json!({"row": w.ids[1], "workspace": B, "channel": "C0BBBB01"})).await, json!({}));
+
+        // 6. Each resolves in its own.
+        let alpha = conn.ask(9, op::CHAT_RESOLVE, json!({"row": w.ids[0]})).await;
+        let beta = conn.ask(10, op::CHAT_RESOLVE, json!({"row": w.ids[1]})).await;
+        assert_eq!((alpha["state"].as_str(), alpha["workspace"].as_str(), alpha["channel"].as_str()), (Some("mapped"), Some(A), Some("C0AAAA01")), "{alpha}");
+        assert_eq!((beta["state"].as_str(), beta["workspace"].as_str(), beta["channel"].as_str()), (Some("mapped"), Some(B), Some("C0BBBB01")), "{beta}");
+
+        // 7. Each watch hears its own workspace's socket.
+        let chat = w.services.chat.clone();
+        let (ta, tb) = (w.target(0, A, "C0AAAA01"), w.target(1, B, "C0BBBB01"));
+        for t in [&ta, &tb] {
+            after_hello(&chat, &w.rows, &serde_json::from_value(t.clone()).unwrap()).await;
+        }
+        let wa = conn.ask(11, op::CHAT_WATCH, json!({"target": ta})).await;
+        let wb = conn.ask(12, op::CHAT_WATCH, json!({"target": tb})).await;
+        assert!(wa["state"].is_string() && wb["state"].is_string(), "{wa} {wb}");
+        let probe = chat.hub().connect();
+        until("both snapshots", || {
+            probe.conn.state(A, "C0AAAA01") == sot_protocol::ops::ChatWatchState::Complete
+                && probe.conn.state(B, "C0BBBB01") == sot_protocol::ops::ChatWatchState::Complete
+        })
+        .await;
+        w.teams.feed(A, w.teams.message(A, "C0AAAA01", 1, &stamp(1)));
+        let put = changed_in(&mut conn, "C0AAAA01").await;
+        assert_eq!(put["workspace"], A, "{put}");
+        w.teams.feed(B, w.teams.message(B, "C0BBBB01", 2, &stamp(2)));
+        let put_b = changed_in(&mut conn, "C0BBBB01").await;
+        assert_eq!(put_b["workspace"], B, "{put_b}");
+
+        // 8. A person's post in beta's channel goes out once under the second workspace's user token.
+        let posted = conn.ask(13, op::CHAT_POST, json!({"target": tb, "kind": "person", "name": "tester", "text": "hello"})).await;
+        assert_eq!(posted["outcome"], "posted", "{posted}");
+        let sent: Vec<_> = w.teams.fake().seen().into_iter().filter(|s| s.path().ends_with("/chat.postMessage")).collect();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].authorization.as_deref(), Some(&*format!("Bearer {}", w.teams.user(B))));
+
+        assert!(chat.hub().running_in(A) && chat.hub().running_in(B), "each workspace has its own owner");
+        // 10. Slack revokes the first workspace's bot: alpha's read is refused, its workspace ends, and beta's goes on.
+        w.teams.revoke(A);
+        let history = conn.ask(14, op::CHAT_HISTORY, json!({"target": ta, "limit": 5})).await;
+        assert!(history["code"].is_string(), "a revoked token's read is refused: {history}");
+        until("the first workspace's end", || chat.status_of(A) == Status::Failed("bot_token_refused")).await;
+        let alpha = conn.ask(15, op::CHAT_RESOLVE, json!({"row": w.ids[0]})).await;
+        assert_eq!((alpha["state"].as_str(), alpha["reason"].as_str()), (Some("unconfigured"), Some("tokens_refused")), "{alpha}");
+        assert_eq!(chat.status_of(B), Status::Running);
+        until("the first workspace's owner's end", || !chat.hub().running_in(A)).await;
+        assert!(chat.hub().running_in(B), "one workspace's end ended another's owner");
+        w.teams.feed(B, w.teams.message(B, "C0BBBB01", 3, &stamp(3)));
+        let put_c = changed_in(&mut conn, "C0BBBB01").await;
+        assert_eq!(put_c["put"][0]["ts"], stamp(3).as_str(), "{put_c}");
+
+        // 11. The file: alpha's mapping names no workspace, beta's names its own.
+        let t: toml::Table = std::fs::read_to_string(w.home.config().join(CONFIG_FILE)).unwrap().parse().unwrap();
+        let mappings = t["mapping"].as_array().unwrap();
+        let of = |folder: &std::path::Path| mappings.iter().find(|m| m["folder"].as_str() == folder.to_str()).unwrap().clone();
+        assert_eq!(of(&w.folders[0]).get("workspace"), None);
+        assert_eq!(of(&w.folders[1]).get("workspace").and_then(toml::Value::as_str), Some(B));
+        seen.extend([first, second, listed, a_list, b_list, alpha, beta, put, put_b, posted, history, put_c].map(|v| v.to_string()));
+    });
+    holds_no_token("the daemon's log", &text, &bodies);
+    for (n, reply) in seen.iter().enumerate() {
+        holds_no_token(&format!("reply or event {n}"), reply, &bodies);
+    }
+}
+
+/// Writes a secrets file `file` for workspace `w` with tokens of the fake's form (`mark` tells them apart).
+fn write_secrets_of(home: &Home, file: &str, w: &str, mark: &str) {
+    let text = format!("workspace = \"{w}\"\nbot_token = \"{}\"\nuser_token = \"{}\"\napp_token = \"{}\"\n", bot(mark), user(mark), app(mark));
+    home.write(file, &text);
+}
+
+/// B1 delta 5 (L10's ninth workspace): a connect of a workspace with no file yet is refused, nothing written, when the
+/// folder already lists seven named files beside the default's, a refused one among them (a new name sorting first would
+/// push a served one past the load's bound); one of the seven connects again into its own file alone.
+#[test]
+fn a_connect_that_would_push_a_served_workspace_past_the_bound_is_refused() {
+    logged(|| async {
+        let teams = sot_chat::fake_slack::Teams::start(&[("T0B00", "New Lab"), ("T0C03", "Third Lab")]).await;
+        let home = Home::new(Some(SELF));
+        home.write(CONFIG_FILE, &config::fresh("T0AAAA").unwrap());
+        write_secrets_of(&home, SECRETS_FILE, "T0AAAA", "0");
+        for i in 1..=7 {
+            let id = format!("T0C0{i}");
+            write_secrets_of(&home, &format!("chat-secrets-{id}.toml"), &id, &i.to_string());
+        }
+        home.write("chat-secrets-T0C05.toml", "workspace = [[[");
+        let rows = Workspaces::new();
+        let chat = Chat::boot(&home.env, &rows, &|p| config::read_file(p), &Registry::new(), starter(teams.fake()), Verifier::at(teams.fake()), HUB_CHECK, Timing::PRODUCT);
+        running(&chat).await;
+        let root = tempfile::tempdir().unwrap();
+        let mut services = Services::for_test("t", root.path());
+        services.chat = chat;
+        let mut conn = connect_window(services.clone()).await;
+        let req = |w: &str| connect_with(&teams.bot(w), &teams.user(w), &teams.app_token(w));
+        let before = files(&home);
+        assert_eq!(code(&conn.ask(2, op::CHAT_CONNECT, req("T0B00")).await), "too_many_workspaces");
+        assert_eq!(files(&home), before, "a refused connect wrote something");
+        // One of the seven gives new tokens: its own file alone changes.
+        assert_eq!(conn.ask(3, op::CHAT_CONNECT, req("T0C03")).await, json!({"workspace": "T0C03"}));
+        let after = files(&home);
+        let own = "chat-secrets-T0C03.toml";
+        assert_eq!(after.iter().filter(|(n, _)| n != own).collect::<Vec<_>>(), before.iter().filter(|(n, _)| n != own).collect::<Vec<_>>());
+        let t: toml::Table = std::fs::read_to_string(home.config().join(own)).unwrap().parse().unwrap();
+        assert_eq!(t["bot_token"].as_str(), Some(&*teams.bot("T0C03")));
+    });
+}
+
+/// B1 delta 6: `chat.workspaces` keeps a workspace's name past its service's end, so a failed workspace is still named;
+/// it is listed not running.
+#[test]
+fn the_workspaces_op_keeps_a_failed_workspaces_name() {
+    logged(|| async {
+        let w = two().await;
+        let mut conn = connect_window(w.services.clone()).await;
+        conn.ask(2, op::CHAT_CONNECT, w.connect_req(A)).await;
+        conn.ask(3, op::CHAT_CONNECT, w.connect_req(B)).await;
+        w.teams.revoke(A);
+        // A's bot is refused on its next call, which ends its service.
+        assert!(conn.ask(4, op::CHAT_CHANNELS, json!({"workspace": A})).await["code"].is_string());
+        let chat = w.services.chat.clone();
+        until("the first workspace's end", || chat.status_of(A) == Status::Failed("bot_token_refused")).await;
+        let listed = conn.ask(5, op::CHAT_WORKSPACES, json!({})).await;
+        assert_eq!(listed["workspaces"][0], json!({"id": A, "name": "Alpha Lab", "running": false}), "{listed}");
+        assert_eq!(listed["workspaces"][1], json!({"id": B, "name": "Beta Lab", "running": true}), "{listed}");
+        // Any connection may read it; a hub with no chat.toml has none to give.
+        let mut cli = connect(w.services.clone()).await;
+        assert_eq!(cli.ask(6, op::CHAT_WORKSPACES, json!({})).await, listed);
+    });
+}
+
+/// PS9, L11 rule 2: a channel the pairing's workspace does not hold is `no_such_channel`, unpaired; a workspace whose
+/// listener does not run is `unavailable` for the list and the pair.
+#[test]
+fn a_channel_of_another_workspace_is_no_such_channel() {
+    logged(|| async {
+        let w = two().await;
+        let mut conn = connect_window(w.services.clone()).await;
+        conn.ask(2, op::CHAT_CONNECT, w.connect_req(A)).await;
+        conn.ask(3, op::CHAT_CONNECT, w.connect_req(B)).await;
+        let paired = conn.ask(4, op::CHAT_PAIR, json!({"row": w.ids[1], "workspace": B, "channel": "C0AAAA01"})).await;
+        assert_eq!(code(&paired), "no_such_channel", "{paired}");
+        assert!(std::fs::read_to_string(w.home.config().join(CONFIG_FILE)).unwrap().parse::<toml::Table>().unwrap().get("mapping").is_none());
+        for (op, payload) in [(op::CHAT_CHANNELS, json!({"workspace": "T0ZZZZ"})), (op::CHAT_PAIR, json!({"row": w.ids[1], "workspace": "T0ZZZZ", "channel": "C0BBBB01"}))] {
+            assert_eq!(code(&conn.ask(5, op, payload).await), "unavailable", "{op}");
+        }
+    });
+}
+
+/// C4, L8 rule 4: a mapped row is judged by its own workspace; an unmapped one is `unconfigured` only when no workspace's
+/// listener runs, so one failed workspace never keeps a person from pairing in another.
+#[test]
+fn resolve_judges_a_row_by_its_own_workspace_and_an_unmapped_row_by_whether_any_runs() {
+    logged(|| async {
+        let w = two().await;
+        let mut conn = connect_window(w.services.clone()).await;
+        conn.ask(2, op::CHAT_CONNECT, w.connect_req(A)).await;
+        conn.ask(3, op::CHAT_CONNECT, w.connect_req(B)).await;
+        assert_eq!(conn.ask(4, op::CHAT_PAIR, json!({"row": w.ids[0], "channel": "C0AAAA01"})).await, json!({}));
+        w.teams.revoke(A);
+        assert!(conn.ask(5, op::CHAT_CHANNELS, json!({})).await["code"].is_string());
+        let chat = w.services.chat.clone();
+        until("the default workspace's end", || chat.status_of(A) == Status::Failed("bot_token_refused")).await;
+        let alpha = conn.ask(6, op::CHAT_RESOLVE, json!({"row": w.ids[0]})).await;
+        assert_eq!((alpha["state"].as_str(), alpha["reason"].as_str()), (Some("unconfigured"), Some("tokens_refused")), "{alpha}");
+        let beta = conn.ask(7, op::CHAT_RESOLVE, json!({"row": w.ids[1]})).await;
+        assert_eq!(beta, json!({"state": "unmapped"}), "an unmapped row read unconfigured while another workspace runs");
+        // And it pairs there.
+        assert_eq!(conn.ask(8, op::CHAT_PAIR, json!({"row": w.ids[1], "workspace": B, "channel": "C0BBBB01"})).await, json!({}));
+    });
 }

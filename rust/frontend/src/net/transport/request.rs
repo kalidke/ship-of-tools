@@ -573,11 +573,11 @@ pub(super) async fn send_request<W: AsyncWrite + Unpin>(
             send_chat(&mut tx, pending, id, op::CHAT_CONNECT, req, Some(PendingKind::ChatConnect)).await?
         }
         OutgoingReq::ChatChannels => {
-            send_chat(&mut tx, pending, id, op::CHAT_CHANNELS, sot_protocol::ops::ChatChannelsReq {}, Some(PendingKind::ChatChannels)).await?
+            send_chat(&mut tx, pending, id, op::CHAT_CHANNELS, sot_protocol::ops::ChatChannelsReq { workspace: None }, Some(PendingKind::ChatChannels)).await?
         }
         OutgoingReq::ChatPair { row, channel } => {
             let kind = PendingKind::ChatPair { row: row.clone(), channel: channel.clone() };
-            send_chat(&mut tx, pending, id, op::CHAT_PAIR, sot_protocol::ops::ChatPairReq { row, channel }, Some(kind)).await?
+            send_chat(&mut tx, pending, id, op::CHAT_PAIR, sot_protocol::ops::ChatPairReq { row, workspace: None, channel }, Some(kind)).await?
         }
         OutgoingReq::QuartoOpen { path, execute } => send_quarto_open(&mut tx, pending, id, path, execute).await?,
         OutgoingReq::ReplRunFile { eval_id, path, fresh, workspace_id } => send_repl_run_file(&mut tx, pending, id, eval_id, path, fresh, workspace_id).await?,

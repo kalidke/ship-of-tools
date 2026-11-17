@@ -1,7 +1,8 @@
-//! The chat's watches in the daemon: which connection watches which channel (the table), the one owner task that holds
-//! the service's one `Watches` and turns its changes into `chat.changed` and `chat.status` events, and the
-//! connection's side (`Watcher`, whose drop releases its slots). A slot is a connection's watch of one channel and the
-//! target it was admitted against. The owner calls Slack for one thing only, a channel's snapshot, and admits it again
+//! The chat's watches in the daemon: which connection watches which channel of which workspace (the table, keyed by the
+//! pair), one owner task per workspace (its desk) that holds that workspace's service's one `Watches` and turns its
+//! changes into `chat.changed` and `chat.status` events, the daemon's one filing slot, and the connection's side
+//! (`Watcher`, whose drop releases its slots). A slot is a connection's watch of one channel and the target it was
+//! admitted against. The owner calls Slack for one thing only, a channel's snapshot, and admits it again
 //! at every attempt against the oldest watch whose row is still current; a watch whose row went away is released and
 //! told to resync, so its refusal reaches it as the answer to its next `chat.watch`.
 
@@ -50,52 +51,117 @@ pub(crate) enum Evt {
     Status(Arc<Vec<(u64, ChatStatusEvt)>>),
 }
 
+/// A slot's workspace and channel.
+fn pair(t: &ChatTarget) -> (&str, &str) {
+    (t.workspace.as_str(), t.channel.as_str())
+}
+
 #[derive(Default)]
 struct Table {
-    /// At most one per connection and channel.
+    /// At most one per connection, workspace and channel.
     slots: Vec<(u64, ChatTarget)>,
-    /// What the owner last said of each watched channel.
-    states: BTreeMap<String, ChatWatchState>,
+    /// What each workspace's owner last said of each of its watched channels, by (workspace, channel).
+    states: BTreeMap<(String, String), ChatWatchState>,
 }
 
 impl Table {
-    fn channels(&self) -> BTreeSet<String> {
-        self.slots.iter().map(|(_, t)| t.channel.as_str().to_string()).collect()
+    /// The channels watched in `workspace`.
+    fn channels_of(&self, workspace: &str) -> BTreeSet<String> {
+        self.slots.iter().filter(|(_, t)| t.workspace == workspace).map(|(_, t)| t.channel.as_str().to_string()).collect()
     }
 
-    fn holds(&self, conn: u64, channel: &str) -> bool {
-        self.slots.iter().any(|(c, t)| *c == conn && t.channel.as_str() == channel)
+    /// Every watched (workspace, channel), whatever the workspace: the watch bound counts them all.
+    fn pairs(&self) -> BTreeSet<(String, String)> {
+        self.slots.iter().map(|(_, t)| (t.workspace.clone(), t.channel.as_str().to_string())).collect()
     }
 
-    /// One entry for each connection with a slot: its channels among `of`.
-    fn status(&self, service: ChatService, gap: bool, of: &BTreeSet<String>) -> Vec<(u64, ChatStatusEvt)> {
-        let conns: BTreeSet<u64> = self.slots.iter().map(|(c, _)| *c).collect();
+    fn holds(&self, conn: u64, workspace: &str, channel: &str) -> bool {
+        self.slots.iter().any(|(c, t)| *c == conn && pair(t) == (workspace, channel))
+    }
+
+    /// One entry for each connection with a slot in `workspace`: its channels of that workspace among `of`.
+    fn status(&self, workspace: &str, service: ChatService, gap: bool, of: &BTreeSet<String>) -> Vec<(u64, ChatStatusEvt)> {
+        let conns: BTreeSet<u64> = self.slots.iter().filter(|(_, t)| t.workspace == workspace).map(|(c, _)| *c).collect();
         let mine = |conn: u64| -> Vec<ChatChannel> {
-            self.slots.iter().filter(|(c, t)| *c == conn && of.contains(t.channel.as_str())).map(|(_, t)| t.channel.clone()).collect()
+            self.slots
+                .iter()
+                .filter(|(c, t)| *c == conn && t.workspace == workspace && of.contains(t.channel.as_str()))
+                .map(|(_, t)| t.channel.clone())
+                .collect()
         };
         conns.into_iter().map(|c| (c, ChatStatusEvt { service, gap, resync: mine(c) })).collect()
     }
+
+    /// `workspace`'s end: each connection with a slot in it is told its channels there owe a snapshot, and its slots and
+    /// states go; every other workspace's stay.
+    fn end_of(&mut self, workspace: &str, phase: ChatService) -> Vec<(u64, ChatStatusEvt)> {
+        let all = self.channels_of(workspace);
+        let status = self.status(workspace, phase, false, &all);
+        self.slots.retain(|(_, t)| t.workspace != workspace);
+        self.states.retain(|(w, _), _| w != workspace);
+        status
+    }
 }
 
-enum Owner {
-    /// No owner runs: none started yet, or the last one's service ended, so the next running service starts one.
-    Idle,
-    Running,
+/// One workspace's owner: whether it runs, its kick (a `Notify` wakes one waiter, so each owner has its own), and the
+/// stop's way to it.
+#[derive(Default)]
+struct Desk {
+    /// No owner runs while false: none started yet, or the last one's service ended, so the workspace's next running
+    /// service starts one.
+    running: bool,
+    kick: Arc<Notify>,
+    /// The stop's way to the owner: a request to end the delivery, carrying the answer's sender. `None` until an owner
+    /// runs; a send that fails, or an answer dropped unsent, means no owner is left to wait for.
+    ending: Option<mpsc::UnboundedSender<oneshot::Sender<()>>>,
+}
+
+/// The daemon's one filing slot and its one `FILE_GAP` clock (C8): every workspace's filing job takes the slot, waits
+/// until `FILE_GAP` after the daemon's last filing returned, files, records its return and frees the slot, so a registry
+/// writer of another process meets free polls after every filing's hold whatever the number of workspaces.
+struct FilingSlot {
+    one: tokio::sync::Semaphore,
+    returned: Mutex<Option<tokio::time::Instant>>,
+}
+
+impl FilingSlot {
+    fn new() -> FilingSlot {
+        FilingSlot { one: tokio::sync::Semaphore::new(1), returned: Mutex::new(None) }
+    }
+
+    /// `file` run at the slot: the slot taken, then `FILE_GAP` after the daemon's last filing returned, `file`, and its
+    /// return recorded as the slot is freed. `None`, with nothing run, for a job its delivery's end dropped while it
+    /// waited (`at`).
+    async fn file<T>(&self, at: &Mutex<Slot>, file: impl Future<Output = T>) -> Option<T> {
+        let _held = self.one.acquire().await.ok()?;
+        {
+            let mut at = lock(at);
+            if *at == Slot::Dropped {
+                return None;
+            }
+            *at = Slot::Holding;
+        }
+        let after = *lock(&self.returned);
+        if let Some(after) = after {
+            tokio::time::sleep_until(after + sot_chat::delivery::FILE_GAP).await;
+        }
+        let out = file.await;
+        *lock(&self.returned) = Some(tokio::time::Instant::now());
+        Some(out)
+    }
 }
 
 pub(crate) struct Hub {
     table: Mutex<Table>,
-    kick: Notify,
     events: broadcast::Sender<Evt>,
-    owner: Mutex<Owner>,
-    /// Woken when an owner ends.
+    /// Each workspace's owner, by workspace.
+    desks: Mutex<BTreeMap<String, Desk>>,
+    /// Woken when any owner ends.
     idle: Notify,
     conns: AtomicU64,
-    /// The stop's way to the owner: a request to end the delivery, carrying the answer's sender. `None` until an owner
-    /// runs; a send that fails, or an answer dropped unsent, means no owner is left to wait for.
-    ending: Mutex<Option<mpsc::UnboundedSender<oneshot::Sender<()>>>>,
-    /// The delivery's timings, read when the owner starts.
+    /// The delivery's timings, read when an owner starts.
     timing: Mutex<Timing>,
+    filing: Arc<FilingSlot>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -106,13 +172,12 @@ impl Hub {
     pub(crate) fn new() -> Arc<Hub> {
         Arc::new(Hub {
             table: Mutex::new(Table::default()),
-            kick: Notify::new(),
             events: broadcast::channel(EVENTS_QUEUE).0,
-            owner: Mutex::new(Owner::Idle),
+            desks: Mutex::new(BTreeMap::new()),
             idle: Notify::new(),
             conns: AtomicU64::new(0),
-            ending: Mutex::new(None),
             timing: Mutex::new(Timing::PRODUCT),
+            filing: Arc::new(FilingSlot::new()),
         })
     }
 
@@ -121,10 +186,20 @@ impl Hub {
         *lock(&self.timing) = timing;
     }
 
-    /// Ask a running owner to end its delivery and wait until it has (bounded): the stop calls it before the service's, so
-    /// the lock outlives the last filing.
-    pub(super) async fn end_mail(&self) {
-        let Some(ask) = lock(&self.ending).clone() else { return };
+    /// Wake `workspace`'s owner (or its next one: a kick is kept until an owner waits).
+    fn kick(&self, workspace: &str) {
+        lock(&self.desks).entry(workspace.to_string()).or_default().kick.notify_one();
+    }
+
+    /// Wake every workspace's owner.
+    fn kick_all(&self) {
+        lock(&self.desks).values().for_each(|d| d.kick.notify_one());
+    }
+
+    /// Ask `workspace`'s running owner to end its delivery and wait until it has (bounded): the stop calls it before the
+    /// service's, so the lock outlives the last filing.
+    pub(super) async fn end_mail(&self, workspace: &str) {
+        let Some(ask) = lock(&self.desks).get(workspace).and_then(|d| d.ending.clone()) else { return };
         let (done, over) = oneshot::channel();
         if ask.send(done).is_ok() {
             let _ = tokio::time::timeout(MAIL_END, over).await;
@@ -148,46 +223,54 @@ impl Hub {
         lock(&self.table).slots.iter().map(|(c, t)| (*c, t.channel.as_str().to_string())).collect()
     }
 
-    /// Whether the owner is running.
+    /// Whether any workspace's owner is running.
     #[cfg(test)]
     pub(crate) fn running(&self) -> bool {
-        matches!(*lock(&self.owner), Owner::Running)
+        lock(&self.desks).values().any(|d| d.running)
     }
 
-    /// Until no owner runs: a reload starts its service only after the last one's owner ended, or the new service's
-    /// `ensure_owner` would find the old owner running and start none.
-    pub(super) async fn owner_ended(&self) {
+    /// Whether `workspace`'s owner is running.
+    #[cfg(test)]
+    pub(crate) fn running_in(&self, workspace: &str) -> bool {
+        lock(&self.desks).get(workspace).is_some_and(|d| d.running)
+    }
+
+    /// Until `workspace`'s owner is not running: a reload starts its service only after the last one's owner ended, or the
+    /// new service's `ensure_owner` would find the old owner running and start none.
+    pub(super) async fn owner_ended(&self, workspace: &str) {
         loop {
             let ended = self.idle.notified();
             tokio::pin!(ended);
             ended.as_mut().enable();
-            if matches!(*lock(&self.owner), Owner::Idle) {
+            if !lock(&self.desks).get(workspace).is_some_and(|d| d.running) {
                 return;
             }
             ended.await;
         }
     }
 
-    /// A service another `Watches` already serves is refused.
+    /// The owner of `service`'s workspace, started unless it runs. A service another `Watches` already serves is refused.
     pub(super) fn ensure_owner(self: &Arc<Hub>, service: &Arc<Service>, chat: &Arc<Chat>, rows: &Workspaces) -> Result<(), ChatCode> {
-        let mut owner = lock(&self.owner);
-        match *owner {
-            Owner::Running => Ok(()),
-            Owner::Idle => {
-                let Some(watches) = service.watches() else {
-                    // An ended service gives none, and no owner would ever see its end: turn the chat off here.
-                    drop(owner);
-                    chat.service_ended(service);
-                    return Err(ChatCode::Unavailable);
-                };
-                *owner = Owner::Running;
-                let own = Own { hub: self.clone(), service: service.clone(), chat: chat.clone(), rows: rows.clone(), known: BTreeSet::new(), told: BTreeSet::new(), mail: None };
-                let (ask, ending) = mpsc::unbounded_channel();
-                *lock(&self.ending) = Some(ask);
-                tokio::spawn(own.run(watches, ending));
-                Ok(())
-            }
+        let workspace = service.workspace().to_string();
+        let mut desks = lock(&self.desks);
+        let desk = desks.entry(workspace.clone()).or_default();
+        if desk.running {
+            return Ok(());
         }
+        let Some(watches) = service.watches() else {
+            // An ended service gives none, and no owner would ever see its end: turn its workspace off here.
+            drop(desks);
+            chat.service_ended(service);
+            return Err(ChatCode::Unavailable);
+        };
+        desk.running = true;
+        let (ask, ending) = mpsc::unbounded_channel();
+        desk.ending = Some(ask);
+        let kick = desk.kick.clone();
+        drop(desks);
+        let own = Own { hub: self.clone(), workspace, kick, service: service.clone(), chat: chat.clone(), rows: rows.clone(), known: BTreeSet::new(), told: BTreeSet::new(), mail: None };
+        tokio::spawn(own.run(watches, ending));
+        Ok(())
     }
 
     fn send(&self, evt: Evt) {
@@ -204,57 +287,59 @@ pub(crate) struct Conn {
 }
 
 impl Conn {
-    /// Watch `target`'s channel. The daemon holds at most `MAX_CHANNELS` channels in all (the model's bound, which wire's `MAX_WATCHED` repeats), so a
-    /// connection, whose slots are among them, holds at most that many too; a connection may join a channel another
-    /// holds, and a watch it already holds is replaced by this one.
+    /// Watch `target`'s channel of its workspace. The daemon holds at most `MAX_CHANNELS` (workspace, channel) pairs in
+    /// all, every workspace's counted together (the model's bound, which wire's `MAX_WATCHED` repeats, so the watched
+    /// records' memory is today's bound whatever the number of workspaces), so a connection, whose slots are among them,
+    /// holds at most that many too; a connection may join a channel another holds, and a watch it already holds is
+    /// replaced by this one. One channel id in two workspaces is two slots.
     pub(crate) fn claim(&self, target: ChatTarget) -> Result<(), ChatCode> {
         let mut table = lock(&self.hub.table);
-        let channel = target.channel.as_str();
-        let held = table.channels();
-        if held.len() >= MAX_CHANNELS && !held.contains(channel) {
+        let key = (target.workspace.clone(), target.channel.as_str().to_string());
+        let held = table.pairs();
+        if held.len() >= MAX_CHANNELS && !held.contains(&key) {
             return Err(ChatCode::TooManyWatches);
         }
-        table.slots.retain(|(c, t)| !(*c == self.id && t.channel.as_str() == channel));
+        table.slots.retain(|(c, t)| !(*c == self.id && pair(t) == (key.0.as_str(), key.1.as_str())));
         table.slots.push((self.id, target));
         Ok(())
     }
 
-    /// End this connection's watch of the channel, and no other's.
-    pub(crate) fn release(&self, channel: &str) {
-        lock(&self.hub.table).slots.retain(|(c, t)| !(*c == self.id && t.channel.as_str() == channel));
-        self.hub.kick.notify_one();
+    /// End this connection's watch of the channel of `workspace`, and no other's.
+    pub(crate) fn release(&self, workspace: &str, channel: &str) {
+        lock(&self.hub.table).slots.retain(|(c, t)| !(*c == self.id && pair(t) == (workspace, channel)));
+        self.hub.kick(workspace);
     }
 
     pub(crate) fn is(&self, id: u64) -> bool {
         self.id == id
     }
 
-    pub(crate) fn watches(&self, channel: &str) -> bool {
-        lock(&self.hub.table).holds(self.id, channel)
+    pub(crate) fn watches(&self, workspace: &str, channel: &str) -> bool {
+        lock(&self.hub.table).holds(self.id, workspace, channel)
     }
 
-    /// The state to answer a watch with: complete when the owner holds the channel's snapshot, else a snapshot is under
-    /// way or about to begin. Never `needed`: a channel that owes one is told by `chat.status`.
-    pub(crate) fn state(&self, channel: &str) -> ChatWatchState {
-        match lock(&self.hub.table).states.get(channel) {
+    /// The state to answer a watch with: complete when the workspace's owner holds the channel's snapshot, else a
+    /// snapshot is under way or about to begin. Never `needed`: a channel that owes one is told by `chat.status`.
+    pub(crate) fn state(&self, workspace: &str, channel: &str) -> ChatWatchState {
+        match lock(&self.hub.table).states.get(&(workspace.to_string(), channel.to_string())) {
             Some(ChatWatchState::Complete) => ChatWatchState::Complete,
             _ => ChatWatchState::Pending,
         }
     }
 
-    /// Register the watch, start the owner if it is not running and have it begin the snapshot.
+    /// Register the watch, start its workspace's owner if it is not running and have it begin the snapshot.
     pub(crate) async fn watch(&self, target: ChatTarget, service: &Arc<Service>, chat: &Arc<Chat>, rows: &Workspaces) -> Result<ChatWatchState, ChatCode> {
-        let channel = target.channel.as_str().to_string();
+        let (workspace, channel) = (target.workspace.clone(), target.channel.as_str().to_string());
         self.claim(target)?;
         if let Err(code) = self.hub.ensure_owner(service, chat, rows) {
-            self.release(&channel);
+            self.release(&workspace, &channel);
             return Err(code);
         }
-        self.hub.kick.notify_one();
+        self.hub.kick(&workspace);
         // A test's hold point, keyed by the hub's address, between the registration and the reply. The owner is kicked
         // above, so its snapshot runs while this is held; `chat.watch.snapshot` holds that.
         sot_platform::hold_point_async!("chat.watch.between", Arc::as_ptr(&self.hub) as usize);
-        Ok(self.state(&channel))
+        Ok(self.state(&workspace, &channel))
     }
 }
 
@@ -267,7 +352,7 @@ pub(crate) struct Watcher {
 impl Drop for Watcher {
     fn drop(&mut self) {
         lock(&self.conn.hub.table).slots.retain(|(c, _)| *c != self.conn.id);
-        self.conn.hub.kick.notify_one();
+        self.conn.hub.kick_all();
     }
 }
 
@@ -282,6 +367,10 @@ struct Fetched {
 
 struct Own {
     hub: Arc<Hub>,
+    /// The workspace this owner serves: it syncs, publishes, tells and ends only that workspace's slots and states.
+    workspace: String,
+    /// Its desk's kick.
+    kick: Arc<Notify>,
     service: Arc<Service>,
     chat: Arc<Chat>,
     rows: Workspaces,
@@ -313,10 +402,19 @@ struct Mail {
     folders: Vec<(String, String)>,
     tx: mpsc::Sender<Done>,
     wake: Option<tokio::time::Instant>,
-    /// The start's read, the filing in flight and the pass in flight.
+    /// The start's read, the filing in flight (with its place at the daemon's filing slot) and the pass in flight.
     read: JoinHandle<()>,
-    filing: Option<JoinHandle<()>>,
+    filing: Option<(JoinHandle<()>, Arc<Mutex<Slot>>)>,
     pass: Option<JoinHandle<()>>,
+}
+
+/// Where a filing job stands at the daemon's filing slot: a job still waiting has filed nothing, so a delivery's end
+/// drops it at once; one that holds the slot is waited for.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Slot {
+    Waiting,
+    Holding,
+    Dropped,
 }
 
 impl Drop for Mail {
@@ -345,15 +443,23 @@ async fn read_inboxes(env: Env, tx: mpsc::Sender<Done>, timing: Timing) {
 #[cfg(test)]
 pub(crate) static PANIC_ON: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
-/// One filing: the author named as a read names it, then the guarded append.
-async fn file_job(env: Env, rows: Workspaces, service: Arc<Service>, folder: String, mut f: Filing) -> Done {
+/// One filing, at the daemon's one filing slot: the slot taken, then `FILE_GAP` after the daemon's last filing returned,
+/// the author named as a read names it, the guarded append, and the slot freed with the return recorded. A job its
+/// delivery's end dropped while it waited files nothing.
+async fn file_job(env: Env, rows: Workspaces, service: Arc<Service>, folder: String, mut f: Filing, filing: Arc<FilingSlot>, at: Arc<Mutex<Slot>>) -> Done {
     #[cfg(test)]
     assert!(!PANIC_ON.lock().unwrap().contains(&f.record.ts.as_str().to_string()), "a test's filing job fails here");
-    sot_platform::hold_point_async!("chat.mail.filing", folder);
-    if let Ok(api) = service.api() {
-        api.fill_names(std::slice::from_mut(&mut f.record)).await;
-    }
-    Done::Filed { result: mail::file(&env, &rows, &folder, &f.record).await, channel: f.channel, ts: f.record.ts, live: f.live }
+    let (channel, ts, live) = (f.channel.clone(), f.record.ts.clone(), f.live);
+    let filed = filing
+        .file(&at, async {
+            sot_platform::hold_point_async!("chat.mail.filing", folder);
+            if let Ok(api) = service.api() {
+                api.fill_names(std::slice::from_mut(&mut f.record)).await;
+            }
+            mail::file(&env, &rows, &folder, &f.record).await
+        })
+        .await;
+    Done::Filed { result: filed.unwrap_or_else(|| Err("ended".into())), channel, ts, live }
 }
 
 /// The mapped folders whose pass job panics, so a test can prove a failed pass still answers.
@@ -460,7 +566,7 @@ impl Own {
         loop {
             let at = self.mail.as_ref().and_then(|m| m.wake);
             tokio::select! {
-                _ = self.hub.kick.notified() => self.sync(&mut watches, &done_tx),
+                _ = self.kick.notified() => self.sync(&mut watches, &done_tx),
                 Some(f) = done_rx.recv() => self.finish(&mut watches, f),
                 Some(d) = mail_rx.recv() => self.returned(d),
                 Some(done) = ending.recv() => self.end_mail(done).await,
@@ -488,7 +594,7 @@ impl Own {
         self.end_delivery().await;
         drop(ending);
         if self.service.ended().is_some() {
-            let _ = tokio::time::timeout(2 * super::STOP_WITHIN, self.chat.stopped()).await;
+            let _ = tokio::time::timeout(2 * super::STOP_WITHIN, self.chat.stopped_of(&self.workspace)).await;
         }
         self.end();
     }
@@ -499,16 +605,16 @@ impl Own {
         }
     }
 
-    /// The delivery for the hub's delivering channels, whose states are read and whose records the model hands over from
-    /// here on; the start's read of the inboxes begins. A channel whose state cannot be read stays off.
+    /// The delivery for its workspace's delivering channels, whose states are read and whose records the model hands
+    /// over from here on; the start's read of the inboxes begins. A channel whose state cannot be read stays off.
     fn open_mail(&self, watches: &mut Watches, tx: mpsc::Sender<Done>) -> Option<Mail> {
         let loaded = self.chat.config();
         let Some(Ok(config)) = loaded.as_ref() else { return None };
         let dir = sot_platform::host::state_dir::daemon_state_dir_in(&self.chat.env).join("chat");
         let (mut states, mut folders) = (Vec::new(), Vec::new());
-        for (folder, _, channel) in config.mappings() {
+        for (folder, _, channel) in config.mappings().filter(|(_, w, _)| *w == self.workspace) {
             let Some(floor) = config.floor(channel) else { continue };
-            match sot_chat::state::State::load(&dir, config.workspace(), channel, &floor) {
+            match sot_chat::state::State::load(&dir, &self.workspace, channel, &floor) {
                 Ok(state) if watches.deliver(channel).is_ok() => {
                     states.push((state, floor));
                     folders.push((channel.to_string(), folder.to_string()));
@@ -522,7 +628,7 @@ impl Own {
         }
         let timing = *lock(&self.hub.timing);
         let read = tokio::spawn(read_inboxes(self.chat.env.clone(), tx.clone(), timing));
-        Some(Mail { delivery: Delivery::new(timing, std::time::Instant::now(), states), workspace: config.workspace().into(), dir, folders, tx, wake: None, read, filing: None, pass: None })
+        Some(Mail { delivery: Delivery::new(timing, std::time::Instant::now(), states), workspace: self.workspace.clone(), dir, folders, tx, wake: None, read, filing: None, pass: None })
     }
 
     /// A job came back: the delivery learns its result, and the daemon's log gets one line (fixed codes and ids, no text).
@@ -564,10 +670,23 @@ impl Own {
         drop(done.send(()));
     }
 
-    /// The delivery out of use, its filing in flight returned (bounded by `MAIL_END`).
+    /// The delivery out of use, its filing in flight returned (bounded by `MAIL_END`); a filing still waiting for the
+    /// daemon's slot has filed nothing and is dropped at once, so another workspace's filings never spend this wait.
     async fn end_delivery(&mut self) {
-        if let Some(filing) = self.mail.take().and_then(|mut m| m.filing.take()) {
-            let _ = tokio::time::timeout(MAIL_END, filing).await;
+        if let Some((filing, at)) = self.mail.take().and_then(|mut m| m.filing.take()) {
+            let waiting = {
+                let mut at = lock(&at);
+                let waiting = *at == Slot::Waiting;
+                if waiting {
+                    *at = Slot::Dropped;
+                }
+                waiting
+            };
+            if waiting {
+                filing.abort();
+            } else {
+                let _ = tokio::time::timeout(MAIL_END, filing).await;
+            }
         }
     }
 
@@ -582,7 +701,9 @@ impl Own {
             match m.delivery.poll(std::time::Instant::now()) {
                 Action::File(f) => {
                     let (folder, failed) = (folder(&f.channel), Done::Filed { channel: f.channel.clone(), ts: f.record.ts.clone(), live: f.live, result: Err("job_failed".into()) });
-                    m.filing = Some(run_job(tx, file_job(env, rows, service, folder, f), failed));
+                    let at = Arc::new(Mutex::new(Slot::Waiting));
+                    let job = file_job(env, rows, service, folder, f, self.hub.filing.clone(), at.clone());
+                    m.filing = Some((run_job(tx, job, failed), at));
                 }
                 Action::Pass { order, pace } => {
                     let channel = order.state.channel().to_string();
@@ -615,9 +736,11 @@ impl Own {
             if let Ok(api) = self.service.api() {
                 api.cached_names(&mut put);
             }
-            let Some(workspace) = lock(&self.hub.table).slots.iter().find(|(_, t)| t.channel.as_str() == channel).map(|(_, t)| t.workspace.clone()) else {
+            // A channel no connection watches in this workspace (a delivering one) tells no one.
+            if !lock(&self.hub.table).slots.iter().any(|(_, t)| pair(t) == (self.workspace.as_str(), channel.as_str())) {
                 continue;
-            };
+            }
+            let workspace = self.workspace.clone();
             let Ok(chan) = ChatChannel::try_from(channel) else { continue };
             let (mut put, mut gone) = (put.chunks(MAX_PAGE_RECORDS), gone.chunks(MAX_PAGE_RECORDS));
             loop {
@@ -635,7 +758,7 @@ impl Own {
     /// Bring the model to the table: watch what is newly watched, forget what no connection holds, and begin the
     /// snapshot of every watched channel that owes one.
     fn sync(&mut self, watches: &mut Watches, done: &mpsc::Sender<Fetched>) {
-        let want = lock(&self.hub.table).channels();
+        let want = lock(&self.hub.table).channels_of(&self.workspace);
         for gone in self.known.difference(&want).cloned().collect::<Vec<_>>() {
             watches.unwatch(&gone);
             self.known.remove(&gone);
@@ -652,7 +775,7 @@ impl Own {
             let (ticket, arrived) = self.step(watches, None, |w| w.begin(&channel, &service));
             self.hand_over(arrived);
             let Some(ticket) = ticket else { continue };
-            let targets: Vec<(u64, ChatTarget)> = lock(&self.hub.table).slots.iter().filter(|(_, t)| t.channel.as_str() == channel).cloned().collect();
+            let targets: Vec<(u64, ChatTarget)> = lock(&self.hub.table).slots.iter().filter(|(_, t)| pair(t) == (self.workspace.as_str(), channel.as_str())).cloned().collect();
             let (chat, rows, done) = (self.chat.clone(), self.rows.clone(), done.clone());
             let key = Arc::as_ptr(&self.hub) as usize;
             tokio::spawn(async move {
@@ -668,7 +791,7 @@ impl Own {
 
     fn finish(&mut self, watches: &mut Watches, f: Fetched) {
         for conn in &f.stale {
-            lock(&self.hub.table).slots.retain(|(c, t)| !(c == conn && t.channel.as_str() == f.channel));
+            lock(&self.hub.table).slots.retain(|(c, t)| !(c == conn && pair(t) == (self.workspace.as_str(), f.channel.as_str())));
         }
         let gap = self.service.gap().is_some();
         let released = f.stale.iter().map(|c| (*c, ChatStatusEvt { service: ChatService::Running, gap, resync: ChatChannel::try_from(f.channel.clone()).into_iter().collect() })).collect();
@@ -693,7 +816,8 @@ impl Own {
     fn publish(&mut self, watches: &Watches) {
         let mut needed = BTreeSet::new();
         let mut table = lock(&self.hub.table);
-        table.states.clear();
+        let workspace = self.workspace.clone();
+        table.states.retain(|(w, _), _| *w != workspace);
         for channel in &self.known {
             let state = match watches.state(channel) {
                 Some(State::Complete) => ChatWatchState::Complete,
@@ -703,7 +827,7 @@ impl Own {
                     ChatWatchState::Needed
                 }
             };
-            table.states.insert(channel.clone(), state);
+            table.states.insert((workspace.clone(), channel.clone()), state);
         }
         // A service that is stopping makes every channel read as owing a snapshot: `end` says so once, as the stop. The
         // status is read after the states: a stop sets its phase before it ends the claim they read.
@@ -712,27 +836,25 @@ impl Own {
         }
         self.told = needed.clone();
         if !needed.is_empty() {
-            let status = table.status(ChatService::Running, self.service.gap().is_some(), &needed);
+            let status = table.status(&workspace, ChatService::Running, self.service.gap().is_some(), &needed);
             drop(table);
             self.hub.send(Evt::Status(Arc::new(status)));
         }
     }
 
-    /// The service stopped: every watching connection is told its channels need a snapshot, every watch ends, and the
-    /// owner is idle again, for the next service a reload starts (a stopped service gives no second `Watches`).
+    /// The service stopped: every connection watching in its workspace is told its channels there need a snapshot, every
+    /// watch of the workspace ends (another workspace's stay), and the desk is idle again, for the next service a reload
+    /// starts (a stopped service gives no second `Watches`).
     fn end(self) {
         let phase = match self.service.status() {
             Status::Stopping => ChatService::Stopping,
             _ => ChatService::Stopped,
         };
-        let mut table = lock(&self.hub.table);
-        let all = table.channels();
-        let status = table.status(phase, false, &all);
-        table.slots.clear();
-        table.states.clear();
-        drop(table);
+        let status = lock(&self.hub.table).end_of(&self.workspace, phase);
         self.hub.send(Evt::Status(Arc::new(status)));
-        *lock(&self.hub.owner) = Owner::Idle;
+        if let Some(desk) = lock(&self.hub.desks).get_mut(&self.workspace) {
+            (desk.running, desk.ending) = (false, None);
+        }
         self.hub.idle.notify_waiters();
     }
 }

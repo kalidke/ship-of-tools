@@ -98,7 +98,7 @@ impl ConfigError {
             ConfigError::BadMailAfter(_) => "mail_after is not a Slack timestamp (<seconds>.<six digits>)",
             ConfigError::BadToken => "a token is not of its form: the bot token starts xoxb-, the user token xoxp- and the app token xapp- (so they differ), then letters, digits and hyphens, at most 512 bytes in all",
             ConfigError::UnknownKey(_) => "a key this file does not take is present: each chat file holds only its own documented keys",
-            ConfigError::SecondWorkspace => "the chat serves one workspace: a second one, or secrets for another, is refused",
+            ConfigError::SecondWorkspace => "chat.toml's workspace is one id (a mapping names another with its own workspace key), and chat-secrets.toml holds that workspace's secrets",
             ConfigError::DuplicateChannel => "a channel is listed twice in chat.toml",
             ConfigError::FolderRepeated(_) => "two mappings name one folder (an alias of it, or the same pair twice)",
             ConfigError::ChannelRepeated(_) => "two folders map to one channel: a channel belongs to one folder",
@@ -192,8 +192,9 @@ fn workspace(t: &toml::Table) -> Result<String, ConfigError> {
 #[derive(Debug)]
 pub struct Config {
     workspace: String,
-    /// Canonical folder, channel and the mapping's own `mail_after`, folders and channels one-to-one.
-    mappings: Vec<(String, String, Option<Ts>)>,
+    /// Canonical folder, the mapping's workspace, its channel and its own `mail_after`, folders and channels one-to-one
+    /// (a channel id is mapped once in the file, whatever its workspace).
+    mappings: Vec<(String, String, String, Option<Ts>)>,
     /// The ordinals of the mappings whose folder did not canonicalize: kept in the file, mapped to nothing.
     ignored: Vec<usize>,
     mail_after: Option<Ts>,
@@ -211,10 +212,10 @@ impl Config {
         &self.workspace
     }
 
-    /// The admitted mappings, each as its canonical folder, its workspace and its channel. Every mapping is in the
-    /// file's workspace: one naming another is refused at load.
+    /// The admitted mappings, each as its canonical folder, its workspace (its own `workspace` key, else the file's) and
+    /// its channel.
     pub fn mappings(&self) -> impl Iterator<Item = (&str, &str, &str)> {
-        self.mappings.iter().map(|(f, c, _)| (f.as_str(), self.workspace.as_str(), c.as_str()))
+        self.mappings.iter().map(|(f, w, c, _)| (f.as_str(), w.as_str(), c.as_str()))
     }
 
     /// The ordinals (from 1, in file order) of the mappings the load ignored: a folder that does not exist (or is not
@@ -232,7 +233,7 @@ impl Config {
     /// (and for a channel no mapping holds).
     pub fn floor(&self, channel: &str) -> Option<Ts> {
         let hub = self.mail_after.as_ref()?;
-        let own = self.mappings.iter().find(|(_, c, _)| c == channel)?.2.as_ref();
+        let own = self.mappings.iter().find(|(_, _, c, _)| c == channel)?.3.as_ref();
         Some(match own {
             Some(t) if ts_key(t) > ts_key(hub) => t.clone(),
             _ => hub.clone(),
@@ -262,7 +263,7 @@ impl Config {
                     .map_err(|_| ConfigError::BadMailAfter(None))?,
             ),
         };
-        let mut mappings: Vec<(String, String, Option<Ts>)> = Vec::new();
+        let mut mappings: Vec<(String, String, String, Option<Ts>)> = Vec::new();
         let mut ignored = Vec::new();
         // Every entry's folder (canonical, else as written) and channel, ignored ones included, so the repeat checks
         // hold for a folder that is not on disk now.
@@ -275,11 +276,11 @@ impl Config {
             let at = i + 1;
             let m = m.as_table().ok_or(ConfigError::Malformed(None))?;
             only(m, &MAPPING_KEYS)?;
-            if let Some(w) = m.get("workspace") {
-                if id(w)? != workspace {
-                    return Err(ConfigError::SecondWorkspace);
-                }
-            }
+            // A mapping without its own workspace is in the file's.
+            let in_workspace = match m.get("workspace") {
+                Some(w) => id(w)?,
+                None => workspace.clone(),
+            };
             let folder = m
                 .get("folder")
                 .and_then(toml::Value::as_str)
@@ -310,7 +311,7 @@ impl Config {
             }
             seen.push((key, channel.clone()));
             match canonical {
-                Some(canonical) => mappings.push((canonical, channel, own)),
+                Some(canonical) => mappings.push((canonical, in_workspace, channel, own)),
                 None => ignored.push(at),
             }
         }
@@ -379,10 +380,10 @@ impl fmt::Display for Resolution {
 pub fn resolve(config: &Result<Config, ConfigError>, folder: &str) -> Resolution {
     match config {
         Err(e) => Resolution::Invalid(*e),
-        Ok(c) => match c.mappings.iter().find(|(f, _, _)| f == folder) {
+        Ok(c) => match c.mappings.iter().find(|(f, _, _, _)| f == folder) {
             None => Resolution::Unmapped,
-            Some((_, ch, _)) => Resolution::Mapped {
-                workspace: c.workspace.clone(),
+            Some((_, w, ch, _)) => Resolution::Mapped {
+                workspace: w.clone(),
                 channel: ch.clone(),
                 mail_after: c.floor(ch),
             },
@@ -479,6 +480,11 @@ pub struct Secrets {
     default: Option<ConfigError>,
     /// Each named file refused or not read, by its name, in name order.
     refused: Vec<(String, ConfigError)>,
+    /// The ids of every `chat-secrets-<id>.toml` listed but the default's, in name order: admitted, refused or past the
+    /// bound alike.
+    named: Vec<String>,
+    /// `chat.toml`'s workspace, whose file is `chat-secrets.toml`.
+    default_id: String,
 }
 
 impl Secrets {
@@ -490,7 +496,7 @@ impl Secrets {
     /// named file. Every open goes through `read`.
     pub fn read(dir: &Path, read: Reader, config: &Config) -> Secrets {
         let open = |name: &str| text(read, &dir.join(name)).and_then(|t| Credentials::parse(&t));
-        let mut s = Secrets { admitted: BTreeMap::new(), default: None, refused: Vec::new() };
+        let mut s = Secrets { admitted: BTreeMap::new(), default: None, refused: Vec::new(), named: Vec::new(), default_id: config.workspace.clone() };
         match open(SECRETS_FILE) {
             Ok((w, c)) if w == config.workspace => { s.admitted.insert(w, (SecretsFile(None), c)); }
             Ok(_) => s.default = Some(ConfigError::SecondWorkspace),
@@ -499,6 +505,7 @@ impl Secrets {
         let mut named = named_ids(dir);
         named.sort_unstable();
         let mut opened = 1;
+        s.named = named.iter().filter(|id| **id != config.workspace).cloned().collect();
         for id in named {
             let file = SecretsFile(Some(id.clone()));
             let held = if id == config.workspace {
@@ -545,6 +552,21 @@ impl Secrets {
     /// Why `chat-secrets.toml` was not admitted: `Missing` when it is absent. A named file's refusal is never this.
     pub fn default_refusal(&self) -> Option<ConfigError> {
         self.default
+    }
+
+    /// The ids of the `chat-secrets-<id>.toml` files the folder lists, the default's id left out, whether each was
+    /// admitted, refused or past the bound: the files a new workspace's file would sort among.
+    pub fn named(&self) -> &[String] {
+        &self.named
+    }
+
+    /// Each workspace whose own file was refused, with that file's code: `chat-secrets.toml`'s under `chat.toml`'s
+    /// workspace (not when it is absent), and each named file's under the id its name says. A file's refusal is its own
+    /// workspace's alone.
+    pub fn refusals(&self) -> Vec<(String, ConfigError)> {
+        let default = self.default.filter(|e| *e != ConfigError::Missing).map(|e| (self.default_id.clone(), e));
+        let named = self.refused.iter().filter_map(|(name, e)| SecretsFile::named(name).map(|id| (id.to_string(), *e)));
+        default.into_iter().chain(named).collect()
     }
 
     /// Each named file refused or not read, by its name and its code (a value of the file never).
@@ -616,26 +638,29 @@ impl From<ConfigError> for PairError {
     }
 }
 
-/// `chat.toml`'s text with `folder` paired with `channel`, or unpaired for `None`; `None` when nothing changes. A text
-/// the load refuses is refused as it stands and never rewritten. The folder's own mapping (matched by its canonical
-/// spelling) is dropped; for a channel, a mapping of it whose folder does not canonicalize is dropped (taken over),
-/// one to another existing folder is `ChannelTaken`, and `{folder, channel}` is appended, with `mail_after = floor`
-/// when the file is delivering, its channel listed. A channel whose mapping the edit dropped and that no mapping holds
+/// `chat.toml`'s text with `folder` paired with `target`'s channel in `target`'s workspace, or unpaired for `None`;
+/// `None` when nothing changes (the folder already maps that workspace and that channel: the same channel id in another
+/// workspace is a change). A text the load refuses is refused as it stands and never rewritten. The folder's own
+/// mapping (matched by its canonical spelling) is dropped; for a channel, a mapping of it in any workspace whose folder
+/// does not canonicalize is dropped (taken over), one to another existing folder is `ChannelTaken`, and `{folder,
+/// channel}` is appended, with `workspace` only when it is not the file's and `mail_after = floor` when the file is
+/// delivering, its channel listed. A channel whose mapping the edit dropped and that no mapping holds
 /// after it leaves `channels`. Ignored mappings and every other key stay; comments and key order do not. The result is
 /// what the load admits, or the edit is refused with its code.
 pub fn pair(
     text: &str,
     folder: &str,
-    channel: Option<&str>,
+    target: Option<(&str, &str)>,
     floor: Option<Ts>,
     canon: Canon,
 ) -> Result<Option<String>, PairError> {
     let config = Config::parse(text, canon)?;
-    if channel.is_some_and(|c| !is_slack_id(c)) {
+    if target.is_some_and(|(w, c)| !is_slack_id(w) || !is_slack_id(c)) {
         return Err(ConfigError::BadId.into());
     }
+    let channel = target.map(|(_, c)| c);
     let mut t = parse_table(text)?;
-    let target = canon(folder).unwrap_or_else(|| folder.to_string());
+    let folder_key = canon(folder).unwrap_or_else(|| folder.to_string());
     let field = |m: &toml::Value, k: &str| m.get(k).and_then(toml::Value::as_str).map(str::to_string);
     let entries = match t.remove("mapping") {
         None => Vec::new(),
@@ -648,8 +673,9 @@ pub fn pair(
         let (Some(f), Some(c)) = (field(&m, "folder"), field(&m, "channel")) else {
             return Err(ConfigError::Malformed(None).into());
         };
-        let own = canon(&f).unwrap_or_else(|| f.clone()) == target;
-        if own && channel == Some(c.as_str()) {
+        let own = canon(&f).unwrap_or_else(|| f.clone()) == folder_key;
+        let in_workspace = field(&m, "workspace").unwrap_or_else(|| config.workspace().to_string());
+        if own && target == Some((in_workspace.as_str(), c.as_str())) {
             return Ok(None);
         }
         if own || channel == Some(c.as_str()) {
@@ -661,9 +687,12 @@ pub fn pair(
             kept.push(m);
         }
     }
-    if let Some(c) = channel {
+    if let Some((w, c)) = target {
         let mut m = toml::Table::new();
-        m.insert("folder".into(), target.into());
+        m.insert("folder".into(), folder_key.into());
+        if w != config.workspace() {
+            m.insert("workspace".into(), w.into());
+        }
         m.insert("channel".into(), c.into());
         if let (Some(_), Some(f)) = (config.mail_after(), &floor) {
             m.insert("mail_after".into(), f.as_str().into());

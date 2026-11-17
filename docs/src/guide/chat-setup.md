@@ -8,14 +8,13 @@ The chat runs on one computer: the one that runs your project sessions. If you u
 is the one, with no `hosts.toml` needed. If you have several, it is the one your `hosts.toml` names as `hub`. Every
 window shows the chat of that computer, and a project's chat is that of a session row on it.
 
-**One Slack workspace, for now.** The chat connects one Slack workspace, and every project's channel is a channel of
-that workspace. Codes from a second workspace's Slack app are refused at the connect step with "these Slack codes are for a different
-workspace than the one connected; the chat connects one Slack workspace for now (the manual page "Setting up Slack"
-says how to move it: press F1, select "Choose channel" in the list, and press Enter)". The channel list says the same under
-its first line, with the same route to this page: in the Help drawer (`F1`), Enter on **Choose channel** opens this page in your browser. Channels in several workspaces
-at once, one workspace per project, are planned and not yet built.
-Until then, to move the chat to another workspace, remove `chat.toml` and `chat-secrets.toml` from the settings folder
-of the computer the chat runs on (see the end of this page), which clears every project's channel, then connect again.
+**Several Slack workspaces.** The chat can connect up to 8 Slack workspaces, with your own Slack app in each, and each
+project's channel is in one of them. Connecting another workspace adds it and leaves the others as they are: at the end
+of the channel list choose **Connect Slack again** and go through the steps below with an app made in that workspace (all
+three Slack codes come from that one app). For now the channel list shows, and picks from, only the channels of the first
+workspace you connected (its first line still says the chat connects one workspace), so a project's channel in another
+workspace is set by hand, as [Setting it up by hand](#setting-it-up-by-hand) shows; choosing it from the list is not built
+yet. If one workspace's Slack codes stop working, the other workspaces' projects go on.
 
 ## Once: connect Slack
 
@@ -158,6 +157,17 @@ The drawer writes the same two files a person can write. To write them yourself 
    [[mapping]]
    folder = "/home/you/projects/my-project"
    channel = "C0456EFGH"
+   ```
+
+   For a project whose channel is in another workspace, make that workspace's file beside it, named for its ID
+   (`chat-secrets-T0987WXYZ.toml`), in the same four lines with that workspace's ID and the three Slack codes of the app made
+   there, and give the project's mapping that workspace; its channel goes in the same `channels` list:
+
+   ```toml
+   [[mapping]]
+   folder = "/home/you/projects/other-project"
+   workspace = "T0987WXYZ"
+   channel = "C0789IJKL"
    ```
 4. Restart Ship of Tools' background service on the hub (on Linux: `systemctl --user restart sotd`). Your sessions
    keep running; their Julia REPLs start fresh. A file edited by hand is read at the service's start; a change from the

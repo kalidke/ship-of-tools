@@ -386,37 +386,73 @@ fn other_secrets(user: bool) -> String {
     format!("workspace = \"T0BBBB\"\nbot_token = \"{}\"\napp_token = \"{}\"\n{user}", ["xoxb", "-5555-6666-bbbb"].concat(), ["xapp", "-1-B555-6666-eeee"].concat())
 }
 
-/// A start that keeps whether the credentials it was given hold a user token (the default's do, `T0BBBB`'s here not).
-fn keeps(listener: &Arc<Fake>, given: &Arc<Mutex<Vec<bool>>>) -> Starter<Fake> {
-    let (listener, given) = (listener.clone(), given.clone());
-    Box::new(move |_, credentials, _| {
-        given.lock().unwrap().push(credentials.user.is_some());
+/// A start that records the workspace it was asked for and whether the credentials it was given hold a user token (the
+/// default's do, `T0BBBB`'s here not), and gives `listener`.
+fn naming(listener: &Arc<Fake>, asked: &Arc<Mutex<Vec<(String, bool)>>>) -> Starter<Fake> {
+    let (listener, asked) = (listener.clone(), asked.clone());
+    Box::new(move |workspace, credentials, _| {
+        asked.lock().unwrap().push((workspace.to_string(), credentials.user.is_some()));
         let listener = listener.clone();
         Box::pin(async move { Ok(listener) })
     })
 }
 
+/// C5, L7: every admitted secrets file's workspace starts its own listener, once; the chat's status is the file's
+/// default's; the no-user-token warning is per file and no token byte is in the log.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_hub_with_secrets_for_two_workspaces_serves_the_files_default_and_logs_the_other() {
+async fn every_connected_workspace_starts_its_own_listener() {
     let log = sot_platform::test_log::capture();
     let home = Home::new(Some(SELF));
     home.configured();
     home.write(OTHER_FILE, &other_secrets(false));
-    let (seen, listener, given) = (Observed::new(), Arc::new(Fake::default()), Arc::new(Mutex::new(Vec::new())));
-    let chat = begin(&home, &seen, &Registry::new(), keeps(&listener, &given));
+    let (seen, listener, asked) = (Observed::new(), Arc::new(Fake::default()), Arc::new(Mutex::new(Vec::new())));
+    let chat = begin(&home, &seen, &Registry::new(), naming(&listener, &asked));
     assert_eq!(settled(&chat).await, Status::Running);
-    // Both files are read, and the one start is the file's default's, under its own token.
+    until("both starts", || chat.status_of("T0BBBB") == Status::Running).await;
     let opened = vec![home.config().join(CONFIG_FILE), home.config().join(SECRETS_FILE), home.config().join(OTHER_FILE)];
     assert_eq!(seen.opened(), opened);
-    assert_eq!(*given.lock().unwrap(), [true], "the start was not given the default's credentials alone");
-    // The other file is logged by its name, once, and no token byte is in the log.
+    let mut started = asked.lock().unwrap().clone();
+    started.sort();
+    assert_eq!(started, [("T0AAAA".to_string(), true), ("T0BBBB".to_string(), false)], "each workspace starts once, with its own credentials");
+    assert!(chat.service_of("T0AAAA").is_some() && chat.service_of("T0BBBB").is_some());
     let text = log.text();
-    let line = "project chat: a secrets file of another workspace is not served";
-    assert_eq!(text.lines().filter(|l| l.contains(line) && l.contains(OTHER_FILE)).count(), 1, "the other file's line");
-    // The no-user-token warning is per file: the other file holds none, the default's does.
+    assert!(!text.contains("is not served: this daemon serves chat.toml's workspace alone"), "the one-workspace line is gone");
     let named = "chat-secrets-T0BBBB.toml holds no user token: a person's post waits for Connect Slack in the Chat drawer";
     assert_eq!((text.matches(named).count(), text.matches("chat-secrets.toml holds no user token").count()), (1, 0));
     assert!(!text.contains("xox") && !text.contains("xapp") && !text.contains("5555"), "a token form in the log");
+}
+
+/// C5: a workspace whose start fails is off with its own code, and the other runs.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_workspace_whose_start_fails_leaves_the_others_running() {
+    let home = Home::new(Some(SELF));
+    home.configured();
+    home.write(OTHER_FILE, &other_secrets(false));
+    let listener = Arc::new(Fake::default());
+    let start: Starter<Fake> = Box::new(move |workspace, _, _| {
+        let (listener, fails) = (listener.clone(), workspace == "T0BBBB");
+        Box::pin(async move { if fails { Err("invalid_auth") } else { Ok(listener) } })
+    });
+    let chat = begin(&home, &Observed::new(), &Registry::new(), start);
+    assert_eq!(settled(&chat).await, Status::Running);
+    until("the other's end", || chat.status_of("T0BBBB") != Status::Starting).await;
+    assert_eq!(chat.status_of("T0BBBB"), Status::Failed("invalid_auth"));
+    assert!(chat.any_running());
+    assert_eq!(chat.service_of("T0BBBB").map(|_| ()), None);
+}
+
+/// L7 rule 6: a workspace with no secrets file is not connected, and one whose own file was refused carries that
+/// file's code; neither is the default's.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_workspace_with_no_file_is_not_connected_and_its_refused_file_is_its_own() {
+    let home = Home::new(Some(SELF));
+    home.configured();
+    home.write(OTHER_FILE, &other_secrets(false).replace("xoxb-", "xoxq-"));
+    let listener = Arc::new(Fake::default());
+    let chat = begin(&home, &Observed::new(), &Registry::new(), gives(&listener));
+    assert_eq!(settled(&chat).await, Status::Running);
+    assert_eq!(chat.status_of("T0BBBB"), Status::Secrets(ConfigError::BadToken));
+    assert_eq!(chat.status_of("T0CCCC"), Status::Secrets(ConfigError::Missing));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -436,17 +472,19 @@ async fn a_named_files_refusal_is_not_the_defaults() {
     // No `chat-secrets.toml` beside an admitted named file: the default's own absence, never the named file's state.
     home.write(OTHER_FILE, &other_secrets(true));
     std::fs::remove_file(home.config().join(SECRETS_FILE)).unwrap();
-    let called = Arc::new(AtomicBool::new(false));
-    let missing = begin(&home, &Observed::new(), &Registry::new(), never(&called));
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let missing = begin(&home, &Observed::new(), &Registry::new(), naming(&listener, &asked));
     assert_eq!(missing.status(), Status::Secrets(ConfigError::Missing));
     // A refused `chat-secrets.toml` is its own code, whatever the named file holds.
     home.write(SECRETS_FILE, "workspace = \"T0AAAA\"\nbot_token = \"x\"\n");
-    let refused = begin(&home, &Observed::new(), &Registry::new(), never(&called));
+    let refused = begin(&home, &Observed::new(), &Registry::new(), naming(&listener, &asked));
     assert_eq!(refused.status(), Status::Secrets(ConfigError::BadToken));
     home.write(OTHER_FILE, "workspace = [[[");
-    let both = begin(&home, &Observed::new(), &Registry::new(), never(&called));
+    let both = begin(&home, &Observed::new(), &Registry::new(), naming(&listener, &asked));
     assert_eq!(both.status(), Status::Secrets(ConfigError::BadToken));
-    assert!(!called.load(Ordering::SeqCst), "a named file started the default's chat");
+    assert_eq!(both.status_of("T0BBBB"), Status::Secrets(ConfigError::Malformed(Some(1))), "the named file's own refusal");
+    tokio::task::yield_now().await;
+    assert!(!asked.lock().unwrap().iter().any(|(w, _)| w == "T0AAAA"), "a named file started the default's chat");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -542,7 +580,7 @@ async fn stop_begun(listener: &Fake) {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_stop_that_does_not_finish_is_reported_incomplete_and_final() {
     // Twice: as it usually runs, and with the stop asked only after the report, the order a loaded host gives (the
-    // retirement's thread had not reached the chat within the bound), forced by holding the phase lock across it.
+    // retirement's thread had not reached the chat within the bound), forced by holding the units lock across it.
     for late in [false, true] {
         let home = Home::new(Some(SELF));
         home.configured();
@@ -550,7 +588,7 @@ async fn a_stop_that_does_not_finish_is_reported_incomplete_and_final() {
         let chat = begin(&home, &Observed::new(), &registry, gives(&listener));
         assert_eq!(settled(&chat).await, Status::Running);
 
-        let held = late.then(|| chat.shared.lock());
+        let held = late.then(|| chat.units());
         let done = retire(&registry, Duration::from_millis(50));
         drop(held);
         assert_eq!(done.incomplete, vec!["chat"], "late: {late}");
@@ -769,17 +807,18 @@ async fn slack() -> sot_chat::fake_slack::FakeSlack {
     .await
 }
 
+/// The bot's `auth.test`s: one per listener's start (a start's check of the user token is another bearer's).
 fn identity_reads(fake: &sot_chat::fake_slack::FakeSlack) -> usize {
-    fake.seen().iter().filter(|s| s.path().ends_with("/auth.test")).count()
+    fake.seen().iter().filter(|s| s.path().ends_with("/auth.test") && s.authorization.as_deref().is_some_and(|a| a.starts_with("Bearer xoxb-"))).count()
 }
 
 /// The product's service against `fake`, counting each try.
 fn counting(fake: &sot_chat::fake_slack::FakeSlack, tries: &Arc<AtomicUsize>) -> Starter<Service> {
-    let (http, base, tries) = (fake.http(), fake.url("slack.com", "/api/"), tries.clone());
-    Box::new(move |config, credentials, dir| {
+    let (http, base, tries, transfers) = (fake.http(), fake.url("slack.com", "/api/"), tries.clone(), sot_chat::api::Transfers::new());
+    Box::new(move |workspace, credentials, dir| {
         tries.fetch_add(1, Ordering::SeqCst);
-        let (http, base) = (http.clone(), base.clone());
-        Box::pin(async move { Service::start_at(config, credentials, http, dir, base).await.map(Arc::new).map_err(|e| e.code()) })
+        let (http, base, transfers) = (http.clone(), base.clone(), transfers.clone());
+        Box::pin(async move { Service::start_at(workspace, credentials, http, dir, base, transfers).await.map(Arc::new).map_err(|e| e.code()) })
     })
 }
 
@@ -1022,7 +1061,7 @@ async fn a_retirement_while_a_reload_waits_for_the_stop_starts_and_swaps_nothing
     until("the reload's stop", || listeners[0].stops.load(Ordering::SeqCst) == 1).await;
     let reg = registry.clone();
     let retiring = tokio::task::spawn_blocking(move || retire(&reg, LONG));
-    until("the retirement's mark", || chat.shared.closed_now()).await;
+    until("the retirement's mark", || chat.closed_now()).await;
     gate.add_permits(1);
     assert!(retiring.await.unwrap().incomplete.is_empty());
     assert_eq!(reloading.await.unwrap(), Status::Stopped);
@@ -1131,26 +1170,115 @@ async fn two_reloads_at_once_run_one_after_the_other() {
     assert_eq!(stops(&listeners), [1, 1, 0], "each reload stopped the service before it and started its own");
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn one_step_down_watch_runs_after_two_reloads() {
+/// A start that gives each workspace its own listener, `a` for `T0AAAA` and `b` for any other.
+fn per_workspace(a: &Arc<Fake>, b: &Arc<Fake>) -> Starter<Fake> {
+    let (a, b) = (a.clone(), b.clone());
+    Box::new(move |workspace, _, _| {
+        let made = if workspace == "T0AAAA" { a.clone() } else { b.clone() };
+        Box::pin(async move { Ok(made) })
+    })
+}
+
+/// A hub with the default `T0AAAA` and `T0BBBB` admitted.
+fn two_files() -> Home {
     let home = Home::new(Some(SELF));
     home.configured();
-    let (listeners, tries) = (fakes(3), Arc::new(AtomicUsize::new(0)));
-    let chat = Chat::begin(&home.env, &|p| config::read_file(p), &Registry::new(), in_turn(&listeners, &tries), setup::Verifier::none(), FAST);
+    home.write(OTHER_FILE, &other_secrets(false));
+    home
+}
+
+/// C5, review D2: the hub fact is the chat's, so one watch asks it whatever the units and the reloads (the watch holds
+/// the chat's one weak reference), and when another computer is named the hub every workspace steps down.
+#[tokio::test(flavor = "multi_thread")]
+async fn one_hub_fact_watch_steps_every_workspace_down() {
+    let home = two_files();
+    let (a, b) = (Arc::new(Fake::default()), Arc::new(Fake::default()));
+    let chat = Chat::begin(&home.env, &|p| config::read_file(p), &Registry::new(), per_workspace(&a, &b), setup::Verifier::none(), FAST);
     assert_eq!(settled(&chat).await, Status::Running);
+    until("both running", || chat.status_of("T0BBBB") == Status::Running).await;
     for _ in 0..2 {
         assert_eq!(reload(&chat).await, Status::Running);
     }
-    // Each hub fact watch holds its service weakly: a stopped service's watch ends at its next ask, and the running
-    // service keeps its own.
-    let watches = || listeners.iter().map(Arc::weak_count).collect::<Vec<_>>();
-    until("one watch on the hub fact", || watches() == [0, 0, 1]).await;
+    until("both running again", || chat.status_of("T0BBBB") == Status::Running).await;
     tokio::time::sleep(5 * FAST).await;
-    assert_eq!(watches(), [0, 0, 1]);
+    assert_eq!(Arc::weak_count(&chat), 1, "one hub fact watch for the chat, whatever its units and reloads");
     home.list("elsewhere");
-    until("the step-down", || chat.status() == Status::NotHub).await;
-    until("no watch left", || watches() == [0, 0, 0]).await;
-    assert_eq!(stops(&listeners), [1, 1, 1]);
+    until("every workspace steps down", || chat.status_of("T0AAAA") == Status::NotHub && chat.status_of("T0BBBB") == Status::NotHub).await;
+    assert_eq!(stops(&[a, b]), [3, 3], "two reloads' stops and the step-down's, in each workspace");
+}
+
+/// C5: a workspace held by another daemon waits alone; the other runs.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_held_workspace_waits_alone() {
+    let home = two_files();
+    let a = Arc::new(Fake::default());
+    let start: Starter<Fake> = Box::new(move |workspace, _, _| {
+        let (a, held) = (a.clone(), workspace == "T0BBBB");
+        Box::pin(async move { if held { Err("held") } else { Ok(a) } })
+    });
+    let chat = Chat::begin(&home.env, &|p| config::read_file(p), &Registry::new(), start, setup::Verifier::none(), FAST);
+    assert_eq!(settled(&chat).await, Status::Running);
+    tokio::time::sleep(5 * FAST).await;
+    assert_eq!((chat.status_of("T0AAAA"), chat.status_of("T0BBBB")), (Status::Running, Status::Starting));
+}
+
+/// L7 rule 5: retirement stops every workspace at once, so two stops that each take most of lifecycle's bound end
+/// within it.
+#[tokio::test(flavor = "multi_thread")]
+async fn retirement_stops_every_workspace_within_its_bound() {
+    let home = two_files();
+    let gate = |_: ()| Arc::new(Fake { gate: Some(Arc::new(tokio::sync::Semaphore::new(0))), ..Fake::default() });
+    let (a, b) = (gate(()), gate(()));
+    let registry = Registry::new();
+    let chat = begin(&home, &Observed::new(), &registry, per_workspace(&a, &b));
+    assert_eq!(settled(&chat).await, Status::Running);
+    until("both running", || chat.status_of("T0BBBB") == Status::Running).await;
+    // Each stop is let go after most of the bound, counted from when it began.
+    for l in [&a, &b] {
+        let l = l.clone();
+        drop(tokio::spawn(async move {
+            until("its stop", || l.stops.load(Ordering::SeqCst) == 1).await;
+            tokio::time::sleep(RETIRE_WAIT * 6 / 10).await;
+            l.gate.as_ref().unwrap().add_permits(1);
+        }));
+    }
+    let done = tokio::task::spawn_blocking(move || retire(&registry, RETIRE_WAIT)).await.unwrap();
+    assert!(done.incomplete.is_empty(), "the stops ran one after another: {done:?}");
+    assert_eq!((chat.status_of("T0AAAA"), chat.status_of("T0BBBB")), (Status::Stopped, Status::Stopped));
+}
+
+/// L7 rule 4: a retirement between the registration and the starts finds every workspace's start.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_retirement_between_register_and_starting_finds_every_workspaces_start() {
+    let home = two_files();
+    let registry = Arc::new(Registry::new());
+    let retiring = Arc::new(std::sync::Mutex::new(None));
+    let (reg, slot) = (registry.clone(), retiring.clone());
+    registry.on_register(Box::new(move || {
+        let reg = reg.clone();
+        *slot.lock().unwrap() = Some(std::thread::spawn(move || retire(&reg, LONG)));
+        std::thread::sleep(Duration::from_millis(50));
+    }));
+    let chat = begin(&home, &Observed::new(), &registry, pending());
+    let done = retiring.lock().unwrap().take().unwrap().join().unwrap();
+    assert!(done.incomplete.is_empty(), "{done:?}");
+    assert_eq!((chat.status_of("T0AAAA"), chat.status_of("T0BBBB")), (Status::Stopped, Status::Stopped), "a start began after its retirement");
+}
+
+/// A reload after retirement began starts no workspace.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reload_after_retirement_began_starts_no_workspace() {
+    let home = two_files();
+    let (a, b) = (Arc::new(Fake::default()), Arc::new(Fake::default()));
+    let registry = Registry::new();
+    let chat = begin(&home, &Observed::new(), &registry, per_workspace(&a, &b));
+    assert_eq!(settled(&chat).await, Status::Running);
+    until("both running", || chat.status_of("T0BBBB") == Status::Running).await;
+    chat.request_stop();
+    assert!(chat.wait_retired(LONG));
+    reload(&chat).await;
+    assert_eq!((chat.status_of("T0AAAA"), chat.status_of("T0BBBB")), (Status::Stopped, Status::Stopped));
+    assert_eq!(stops(&[a, b]), [1, 1]);
 }
 
 // ---- M3: the adapter every chat action passes ----
@@ -1209,7 +1337,7 @@ async fn stale_row_or_mapping_cannot_post_or_fetch() {
     assert!(w.chat.admit(&w.rows, &target(&id, "T0AAAA", "C0AAAA")).is_ok());
     w.rows.remove_by_id(&id).unwrap();
     assert_eq!(admitted(&w, &id, "T0AAAA", "C0AAAA"), Err(ChatCode::StaleRow));
-    assert_eq!(w.chat.admit_unwatch(), Ok(()));
+    assert_eq!(w.chat.admit_unwatch("T0AAAA"), Ok(()));
 
     // Replaced: a new row in the folder under a new id does not inherit a request that named the old id, and a request
     // naming the new id works.
@@ -1219,9 +1347,11 @@ async fn stale_row_or_mapping_cannot_post_or_fetch() {
     assert_eq!(admitted(&w, &new, "T0AAAA", "C0AAAA"), Ok(()));
 
     // A pair the mapping does not hold: another channel, another workspace, a channel the file does not list.
-    for (workspace, channel) in [("T0AAAA", "C0BBBB"), ("T0ZZZZ", "C0AAAA"), ("T0AAAA", "C0ZZZZ")] {
+    for (workspace, channel) in [("T0AAAA", "C0BBBB"), ("T0AAAA", "C0ZZZZ")] {
         assert_eq!(admitted(&w, &new, workspace, channel), Err(ChatCode::StaleMapping), "{workspace} {channel}");
     }
+    // A workspace with no listener here hands out no service at all.
+    assert_eq!(admitted(&w, &new, "T0ZZZZ", "C0AAAA"), Err(ChatCode::Unavailable));
     // The same id re-rooted (a same-slug insert keeps the id): onto folder b it maps to C0BBBB, not what was expected;
     // onto folder c it maps to nothing; and the row that went away with its folder is gone.
     w.rows.insert(row("alpha", &w.folders[1]));
@@ -1246,7 +1376,7 @@ async fn stale_row_or_mapping_cannot_post_or_fetch() {
 async fn no_action_is_admitted_unless_the_service_runs() {
     let rows = Workspaces::new();
     let t = |id: &str| target(id, "T0AAAA", "C0AAAA");
-    let unavailable = |chat: &Chat<Fake>, id: &str| chat.admit(&rows, &t(id)).err() == Some(ChatCode::Unavailable) && chat.admit_unwatch() == Err(ChatCode::Unavailable);
+    let unavailable = |chat: &Chat<Fake>, id: &str| chat.admit(&rows, &t(id)).err() == Some(ChatCode::Unavailable) && chat.admit_unwatch("T0AAAA") == Err(ChatCode::Unavailable);
 
     // Not the hub, a hub with no chat.toml, one with no secrets, and one whose start failed.
     let other = Home::new(Some("elsewhere"));
@@ -1276,7 +1406,7 @@ async fn no_action_is_admitted_unless_the_service_runs() {
     w.chat.request_stop();
     assert!(w.chat.wait_retired(LONG));
     assert_eq!(w.chat.admit(&w.rows, &t).err(), Some(ChatCode::Unavailable));
-    assert_eq!(w.chat.admit_unwatch(), Err(ChatCode::Unavailable));
+    assert_eq!(w.chat.admit_unwatch("T0AAAA"), Err(ChatCode::Unavailable));
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -673,3 +673,61 @@ fn post_record(n: u32) -> sot_protocol::chat::ChatRecord {
         ..ChatRecord::fixture()
     }
 }
+
+/// L8 and C8: a delivering file maps alpha to a channel of the default workspace and beta to one of a second; a member's
+/// post in each workspace's channel becomes one mail line in its own row's inbox, each workspace's owner filing through
+/// the daemon's one filing slot.
+#[tokio::test(flavor = "multi_thread")]
+async fn two_workspaces_file_their_own_mail_one_filing_at_a_time() {
+    let (a, b) = ("T0AAAA", "T0BBBB");
+    let teams = sot_chat::fake_slack::Teams::start(&[(a, "Alpha Lab"), (b, "Beta Lab")]).await;
+    teams.channels(a, &[("C0AAAA01", "alpha-one", false, true)]);
+    teams.channels(b, &[("C0BBBB01", "beta-one", false, true)]);
+    let th = TestHome::new();
+    th.own_record();
+    let mut home = Home::new(Some(SELF));
+    home.env = std::mem::take(&mut home.env).with("SOT_COMM_HOME", &th.home).with("SOT_SOCKET", th.home.join("no-daemon.sock"));
+    let (fa, fb) = (home.folder("a"), home.folder("b"));
+    let floor = "1700000000.000000";
+    home.write(
+        config::CONFIG_FILE,
+        &format!(
+            "workspace = \"{a}\"\nchannels = [\"C0AAAA01\", \"C0BBBB01\"]\nmail_after = \"{floor}\"\n\
+             [[mapping]]\nfolder = '{}'\nchannel = \"C0AAAA01\"\nmail_after = \"{floor}\"\n\
+             [[mapping]]\nfolder = '{}'\nworkspace = \"{b}\"\nchannel = \"C0BBBB01\"\nmail_after = \"{floor}\"\n",
+            fa.display(),
+            fb.display()
+        ),
+    );
+    let secrets = |w: &str| format!("workspace = \"{w}\"\nbot_token = \"{}\"\napp_token = \"{}\"\nuser_token = \"{}\"\n", teams.bot(w), teams.app_token(w), teams.user(w));
+    home.write(config::SECRETS_FILE, &secrets(a));
+    home.write(&format!("chat-secrets-{b}.toml"), &secrets(b));
+    let rows = Workspaces::new();
+    for (label, folder, handle) in [("claude-alpha", &fa, "alpha-h"), ("claude-beta", &fb, "beta-h")] {
+        let id = rows.insert(Workspace::from_label(label, folder.clone(), false, "claude".into(), handle.into(), String::new())).workspace_id.clone();
+        th.put(handle, json!({"host": SELF, "workspace_id": id, "repo": "r", "root": "/", "last_seen": iso8601_utc_from_secs(unix_now_secs())}));
+    }
+    let read = |p: &std::path::Path| config::read_file(p);
+    let chat = Chat::boot(&home.env, &rows, &read, &Registry::new(), starter(teams.fake()), crate::chat::setup::Verifier::at(teams.fake()), HUB_CHECK, TIMING);
+    running(&chat).await;
+    until("both workspaces running", || chat.status_of(a) == Status::Running && chat.status_of(b) == Status::Running).await;
+    let ids: Vec<String> = rows.list().iter().map(|w| w.workspace_id.clone()).collect();
+    for (row, w, c) in [(&ids[0], a, "C0AAAA01"), (&ids[1], b, "C0BBBB01")] {
+        let target = ChatTarget { row: row.clone(), workspace: w.into(), channel: ChatChannel::try_from(c.to_string()).unwrap() };
+        super::chat_watch_tests::after_hello(&chat, &rows, &target).await;
+    }
+    let inbox = |handle: &str| -> Vec<String> {
+        let text = std::fs::read_to_string(th.home.join("inbox").join(format!("{handle}.jsonl"))).unwrap_or_default();
+        text.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()).filter_map(|v| v["msg"].as_str().map(str::to_string)).collect()
+    };
+    teams.feed(a, teams.message(a, "C0AAAA01", 1, "1700000100.000100"));
+    teams.feed(b, teams.message(b, "C0BBBB01", 2, "1700000200.000100"));
+    until("each post filed", || inbox("alpha-h").len() == 1 && inbox("beta-h").len() == 1).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let (alpha, beta) = (inbox("alpha-h"), inbox("beta-h"));
+    assert_eq!((alpha.len(), beta.len()), (1, 1), "a post filed twice or to the other row");
+    assert!(alpha[0].contains(&format!("ts=1700000100.000100 thread=1700000100.000100 channel=C0AAAA01 workspace={a}")), "{}", alpha[0]);
+    assert!(beta[0].contains(&format!("ts=1700000200.000100 thread=1700000200.000100 channel=C0BBBB01 workspace={b}")), "{}", beta[0]);
+    chat.request_stop();
+    assert!(chat.wait_retired(LONG));
+}

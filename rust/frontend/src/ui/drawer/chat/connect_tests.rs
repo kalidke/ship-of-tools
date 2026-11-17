@@ -405,7 +405,7 @@ fn a_refused_token_goes_back_to_its_step_and_the_others_are_kept() {
     // Any other answer drops all three and says why on the first screen.
     c.answered(ChatReply::Refused(ChatCode::OtherWorkspace));
     assert_eq!(c.screen(), &Screen::First);
-    assert!(c.body().head.starts_with("Not connected: these Slack codes are for a different workspace than the one connected; the chat connects one Slack workspace for now (the manual page \"Setting up Slack\" says how to move it: press F1, select \"Choose channel\" in the list, and press Enter)."));
+    assert!(c.body().head.starts_with(&format!("Not connected: {}.", ChatCode::OtherWorkspace.text())));
     assert_eq!(c.held(), (None, None, None));
     for t in [bot(), user(), app()] {
         c.key(PASTE, Some(&t), false);
@@ -804,14 +804,14 @@ fn no_project_word_reaches_a_screen() {
             | ChatCode::TooManyWatches | ChatCode::Limited | ChatCode::Busy | ChatCode::BotTokenRefused | ChatCode::AppTokenRefused
             | ChatCode::UserTokenRefused | ChatCode::NoUserToken | ChatCode::NotAMember | ChatCode::OtherWorkspace
             | ChatCode::NotInChannel | ChatCode::ChannelTaken | ChatCode::NotSaved | ChatCode::NotAFile | ChatCode::TooLarge
-            | ChatCode::NotAnImage | ChatCode::Failed | ChatCode::Other => c,
+            | ChatCode::NotAnImage | ChatCode::TooManyWorkspaces | ChatCode::NoSuchChannel | ChatCode::Failed | ChatCode::Other => c,
         };
         [
             ChatCode::Unavailable, ChatCode::Unmapped, ChatCode::StaleRow, ChatCode::StaleMapping, ChatCode::BadRequest,
             ChatCode::TooManyWatches, ChatCode::Limited, ChatCode::Busy, ChatCode::BotTokenRefused, ChatCode::AppTokenRefused,
             ChatCode::UserTokenRefused, ChatCode::NoUserToken, ChatCode::NotAMember, ChatCode::OtherWorkspace,
             ChatCode::NotInChannel, ChatCode::ChannelTaken, ChatCode::NotSaved, ChatCode::NotAFile, ChatCode::TooLarge,
-            ChatCode::NotAnImage, ChatCode::Failed, ChatCode::Other,
+            ChatCode::NotAnImage, ChatCode::TooManyWorkspaces, ChatCode::NoSuchChannel, ChatCode::Failed, ChatCode::Other,
         ]
         .map(all)
     };

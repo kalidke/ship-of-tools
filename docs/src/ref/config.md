@@ -286,31 +286,37 @@ The project chat's configuration, `chat.toml` and one secrets file per workspace
 Only the hub's daemon reads them: the chat runs on the computer that `hosts.toml` (above) parses and names, by
 `SOT_SELF_HOST` or its host name, as its `hub`, and on a computer with no `hosts.toml` at all, which is its own hub. A
 computer whose `hosts.toml` names another computer as `hub`, or does not parse, runs no chat and opens none of them. The files are read when the daemon starts, and again after a connect or a pairing a window asks for. Connecting Slack
-from a window checks all three tokens with Slack first and writes nothing if any is refused; then the daemon writes
-`chat-secrets.toml` whole, private to your account from the moment it is made, writes a `chat.toml` of the workspace and
-no channel when there is none, and restarts the chat from the files, with no daemon restart. The Chat drawer's Connect
-step sends this request ([Setting up Slack](../guide/chat-setup.md)). A connect leaves an
-existing `chat.toml` as it is, and is refused when that file names another workspace or is itself refused. Only Slack's
+from a window checks all three tokens with Slack first and writes nothing if any is refused; then the daemon writes that
+workspace's one secrets file whole, private to your account from the moment it is made: `chat-secrets.toml` for the
+workspace `chat.toml` names, `chat-secrets-<id>.toml` for any other, so connecting another workspace adds it and
+connecting one again replaces only its own tokens. It writes a `chat.toml` of the workspace and no channel when there is
+none (that workspace then is the file's), and restarts the chat from the files, with no daemon restart. The Chat drawer's
+Connect step sends this request ([Setting up Slack](../guide/chat-setup.md)). A connect leaves an existing `chat.toml`
+byte for byte as it is, and is refused when that file is itself refused, or, for a workspace with no file yet, when the
+folder already holds the files of 8 workspaces. Only Slack's
 answer that a token is bad refuses it; a Slack outage or rate limit, or no network, fails the connect with nothing
 written, and it can be tried again. After editing any of them by hand, restart the daemon (on
 Linux `systemctl --user restart sotd`; rows keep running). A mapped folder needs no row at the start: a row made later
 in it gets the channel at its first use. A mapping whose folder does not exist is ignored, and the daemon's log says so
-by the mapping's number; the rest of the file works. A missing or refused `chat.toml`, or a missing or refused
-`chat-secrets.toml`, leaves the chat off. One refused mapping, such as two mappings of one folder, turns the chat off
-for every project. The reason is in the
+by the mapping's number; the rest of the file works. A missing or refused `chat.toml` leaves the chat off; each workspace
+runs on its own secrets file, so a missing or refused one leaves that workspace off and no other. One refused mapping,
+such as two mappings of one folder, turns the chat off for every project. The reason is in the
 daemon's log, on the "project chat" line, as a fixed explanation that starts with the name of the file that was refused
 (`chat.toml:` or `chat-secrets.toml:`) and gives the mapping's number or the line, or the name of a key that the other
-file takes (`channels` in the secrets file, say), never a value; `sotd log-path` prints the log's path. A start that
-Slack refuses or cannot reach (a rejected token, no network)
-is logged as "project chat did not start" and stays failed until the daemon restarts or a connect from a window saves the tokens again.
+file takes (`channels` in the secrets file, say), never a value; `sotd log-path` prints the log's path. A workspace's
+start that Slack refuses or cannot reach (a rejected token, no network) is logged as "a workspace's chat did not start"
+with the workspace's ID, and stays failed until the daemon restarts or the chat starts again: for now every connect and
+every pairing from a window starts every workspace again.
 
 A window can pair a project's folder with a channel, or unpair it, and the daemon then rewrites `chat.toml` whole and
 starts the chat again from the two files, with no restart; the Chat drawer's channel list sends this request. The daemon keeps every key
 the file takes and every mapping it ignores, and drops comments and the order of keys. A new mapping in a delivering file
 gets a `mail_after` of the daemon's clock at that moment, so a channel's backlog is never turned into mail. A channel
 already mapped to another folder that exists is refused, one mapped to a folder that no longer exists is taken over, and
-a `chat.toml` the daemon refuses is never rewritten. A pairing that changes nothing writes nothing. Restarting the chat
-costs every open Chat drawer one resync.
+a `chat.toml` the daemon refuses is never rewritten. A pairing that changes nothing writes nothing. A pairing names the
+workspace of its channel (none means the one `chat.toml` names), and a channel that workspace does not hold is refused.
+Restarting the chat costs every open Chat drawer one resync; for now a pairing or a connect restarts every workspace's
+chat, not only its own.
 
 Each file is a regular file of at most 64 KiB, and only the keys below are accepted.
 
@@ -318,9 +324,9 @@ Each file is a regular file of at most 64 KiB, and only the keys below are accep
 
 | Key | Form | Required | Meaning |
 |-----|------|----------|---------|
-| `workspace` | Slack id (a capital letter, then capitals and digits, 32 at most), not a name | yes | The one Slack workspace; it must equal `chat-secrets.toml`'s. A list or table naming a second one is refused. |
-| `channels` | list of Slack ids | yes | The channels the chat may use. A repeated channel is refused. |
-| `[[mapping]]` | table | one per project | `folder`, an absolute path of a project's folder (a folder with no row maps nothing until a row is made in it, and the window's default row, which runs no agent, never takes a channel), and `channel`, one of `channels`. On Windows write the path in single quotes (`'C:\work\proj'`). A table may also repeat `workspace`, which must match, and may carry its own `mail_after` (below), for example `mail_after = "1731283200.000000"`. Two entries for one folder, or one channel for two folders, are refused. |
+| `workspace` | Slack id (a capital letter, then capitals and digits, 32 at most), not a name | yes | The file's workspace: the one a mapping without its own `workspace` is in, and the one whose secrets are `chat-secrets.toml`. One id; a list or a table is refused. |
+| `channels` | list of Slack ids | yes | The channels the chat may use, of every workspace. A repeated channel is refused. |
+| `[[mapping]]` | table | one per project | `folder`, an absolute path of a project's folder (a folder with no row maps nothing until a row is made in it, and the window's default row, which runs no agent, never takes a channel), and `channel`, one of `channels`. On Windows write the path in single quotes (`'C:\work\proj'`). A table may name its channel's `workspace` (a Slack id), when it is another than the file's, and may carry its own `mail_after` (below), for example `mail_after = "1731283200.000000"`. Two entries for one folder, or one channel id for two folders, whatever their workspaces, are refused. |
 | `mail_after` | Slack timestamp (`<seconds>.<six digits>`), a quoted string | no | Setting it makes the file delivering: at most 32 mappings are allowed (an ignored one counts), and each mapping needs its own `mail_after`, set to the time you add the mapping, so a channel added later never has its backlog turned into mail. A channel's floor is the later of its mapping's value and this one. Write the current Unix time (`date +%s`, then `.000000`) and never copy another mapping's value. A value that is not a timestamp is refused even when the hub's `mail_after` is unset. A delivering file files a member's new post in a mapped channel as one line of mail to the row, once, also after a restart of the daemon (every start reads the inboxes). A post made while the daemon was down or the connection was lost, and a post whose filing was refused (the row had no live session, say), are found by a recovery pass, which reads the channel back to its floor; a post another connection on the chat app's token took waits for the next hello or the 6-hour sweep. A pass reads in proportion to the channel's posts since the floor (about 52 reads, 80 seconds, for 50,000 posts), so a floor moved forward by hand shortens it. |
 
 `chat-secrets.toml` holds `workspace`, `bot_token` (it starts `xoxb-`), `app_token` (it starts `xapp-`) and `user_token`
@@ -337,8 +343,10 @@ its Slack id, in the same form and holding that workspace, at the top of the con
 daemon reads `chat-secrets.toml` and the files named that way (not a backup such as `chat-secrets.toml~`, nor a
 lower-case id), at most 8 files, and takes or refuses each on its own, so a refused file never stops another
 workspace; a refused file, and a named file past the eighth or named for `chat.toml`'s own workspace, is named in the
-daemon's log with its reason. For now the daemon serves `chat.toml`'s workspace alone: another workspace's file is read,
-logged as not served, and changes nothing. A tool that needs several workspaces can read the files of this form.
+daemon's log with its reason. Each workspace whose file is taken runs its own chat, with its own app's tokens, and a
+project's actions reach Slack only through its own workspace's. A daemon from before several workspaces reads
+`chat-secrets.toml` alone and refuses a `chat.toml` whose mapping names another workspace, so going back to it with
+several workspaces mapped leaves its chat off until the newer one returns.
 
 A `chat.toml` of one mapping:
 

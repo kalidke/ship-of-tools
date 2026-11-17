@@ -89,8 +89,13 @@ pub enum ChatCode {
     NoUserToken,
     /// The person is not in the channel they posted to.
     NotAMember,
-    /// The token belongs to another Slack workspace than the one the chat is set up for.
+    /// The token belongs to another Slack workspace than the one the chat is set up for: only a daemon that serves one
+    /// workspace sends it.
     OtherWorkspace,
+    /// A `chat.connect` of a new workspace when the hub already holds `MAX_WORKSPACES`' secrets files.
+    TooManyWorkspaces,
+    /// The channel a `chat.pair` named is not one of its workspace's (Slack's `channel_not_found` to that workspace's app).
+    NoSuchChannel,
     /// The app is not in the channel a `chat.pair` named, and could not join it.
     NotInChannel,
     /// Another project's folder already maps the channel a `chat.pair` named.
@@ -125,7 +130,9 @@ impl ChatCode {
             ChatCode::UserTokenRefused => "Slack refused the \"User OAuth Token\"",
             ChatCode::NoUserToken => "no Slack code that posts as you is saved; open the channel list (Ctrl+Shift+K, or Cmd+Shift+K on a Mac) and choose Connect Slack again",
             ChatCode::NotAMember => "you are not in that channel in Slack; join it there first",
-            ChatCode::OtherWorkspace => "these Slack codes are for a different workspace than the one connected; the chat connects one Slack workspace for now (the manual page \"Setting up Slack\" says how to move it: press F1, select \"Choose channel\" in the list, and press Enter)",
+            ChatCode::OtherWorkspace => "these Slack codes are for another Slack workspace, and Ship of Tools on the computer that runs your agents is too old to connect more than one: whoever runs Ship of Tools there can update it",
+            ChatCode::TooManyWorkspaces => "the computer that runs your agents already holds 8 Slack workspaces, the most it can: to add another, remove one workspace's file chat-secrets-<id>.toml (<id> is that workspace's ID) from Ship of Tools' settings folder there, ~/.config/sot on Linux and macOS or %LOCALAPPDATA%\\sot\\config on Windows",
+            ChatCode::NoSuchChannel => "that channel is not in this Slack workspace",
             ChatCode::NotInChannel => "your Slack app is not in that channel",
             ChatCode::ChannelTaken => "another project already uses that channel",
             ChatCode::NotSaved => "the chat settings could not be saved",
@@ -241,9 +248,51 @@ pub struct ChatConnectRes {
     pub workspace: String,
 }
 
-/// `chat.channels`: the channels the picker offers.
+/// `chat.channels`: the channels the picker offers, of `workspace` (absent: `chat.toml`'s own, as an older window asks).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ChatChannelsReq {}
+pub struct ChatChannelsReq {
+    #[serde(default, deserialize_with = "workspace_id", skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
+}
+
+/// An optional workspace a request names: when present, an id within `MAX_ID`; absent or null is none.
+fn workspace_id<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    #[derive(Deserialize)]
+    struct Id(#[serde(deserialize_with = "an_id")] String);
+    Ok(Option::<Id>::deserialize(d)?.map(|i| i.0))
+}
+
+/// `chat.workspaces`: the Slack workspaces the hub is connected to, a read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChatWorkspacesReq {}
+
+/// One connected workspace: its id, its name as Slack last gave it (a reader shows the id without one), and whether its
+/// chat runs now.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChatWorkspaceInfo {
+    #[serde(deserialize_with = "an_id")]
+    pub id: String,
+    #[serde(default, deserialize_with = "channel_name", skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    pub running: bool,
+}
+
+/// Reply to `chat.workspaces`: `chat.toml`'s workspace (the one a request naming none means) and every connected
+/// workspace, ordered by name, the id breaking a tie. A reader keeps the first `MAX_WORKSPACES` entries it can read and
+/// skips the rest, never refusing the reply, so a later daemon's longer list or a malformed entry costs only entries.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChatWorkspacesRes {
+    #[serde(deserialize_with = "an_id")]
+    pub default: String,
+    #[serde(deserialize_with = "workspace_list")]
+    pub workspaces: Vec<ChatWorkspaceInfo>,
+}
+
+/// The readable entries of a list, the first `MAX_WORKSPACES` of them: an entry that does not decode is skipped.
+fn workspace_list<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<ChatWorkspaceInfo>, D::Error> {
+    let all = Vec::<serde_json::Value>::deserialize(d)?;
+    Ok(all.into_iter().filter_map(|v| serde_json::from_value(v).ok()).take(MAX_WORKSPACES).collect())
+}
 
 /// One listed channel: its id, its name as the daemon cleaned it, whether it is private, whether the app is in it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -264,11 +313,14 @@ pub struct ChatChannelsRes {
     pub more: bool,
 }
 
-/// `chat.pair`: map the row's folder to `channel`, or, with none (absent or null), unmap it.
+/// `chat.pair`: map the row's folder to `channel` of `workspace` (absent: `chat.toml`'s own, as an older window asks), or,
+/// with no channel (absent or null), unmap it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChatPairReq {
     #[serde(deserialize_with = "within::<_, MAX_ROW>")]
     pub row: String,
+    #[serde(default, deserialize_with = "workspace_id", skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
     #[serde(default)]
     pub channel: Option<ChatChannel>,
 }

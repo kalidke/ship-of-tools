@@ -30,8 +30,8 @@ pub const READ_DEADLINE: Duration = Duration::from_secs(15);
 pub const POST_DEADLINE: Duration = Duration::from_secs(30);
 /// A file's bytes on the wire (a post's upload): up to `MAX_CHAT_FILE` on a slow link.
 pub const TRANSFER_DEADLINE: Duration = Duration::from_secs(60);
-/// Transfers at once, per `Api` (one daemon's): the next is refused `busy` at once, so at most this many files'
-/// bytes are held for the network.
+/// Transfers at once, per `Transfers` (one daemon's, shared by every workspace's `Api`): the next is refused `busy` at
+/// once, so at most this many files' bytes are held for the network.
 pub const MAX_TRANSFERS: usize = 2;
 /// A URL Slack answers (an upload's, a file's): a longer one is `malformed`.
 const MAX_URL: usize = 2048;
@@ -439,6 +439,23 @@ pub enum PostOutcome {
 /// file is read into memory before its permit, and by `Api::post_file` across all three steps; freed when dropped.
 pub struct Transfer(#[allow(dead_code)] OwnedSemaphorePermit);
 
+/// The `MAX_TRANSFERS` permits: clones share them, so every `Api` given one clone draws on the same two. The daemon makes
+/// one per chat and gives it to every workspace's service, so it holds at most two files whatever the workspaces.
+#[derive(Clone)]
+pub struct Transfers(Arc<Semaphore>);
+
+impl Transfers {
+    pub fn new() -> Transfers {
+        Transfers(Arc::new(Semaphore::new(MAX_TRANSFERS)))
+    }
+}
+
+impl Default for Transfers {
+    fn default() -> Transfers {
+        Transfers::new()
+    }
+}
+
 /// How a file post ended. Only the share (the third step) can post a file, and it was submitted at most once.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FileOutcome {
@@ -521,17 +538,21 @@ pub struct Api {
     eligible: Mutex<Option<Instant>>,
     names: Mutex<Names>,
     closed: AtomicBool,
-    /// `MAX_TRANSFERS` permits, each held across every step of one transfer.
-    transfers: Arc<Semaphore>,
+    /// The permits it draws on, each held across every step of one transfer: its own unless it was given shared ones.
+    transfers: Transfers,
+    /// The workspace's name as the last `auth.test` gave it (`team`, cleaned), for words only.
+    name: Mutex<Option<String>>,
     /// The service's end: a refusal of the bot's token ends it, and an ended service's client is closed.
     end: Arc<End>,
 }
 
-/// A bot token's workspace and bot, as one `auth.test` names them before any workspace is configured.
+/// A bot token's workspace and bot, as one `auth.test` names them before any workspace is configured, and the workspace's
+/// name when Slack gives a usable one (`team`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Identified {
     pub workspace: String,
     pub own: Identity,
+    pub name: Option<String>,
 }
 
 /// Who a token (the bot's, or the user token's) is, with no workspace expected: one `auth.test` under the read rules (guarantee 28). The setup asks
@@ -565,6 +586,7 @@ pub(crate) async fn identify_at(http: &Http, bot: Secret, base: String) -> Resul
     Ok(Identified {
         workspace: workspace_of(&v)?.into(),
         own: identity_of(&v)?,
+        name: name_of(&v),
     })
 }
 
@@ -594,9 +616,26 @@ impl Api {
             eligible: Mutex::new(None),
             names: Mutex::new(Names::default()),
             closed: AtomicBool::new(false),
-            transfers: Arc::new(Semaphore::new(MAX_TRANSFERS)),
+            transfers: Transfers::new(),
+            name: Mutex::new(None),
             end: End::detached(),
         }
+    }
+
+    /// This client drawing on `transfers`, shared with every other client given them.
+    pub fn with_transfers(mut self, transfers: Transfers) -> Api {
+        self.transfers = transfers;
+        self
+    }
+
+    /// The Slack team id this client serves.
+    pub fn workspace(&self) -> &str {
+        &self.workspace
+    }
+
+    /// The workspace's name as the last `auth.test` gave it; `None` before one, or when Slack gave none usable.
+    pub fn workspace_name(&self) -> Option<String> {
+        self.name.lock().unwrap().clone()
     }
 
     /// This client under its service's end.
@@ -683,6 +722,21 @@ impl Api {
         self
     }
 
+    /// The person's user token checked once, at the service's start: one `auth.test` under it. A `team_id` other than this
+    /// client's workspace, or a code of `TOKEN_REFUSALS`, drops the token (a person's post is then refused unsent,
+    /// `NoPersonToken`) and answers why, a fixed code (`user_token_other_workspace`, `user_token_refused`); Slack's own
+    /// state or the transport keeps it, and so does a client that holds none (`None`).
+    pub(crate) async fn check_person(&self) -> Option<&'static str> {
+        let token = self.person.lock().unwrap().clone()?;
+        let dropped = match self.read_as(token, "auth.test", &[], MAX_BODY).await {
+            Ok(v) if workspace_of(&v).is_ok_and(|w| w != self.workspace) => "user_token_other_workspace",
+            Err(ApiError::Slack(code)) if TOKEN_REFUSALS.contains(&code.as_str()) => "user_token_refused",
+            _ => return None,
+        };
+        *self.person.lock().unwrap() = None;
+        Some(dropped)
+    }
+
     /// The bot's app (`bots.info`'s `bot.app_id` for the identity's `bot_id`; `NoIdentity`, unsent, for a bot with
     /// none). Its failure, any code, only leaves the app unknown and ends nothing: the check it serves fails open.
     pub async fn bot_app(&self) -> Result<String, ApiError> {
@@ -700,6 +754,7 @@ impl Api {
         }
         let identity = identity_of(&v)?;
         *self.own.lock().unwrap() = Some(identity.clone());
+        *self.name.lock().unwrap() = name_of(&v);
         Ok(identity)
     }
 
@@ -869,7 +924,7 @@ impl Api {
         if self.is_closed() {
             return Err(ApiError::Closed);
         }
-        self.transfers.clone().try_acquire_owned().map(Transfer).map_err(|_| ApiError::Http(HttpError::Busy))
+        self.transfers.0.clone().try_acquire_owned().map(Transfer).map_err(|_| ApiError::Http(HttpError::Busy))
     }
 
     /// Share a file once, as `kind` named `name`: Slack's three steps under the caller's transfer permit. Step 1 is a read
@@ -1352,6 +1407,13 @@ fn identity_of(v: &Value) -> Result<Identity, ApiError> {
         bot_id: answered_id(v, "bot_id").map(String::from),
         app_id: None,
     })
+}
+
+/// An `auth.test` answer's `team`, the workspace's name, its control characters dropped and trimmed; absent, not a
+/// string, empty, or past `MAX_NAME` is none (words only: the window then shows the id).
+fn name_of(v: &Value) -> Option<String> {
+    let (name, cut) = clean(v.get("team")?.as_str()?, MAX_NAME);
+    (!name.is_empty() && !cut).then_some(name)
 }
 
 fn answered_id<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
