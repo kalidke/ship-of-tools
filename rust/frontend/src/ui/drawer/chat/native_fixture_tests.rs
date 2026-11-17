@@ -19,6 +19,8 @@ struct Seen {
     threads: u32,
     posts: Vec<(String, Option<String>)>,
     connects: u32,
+    /// The workspaces whose channel lists were asked for.
+    lists: Vec<Option<String>>,
     /// The files whose original was asked for.
     originals: Vec<String>,
 }
@@ -65,12 +67,23 @@ impl Daemon {
         match req {
             OutgoingReq::ChatResolve { row } if self.unconfigured => {
                 self.seen.resolves += 1;
-                let off = serde_json::json!({ "state": "unconfigured", "reason": "not_connected" });
+                // The row's channel is in WS2, whose connection failed; WS1 runs.
+                let off = serde_json::json!({ "state": "unconfigured", "reason": "tokens_refused", "workspace": "WS2" });
                 Some(ChatEvt::Resolved { row, reply: ChatReply::Done(serde_json::from_value::<ChatResolveRes>(off).unwrap()) })
             }
             OutgoingReq::ChatConnect { .. } => {
                 (self.seen.connects, self.unconfigured) = (self.seen.connects + 1, false);
-                Some(ChatEvt::Connect { reply: ChatReply::Done(sot_protocol::ops::ChatConnectRes { workspace: "WS1".into() }) })
+                Some(ChatEvt::Connect { reply: ChatReply::Done(sot_protocol::ops::ChatConnectRes { workspace: "WS2".into(), name: Some("Beta Lab".into()) }) })
+            }
+            OutgoingReq::ChatWorkspaces => {
+                let all = serde_json::json!({ "default": "WS1", "workspaces": [
+                    { "id": "WS1", "name": "Alpha Lab", "running": true }, { "id": "WS2", "name": "Beta Lab", "running": !self.unconfigured } ] });
+                Some(ChatEvt::Workspaces { reply: ChatReply::Done(serde_json::from_value(all).unwrap()) })
+            }
+            OutgoingReq::ChatChannels { workspace } => {
+                self.seen.lists.push(workspace.clone());
+                let list = serde_json::json!({ "channels": [{ "id": "CH1", "name": "general", "private": false, "member": true }] });
+                Some(ChatEvt::Channels { workspace, reply: ChatReply::Done(serde_json::from_value(list).unwrap()) })
             }
             OutgoingReq::ChatResolve { row } => {
                 self.seen.resolves += 1;
@@ -220,8 +233,13 @@ impl State {
     /// decides the action), then routed as `drawer_pane_key` and `chat_key` route it, the Connect step's `connect_action`
     /// first. A winit `KeyEvent` cannot be built outside the event loop, so those two functions themselves are not called.
     fn witness_key(&mut self, key: Key, (ctrl, alt): (bool, bool), expect: Option<Action>) -> Result<()> {
+        self.witness_chord(key, Modifiers { ctrl, alt, shift: false, super_: false }, expect)
+    }
+
+    /// `witness_key` with any modifiers (Shift too).
+    fn witness_chord(&mut self, key: Key, mods: Modifiers, expect: Option<Action>) -> Result<()> {
+        let (ctrl, alt) = (mods.ctrl, mods.alt);
         let context = self.help_context();
-        let mods = Modifiers { ctrl, alt, shift: false, super_: false };
         let action = self.bindings.resolve(&key, Some(&key), mods, context.consumes_text(), |a| context.allows(a));
         anyhow::ensure!(action == expect, "{key:?} resolved to {action:?}, not {expect:?}");
         if super::connect::connect_action(self, action, &key, false, (ctrl, alt, false), "witness") {
@@ -516,6 +534,21 @@ impl State {
         self.witness_pump(events, sent, &mut daemon)?;
         self.redraw()?;
         anyhow::ensure!(self.chat.in_setup(), "unconfigured began no Connect step");
+        // B1 delta 7: the row's channel is in a workspace whose connection failed while another runs, so the step offers
+        // Ctrl+Shift+K, taken by the step's own keys: the other workspace's channel list opens in its place; Escape gives
+        // the step back.
+        let chord = if cfg!(target_os = "macos") { "Cmd+Shift+K" } else { "Ctrl+Shift+K" };
+        let pin = self.chat.body().map(|b| b.pin).unwrap_or_default();
+        anyhow::ensure!(pin.contains(&format!("{chord}  open the channel list of another workspace")), "the step's keys say {pin:?}");
+        let shift_k = Modifiers { ctrl: !cfg!(target_os = "macos"), alt: false, shift: true, super_: cfg!(target_os = "macos") };
+        self.witness_chord(Key::Character("K".into()), shift_k, Some(Action::ChatSetup))?;
+        anyhow::ensure!(self.chat.picking() && !self.chat.in_setup(), "the chord opened no channel list");
+        self.witness_pump(events, sent, &mut daemon)?;
+        anyhow::ensure!(daemon.seen.lists == [Some("WS1".to_string())], "the lists asked were {:?}", daemon.seen.lists);
+        anyhow::ensure!(self.chat.picking(), "the row's unconfigured answer took the list away");
+        self.chat.dismiss_picker();
+        self.witness_pump(events, sent, &mut daemon)?;
+        anyhow::ensure!(self.chat.in_setup(), "Escape over the list did not give the step back");
         // While the step has the keys, a typed character is neither logged nor shown as the last key.
         anyhow::ensure!(self.keys_take_secrets(), "the Connect step's keys are not taken as secret");
         let typed = crate::ui::input::keypress::key_texts(&Key::Character("q".into()), self.keys_take_secrets());
@@ -529,6 +562,8 @@ impl State {
         self.witness_pump(events, sent, &mut daemon)?;
         anyhow::ensure!(daemon.seen.connects == 1, "{} connects went", daemon.seen.connects);
         anyhow::ensure!(self.chat.title() == " chat · connected ", "the title says {:?}", self.chat.title());
+        let head = self.chat.body().map(|b| b.head).unwrap_or_default();
+        anyhow::ensure!(head.starts_with("Ship of Tools is connected to the Slack workspace Beta Lab."), "the connected screen says {head:?}");
         self.redraw()?;
         Ok(())
     }

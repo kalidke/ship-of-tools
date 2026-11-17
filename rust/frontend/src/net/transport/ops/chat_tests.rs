@@ -180,13 +180,14 @@ async fn a_connect_or_pair_without_its_reply_is_unknown_once_and_never_written_a
         let mut guard = PendingGuard { map: HashMap::new(), evt_tx: &evt_tx, host: "h".into() };
         guard.insert(4, PendingKind::ChatConnect);
         guard.insert(5, PendingKind::ChatPair { row: "r1".into(), channel: Some(channel.clone()) });
-        guard.insert(6, PendingKind::ChatChannels);
+        guard.insert(6, PendingKind::ChatChannels { workspace: None });
     }
     let (out_tx, out_rx) = outgoing_channel();
     let mut outbox = Outbox::new(out_rx);
     out_tx.send(OutgoingReq::ChatConnect { bot_token: token("xoxb"), user_token: token("xoxp"), app_token: token("xapp") }).unwrap();
-    out_tx.send(OutgoingReq::ChatPair { row: "r2".into(), channel: None }).unwrap();
-    out_tx.send(OutgoingReq::ChatChannels).unwrap();
+    out_tx.send(OutgoingReq::ChatPair { row: "r2".into(), workspace: None, channel: None }).unwrap();
+    out_tx.send(OutgoingReq::ChatChannels { workspace: Some("T2".into()) }).unwrap();
+    out_tx.send(OutgoingReq::ChatWorkspaces).unwrap();
     outbox.retire(&evt_tx, &"h".to_string()).await;
     drop(out_tx);
     let mut ended: Vec<String> = evt_rx.try_iter().map(|(_, e)| format!("{e:?}")).collect();
@@ -195,7 +196,8 @@ async fn a_connect_or_pair_without_its_reply_is_unknown_once_and_never_written_a
     assert_eq!(ended.iter().filter(|e| e.starts_with("Chat(ConnectUnknown)")).count(), 2, "{ended:?}");
     assert!(ended.iter().any(|e| e.contains("PairUnknown { row: \"r1\", channel: Some(ChatChannel(\"C9\")) }")), "{ended:?}");
     assert!(ended.iter().any(|e| e.contains("PairUnknown { row: \"r2\", channel: None }")), "{ended:?}");
-    assert!(matches!(outbox.recv().await, Some(OutgoingReq::ChatChannels)), "only the read is kept");
+    assert!(matches!(outbox.recv().await, Some(OutgoingReq::ChatChannels { workspace: Some(w) }) if w == "T2"), "only the reads are kept");
+    assert!(matches!(outbox.recv().await, Some(OutgoingReq::ChatWorkspaces)));
     assert!(outbox.recv().await.is_none());
 }
 
@@ -207,13 +209,17 @@ fn the_setup_replies_carry_their_request_and_refusal() {
     let channel: sot_protocol::ops::ChatChannel = serde_json::from_value(serde_json::json!("C9")).unwrap();
     let mut pending = HashMap::from([
         (1, PendingKind::ChatConnect),
-        (2, PendingKind::ChatChannels),
+        (2, PendingKind::ChatChannels { workspace: None }),
         (3, PendingKind::ChatPair { row: "r".into(), channel: Some(channel.clone()) }),
         (4, PendingKind::ChatPair { row: "r".into(), channel: None }),
         (5, PendingKind::ChatConnect),
         (6, PendingKind::ChatPair { row: "r".into(), channel: None }),
-        (7, PendingKind::ChatChannels),
+        (7, PendingKind::ChatChannels { workspace: None }),
         (8, PendingKind::ChatConnect),
+        (9, PendingKind::ChatWorkspaces),
+        (10, PendingKind::ChatChannels { workspace: Some("T2".into()) }),
+        (11, PendingKind::ChatWorkspaces),
+        (12, PendingKind::ChatConnect),
     ]);
     let list = serde_json::json!({ "channels": [{ "id": "C9", "name": "lab", "private": false, "member": true }], "more": true });
     let shown = events(
@@ -227,17 +233,25 @@ fn the_setup_replies_carry_their_request_and_refusal() {
             Frame::res(6, op::CHAT_PAIR, serde_json::json!({ "error": "a panic's text", "code": "handler_error" })),
             Frame::res(7, op::CHAT_CHANNELS, serde_json::json!({ "error": "unknown op: chat.channels" })),
             Frame::res(8, op::CHAT_CONNECT, serde_json::json!({ "workspace": 5 })),
+            Frame::res(9, op::CHAT_WORKSPACES, serde_json::json!({ "default": "T1", "workspaces": [{ "id": "T1", "name": "Alpha Lab", "running": true }] })),
+            Frame::res(10, op::CHAT_CHANNELS, serde_json::json!({ "error": "x", "code": "no_such_channel" })),
+            Frame::res(11, op::CHAT_WORKSPACES, serde_json::json!({ "error": "unknown op: chat.workspaces" })),
+            Frame::res(12, op::CHAT_CONNECT, serde_json::json!({ "workspace": "T2", "name": "Beta Lab" })),
         ],
     );
     assert!(pending.is_empty(), "every reply consumed its entry");
-    assert!(shown[0].starts_with("Chat(Connect { reply: Done(ChatConnectRes { workspace: \"T1\" }) })"), "{}", shown[0]);
-    assert!(shown[1].starts_with("Chat(Channels { reply: Done(") && shown[1].contains("more: true"), "{}", shown[1]);
+    assert!(shown[0].starts_with("Chat(Connect { reply: Done(ChatConnectRes { workspace: \"T1\", name: None }) })"), "{}", shown[0]);
+    assert!(shown[1].starts_with("Chat(Channels { workspace: None, reply: Done(") && shown[1].contains("more: true"), "{}", shown[1]);
     assert!(shown[2].contains("Paired { row: \"r\", channel: Some(ChatChannel(\"C9\")), reply:") && shown[2].contains("Refused(ChannelTaken)"), "{}", shown[2]);
     assert!(shown[3].contains("Paired { row: \"r\", channel: None, reply: Done("), "{}", shown[3]);
     assert!(shown[4].starts_with("Chat(Connect { reply: Refused(AppTokenRefused) })"), "{}", shown[4]);
     assert_eq!(shown[5], "Chat(PairUnknown { row: \"r\", channel: None })");
-    assert!(shown[6].starts_with("Chat(Channels { reply: Unsupported })"), "{}", shown[6]);
+    assert!(shown[6].starts_with("Chat(Channels { workspace: None, reply: Unsupported })"), "{}", shown[6]);
     assert_eq!(shown[7], "Chat(ConnectUnknown)");
+    assert!(shown[8].starts_with("Chat(Workspaces { reply: Done(") && shown[8].contains("\"Alpha Lab\""), "{}", shown[8]);
+    assert_eq!(shown[9], "Chat(Channels { workspace: Some(\"T2\"), reply: Refused(NoSuchChannel) })", "a refused list still names its workspace");
+    assert_eq!(shown[10], "Chat(Workspaces { reply: Unsupported })", "an older daemon serves one workspace");
+    assert!(shown[11].contains("ChatConnectRes { workspace: \"T2\", name: Some(\"Beta Lab\") }"), "{}", shown[11]);
 }
 
 fn file_req(variant: &str) -> ChatFileReq {

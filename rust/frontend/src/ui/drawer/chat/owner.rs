@@ -487,7 +487,7 @@ impl ChatOwner {
             // The drawer (`ChatDrawer`) answers a resolve before the owner sees it.
             ChatEvt::Resolved { .. } => Vec::new(),
             // The drawer answers the setup's replies (the Connect step's and the picker's) before the owner sees them.
-            ChatEvt::Connect { .. } | ChatEvt::ConnectUnknown | ChatEvt::Channels { .. } | ChatEvt::Paired { .. } | ChatEvt::PairUnknown { .. } => Vec::new(),
+            ChatEvt::Connect { .. } | ChatEvt::ConnectUnknown | ChatEvt::Workspaces { .. } | ChatEvt::Channels { .. } | ChatEvt::Paired { .. } | ChatEvt::PairUnknown { .. } => Vec::new(),
             // The drawer gives a picture's reply to its pictures owner before the owner sees it.
             ChatEvt::File { .. } => Vec::new(),
             ChatEvt::Watched { target, reply } => self.on_watched(host, &target, reply, now),

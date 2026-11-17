@@ -34,9 +34,17 @@ fn unmapped() -> (ChatDrawer, Instant, Vec<Out>) {
     d.tick(shown("ROW1"), t0 + Duration::from_millis(200));
     let at = t0 + Duration::from_millis(210);
     d.on_evt(&host(), answer("ROW1", serde_json::json!({ "state": "unmapped" })), at);
-    // The frame after the answer opens the picker by itself, and asks for the list.
+    // The frame after the answer opens the picker by itself, and asks which workspaces run; an older computer's daemon
+    // answers that it serves one, and the picker asks for its list.
     let outs = d.tick(shown("ROW1"), at + Duration::from_millis(1)).0;
+    older(&mut d, at);
     (d, at, outs)
+}
+
+/// The picker's daemon is an older computer's, which serves one workspace: the picker asks for that one's list.
+pub(super) fn older(d: &mut ChatDrawer, at: Instant) {
+    let outs = d.on_evt(&host(), ChatEvt::Workspaces { reply: ChatReply::Unsupported }, at);
+    assert_eq!(outs.iter().filter(|(_, r)| matches!(r, OutgoingReq::ChatChannels { workspace: None })).count(), 1);
 }
 
 fn channels_reply(more: bool) -> ChatEvt {
@@ -46,18 +54,19 @@ fn channels_reply(more: bool) -> ChatEvt {
         { "id": "C2", "name": "lab-microscopes", "private": false, "member": false },
         { "id": "C1", "name": "lab-general", "private": false, "member": true },
     ], "more": more })).unwrap();
-    ChatEvt::Channels { reply: ChatReply::Done(res) }
+    ChatEvt::Channels { workspace: None, reply: ChatReply::Done(res) }
 }
 
 fn pairs(outs: &[Out]) -> Vec<(String, Option<String>)> {
     outs.iter().filter_map(|(_, r)| match r {
-        OutgoingReq::ChatPair { row, channel } => Some((row.clone(), channel.as_ref().map(|c| c.as_str().to_string()))),
+        OutgoingReq::ChatPair { row, channel, .. } => Some((row.clone(), channel.as_ref().map(|c| c.as_str().to_string()))),
         _ => None,
     }).collect()
 }
 
+/// How many times the picker opened and asked which workspaces run, the first of its reads.
 fn lists(outs: &[Out]) -> usize {
-    outs.iter().filter(|(_, r)| matches!(r, OutgoingReq::ChatChannels)).count()
+    outs.iter().filter(|(_, r)| matches!(r, OutgoingReq::ChatWorkspaces)).count()
 }
 
 fn paired(row: &str, channel: Option<&str>, reply: ChatReply<ChatPairRes>) -> ChatEvt {
@@ -94,9 +103,9 @@ fn the_picker_lists_channels_by_name_with_their_marks_and_says_how_a_private_one
     assert!(lines[4].starts_with("  Connect Slack again") && lines[4].ends_with("connect again with new Slack codes (same workspace)"), "{lines:?}");
     let guide = lines[5..].join(" ");
     assert!(guide.contains("Esc to close") && guide.contains("/invite @") && !guide.contains("paste a channel's link"), "{guide}");
-    // The head names the one connected workspace and says another cannot be added yet, and what the Slack app is.
+    // An older computer's head names the one connected workspace and says who can update it, and what the Slack app is.
     let head = shown_lines(&d).join(" ");
-    assert!(head.contains("channels of your connected Slack workspace") && head.contains("one Slack workspace for now, so another cannot be added yet"), "{head}");
+    assert!(head.contains("channels of your connected Slack workspace") && head.contains("Ship of Tools on a is too old to connect more than one Slack workspace"), "{head}");
     assert!(head.contains("Your Slack app (the bot that reads the channel and posts for your agents)"), "{head}");
     assert!(guide.contains("To move the chat to another workspace, see the manual page \"Setting up Slack\": press F1, select \"Choose channel\" in the list, and press Enter"), "{guide}");
     // A list cut at the bound says to paste a link.
@@ -117,26 +126,26 @@ fn the_picker_lists_channels_by_name_with_their_marks_and_says_how_a_private_one
     (0..5).for_each(|_| d.picker_step(false));
     // A read that fails says why and offers only to connect Slack again; the picker does not hide.
     let (mut d, at, _) = unmapped();
-    d.on_evt(&host(), ChatEvt::Channels { reply: ChatReply::Refused(ChatCode::Unavailable) }, at);
+    d.on_evt(&host(), ChatEvt::Channels { workspace: None, reply: ChatReply::Refused(ChatCode::Unavailable) }, at);
     assert_eq!(shown_lines(&d)[..2], ["could not list the channels: the chat is not available here", "> Connect Slack again  connect again with new Slack codes (same workspace)"]);
-    d.on_evt(&host(), ChatEvt::Channels { reply: ChatReply::Unsupported }, at);
+    d.on_evt(&host(), ChatEvt::Channels { workspace: None, reply: ChatReply::Unsupported }, at);
     assert_eq!(shown_lines(&d)[0], "Ship of Tools on a is too old to list channels: update it");
     assert!(d.picker_enter().is_empty() && d.in_setup(), "Connect Slack again sends nothing and starts the Connect step");
 }
 
-/// The listed picker says whose channels these are, that the chat connects one Slack workspace for now, so another cannot be
-/// added yet, and where the manual says how to move it; a filter that matches nothing keeps the line and adds its own.
+/// An older computer's listed picker says whose channels these are, that Ship of Tools there connects one Slack workspace
+/// and who can update it, and where the manual says how to move it; a filter that matches nothing keeps the line and adds its own.
 #[test]
 fn the_picker_says_the_one_connected_workspace_and_that_another_cannot_be_added_yet() {
     let (mut d, at, _) = unmapped();
     d.on_evt(&host(), channels_reply(false), at);
     let said = shown_lines(&d).join(" ");
-    assert!(said.contains("These are the channels of your connected Slack workspace. The chat connects one Slack workspace for now, so another cannot be added yet."), "{said}");
+    assert!(said.contains("These are the channels of your connected Slack workspace. Ship of Tools on a is too old to connect more than one Slack workspace: whoever runs Ship of Tools there can update it."), "{said}");
     assert!(said.contains("manual page \"Setting up Slack\": press F1, select \"Choose channel\" in the list, and press Enter; the page opens in your browser."), "{said}");
     // Typing narrows the entries and leaves the line; a filter with no match says so under it.
     d.picker_edit(Edit::Text("zzz"));
     let said = shown_lines(&d).join(" ");
-    assert!(said.contains("another cannot be added yet") && said.contains("no channel matches"), "{said}");
+    assert!(said.contains("whoever runs Ship of Tools there") && said.contains("no channel matches"), "{said}");
 }
 
 #[test]
@@ -215,6 +224,7 @@ fn the_setup_chord_offers_no_channel_first_on_a_mapped_row() {
     let (mut d, at) = channel(&[]);
     let outs = d.open_picker(shown("ROW1").as_ref()).unwrap();
     assert_eq!(lists(&outs), 1);
+    older(&mut d, at);
     d.on_evt(&host(), channels_reply(false), at);
     let lines = listed(&d);
     assert!(lines[0].starts_with("  No channel for this project") && lines[1].starts_with("> #lab-general"), "{lines:?}");
@@ -374,13 +384,15 @@ fn a_request_that_could_not_be_queued_is_told_it_was_refused_unavailable() {
         "kind": "person", "name": "tester", "text": "hi" })).unwrap();
     assert!(matches!(never_written(&OutgoingReq::ChatPost { req: post }),
         Some(ChatEvt::Posted { reply: ChatReply::Done(sot_protocol::ops::ChatPostRes::Refused { code: ChatCode::Unavailable }), .. })));
-    assert!(matches!(never_written(&OutgoingReq::ChatPair { row: "ROW1".into(), channel: Some(id("C1")) }),
+    assert!(matches!(never_written(&OutgoingReq::ChatPair { row: "ROW1".into(), workspace: None, channel: Some(id("C1")) }),
         Some(ChatEvt::Paired { reply: ChatReply::Refused(ChatCode::Unavailable), .. })));
-    assert!(matches!(never_written(&OutgoingReq::ChatChannels), Some(ChatEvt::Channels { reply: ChatReply::Refused(ChatCode::Unavailable) })));
+    assert!(matches!(never_written(&OutgoingReq::ChatChannels { workspace: None }), Some(ChatEvt::Channels { workspace: None, reply: ChatReply::Refused(ChatCode::Unavailable) })));
+    assert!(matches!(never_written(&OutgoingReq::ChatChannels { workspace: Some("WS1".into()) }), Some(ChatEvt::Channels { workspace: Some(w), .. }) if w == "WS1"));
+    assert!(matches!(never_written(&OutgoingReq::ChatWorkspaces), Some(ChatEvt::Workspaces { reply: ChatReply::Refused(ChatCode::Unavailable) })));
     assert!(never_written(&OutgoingReq::ChatResolve { row: "ROW1".into() }).is_none());
     // Told so, the picker is not left waiting: its list says why, and a pair that was never queued is refused and frees the next.
     let (mut d, at, _) = unmapped();
-    d.on_evt(&host(), never_written(&OutgoingReq::ChatChannels).unwrap(), at);
+    d.on_evt(&host(), never_written(&OutgoingReq::ChatChannels { workspace: None }).unwrap(), at);
     assert_eq!(shown_lines(&d)[0], "could not list the channels: the chat is not available here");
     d.on_evt(&host(), channels_reply(false), at);
     let sent = d.picker_enter();
@@ -396,6 +408,8 @@ fn an_empty_channel_says_no_messages_in_the_body_and_the_picker_and_a_thread_say
     let (mut d, _) = channel(&[]);
     assert_eq!(d.body().unwrap().lines(40, 5), ["no messages"]);
     d.open_picker(shown("ROW1").as_ref()).unwrap();
+    assert_eq!(d.body().unwrap().lines(80, 5), ["reading which Slack workspaces the chat on a is connected to…"]);
+    older(&mut d, Instant::now());
     assert_eq!(d.body().unwrap().lines(40, 5), ["reading Slack's channels…"]);
     let (d, _) = channel(&[top(1)]);
     assert!(d.body().is_none(), "a channel with a record says nothing");
@@ -452,4 +466,118 @@ fn the_body_draws_the_choice_in_view_and_the_guide_below_it() {
     assert!(rows.len() <= 10);
     assert!(rows.iter().any(|t| t.starts_with("> #c20")), "{rows:?}");
     assert!(rows.last().unwrap().ends_with("rows"), "{rows:?}");
+}
+
+/// A `chat.workspaces` answer: `default`, then each workspace's id, name and whether it runs.
+fn workspaces(default: &str, all: &[(&str, Option<&str>, bool)]) -> ChatEvt {
+    let list: Vec<serde_json::Value> = all.iter().map(|(id, name, running)| serde_json::json!({ "id": id, "name": name, "running": running })).collect();
+    let res = serde_json::from_value(serde_json::json!({ "default": default, "workspaces": list })).unwrap();
+    ChatEvt::Workspaces { reply: ChatReply::Done(res) }
+}
+
+/// The workspaces whose channels were asked for.
+fn asked(outs: &[Out]) -> Vec<Option<String>> {
+    outs.iter().filter_map(|(_, r)| match r {
+        OutgoingReq::ChatChannels { workspace } => Some(workspace.clone()),
+        _ => None,
+    }).collect()
+}
+
+fn listed_in(workspace: &str, more: bool) -> ChatEvt {
+    match channels_reply(more) {
+        ChatEvt::Channels { reply, .. } => ChatEvt::Channels { workspace: Some(workspace.to_string()), reply },
+        _ => unreachable!(),
+    }
+}
+
+/// An unmapped row's picker on a computer running two workspaces (a third stopped): it opens on the default's list, one
+/// workspace at a time, says so with Left and Right, moves between them without wrapping, and pairs in the one shown.
+#[test]
+fn the_picker_shows_one_workspace_at_a_time_and_left_and_right_move_between_them() {
+    let t0 = Instant::now();
+    let mut d = ChatDrawer::default();
+    d.set_focused(true);
+    d.on_connection(&host(), true, false, t0);
+    d.tick(shown("ROW1"), t0);
+    d.tick(shown("ROW1"), t0 + Duration::from_millis(200));
+    let at = t0 + Duration::from_millis(210);
+    d.on_evt(&host(), answer("ROW1", serde_json::json!({ "state": "unmapped" })), at);
+    assert_eq!(lists(&d.tick(shown("ROW1"), at).0), 1);
+    let all = [("TAAAA1111", Some("Alpha Lab"), true), ("TBBBB2222", Some("Beta Lab"), true), ("TCCCC3333", Some("Gamma Lab"), false)];
+    assert_eq!(asked(&d.on_evt(&host(), workspaces("TAAAA1111", &all), at)), [Some("TAAAA1111".to_string())]);
+    assert_eq!(d.title(), " chat · choose this project's channel · Alpha Lab (1 of 2) ");
+    assert_eq!(shown_lines(&d), ["reading the channels of the Slack workspace Alpha Lab…"]);
+    // Another workspace's late list is not this one's.
+    d.on_evt(&host(), listed_in("TBBBB2222", false), at);
+    assert_eq!(shown_lines(&d), ["reading the channels of the Slack workspace Alpha Lab…"]);
+    d.on_evt(&host(), listed_in("TAAAA1111", false), at);
+    let said = d.body().unwrap().lines(2000, 60).join(" ");
+    assert!(said.contains("These are the channels of the Slack workspace Alpha Lab that you can see, one of the 2 Slack workspaces the chat on a is connected to. The list shows one workspace at a time: Left and Right move between them, and Connect a Slack workspace is at the end of each."), "{said}");
+    assert!(said.contains("picking a channel adds it there") && said.contains("Left and Right for another Slack workspace"), "{said}");
+    assert!(!said.contains("To move the chat to another workspace"), "{said}");
+    let lines = listed(&d);
+    assert!(lines[4].starts_with("  Connect a Slack workspace") && lines[4].ends_with("add a Slack workspace, or give one new Slack codes"), "{lines:?}");
+    // Left at the first does nothing; Right shows the second and asks its list; Right at the last does nothing.
+    assert!(d.picker_move(false).is_empty());
+    assert_eq!(asked(&d.picker_move(true)), [Some("TBBBB2222".to_string())]);
+    assert_eq!(d.title(), " chat · choose this project's channel · Beta Lab (2 of 2) ");
+    assert!(d.picker_move(true).is_empty());
+    d.on_evt(&host(), listed_in("TBBBB2222", false), at);
+    // Enter pairs in the workspace shown.
+    let sent = d.picker_enter();
+    assert!(matches!(sent.as_slice(), [(_, OutgoingReq::ChatPair { workspace: Some(w), channel: Some(c), .. })] if w == "TBBBB2222" && c.as_str() == "C1"), "{sent:?}");
+    // A channel that is not in it says which workspace and that the others are a key away.
+    d.on_evt(&host(), paired("ROW1", Some("C1"), ChatReply::Refused(ChatCode::NoSuchChannel)), at);
+    assert_eq!(d.take_notice().as_deref(), Some("not set: that channel is not in the Slack workspace Beta Lab; Left and Right show the channels of the other Slack workspaces"));
+    assert!(d.picking());
+    // A pasted link pairs in the workspace it names when that one runs; one the computer is not connected to is refused.
+    let sent = d.picker_paste("https://app.slack.com/client/TAAAA1111/C0456EFGH").unwrap();
+    assert!(matches!(sent.as_slice(), [(_, OutgoingReq::ChatPair { workspace: Some(w), .. })] if w == "TAAAA1111"), "{sent:?}");
+    d.on_evt(&host(), paired("ROW1", Some("C0456EFGH"), ChatReply::Refused(ChatCode::NotInChannel)), at);
+    assert_eq!(
+        d.picker_paste("https://app.slack.com/client/TCCCC3333/C0456EFGH").unwrap_err(),
+        "not pasted: that channel is in a Slack workspace the chat on a is not connected to; to connect it, choose Connect a Slack workspace at the end of this list"
+    );
+    let sent = d.picker_paste("C0456EFGH").unwrap();
+    assert!(matches!(sent.as_slice(), [(_, OutgoingReq::ChatPair { workspace: Some(w), .. })] if w == "TBBBB2222"), "an id alone pairs in the one shown: {sent:?}");
+}
+
+/// A mapped row's picker opens on its own workspace; one workspace's list names it and says how to add another; a
+/// workspace with no name is said by its ID; none running leaves only the Connect step; a list that fails names its workspace.
+#[test]
+fn the_picker_opens_on_the_rows_workspace_and_says_each_place() {
+    let (mut d, at) = channel(&[]);
+    assert_eq!(lists(&d.open_picker(shown("ROW1").as_ref()).unwrap()), 1);
+    let all = [("TAAAA1", Some("Alpha Lab"), true), ("WS1", None, true)];
+    assert_eq!(asked(&d.on_evt(&host(), workspaces("TAAAA1", &all), at)), [Some("WS1".to_string())], "the row's own, not the default");
+    assert_eq!(d.title(), " chat · choose this project's channel · workspace WS1 (2 of 2) ");
+    d.on_evt(&host(), ChatEvt::Channels { workspace: Some("WS1".into()), reply: ChatReply::Refused(ChatCode::Unavailable) }, at);
+    assert!(d.body().unwrap().lines(2000, 9)[0].starts_with("could not list the channels of the Slack workspace WS1: the chat is not available here"));
+    // Unpairing names the workspace shown.
+    d.on_evt(&host(), listed_in("WS1", false), at);
+    (0..2).for_each(|_| d.picker_step(false));
+    assert!(matches!(d.picker_enter().as_slice(), [(_, OutgoingReq::ChatPair { workspace: Some(w), channel: None, .. })] if w == "WS1"));
+
+    let (mut d, at) = channel(&[]);
+    d.open_picker(shown("ROW1").as_ref()).unwrap();
+    d.on_evt(&host(), workspaces("WS1", &[("WS1", Some("Alpha Lab"), true)]), at);
+    assert_eq!(d.title(), " chat · choose this project's channel · Alpha Lab ");
+    d.on_evt(&host(), listed_in("WS1", false), at);
+    let said = d.body().unwrap().lines(2000, 60).join(" ");
+    assert!(said.contains("These are the channels of the Slack workspace Alpha Lab that you can see. Your Slack app (the bot you make for yourself in each Slack workspace, which reads the channel and posts for your agents) reads only the channels it is in; picking a channel adds it there. To add another Slack workspace, choose Connect a Slack workspace at the end of this list."), "{said}");
+    assert!(said.contains("Type to narrow the list, Up and Down to choose, Enter to pick"), "one workspace's guide has no Left and Right: {said}");
+    assert!(d.picker_move(true).is_empty());
+
+    let (mut d, at) = channel(&[]);
+    d.open_picker(shown("ROW1").as_ref()).unwrap();
+    assert!(asked(&d.on_evt(&host(), workspaces("WS1", &[("WS1", None, false)]), at)).is_empty());
+    let lines = shown_lines(&d);
+    assert!(lines.join(" ").starts_with("no Slack workspace is running on a right now: choose Connect a Slack workspace below; the log of Ship of Tools' service on a says why"), "{lines:?}");
+    assert_eq!(listed(&d)[0], "> Connect a Slack workspace  add a Slack workspace, or give one new Slack codes");
+    assert!(d.picker_enter().is_empty() && d.in_setup(), "the Connect step takes the picker's place");
+
+    let (mut d, at) = channel(&[]);
+    d.open_picker(shown("ROW1").as_ref()).unwrap();
+    d.on_evt(&host(), ChatEvt::Workspaces { reply: ChatReply::Refused(ChatCode::Busy) }, at);
+    assert!(shown_lines(&d)[0].starts_with("could not read which Slack workspaces the chat on a is connected to: "), "{:?}", shown_lines(&d));
 }

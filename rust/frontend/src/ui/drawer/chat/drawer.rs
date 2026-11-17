@@ -151,8 +151,9 @@ pub(super) fn never_written(req: &OutgoingReq) -> Option<ChatEvt> {
     Some(match req {
         OutgoingReq::ChatPost { req } => ChatEvt::Posted { req: req.clone(), reply: ChatReply::Done(ChatPostRes::Refused { code: refused }) },
         OutgoingReq::ChatPostFile { req } => ChatEvt::FilePosted { req: req.clone(), reply: ChatReply::Done(ChatPostFileRes::Refused { code: refused }) },
-        OutgoingReq::ChatPair { row, channel } => ChatEvt::Paired { row: row.clone(), channel: channel.clone(), reply: ChatReply::Refused(refused) },
-        OutgoingReq::ChatChannels => ChatEvt::Channels { reply: ChatReply::Refused(refused) },
+        OutgoingReq::ChatPair { row, channel, .. } => ChatEvt::Paired { row: row.clone(), channel: channel.clone(), reply: ChatReply::Refused(refused) },
+        OutgoingReq::ChatChannels { workspace } => ChatEvt::Channels { workspace: workspace.clone(), reply: ChatReply::Refused(refused) },
+        OutgoingReq::ChatWorkspaces => ChatEvt::Workspaces { reply: ChatReply::Refused(refused) },
         OutgoingReq::ChatConnect { .. } => ChatEvt::Connect { reply: ChatReply::Refused(refused) },
         OutgoingReq::ChatFile { req } => ChatEvt::File { req: req.clone(), reply: ChatReply::Refused(refused) },
         _ => return None,
@@ -199,7 +200,7 @@ impl ChatDrawer {
             outs = self.owner_outs(ChatOwner::stop);
         }
         outs.extend(step.resolve);
-        self.follow_setup();
+        outs.extend(self.follow_setup());
         // An unmapped row opens the picker by itself while the drawer has the keys, once per row (Escape keeps it closed).
         if self.focused && self.modal.is_none() && self.rows.stand() == Stand::Unmapped && self.dismissed.as_ref() != self.rows.row() {
             let row = self.rows.row().cloned();
@@ -211,15 +212,21 @@ impl ChatDrawer {
         (outs, step.settling)
     }
 
-    /// The Connect step follows the row's stand: `unconfigured` begins it (in place of the picker) or tells it the reason
-    /// again; another answer ends one begun from `unconfigured` while the person is still pasting (`Connect::ends_on_another_answer`).
-    fn follow_setup(&mut self) {
+    /// The Connect step follows the row's stand: `unconfigured` begins it (in place of the picker, but for one the step
+    /// itself opened to move the project to another workspace) or tells it the reason again; another answer ends one begun
+    /// from `unconfigured` while the person is still pasting (`Connect::ends_on_another_answer`). A step for a row whose
+    /// workspace failed asks which workspaces run, so it can offer another's channels.
+    fn follow_setup(&mut self) -> Vec<Out> {
         match self.rows.stand() {
             Stand::Unconfigured(reason) => match self.modal.as_mut().map(|m| &mut m.kind) {
                 Some(Kind::Connect(c)) => c.reason(reason),
+                Some(Kind::Picker(p)) if p.away() => {}
                 _ => {
                     if let Some(host) = self.rows.row().map(|r| r.host.clone()) {
-                        self.open_modal(Kind::Connect(Connect::new(host, reason, self.login, true)));
+                        let failed = self.rows.workspace().map(str::to_string);
+                        let ask = failed.is_some().then(|| (host.clone(), OutgoingReq::ChatWorkspaces));
+                        self.open_modal(Kind::Connect(Connect::new(host, reason, self.login, true).in_workspace(failed)));
+                        return ask.into_iter().collect();
                     }
                 }
             },
@@ -230,6 +237,7 @@ impl ChatDrawer {
                 }
             }
         }
+        Vec::new()
     }
 
     /// The modal screen takes the body: the channel's view (or a modal's before it) is set aside, the thread closed and the name
@@ -303,11 +311,17 @@ impl ChatDrawer {
             self.connect_sent = Some(host.clone());
         }
         let mut outs: Vec<Out> = out.into_iter().collect();
-        if asks.done {
+        let connected = self.connect().and_then(Connect::connected).map(str::to_string);
+        if asks.away {
+            // Ctrl+Shift+K over a workspace whose connection failed: the channels of the others, the step behind.
+            self.close_modal();
+            let row = self.rows.row().cloned();
+            outs.extend(self.open_picker_at(row.as_ref(), None, true).unwrap_or_default());
+        } else if asks.done {
             if matches!(self.rows.stand(), Stand::Mapped | Stand::Unmapped) {
                 self.close_modal();
                 let row = self.rows.row().cloned();
-                outs.extend(self.open_picker(row.as_ref()).unwrap_or_default());
+                outs.extend(self.open_picker_at(row.as_ref(), connected, false).unwrap_or_default());
             } else {
                 asks.notice = Some("setting up the chat: press Enter again in a few seconds to choose this project's channel".into());
             }
@@ -391,9 +405,21 @@ impl ChatDrawer {
                 }
             }
             ChatEvt::Resolved { .. } => Vec::new(),
-            ChatEvt::Channels { reply } => {
+            // Which workspaces run: the picker asks one's channels; the Connect step learns whether another runs.
+            ChatEvt::Workspaces { reply } => match self.modal.as_mut().map(|m| &mut m.kind) {
+                Some(Kind::Picker(p)) if &p.row.host == host => match p.on_workspaces(reply) {
+                    Some(workspace) => vec![(host.clone(), OutgoingReq::ChatChannels { workspace })],
+                    None => Vec::new(),
+                },
+                Some(Kind::Connect(c)) if c.host() == host => {
+                    c.on_workspaces(&reply);
+                    Vec::new()
+                }
+                _ => Vec::new(),
+            },
+            ChatEvt::Channels { workspace, reply } => {
                 if let Some(p) = self.picker_mut().filter(|p| &p.row.host == host) {
-                    p.on_channels(reply);
+                    p.on_channels(workspace.as_deref(), reply);
                 }
                 Vec::new()
             }
@@ -568,17 +594,33 @@ impl ChatDrawer {
     /// channel for this project`). Any other stand says its words instead. The channel's view is set aside, and its thread
     /// closed (a thread's Left key would otherwise give back the channel's view under the picker).
     pub(in crate::ui) fn open_picker(&mut self, row: Option<&ResultRowIdentity>) -> Result<Vec<Out>, String> {
+        let start = self.rows.workspace().map(str::to_string);
+        self.open_picker_at(row, start, false)
+    }
+
+    /// The picker, opening on `start`'s list when that workspace runs. It asks first which workspaces run. `away`: the Connect
+    /// step of a row whose workspace failed opened it, to move the project into another (its stand stays `unconfigured`).
+    fn open_picker_at(&mut self, row: Option<&ResultRowIdentity>, start: Option<String>, away: bool) -> Result<Vec<Out>, String> {
         let Some(row) = row.filter(|r| self.rows.row() == Some(*r)) else { return Err("no project is selected to choose a channel for".into()) };
         let mapped = match self.rows.stand() {
             Stand::Mapped => true,
             Stand::Unmapped => false,
+            Stand::Unconfigured(_) if away => true,
             other => return Err(other.words(self.rows.host())),
         };
         if self.picker().is_some() {
             return Ok(Vec::new());
         }
-        self.open_modal(Kind::Picker(Picker::new(row.clone(), mapped, slack_app_name(self.login))));
-        Ok(vec![(row.host.clone(), OutgoingReq::ChatChannels)])
+        let picker = Picker::new(row.clone(), mapped, slack_app_name(self.login)).starting(start);
+        self.open_modal(Kind::Picker(if away { picker.away_from_failed() } else { picker }));
+        Ok(vec![(row.host.clone(), OutgoingReq::ChatWorkspaces)])
+    }
+
+    /// Left (`next` false) or Right in the picker: the previous or next workspace's channels, asked once it shows.
+    pub(in crate::ui) fn picker_move(&mut self, next: bool) -> Vec<Out> {
+        let Some(p) = self.picker_mut() else { return Vec::new() };
+        let host = p.row.host.clone();
+        p.move_by(next).map(|w| vec![(host, OutgoingReq::ChatChannels { workspace: Some(w) })]).unwrap_or_default()
     }
 
     /// The picker ends, and the channel's view returns.
@@ -620,9 +662,9 @@ impl ChatDrawer {
         self.picked(pick)
     }
 
-    pub(in crate::ui) fn picker_paste(&mut self, text: &str) -> Result<Vec<Out>, &'static str> {
+    pub(in crate::ui) fn picker_paste(&mut self, text: &str) -> Result<Vec<Out>, String> {
         if self.pair_sent.is_some() {
-            return Err("setting this project's channel…");
+            return Err("setting this project's channel…".into());
         }
         let pick = self.picker_mut().map(|p| p.paste(text)).transpose()?;
         Ok(self.picked(pick))
@@ -631,9 +673,9 @@ impl ChatDrawer {
     /// What picking an entry sends: one `chat.pair` for a channel, or for none, and nothing more until its reply.
     fn picked(&mut self, pick: Option<Pick>) -> Vec<Out> {
         let (Some(pick), Some(row)) = (pick, self.picker().map(|p| p.row.clone())) else { return Vec::new() };
-        let channel = match pick {
-            Pick::Channel(c) => Some(c),
-            Pick::Unpair => None,
+        let (workspace, channel) = match pick {
+            Pick::Channel(c, workspace) => (workspace, Some(c)),
+            Pick::Unpair(workspace) => (workspace, None),
             // New tokens: the Connect step takes the picker's place, and stays until the person leaves it.
             Pick::Reconnect => {
                 self.open_modal(Kind::Connect(Connect::new(row.host, ChatUnconfigured::NotConnected, self.login, false)));
@@ -641,7 +683,7 @@ impl ChatDrawer {
             }
         };
         self.pair_sent = Some(row.clone());
-        vec![(row.host, OutgoingReq::ChatPair { row: row.workspace_id, channel })]
+        vec![(row.host, OutgoingReq::ChatPair { row: row.workspace_id, workspace, channel })]
     }
 
     /// A `chat.pair` was answered (`None`: it may have been carried out). Every answer makes the row resolve again, so the
@@ -654,6 +696,7 @@ impl ChatDrawer {
         let ours = self.picker().is_some_and(|p| p.sent() && &p.row.host == host && p.row.workspace_id == row);
         let private = ours && channel.is_some_and(|c| self.picker().is_some_and(|p| p.is_private(c)));
         let words = match reply {
+            Some(ChatReply::Refused(ChatCode::NoSuchChannel)) if ours => self.picker().map(Picker::no_such_channel),
             Some(reply) => pair_words(reply, private, &slack_app_name(self.login), host),
             None => Some("the channel may have been set: the panel's top line shows which one".into()),
         };

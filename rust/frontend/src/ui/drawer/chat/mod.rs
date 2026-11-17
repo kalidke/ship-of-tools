@@ -323,8 +323,9 @@ pub(in crate::ui) fn name_key(state: &mut State, key: &KeyPress<'_>, label: &str
     })
 }
 
-/// A key while the channel picker is open: ArrowUp and ArrowDown choose, Enter picks, Escape closes, paste is a channel link
-/// and typing narrows the list (`prompt_key`); every other key reaches the drawer as before.
+/// A key while the channel picker is open: ArrowUp and ArrowDown choose, ArrowLeft and ArrowRight show another Slack
+/// workspace's channels, Enter picks, Escape closes, paste is a channel link and typing narrows the list (`prompt_key`);
+/// every other key reaches the drawer as before.
 pub(in crate::ui) fn picker_key(state: &mut State, key: &KeyPress<'_>, label: &str) -> bool {
     if !state.chat.picking() {
         return false;
@@ -335,6 +336,17 @@ pub(in crate::ui) fn picker_key(state: &mut State, key: &KeyPress<'_>, label: &s
         _ => None,
     } {
         state.chat.picker_step(down);
+        prompt_done(state, label);
+        return true;
+    }
+    if let Some(next) = match key.action {
+        Some(Action::ChatThreadClose) => Some(false),
+        Some(Action::ChatThreadOpen) => Some(true),
+        _ => None,
+    } {
+        if !key.event.repeat {
+            state.with_chat(|c, _| c.picker_move(next));
+        }
         prompt_done(state, label);
         return true;
     }
@@ -355,7 +367,8 @@ pub(in crate::ui) fn picker_key(state: &mut State, key: &KeyPress<'_>, label: &s
                     Vec::new()
                 }));
             }
-            refused
+            refused.into_iter().for_each(|words| state.status.set(words));
+            None
         }
         PromptStep::Edit(edit) => {
             state.chat.picker_edit(edit);

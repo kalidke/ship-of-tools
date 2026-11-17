@@ -27,6 +27,8 @@ struct Wanted {
     answer: Option<(Stand, Instant)>,
     /// The last mapped answer's channel id and the name it carried, if any: the title says `#name` for that id.
     name: Option<(String, String)>,
+    /// The Slack workspace the last answer named: a mapped row's, or the one an `unconfigured` answer says failed.
+    workspace: Option<String>,
     /// Mapped answers with no name so far, and when the next one is asked for (`None` once the asking ended).
     nameless: usize,
     retry_at: Option<Instant>,
@@ -61,7 +63,7 @@ pub(super) fn computer(host: &str) -> String {
 
 /// Where a person finds why the chat is not running: the log of Ship of Tools' service on the computer, and the command that
 /// prints its place there (the window cannot know another computer's folder).
-fn log_words(c: &str) -> String {
+pub(super) fn log_words(c: &str) -> String {
     format!("the log of Ship of Tools' service on {c} says why; to find it, run `sotd log-path` in a terminal on {c}")
 }
 
@@ -114,7 +116,7 @@ impl RowChannel {
     pub(super) fn tick(&mut self, wanted: Option<ResultRowIdentity>, now: Instant) -> Tick {
         let same = self.wanted.as_ref().map(|w| &w.id) == wanted.as_ref();
         if !same {
-            self.wanted = wanted.map(|id| Wanted { id, since: now, asked: false, answer: None, name: None, nameless: 0, retry_at: None });
+            self.wanted = wanted.map(|id| Wanted { id, since: now, asked: false, answer: None, name: None, workspace: None, nameless: 0, retry_at: None });
         }
         // Only a refusal that is neither the hub's nor the row's is asked again, after the pace.
         if let Some(w) = self.wanted.as_mut().filter(|w| matches!(w.answer, Some((Stand::Failed(_), at)) if now.duration_since(at) >= GAP_PACE)) {
@@ -169,7 +171,7 @@ impl RowChannel {
         let stand = match reply {
             ChatReply::Done(ChatResolveRes::Mapped { .. }) => Stand::Mapped,
             ChatReply::Done(ChatResolveRes::Unmapped) => Stand::Unmapped,
-            ChatReply::Done(ChatResolveRes::Unconfigured { reason }) => Stand::Unconfigured(*reason),
+            ChatReply::Done(ChatResolveRes::Unconfigured { reason, .. }) => Stand::Unconfigured(*reason),
             ChatReply::Done(_) => Stand::NoConfig,
             ChatReply::Unsupported => Stand::NoChat,
             ChatReply::Refused(ChatCode::Unavailable) => Stand::NotHub,
@@ -180,9 +182,14 @@ impl RowChannel {
             ChatReply::Done(ChatResolveRes::Mapped { channel, name: Some(name), .. }) => Some((channel.as_str().to_string(), name.clone())),
             _ => None,
         };
+        let workspace = match reply {
+            ChatReply::Done(ChatResolveRes::Mapped { workspace, .. }) => Some(workspace.clone()),
+            ChatReply::Done(ChatResolveRes::Unconfigured { workspace, .. }) => workspace.clone(),
+            _ => None,
+        };
         let nameless = stand == Stand::Mapped && name.is_none();
         for w in self.wanted.iter_mut() {
-            (w.answer, w.name) = (Some((stand, now)), name.clone());
+            (w.answer, w.name, w.workspace) = (Some((stand, now)), name.clone(), workspace.clone());
             w.nameless = if nameless { w.nameless + 1 } else { 0 };
             w.retry_at = nameless.then(|| NAME_RETRIES.get(w.nameless - 1).map(|d| now + *d)).flatten();
         }
@@ -195,6 +202,11 @@ impl RowChannel {
             Some((id, name)) if id == channel => format!("#{}", cell_row(name)),
             _ => channel.to_string(),
         }
+    }
+
+    /// The Slack workspace the wanted row's last answer named (a mapped row's, or the failed one of an `unconfigured`).
+    pub(super) fn workspace(&self) -> Option<&str> {
+        self.wanted.as_ref().filter(|w| w.answer.is_some()).and_then(|w| w.workspace.as_deref())
     }
 
     /// The wanted row.

@@ -174,8 +174,13 @@ pub enum ChatResolveRes {
         name: Option<String>,
     },
     Unmapped,
-    /// The hub's chat is off for a reason a `chat.connect` fixes.
-    Unconfigured { reason: ChatUnconfigured },
+    /// The hub's chat is off for a reason a `chat.connect` fixes. `workspace`: the row's mapping's workspace, when it has
+    /// one (the one whose connection failed); absent from an older daemon and for a row with no mapping.
+    Unconfigured {
+        reason: ChatUnconfigured,
+        #[serde(default, deserialize_with = "named_workspace", skip_serializing_if = "Option::is_none")]
+        workspace: Option<String>,
+    },
     /// Also a state added later: a reader takes it as no usable mapping (an older window shows `unconfigured` as its
     /// no-configuration words).
     #[serde(other)]
@@ -241,11 +246,14 @@ pub struct ChatConnectReq {
     pub app_token: ChatToken,
 }
 
-/// Reply to `chat.connect`: the Slack workspace the bot token belongs to.
+/// Reply to `chat.connect`: the Slack workspace the bot token belongs to, and its name as Slack gave it (absent from an
+/// older daemon and when Slack gave none; read as a resolve's channel `name` is, so a bad one is no name).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChatConnectRes {
     #[serde(deserialize_with = "within::<_, MAX_ID>")]
     pub workspace: String,
+    #[serde(default, deserialize_with = "channel_name", skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 /// `chat.channels`: the channels the picker offers, of `workspace` (absent: `chat.toml`'s own, as an older window asks).
@@ -260,6 +268,15 @@ fn workspace_id<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>
     #[derive(Deserialize)]
     struct Id(#[serde(deserialize_with = "an_id")] String);
     Ok(Option::<Id>::deserialize(d)?.map(|i| i.0))
+}
+
+/// A workspace a reply names for words and a choice: one that is no id reads as none, never a reason to refuse the reply
+/// it rides on.
+fn named_workspace<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    Ok(match serde_json::Value::deserialize(d)? {
+        serde_json::Value::String(s) if is_id(&s) => Some(s),
+        _ => None,
+    })
 }
 
 /// `chat.workspaces`: the Slack workspaces the hub is connected to, a read.

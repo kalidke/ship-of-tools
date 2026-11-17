@@ -1024,16 +1024,6 @@ owned by `docs/CLAUDE.md`.
 
 ## chat
 
-- **CHAT-ONE-WORKSPACE** [person] The chat connects one Slack workspace: `chat.toml` names one and refuses a second at
-  load, the secrets hold one set of tokens, one listener runs, and `chat.connect` refuses another workspace's tokens
-  (`other_workspace`, `rust/backend/src/chat/setup.rs`). A person with several workspaces, one per group of
-  repositories, cannot map projects to channels in more than one; the maintainer met it on 2026-11-17 with five. Until
-  that day neither the guide nor the connect step said so; the setup guide now does. Wanted: several workspaces on one
-  hub, each project's channel in its own workspace, each connected from the window. The daemon's half is built: up to 8
-  workspaces, each with its own secrets file, listener, owner and mail, a mapping naming its workspace, a connect that
-  adds a workspace, `chat.workspaces`, and `chat.channels` and `chat.pair` naming theirs (chat guarantees 21, 30 and 31).
-  Open until the window's half: its channel list shows and pairs the default workspace alone, so a project's channel in
-  another workspace is set by hand (`docs/src/guide/chat-setup.md`).
 - **CHAT-RELOAD-RESTARTS-EVERY-WORKSPACE** [note] A reload (every `chat.connect` and every `chat.pair` that changes the
   file) stops and starts every workspace's chat, not only the one it concerns (`Chat::reload_then`,
   `rust/backend/src/chat.rs`): each watching window of every workspace resyncs, each delivering channel owes a pass,
@@ -1049,8 +1039,8 @@ owned by `docs/CLAUDE.md`.
   workspaces mapped has its chat off, with that line in its log, until the newer daemon returns; nothing is lost, and
   while one workspace is connected every file the daemon writes is one an older daemon loads. From the plan's review,
   reading code; never seen.
-- **CHAT-OLDER-WINDOW-ONE-WORKSPACE** [note] A window that does not name a workspace (every window until the window's half
-  of several workspaces is built) lists channels and pairs in the workspace `chat.toml` names alone; after connecting a
+- **CHAT-OLDER-WINDOW-ONE-WORKSPACE** [note] A window that does not name a workspace (a window older than the one that
+  lists them, `chat.workspaces`) lists channels and pairs in the workspace `chat.toml` names alone; after connecting a
   second workspace, its connected screen's Enter opens the first workspace's list. From the plan's review, reading code;
   never seen.
 - **CHAT-CONNECT-ANSWERS-CONNECTED-WHATEVER-THE-RELOAD-DID** [note] `chat.connect` replies `{workspace}` once the tokens are
@@ -1205,6 +1195,8 @@ owned by `docs/CLAUDE.md`.
   probe; installer hooks (superseded, check); stop commands that match only what they stop.
 
 ## Closed
+
+- **CHAT-ONE-WORKSPACE** (chat, fe-ui) [person] closed by the landing that fixes it, 2026-11-17, seen in use by a person on 2026-11-17 (the maintainer, with five Slack workspaces, one per group of repositories): the chat connected one Slack workspace, refused a second's tokens (`other_workspace`) and gave no way to map projects to channels in more than one. One hub now serves up to 8 workspaces, each with its own secrets file, listener, owner and mail, a failure in one stopping no other (chat guarantees 21, 30 and 31); from the Chat drawer a person connects another workspace (`Connect a Slack workspace`), the channel list shows one workspace at a time with Left and Right between them and pairs a project in the one shown, a row whose workspace failed is told which and can move to another's channel (`Ctrl+Shift+K` in the Connect step), and the connected screen names the workspace (fe-ui, the picker and the Connect step). No person has used it yet.
 
 An item closes by moving here as one line: id, subsystem, the fixing commit or landing.
 

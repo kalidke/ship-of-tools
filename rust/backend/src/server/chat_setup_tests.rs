@@ -697,7 +697,8 @@ async fn resolve_says_unconfigured_for_each_reason_a_connect_fixes() {
     let home = Home::new(Some(SELF));
     home.configured();
     let failing: Starter<Service> = Box::new(|_, _, _| Box::pin(async { Err("down") }));
-    assert_eq!(resolve(world_on(home, &[], Some(failing), None).await).await, unconfigured("start_failed"));
+    // A mapped row's answer names its workspace, the one whose start failed.
+    assert_eq!(resolve(world_on(home, &[], Some(failing), None).await).await, json!({"state": "unconfigured", "reason": "start_failed", "workspace": "T0AAAA"}));
     // A refused chat.toml stays `invalid`: a connect never rewrites it.
     let home = Home::new(Some(SELF));
     home.write(CONFIG_FILE, "workspace = [[[");
@@ -737,7 +738,7 @@ async fn resolve_says_why_a_service_ended() {
         until(&format!("the chat off with {ended}"), || chat.status() == Status::Failed(ended)).await;
         let reason = if ended == "wrong_app" { "wrong_app" } else { "tokens_refused" };
         let resolved = conn.ask(3, op::CHAT_RESOLVE, json!({"row": w.ids[0]})).await;
-        assert_eq!(resolved, json!({"state": "unconfigured", "reason": reason}), "{ended}");
+        assert_eq!(resolved, json!({"state": "unconfigured", "reason": reason, "workspace": "T0AAAA"}), "{ended}");
     }
 }
 
@@ -1010,7 +1011,7 @@ fn two_workspaces_from_nothing_each_project_reads_and_posts_in_its_own() {
 
         // 2. The first workspace: today's two files.
         let first = conn.ask(2, op::CHAT_CONNECT, w.connect_req(A)).await;
-        assert_eq!(first, json!({"workspace": A}));
+        assert_eq!(first, json!({"workspace": A, "name": "Alpha Lab"}), "the reply names the workspace as Slack gave it");
         assert!(w.holds(SECRETS_FILE, A), "chat-secrets.toml holds the first workspace's four keys");
         #[cfg(unix)]
         assert!(w.owner_only(SECRETS_FILE));
@@ -1019,7 +1020,7 @@ fn two_workspaces_from_nothing_each_project_reads_and_posts_in_its_own() {
 
         // 3. The second: its own file, and the first two byte for byte.
         let second = conn.ask(3, op::CHAT_CONNECT, w.connect_req(B)).await;
-        assert_eq!(second, json!({"workspace": B}), "a second workspace is added");
+        assert_eq!(second, json!({"workspace": B, "name": "Beta Lab"}), "a second workspace is added");
         let named = format!("chat-secrets-{B}.toml");
         let after = files(&w.home);
         assert_eq!(after.iter().filter(|(n, _)| n != &named).collect::<Vec<_>>(), before.iter().collect::<Vec<_>>(), "the first workspace's files are as they were");
@@ -1084,7 +1085,7 @@ fn two_workspaces_from_nothing_each_project_reads_and_posts_in_its_own() {
         assert!(history["code"].is_string(), "a revoked token's read is refused: {history}");
         until("the first workspace's end", || chat.status_of(A) == Status::Failed("bot_token_refused")).await;
         let alpha = conn.ask(15, op::CHAT_RESOLVE, json!({"row": w.ids[0]})).await;
-        assert_eq!((alpha["state"].as_str(), alpha["reason"].as_str()), (Some("unconfigured"), Some("tokens_refused")), "{alpha}");
+        assert_eq!((alpha["state"].as_str(), alpha["reason"].as_str(), alpha["workspace"].as_str()), (Some("unconfigured"), Some("tokens_refused"), Some(A)), "the answer names the workspace that failed: {alpha}");
         assert_eq!(chat.status_of(B), Status::Running);
         until("the first workspace's owner's end", || !chat.hub().running_in(A)).await;
         assert!(chat.hub().running_in(B), "one workspace's end ended another's owner");
@@ -1139,7 +1140,7 @@ fn a_connect_that_would_push_a_served_workspace_past_the_bound_is_refused() {
         assert_eq!(code(&conn.ask(2, op::CHAT_CONNECT, req("T0B00")).await), "too_many_workspaces");
         assert_eq!(files(&home), before, "a refused connect wrote something");
         // One of the seven gives new tokens: its own file alone changes.
-        assert_eq!(conn.ask(3, op::CHAT_CONNECT, req("T0C03")).await, json!({"workspace": "T0C03"}));
+        assert_eq!(conn.ask(3, op::CHAT_CONNECT, req("T0C03")).await, json!({"workspace": "T0C03", "name": "Third Lab"}));
         let after = files(&home);
         let own = "chat-secrets-T0C03.toml";
         assert_eq!(after.iter().filter(|(n, _)| n != own).collect::<Vec<_>>(), before.iter().filter(|(n, _)| n != own).collect::<Vec<_>>());

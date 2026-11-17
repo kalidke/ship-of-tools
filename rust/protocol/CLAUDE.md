@@ -128,7 +128,8 @@ name is in this crate's one op table.
     watch `state` as `other` (a snapshot is owed), a resolve `state` as `invalid`, a record's `origin` as `other` (never the
     app's own post, and one record never spoils its page), a post `outcome` as `unknown` (the post may exist; never resent).
     **The setup family** (so a person sets the chat up from the window): `chat.connect {bot_token, user_token?, app_token}` (the user token `xoxp-` is what a person's post goes out under; it is defaulted and left out when `None`, so an older window's two-token connect decodes, and the daemon refuses it `bad_request`) answers
-    `{workspace}`, `chat.channels {workspace?}` answers `{channels: [{id, name, private, member}], more}`, `chat.pair {row,
+    `{workspace, name?}` (`name`: the workspace's as Slack gave it, read as the resolve's `name` is, so a bad one is none and
+    an older daemon's reply has none), `chat.channels {workspace?}` answers `{channels: [{id, name, private, member}], more}`, `chat.pair {row,
     workspace?, channel?}` answers `{}` (an absent or null `channel` unpairs the row's folder), and `chat.workspaces {}` (a
     read, any connection's) answers `{default, workspaces: [{id, name?, running}]}`. A request's `workspace` is an id
     within 64 bytes when present, defaulted and left out when `None` (absent: `chat.toml`'s workspace, so an older window's
@@ -144,7 +145,9 @@ name is in this crate's one op table.
     (`is_id`); `more` says the list was cut there. `MAX_WORKSPACES` (8) is the most Slack workspaces a hub serves, wire's
     one copy, which `sot-chat` holds its secrets load and a connect to and `chat.workspaces`' reader holds its list to. The decoder bounds the entries and the name, not the escaped size: a full
     list fits one frame because the daemon's names carry no control character (a quote or backslash doubles, a control
-    character would be six bytes). `ChatResolveRes::Unconfigured {reason}` is the hub's chat off for a reason a connect fixes
+    character would be six bytes). `ChatResolveRes::Unconfigured {reason, workspace?}` is the hub's chat off for a reason a connect fixes (`workspace`: a
+    mapped row's, the one whose connection failed; absent for a row with no mapping and from an older daemon, and one that is
+    no id reads as none rather than refusing the reply)
     (`not_connected`, `tokens_refused` (also a token Slack refused while the chat ran), `start_failed`, `wrong_app` (the app-level token is another Slack app's than the bot's, so the chat ended; pinned by `the_wrong_app_reason_is_pinned_on_the_wire`); a later reason reads as `other`, as `wrong_app` does to a window that predates it (rc.11's `ChatUnconfigured` has the same `other` arm); a hub that holds no user token says nothing here: `chat.resolve` answers a row as it always did, since a row's reply needs only the bot token, and a person's post refused `no_user_token` is what brings the window's Connect step); an older window reads the state as
     `invalid`, which it shows as its no-configuration words. `chat::slack_app_manifest(name)` is the Slack app's manifest as
     JSON (the app and bot named `name`, which `chat::slack_app_name(login)` makes `Ship of Tools (<login>)`, the login cut

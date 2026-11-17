@@ -56,8 +56,9 @@ fn resolves(outs: &[Out]) -> usize {
     outs.iter().filter(|(_, r)| matches!(r, OutgoingReq::ChatResolve { .. })).count()
 }
 
+/// How many times the picker opened and asked which workspaces run, the first of its reads.
 fn lists(outs: &[Out]) -> usize {
-    outs.iter().filter(|(_, r)| matches!(r, OutgoingReq::ChatChannels)).count()
+    outs.iter().filter(|(_, r)| matches!(r, OutgoingReq::ChatWorkspaces)).count()
 }
 
 fn connects(outs: &[Out]) -> Vec<(String, String, String)> {
@@ -72,7 +73,7 @@ fn connects(outs: &[Out]) -> Vec<(String, String, String)> {
 }
 
 fn connected(workspace: &str) -> ChatEvt {
-    ChatEvt::Connect { reply: ChatReply::Done(ChatConnectRes { workspace: workspace.into() }) }
+    ChatEvt::Connect { reply: ChatReply::Done(ChatConnectRes { workspace: workspace.into(), name: None }) }
 }
 
 fn refused(code: ChatCode) -> ChatEvt {
@@ -149,8 +150,8 @@ fn the_connect_step_says_each_reason_and_its_next_action() {
         let (d, _) = in_step(reason);
         assert_eq!(d.title(), " chat · set up Slack ", "{reason}");
         let body = drawn(&d);
-        assert!(body.contains("First, connect Ship of Tools to your Slack workspace"), "{reason}: the start screen");
-        assert!(body.contains("Each person makes their own Slack app"), "{reason}: one app per person");
+        assert!(body.contains("First, connect Ship of Tools to the Slack workspace the channel is in. You do this once for each Slack workspace you use"), "{reason}: the start screen");
+        assert!(drawn_at(&d, 2000, 60).contains("Each person makes their own Slack app in each workspace they connect, even when a colleague already has one there: two people sharing one app each miss messages, because Slack splits the messages between them."), "{reason}: one app per person");
         assert!(body.contains("A Slack code you paste here is never posted. The messages you write in the chat itself, once it is set up, are posted under your own Slack name; what your agents post goes out as your Slack app."), "{reason}: whose posts are whose");
         assert!(body.contains("Enter  start    Right  I already made my Slack app: go to step 2    Esc  close"), "{reason}");
     }
@@ -304,8 +305,8 @@ fn all_three_tokens_go_in_one_request_and_none_is_kept_once_connected() {
     for k in [ENTER, PASTE, RIGHT] {
         assert!(c.key(k, Some(&app()), false).0.is_none(), "{k:?} while connecting");
     }
-    c.answered(ChatReply::Done(ChatConnectRes { workspace: "T1".into() }));
-    assert_eq!(c.screen(), &Screen::Connected("T1".into()));
+    c.answered(ChatReply::Done(ChatConnectRes { workspace: "T1".into(), name: None }));
+    assert_eq!(c.screen(), &Screen::Connected("T1".into(), None));
     assert_eq!(c.held(), (None, None, None), "a connected step keeps no token");
 }
 
@@ -562,9 +563,10 @@ fn a_late_refusal_never_opens_over_another_row_or_replaces_a_step_holding_a_toke
     let (mut d, at, req) = post_in_flight();
     // Connect Slack again, last in the picker, brings the step over the mapped row; a bot token is pasted.
     assert_eq!(lists(&d.open_picker(shown("ROW1").as_ref()).unwrap()), 1);
+    super::picker_tests::older(&mut d, at);
     let listed: ChatChannelsRes = serde_json::from_value(serde_json::json!({ "channels": [
         { "id": "C1", "name": "lab-general", "private": false, "member": true } ] })).unwrap();
-    d.on_evt(&host(), ChatEvt::Channels { reply: ChatReply::Done(listed) }, at);
+    d.on_evt(&host(), ChatEvt::Channels { workspace: None, reply: ChatReply::Done(listed) }, at);
     (0..3).for_each(|_| d.picker_step(true));
     assert!(d.picker_enter().is_empty() && d.in_setup());
     paste(&mut d, &bot());
@@ -583,9 +585,10 @@ fn the_connect_step_parks_the_channels_records() {
     assert!(d.placed_text().join("|").contains("message 3"));
     // Connect Slack again, last in the picker, starts the step over the mapped row.
     assert_eq!(lists(&d.open_picker(shown("ROW1").as_ref()).unwrap()), 1);
+    super::picker_tests::older(&mut d, at);
     let listed: ChatChannelsRes = serde_json::from_value(serde_json::json!({ "channels": [
         { "id": "C1", "name": "lab-general", "private": false, "member": true } ] })).unwrap();
-    d.on_evt(&host(), ChatEvt::Channels { reply: ChatReply::Done(listed) }, at);
+    d.on_evt(&host(), ChatEvt::Channels { workspace: None, reply: ChatReply::Done(listed) }, at);
     let rows = d.body().unwrap().lines(100, 30);
     assert!(rows.join(" ").contains(&format!("/invite @{NAME}")), "the picker's invite names the person's app");
     assert!(rows.iter().any(|r| r.trim_start_matches(['>', ' ']).starts_with("Connect Slack again")), "Connect Slack again is offered");
@@ -602,7 +605,7 @@ fn the_connect_step_parks_the_channels_records() {
     d.layout(&mut fonts, body(), 1.0, body());
     assert_eq!(d.title(), " chat · connected ");
     assert!(d.placed_text().is_empty(), "the connected screen draws over no record");
-    assert!(drawn(&d).contains("keeps the three codes on a, readable only by your account"));
+    assert!(drawn(&d).contains("It keeps that workspace's three Slack codes on a, readable only by your login there. Other projects keep the channels they have."));
 }
 
 #[test]
@@ -614,7 +617,7 @@ fn a_connect_reply_resolves_the_row_again_and_enter_then_opens_the_picker() {
     d.on_evt(&host(), connected("T1"), t);
     assert_eq!(resolves(&d.tick(shown("ROW1"), t).0), 1, "the reply resolves the row at once");
     assert_eq!(d.title(), " chat · connected ");
-    assert!(drawn(&d).contains("Ship of Tools is connected to your Slack workspace (its workspace ID is T1)."));
+    assert!(drawn(&d).contains("Ship of Tools is connected to the Slack workspace T1."));
     // Before the row's new answer, Enter says to wait; after it, Enter opens the picker and asks for the channels.
     let (outs, asks) = key(&mut d, ENTER);
     assert!(outs.is_empty() && d.in_setup());
@@ -861,7 +864,7 @@ fn no_project_word_reaches_a_screen() {
         for t in [bot(), user(), app()] {
             c.key(PASTE, Some(&t), false);
         }
-        c.answered(ChatReply::Done(ChatConnectRes { workspace: "T1".into() }));
+        c.answered(ChatReply::Done(ChatConnectRes { workspace: "T1".into(), name: None }));
         screens.extend([c.title(), c.body().head, c.body().pin]);
         screens.push(c.key(PASTE, Some("not a code"), false).1.notice.unwrap_or_default());
     }
@@ -873,15 +876,67 @@ fn no_project_word_reaches_a_screen() {
         { "id": "C1", "name": "lab-general", "private": false, "member": true },
         { "id": "C2", "name": "lab-papers", "private": true, "member": true },
         { "id": "C3", "name": "lab-new", "private": false, "member": false } ], "more": true })).unwrap();
-    let mut picks = Vec::new();
+    let mut picks: Vec<String> = Vec::new();
     for reply in [ChatReply::Done(list), ChatReply::Unsupported, ChatReply::Refused(ChatCode::Unavailable)] {
         let mut p = Picker::new(shown("ROW1").unwrap(), true, NAME.to_string());
-        p.on_channels(reply);
+        p.on_channels(None, reply);
         picks.push(p.title());
         picks.extend(p.body().lines(100, 40));
         p.edit(Edit::Text("zzz"));
         picks.extend(p.body().lines(100, 40));
     }
+    // Several workspaces: one listed, two (moved between), none running, the list unread, a refused pair and paste, a
+    // workspace with no name.
+    let running = |all: &[(&str, Option<&str>, bool)]| -> ChatReply<sot_protocol::ops::ChatWorkspacesRes> {
+        let list: Vec<serde_json::Value> = all.iter().map(|(id, name, running)| serde_json::json!({ "id": id, "name": name, "running": running })).collect();
+        ChatReply::Done(serde_json::from_value(serde_json::json!({ "default": all[0].0, "workspaces": list })).unwrap())
+    };
+    let places: [&[(&str, Option<&str>, bool)]; 4] = [
+        &[("TAAAA1", Some("Alpha Lab"), true)],
+        &[("TAAAA1", Some("Alpha Lab"), true), ("TBBBB2", None, true)],
+        &[("TAAAA1", None, false)],
+        &[("TAAAA1", Some("Alpha Lab"), true), ("TBBBB2", Some("Beta Lab"), true), ("TCCCC3", None, false)],
+    ];
+    for (i, all) in places.into_iter().enumerate() {
+        let mut p = Picker::new(shown("ROW1").unwrap(), i % 2 == 0, NAME.to_string());
+        picks.push(p.title());
+        picks.extend(p.body().lines(100, 40));
+        let ask = p.on_workspaces(running(all));
+        picks.push(p.title());
+        picks.extend(p.body().lines(100, 40));
+        p.on_channels(ask.flatten().as_deref(), ChatReply::Done(serde_json::from_value(serde_json::json!({ "channels": [
+            { "id": "C1", "name": "lab-general", "private": false, "member": true } ], "more": true })).unwrap()));
+        picks.push(p.title());
+        picks.extend(p.body().lines(100, 40));
+        picks.push(p.no_such_channel());
+        picks.push(p.paste("https://app.slack.com/client/TZZZZ9/C0456EFGH").err().unwrap_or_default());
+        if let Some(w) = p.move_by(true) {
+            picks.extend(p.body().lines(100, 40));
+            p.on_channels(Some(&w), ChatReply::Refused(ChatCode::Busy));
+            picks.extend([p.title(), p.no_such_channel()]);
+            picks.extend(p.body().lines(100, 40));
+        }
+    }
+    for reply in [ChatReply::Unsupported, ChatReply::Refused(ChatCode::Busy)] {
+        let mut p = Picker::new(shown("ROW1").unwrap(), false, NAME.to_string());
+        p.on_workspaces(reply);
+        picks.push(p.title());
+        picks.extend(p.body().lines(100, 40));
+    }
+    // The Connect step of a row whose workspace failed, for each reason, with another workspace running; and a connect that
+    // names its workspace.
+    for reason in [ChatUnconfigured::NotConnected, ChatUnconfigured::TokensRefused, ChatUnconfigured::StartFailed, ChatUnconfigured::WrongApp, ChatUnconfigured::Other] {
+        let mut c = step(reason).in_workspace(Some("TBBBB2".into()));
+        picks.push(c.body().head);
+        c.on_workspaces(&running(&[("TAAAA1", Some("Alpha Lab"), true), ("TBBBB2", Some("Beta Lab"), false)]));
+        picks.extend([c.title(), c.body().head, c.body().pin]);
+    }
+    let mut c = step(ChatUnconfigured::NotConnected);
+    for t in [bot(), user(), app()] {
+        c.key(PASTE, Some(&t), false);
+    }
+    c.answered(ChatReply::Done(ChatConnectRes { workspace: "T1".into(), name: Some("Alpha Lab".into()) }));
+    picks.extend([c.title(), c.body().head, c.body().pin]);
     said.extend(picks);
     for reply in [ChatReply::Done(ChatPairRes {}), ChatReply::Unsupported, ChatReply::Refused(ChatCode::NotInChannel), ChatReply::Refused(ChatCode::ChannelTaken)] {
         for private in [false, true] {
@@ -911,4 +966,107 @@ fn no_project_word_reaches_a_screen() {
     }
     hits.dedup();
     assert!(hits.is_empty(), "{} project words on screens:\n{}", hits.len(), hits.join("\n"));
+}
+
+const SETUP: Option<Action> = Some(Action::ChatSetup);
+const P: &str = if cfg!(target_os = "macos") { "Cmd" } else { "Ctrl" };
+
+/// A drawer whose shown row ROW1 answered `unconfigured` for `reason` naming its channel's workspace `TBBBB2`, with the step
+/// begun, the instant after, and what that frame sent.
+fn in_failed(reason: &str) -> (ChatDrawer, Instant, Vec<Out>) {
+    let t0 = Instant::now();
+    let mut d = ChatDrawer::default();
+    d.set_login(LOGIN);
+    d.on_connection(&host(), true, false, t0);
+    d.tick(shown("ROW1"), t0);
+    d.tick(shown("ROW1"), t0 + Duration::from_millis(200));
+    d.on_evt(&host(), answer("ROW1", serde_json::json!({ "state": "unconfigured", "reason": reason, "workspace": "TBBBB2" })), t0 + Duration::from_millis(210));
+    let outs = d.tick(shown("ROW1"), t0 + Duration::from_millis(220)).0;
+    assert!(d.in_setup(), "unconfigured begins the step");
+    (d, t0 + Duration::from_millis(230), outs)
+}
+
+fn running(others: bool) -> ChatEvt {
+    let res = serde_json::from_value(serde_json::json!({ "default": "TAAAA1", "workspaces": [
+        { "id": "TAAAA1", "name": "Alpha Lab", "running": others },
+        { "id": "TBBBB2", "name": "Beta Lab", "running": false } ] })).unwrap();
+    ChatEvt::Workspaces { reply: ChatReply::Done(res) }
+}
+
+/// A row whose channel is in a workspace whose connection failed: the step names that workspace and why, and while another
+/// runs, Ctrl+Shift+K (delta 7: inside the step's own keys) opens that one's channel list to move the project there; the
+/// list stays over the row's `unconfigured`, and Escape gives the step back.
+#[test]
+fn a_failed_workspaces_step_names_it_and_its_chord_opens_another_workspaces_list() {
+    let (mut d, at, outs) = in_failed("tokens_refused");
+    assert_eq!(outs.iter().filter(|(_, r)| matches!(r, OutgoingReq::ChatWorkspaces)).count(), 1, "the step asks which workspaces run");
+    assert!(drawn(&d).starts_with(" chat · set up Slack \nThis project's channel is in the Slack workspace TBBBB2, whose connection failed."), "{}", drawn(&d));
+    assert!(!drawn(&d).contains("Shift+K"), "no chord before another workspace is known to run");
+    assert!(key(&mut d, SETUP).0.is_empty() && d.in_setup());
+    d.on_evt(&host(), running(true), at);
+    let shown_now = drawn(&d);
+    assert!(shown_now.contains("This project's channel is in the Slack workspace Beta Lab, whose connection failed.\n\nSlack no longer accepts the Slack codes"), "{shown_now}");
+    assert!(shown_now.contains(&format!("Enter  open your Slack apps    Left  make your Slack app again    {P}+Shift+K  open the channel list of another workspace    Esc  close")), "{shown_now}");
+    // The chord: the picker in the step's place, asking which workspaces run; the row's stand leaves it there.
+    let (outs, _) = key(&mut d, SETUP);
+    assert_eq!(lists(&outs), 1);
+    assert!(d.picking() && !d.in_setup());
+    d.tick(shown("ROW1"), at + Duration::from_millis(10));
+    assert!(d.picking(), "the row's unconfigured answer does not take the list away");
+    let outs = d.on_evt(&host(), running(true), at);
+    assert!(matches!(outs.as_slice(), [(_, OutgoingReq::ChatChannels { workspace: Some(w) })] if w == "TAAAA1"), "{outs:?}");
+    let listed: ChatChannelsRes = serde_json::from_value(serde_json::json!({ "channels": [
+        { "id": "C1", "name": "lab-general", "private": false, "member": true } ] })).unwrap();
+    d.on_evt(&host(), ChatEvt::Channels { workspace: Some("TAAAA1".into()), reply: ChatReply::Done(listed) }, at);
+    let sent = d.picker_enter();
+    assert!(matches!(sent.as_slice(), [(_, OutgoingReq::ChatPair { workspace: Some(w), channel: Some(c), .. })] if w == "TAAAA1" && c.as_str() == "C1"), "{sent:?}");
+    // Escape: the step comes back for the row's stand.
+    let (mut d, at, _) = in_failed("tokens_refused");
+    d.on_evt(&host(), running(true), at);
+    key(&mut d, SETUP);
+    d.dismiss_picker();
+    d.tick(shown("ROW1"), at + Duration::from_millis(10));
+    assert!(d.in_setup());
+}
+
+/// Each failure's lead says why, with the next step; with no other workspace running, or for a row with no workspace named,
+/// the chord is not offered and does nothing.
+#[test]
+fn a_failed_workspaces_lead_says_why_and_the_chord_needs_another_running() {
+    for (reason, lead) in [
+        ("not_connected", "This project's channel is in the Slack workspace Beta Lab, which Ship of Tools on a is not connected to."),
+        ("start_failed", "This project's channel is in the Slack workspace Beta Lab, whose chat did not start on a: the log of Ship of Tools' service on a says why; to find it, run `sotd log-path` in a terminal on a."),
+        ("wrong_app", "This project's channel is in the Slack workspace Beta Lab, whose connection failed.\n\nThe chat stopped"),
+    ] {
+        let (mut d, at, _) = in_failed(reason);
+        d.on_evt(&host(), running(false), at);
+        let shown_now = drawn_at(&d, 2000, 60);
+        assert!(shown_now.contains(lead), "{reason}: {shown_now}");
+        assert!(!shown_now.contains("Shift+K"), "{reason}: no other workspace runs");
+        assert!(key(&mut d, SETUP).0.is_empty() && d.in_setup(), "{reason}");
+    }
+    let (mut d, _) = in_step("tokens_refused");
+    assert!(drawn(&d).starts_with(" chat · set up Slack \nSlack no longer accepts"), "a row with no workspace named has no lead");
+    assert!(key(&mut d, SETUP).0.is_empty() && d.in_setup());
+}
+
+/// A connect whose reply names the workspace says its name, and Enter opens the picker on that workspace's list.
+#[test]
+fn the_connected_screen_names_the_workspace_and_opens_its_list() {
+    let (mut d, t) = in_step("not_connected");
+    paste(&mut d, &bot());
+    paste(&mut d, &user());
+    paste(&mut d, &app());
+    d.on_evt(&host(), ChatEvt::Connect { reply: ChatReply::Done(ChatConnectRes { workspace: "TNEWW5".into(), name: Some("Delta Lab".into()) }) }, t);
+    let shown_now = drawn_at(&d, 2000, 60);
+    assert!(shown_now.contains("Ship of Tools is connected to the Slack workspace Delta Lab. It keeps that workspace's three Slack codes on a, readable only by your login there. Other projects keep the channels they have. Next, press Enter to choose this project's channel in Delta Lab; each project picks its own."), "{shown_now}");
+    assert!(shown_now.ends_with("Enter  choose this project's channel in Delta Lab    Esc  close"), "{shown_now}");
+    d.on_evt(&host(), answer("ROW1", serde_json::json!({ "state": "unmapped" })), t);
+    d.tick(shown("ROW1"), t);
+    let (outs, _) = key(&mut d, ENTER);
+    assert_eq!(lists(&outs), 1);
+    let res = serde_json::from_value(serde_json::json!({ "default": "TAAAA1", "workspaces": [
+        { "id": "TAAAA1", "name": "Alpha Lab", "running": true }, { "id": "TNEWW5", "name": "Delta Lab", "running": true } ] })).unwrap();
+    let outs = d.on_evt(&host(), ChatEvt::Workspaces { reply: ChatReply::Done(res) }, t);
+    assert!(matches!(outs.as_slice(), [(_, OutgoingReq::ChatChannels { workspace: Some(w) })] if w == "TNEWW5"), "{outs:?}");
 }

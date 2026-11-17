@@ -434,7 +434,8 @@ async fn a_chat_request_is_unavailable_with_no_running_service() {
         match what {
             "not the hub" => assert_eq!(code(&resolved), "unavailable", "{what} resolve"),
             "no chat.toml" => assert_eq!(resolved, json!({"state": "unconfigured", "reason": "not_connected"}), "{what} resolve"),
-            "failed start" => assert_eq!(resolved, json!({"state": "unconfigured", "reason": "start_failed"}), "{what} resolve"),
+            // A mapped row's answer names the workspace whose start failed.
+            "failed start" => assert_eq!(resolved, json!({"state": "unconfigured", "reason": "start_failed", "workspace": "T0AAAA"}), "{what} resolve"),
             _ => assert_eq!((resolved["state"].as_str(), resolved["delivers"].as_bool()), (Some("mapped"), Some(false)), "{what} resolve"),
         }
     }

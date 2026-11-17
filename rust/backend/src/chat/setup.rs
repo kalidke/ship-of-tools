@@ -159,10 +159,10 @@ pub(crate) async fn connect(req_id: u64, payload: serde_json::Value, chat: &Arc<
         return Ok(refuse(req_id, NAME, code));
     }
     chat.reload(&held, rows).await;
-    chat.remember_name(&workspace, name);
+    chat.remember_name(&workspace, name.clone());
     let status = chat.status_of(&workspace);
     tracing::info!(workspace, %status, "project chat: a window's connect saved the tokens and reloaded");
-    reply(req_id, NAME, &ChatConnectRes { workspace })
+    reply(req_id, NAME, &ChatConnectRes { workspace, name })
 }
 
 /// Why the connect's writes did not happen: the reply's code and, for the caller to log, a fixed reason with the load's

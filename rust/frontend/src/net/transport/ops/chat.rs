@@ -1,10 +1,10 @@
-//! chat.resolve, chat.watch, chat.unwatch, chat.history, chat.post, chat.post_file, chat.file, chat.connect, chat.channels, chat.pair: the requests (send_chat: write the frame, then record its PendingKind).
+//! chat.resolve, chat.watch, chat.unwatch, chat.history, chat.post, chat.post_file, chat.file, chat.connect, chat.workspaces, chat.channels, chat.pair: the requests (send_chat: write the frame, then record its PendingKind).
 //! Their replies (on_chat_*: the reply frame becomes an `IncomingEvt::Chat`; `chat.file`'s alone carries a blob), and the `chat.changed` and `chat.status` events.
 
 use super::*;
 use sot_protocol::ops::{
     ChatChangedEvt, ChatChannel, ChatChannelsRes, ChatCode, ChatConnectRes, ChatFileReq, ChatFileRes, ChatFileVariant, ChatHistoryReq, ChatHistoryRes, ChatPairRes, ChatPostFileReq, ChatPostFileRes, ChatPostReq,
-    ChatPostRes, ChatRefusal, ChatResolveRes, ChatStatusEvt, ChatTarget, ChatWatchRes, MAX_CHAT_FILE, MAX_THUMB,
+    ChatPostRes, ChatRefusal, ChatResolveRes, ChatStatusEvt, ChatTarget, ChatWatchRes, ChatWorkspacesRes, MAX_CHAT_FILE, MAX_THUMB,
 };
 
 /// What a chat request's reply came to, apart from the answer itself.
@@ -34,7 +34,10 @@ pub(crate) enum ChatEvt {
     /// The connection ended, or the daemon's answer did not prove it, before a `chat.connect` was answered: the tokens
     /// may have been saved, so the owner resolves again and never sends the request again.
     ConnectUnknown,
-    Channels { reply: ChatReply<ChatChannelsRes> },
+    /// A `chat.workspaces`' reply: the hub's connected Slack workspaces; `Unsupported` from a daemon that serves one.
+    Workspaces { reply: ChatReply<ChatWorkspacesRes> },
+    /// A `chat.channels`' reply, with the workspace it asked (none: `chat.toml`'s).
+    Channels { workspace: Option<String>, reply: ChatReply<ChatChannelsRes> },
     /// A `chat.pair`'s reply, with the row and the channel it named (none: the row was unpaired).
     Paired { row: String, channel: Option<ChatChannel>, reply: ChatReply<ChatPairRes> },
     /// As `ConnectUnknown`, for a `chat.pair`: the file may have been written.
@@ -158,8 +161,12 @@ pub(crate) fn on_chat_connect(frame: Frame, emit: &impl Fn(IncomingEvt)) {
     }));
 }
 
-pub(crate) fn on_chat_channels(frame: Frame, emit: &impl Fn(IncomingEvt)) {
-    emit(IncomingEvt::Chat(ChatEvt::Channels { reply: chat_reply(frame) }));
+pub(crate) fn on_chat_workspaces(frame: Frame, emit: &impl Fn(IncomingEvt)) {
+    emit(IncomingEvt::Chat(ChatEvt::Workspaces { reply: chat_reply(frame) }));
+}
+
+pub(crate) fn on_chat_channels(frame: Frame, emit: &impl Fn(IncomingEvt), workspace: Option<String>) {
+    emit(IncomingEvt::Chat(ChatEvt::Channels { workspace, reply: chat_reply(frame) }));
 }
 
 pub(crate) fn on_chat_pair(frame: Frame, emit: &impl Fn(IncomingEvt), row: String, channel: Option<ChatChannel>) {

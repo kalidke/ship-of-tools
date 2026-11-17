@@ -115,7 +115,7 @@ fn every_request_reply_and_event_keeps_its_shape() {
     );
     pinned(ChatRefusal { code: Some(ChatCode::TooManyWatches) }, json!({"code": "too_many_watches"}));
     pinned(
-        ChatResolveRes::Unconfigured { reason: ChatUnconfigured::TokensRefused },
+        ChatResolveRes::Unconfigured { reason: ChatUnconfigured::TokensRefused, workspace: None },
         json!({"state": "unconfigured", "reason": "tokens_refused"}),
     );
     pinned(
@@ -126,7 +126,8 @@ fn every_request_reply_and_event_keeps_its_shape() {
         ChatConnectReq { bot_token: token("xoxb-", 2), user_token: Some(token("xoxp-", 2)), app_token: token("xapp-", 2) },
         json!({"bot_token": "xoxb-a1a1", "user_token": "xoxp-a1a1", "app_token": "xapp-a1a1"}),
     );
-    pinned(ChatConnectRes { workspace: "T1".into() }, json!({"workspace": "T1"}));
+    pinned(ChatConnectRes { workspace: "T1".into(), name: None }, json!({"workspace": "T1"}));
+    pinned(ChatConnectRes { workspace: "T1".into(), name: Some("Alpha Lab".into()) }, json!({"workspace": "T1", "name": "Alpha Lab"}));
     pinned(ChatChannelsReq { workspace: None }, json!({}));
     pinned(ChatChannelsReq { workspace: Some("T1".into()) }, json!({"workspace": "T1"}));
     pinned(ChatWorkspacesReq {}, json!({}));
@@ -180,6 +181,18 @@ fn the_setup_family_carries_its_workspace_and_an_older_shape_still_decodes() {
     }
     let older: OlderPair = serde_json::from_value(json!({"row": "r", "workspace": "T2", "channel": "C1"})).unwrap();
     assert_eq!(older.channel, Some(channel("C1")));
+    // An older daemon's connect reply and unconfigured resolve decode with no name and no workspace; a bad name reads as
+    // none and keeps the reply, as does a workspace that is no id.
+    let connected: ChatConnectRes = serde_json::from_value(json!({"workspace": "T1"})).unwrap();
+    assert_eq!(connected.name, None);
+    for bad in [json!(""), json!(5), json!("n".repeat(161))] {
+        let r: ChatConnectRes = serde_json::from_value(json!({"workspace": "T1", "name": bad})).unwrap();
+        assert_eq!(r.name, None, "{bad}");
+    }
+    let off: ChatResolveRes = serde_json::from_value(json!({"state": "unconfigured", "reason": "not_connected"})).unwrap();
+    assert_eq!(off, ChatResolveRes::Unconfigured { reason: ChatUnconfigured::NotConnected, workspace: None });
+    let bad: ChatResolveRes = serde_json::from_value(json!({"state": "unconfigured", "reason": "not_connected", "workspace": "T 1"})).unwrap();
+    assert_eq!(bad, ChatResolveRes::Unconfigured { reason: ChatUnconfigured::NotConnected, workspace: None });
 }
 
 /// C13: a workspace list is cosmetic for its reader: past `MAX_WORKSPACES` it stops at the bound, an entry it cannot
@@ -237,13 +250,17 @@ fn an_older_reader_reads_unconfigured_as_invalid() {
         assert_eq!(serde_json::from_value::<Before>(reply).unwrap(), Before::Invalid, "{reason}");
     }
     let later = json!({"state": "unconfigured", "reason": "from_the_future"});
-    assert_eq!(serde_json::from_value::<ChatResolveRes>(later).unwrap(), ChatResolveRes::Unconfigured { reason: ChatUnconfigured::Other });
+    assert_eq!(serde_json::from_value::<ChatResolveRes>(later).unwrap(), ChatResolveRes::Unconfigured { reason: ChatUnconfigured::Other, workspace: None });
 }
 
 /// The reason an ended service's chat gives for another app's token, as it is spelled on the wire.
 #[test]
 fn the_wrong_app_reason_is_pinned_on_the_wire() {
-    pinned(ChatResolveRes::Unconfigured { reason: ChatUnconfigured::WrongApp }, json!({"state": "unconfigured", "reason": "wrong_app"}));
+    pinned(ChatResolveRes::Unconfigured { reason: ChatUnconfigured::WrongApp, workspace: None }, json!({"state": "unconfigured", "reason": "wrong_app"}));
+    pinned(
+        ChatResolveRes::Unconfigured { reason: ChatUnconfigured::TokensRefused, workspace: Some("T2".into()) },
+        json!({"state": "unconfigured", "reason": "tokens_refused", "workspace": "T2"}),
+    );
 }
 
 /// A full list, each name at its bound and doubled by escaping (the daemon's names carry no control character, which

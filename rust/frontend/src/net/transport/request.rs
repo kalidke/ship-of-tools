@@ -355,10 +355,12 @@ pub enum OutgoingReq {
     ChatFile { req: sot_protocol::ops::ChatFileReq },
     /// The chat's setup, a window's alone. `ChatConnect` carries the three tokens and is written on one connection at
     /// most (it may have been saved, so no later connection repeats it); its `Debug` prints no token byte (`ChatToken`).
-    /// `ChatChannels` is a read. `ChatPair` is written on one connection at most; no channel unpairs the row.
+    /// `ChatWorkspaces` and `ChatChannels` are reads. `ChatPair` is written on one connection at most; no channel unpairs
+    /// the row. A `workspace` is sent only when it is `Some` (none: `chat.toml`'s, as an older daemon has only that one).
     ChatConnect { bot_token: sot_protocol::ops::ChatToken, user_token: sot_protocol::ops::ChatToken, app_token: sot_protocol::ops::ChatToken },
-    ChatChannels,
-    ChatPair { row: String, channel: Option<sot_protocol::ops::ChatChannel> },
+    ChatWorkspaces,
+    ChatChannels { workspace: Option<String> },
+    ChatPair { row: String, workspace: Option<String>, channel: Option<sot_protocol::ops::ChatChannel> },
     /// The window's selection or drawing for a row, or its clear (`SelectionSetReq`). Not replayable: a request waiting
     /// or unanswered when its connection ends yields one `SelectionReply::Ended`, and the window's share, the one
     /// sender, sets its current state again after a reconnect. Reply surfaces as `IncomingEvt::Selection`.
@@ -480,7 +482,8 @@ impl OutgoingReq {
             | OutgoingReq::DocsOpen { .. }
             | OutgoingReq::QuartoOpen { .. }
             | OutgoingReq::ChatResolve { .. }
-            | OutgoingReq::ChatChannels
+            | OutgoingReq::ChatWorkspaces
+            | OutgoingReq::ChatChannels { .. }
             | OutgoingReq::ChatUnwatch { .. }
             | OutgoingReq::FileDownload { .. }
             | OutgoingReq::FileUpload { .. }
@@ -572,12 +575,16 @@ pub(super) async fn send_request<W: AsyncWrite + Unpin>(
             let req = sot_protocol::ops::ChatConnectReq { bot_token, user_token: Some(user_token), app_token };
             send_chat(&mut tx, pending, id, op::CHAT_CONNECT, req, Some(PendingKind::ChatConnect)).await?
         }
-        OutgoingReq::ChatChannels => {
-            send_chat(&mut tx, pending, id, op::CHAT_CHANNELS, sot_protocol::ops::ChatChannelsReq { workspace: None }, Some(PendingKind::ChatChannels)).await?
+        OutgoingReq::ChatWorkspaces => {
+            send_chat(&mut tx, pending, id, op::CHAT_WORKSPACES, sot_protocol::ops::ChatWorkspacesReq {}, Some(PendingKind::ChatWorkspaces)).await?
         }
-        OutgoingReq::ChatPair { row, channel } => {
+        OutgoingReq::ChatChannels { workspace } => {
+            let kind = PendingKind::ChatChannels { workspace: workspace.clone() };
+            send_chat(&mut tx, pending, id, op::CHAT_CHANNELS, sot_protocol::ops::ChatChannelsReq { workspace }, Some(kind)).await?
+        }
+        OutgoingReq::ChatPair { row, workspace, channel } => {
             let kind = PendingKind::ChatPair { row: row.clone(), channel: channel.clone() };
-            send_chat(&mut tx, pending, id, op::CHAT_PAIR, sot_protocol::ops::ChatPairReq { row, workspace: None, channel }, Some(kind)).await?
+            send_chat(&mut tx, pending, id, op::CHAT_PAIR, sot_protocol::ops::ChatPairReq { row, workspace, channel }, Some(kind)).await?
         }
         OutgoingReq::QuartoOpen { path, execute } => send_quarto_open(&mut tx, pending, id, path, execute).await?,
         OutgoingReq::ReplRunFile { eval_id, path, fresh, workspace_id } => send_repl_run_file(&mut tx, pending, id, eval_id, path, fresh, workspace_id).await?,

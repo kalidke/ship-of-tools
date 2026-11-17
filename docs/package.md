@@ -217,7 +217,7 @@ all but fixes found in use. A
 new release candidate waits until a person has used the last one and carries everything that use found, and
 everything else known to be wrong (the maintainer, 2026-11-13: a candidate saves nothing for the next one). In
 progress is the project chat (the daemon speaks Slack itself,
-in Rust, one workspace, a person's post under a custom author): its plan of record is `docs/history/slack-client-plan.md`.
+in Rust, up to 8 Slack workspaces on one hub, each project's channel in its own, a person's post under a custom author): its plan of record is `docs/history/slack-client-plan.md`.
 Its first stage's preparations (P2, P4, P10, P11, P5, P6, P9, P1), B1a (the record and normalization), B1b (the HTTP core) and B1c (the Slack calls) and B1d (the Socket Mode listener)
 have landed, which closes B1; the stage continues with B2, then B5, each landing alone within the half hour. Of B2, the
 configuration, the service, the watch model, the wire family, the hub composition, the per-action recheck, the request ops' dispatch and the watch ops with their

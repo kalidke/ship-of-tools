@@ -101,14 +101,15 @@ pub(crate) async fn resolve(req_id: u64, payload: serde_json::Value, chat: &Arc<
     // an unmapped one only when no workspace's listener runs (with the default's reason), so one workspace whose tokens
     // failed never keeps a person from pairing in another (C4); a refused `chat.toml` stays `invalid`. A daemon that is
     // not the hub is off as `NotHub`, which no connect fixes, so it never reads as unconfigured here.
+    // The reply names the mapped row's workspace, the one whose connection failed.
     let judged = match &resolved {
-        Ok((Resolution::Mapped { workspace, .. }, _)) => Some(chat.status_of(workspace)),
+        Ok((Resolution::Mapped { workspace, .. }, _)) => Some((chat.status_of(workspace), Some(workspace.clone()))),
         Ok((Resolution::Unmapped, _)) if chat.any_running() => None,
-        Ok(_) => Some(chat.status()),
+        Ok(_) => Some((chat.status(), None)),
         Err(_) => None,
     };
-    if let Some(reason) = judged.and_then(super::setup::unconfigured) {
-        return reply(req_id, NAME, &ChatResolveRes::Unconfigured { reason });
+    if let Some((reason, workspace)) = judged.and_then(|(status, w)| super::setup::unconfigured(status).map(|r| (r, w))) {
+        return reply(req_id, NAME, &ChatResolveRes::Unconfigured { reason, workspace });
     }
     match resolved {
         Err(code) => Ok(refuse(req_id, NAME, code)),
