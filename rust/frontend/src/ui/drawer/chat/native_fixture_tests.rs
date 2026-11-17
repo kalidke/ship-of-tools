@@ -384,7 +384,7 @@ impl State {
         // ArrowUp marks the newest, which shows two pictures; Primary+o asks its first one's original, once, and the answer is
         // installed as the preview's source with no node, the fired target as it was.
         self.preview_requests.record_fired("files:fig.png".into());
-        let fired = self.preview_requests.fired_target().map(str::to_owned);
+        let fired = self.preview_requests.refetch_target().map(str::to_owned);
         self.witness_key(Key::Named(NamedKey::ArrowUp), (false, false), Some(Action::ChatMarkOlder))?;
         self.witness_frame(&mut frames, &newest, "marked")?;
         // A preview of the cursored file is in flight when the picture is opened: its late reply must not replace the picture.
@@ -400,7 +400,7 @@ impl State {
         println!("chat-open child_ms={}", begun.elapsed().as_millis());
         anyhow::ensure!(self.status.text() == "picture shown in the preview", "the status line says {:?}", self.status.text());
         anyhow::ensure!(self.preview_source.node_id().is_none() && self.preview_source.mime() == Some("image/png"), "the preview shows {:?} of {:?}", self.preview_source.mime(), self.preview_source.node_id());
-        anyhow::ensure!(self.preview_requests.fired_target().map(str::to_owned) == fired, "the open changed the fired target");
+        anyhow::ensure!(self.preview_requests.refetch_target().map(str::to_owned) == fired, "the open changed the fired target");
         anyhow::ensure!(self.raster.is_shown(), "the opened picture is not the pane's raster");
         self.witness_frame(&mut frames, &newest, "opened")?;
         // Nothing that acts on what is shown names the fired file under the picture: no region (crop, its paste to the agent,
@@ -408,6 +408,17 @@ impl State {
         anyhow::ensure!(self.raster.roi().is_none(), "the picture's region is recorded as {:?}", self.raster.roi().map(|r| r.node_id.clone()));
         anyhow::ensure!(self.preview_pane_name().is_none(), "the pane is titled {:?} over the picture", self.preview_pane_name());
         anyhow::ensure!(!self.begin_scale_entry(), "the scale prompt opened for the fired file over the picture");
+        // Nor the fired file's caption under the picture, nor `e`'s edit of the fired file.
+        let row_key = self.active_result_row_key().ok_or_else(|| anyhow::anyhow!("no row key for the caption"))?;
+        self.overlays.set_caption(row_key.clone(), "files:fig.png".into(), "the fired file's caption".into());
+        let pane = crate::ui::render::quad::ScreenRect { x: 0.0, y: 0.0, w: 400.0, h: 300.0 };
+        let caption = self.build_caption(pane).is_some();
+        self.overlays.clear_caption(&row_key, "files:fig.png");
+        anyhow::ensure!(!caption, "the fired file's caption is drawn under the picture");
+        while sent.try_recv().is_ok() {}
+        crate::ui::preview::editor::keys::enter_editor(self);
+        let reads = std::iter::from_fn(|| sent.try_recv().ok()).filter(|r| matches!(r, OutgoingReq::FileRead { .. })).count();
+        anyhow::ensure!(reads == 0 && !self.editor.is_editing(), "`e` over the picture read the fired file for editing");
         // An original cut by a link change is given up at State, said on the status line, and never asked again by itself;
         // the host's one transfer is free again, so the next Primary+o asks one.
         let asked = |sent: &mut Requests| std::iter::from_fn(|| sent.try_recv().ok()).filter(|r| matches!(r, OutgoingReq::ChatFile { req } if req.variant == sot_protocol::ops::ChatFileVariant::Original)).count();
@@ -426,6 +437,34 @@ impl State {
         self.witness_pump(events, sent, &mut daemon)?;
         anyhow::ensure!(daemon.seen.originals == ["SAME", "SAME"], "after the link's return, originals asked: {:?}", daemon.seen.originals);
         self.witness_settle(&mut frames, &newest, "drawn again")?;
+        // A second picture opened while the first is with the child: the one shown is the newest asked for, and the first's
+        // outcome is dropped unsaid (it neither installs nor makes the second's job stale).
+        anyhow::ensure!(figure_color("SAME") != figure_color("F4-0"), "the two files share a color");
+        // The real child draws both; the first's answer is held back 1 s, so the second is handed on while the first is with
+        // the worker, and the second's 300 ms, so the first's is settled while the second is still there, whatever the frames.
+        let draws = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let draw: crate::ui::preview::image::svg_draws::Draw = std::sync::Arc::new(move |jobs, stop| {
+            let outcomes = crate::ui::preview::image::svg_run::draw_in_own_child(jobs, stop);
+            let held = [1000, 300][draws.fetch_add(1, std::sync::atomic::Ordering::SeqCst).min(1)];
+            std::thread::sleep(std::time::Duration::from_millis(held));
+            outcomes
+        });
+        let real = std::mem::replace(&mut self.svg_draws, crate::ui::preview::image::svg_draws::SvgDraws::new(crate::ui::preview::image::svg_draws::QUEUED_BYTES, || {}, draw));
+        self.witness_key(Key::Character("o".into()), (true, false), Some(Action::ChatOpenImage))?;
+        self.witness_pump(events, sent, &mut daemon)?;
+        for _ in 0..2 {
+            self.witness_key(Key::Named(NamedKey::ArrowUp), (false, false), Some(Action::ChatMarkOlder))?;
+            self.witness_frame(&mut frames, &newest, "marked an older one")?;
+        }
+        self.witness_key(Key::Character("o".into()), (true, false), Some(Action::ChatOpenImage))?;
+        self.witness_pump(events, sent, &mut daemon)?;
+        anyhow::ensure!(daemon.seen.originals.ends_with(&["SAME".to_string(), "F4-0".to_string()]), "originals asked: {:?}", daemon.seen.originals);
+        let settled = self.witness_settle(&mut frames, &newest, "two opens");
+        self.svg_draws = real;
+        settled?;
+        anyhow::ensure!(self.status.text() == "picture shown in the preview", "the second open ends {:?}", self.status.text());
+        let shown = self.preview_source.bytes().and_then(|b| image::load_from_memory_with_format(b, image::ImageFormat::Png).ok()).map(|i| i.to_rgba8().get_pixel(0, 0).0);
+        anyhow::ensure!(shown == Some(figure_color("F4-0")), "the preview shows {shown:?}, not the second picture's {:?}", figure_color("F4-0"));
         // The child made to fail on purpose (a stand-in for it): one that exits, one past its wall, one that answers garbage.
         // Each is a refusal on the status line, the picture already shown stays, and the window goes on presenting frames.
         #[cfg(unix)]

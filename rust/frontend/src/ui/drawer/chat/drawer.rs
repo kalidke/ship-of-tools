@@ -903,9 +903,14 @@ impl ChatDrawer {
     }
 
     /// The opened picture's original as it came, for State to hand to the window's bounded child, once: the row it was opened
-    /// for, and its bytes.
-    pub(in crate::ui) fn take_opened(&mut self) -> Option<(ResultRowIdentity, Vec<u8>)> {
-        self.pictures.take_opened().map(|(host, workspace_id, bytes)| (ResultRowIdentity { host, workspace_id }, bytes))
+    /// for, and its bytes, with the number of the child's job it becomes.
+    pub(in crate::ui) fn take_opened(&mut self) -> Option<(u64, ResultRowIdentity, Vec<u8>)> {
+        self.pictures.take_opened().map(|(number, host, workspace_id, bytes)| (number, ResultRowIdentity { host, workspace_id }, bytes))
+    }
+
+    /// Whether the child's job `number` is of the newest picture opened: an older one's outcome is dropped unsaid.
+    pub(in crate::ui) fn is_newest_picture(&self, number: u64) -> bool {
+        self.pictures.is_newest(number)
     }
 
     /// The chat is not shown: no record is prepared.

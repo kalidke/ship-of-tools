@@ -51,7 +51,8 @@ pub(crate) struct Job {
 #[derive(Debug, PartialEq)]
 pub(crate) enum Outcome {
     Drawn { w: u32, h: u32, rgba: Vec<u8> },
-    /// A picture ask's answer: PNG of at most `w` by `h` as its reply said, which the ask allowed.
+    /// A picture ask's answer: PNG of `w` by `h` as its reply said, which the ask allowed. Only a picture ask gets one
+    /// (`Ask::accepts`), so every other owner of the worker's outcomes reads it as nothing.
     Picture { w: u32, h: u32, png: Vec<u8> },
     Refused(String),
     Ended(String),

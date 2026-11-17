@@ -58,6 +58,11 @@ fn job(label: &str) -> Job {
     Job { ask: Ask::Stretch(1, 1), svg: Arc::from(label.as_bytes()) }
 }
 
+/// A chat picture's job: a picture ask, its label its bytes.
+fn picture(label: &str) -> Job {
+    Job { ask: Ask::Picture { cap: 100 }, svg: Arc::from(label.as_bytes()) }
+}
+
 fn draws_over(stand: &Arc<Stand>, cap: usize) -> (SvgDraws, Arc<AtomicUsize>) {
     let (wakes, stand) = (Arc::new(AtomicUsize::new(0)), stand.clone());
     let draw: Draw = Arc::new(move |jobs, stop| stand.draw(jobs, stop));
@@ -170,6 +175,29 @@ fn after_two_strikes_a_generation_draws_no_more() {
     draws.advance(2);
     draws.submit("ok3".into(), 2, job("ok3")).unwrap();
     assert!(matches!(outcomes(&mut draws, 1)[0].1, Outcome::Drawn { .. }));
+}
+
+/// A picture ask is a person's one click, never repeated by the window: its end at a bound is no strike against the pane's own
+/// drawings, and the pane's strikes never refuse it.
+#[test]
+fn a_picture_ask_neither_strikes_nor_is_refused_by_the_panes_strikes() {
+    let stand = Arc::new(Stand::default());
+    let (mut draws, _) = draws_over(&stand, 1 << 20);
+    draws.advance(1);
+    draws.submit("end0".into(), 1, picture("end0")).unwrap();
+    draws.submit("end1".into(), 1, picture("end1")).unwrap();
+    draws.submit("ok2".into(), 1, job("ok2")).unwrap();
+    let got = outcomes(&mut draws, 3);
+    assert!(matches!(got[2], (ref key, Outcome::Drawn { .. }) if key == "ok2"), "two pictures that ended struck the pane: {got:?}");
+    // The pane's own drawings strike twice; a picture is still drawn, and the pane's next drawing is still refused.
+    for key in ["end3", "end4"] {
+        draws.submit(key.into(), 1, job(key)).unwrap();
+    }
+    draws.submit("ok5".into(), 1, picture("ok5")).unwrap();
+    draws.submit("ok6".into(), 1, job("ok6")).unwrap();
+    let got = outcomes(&mut draws, 4);
+    assert!(matches!(got[2], (ref key, Outcome::Drawn { .. }) if key == "ok5"), "the pane's strikes refused a picture: {got:?}");
+    assert_eq!(got[3], ("ok6".to_owned(), Outcome::Refused("an earlier picture in this file was refused".into())));
 }
 
 #[test]

@@ -7,12 +7,12 @@ impl PageRequestContext for State {
     fn page_requests(&mut self) -> &mut PreviewRequests { &mut self.preview_requests }
 
     fn shown_page(&self) -> Option<(u32, u32)> {
-        if self.preview_source.node_id()? != self.preview_requests.fired_target()? { return None; }
+        if self.preview_source.node_id()? != self.preview_requests.refetch_target()? { return None; }
         self.pages.page()
     }
 
     fn send_page_request(&mut self, page: u32, generation: u64) -> Result<(), String> {
-        let node_id = self.preview_requests.fired_target().ok_or("no preview target")?.to_string();
+        let node_id = self.preview_requests.refetch_target().ok_or("no preview target")?.to_string();
         let (fit_w, fit_h) = self.preview_fit_px();
         self.send(OutgoingReq::PreviewGet {
             node_id, workspace_id: self.selected.workspace_id().clone(), page: Some(page), fit_w, fit_h, generation,
@@ -114,7 +114,7 @@ impl State {
         if self.preview_requests.suppress_follow(&id) {
             return;
         }
-        if self.preview_requests.fired_target() == Some(id.as_str()) {
+        if self.preview_requests.refetch_target() == Some(id.as_str()) {
             // Same file already shown — no re-fetch needed. But items within a
             // module share a file, so the cursor moving between them must still
             // re-anchor the (already rendered) code preview to the new item.

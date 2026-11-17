@@ -72,9 +72,9 @@ impl State {
             self.status.set(words);
         }
         // An opened picture goes to the bounded child only while its row is still the one the chat shows.
-        if let Some((row, bytes)) = self.chat.take_opened() {
+        if let Some((number, row, bytes)) = self.chat.take_opened() {
             if wanted_row(self.layout_help.chat_shown(), || self.active_result_workspace()).as_ref() == Some(&row) {
-                self.draw_chat_picture(bytes);
+                self.draw_chat_picture(number, bytes);
             } else {
                 self.status.set("picture not opened: the row changed before it came");
             }

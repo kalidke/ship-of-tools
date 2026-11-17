@@ -75,8 +75,12 @@ impl State {
         if let Some(step) = frame.preview {
             self.apply_svg_step(step);
         }
-        if let Some(outcome) = frame.chat {
-            self.settle_chat_picture(outcome);
+        // Only the newest picture opened is shown: an older one's outcome is dropped unsaid, so it installs nothing and the
+        // newer one's job is not made stale by it.
+        for (number, outcome) in frame.chat {
+            if self.chat.is_newest_picture(number) {
+                self.settle_chat_picture(outcome);
+            }
         }
     }
 
@@ -84,11 +88,11 @@ impl State {
     /// decodes it. It goes to the worker's bounded child (`svg_run`: the SVG draw's child, heap, CPU bound and wall), which
     /// answers PNG fitted to `MAX_RASTER_PIXELS` and the texture limit; `settle_chat_picture` installs that PNG alone.
     /// The request generation advances at the ask, so a preview reply in flight is already stale while the child decodes.
-    pub(in crate::ui) fn draw_chat_picture(&mut self, bytes: Vec<u8>) {
+    pub(in crate::ui) fn draw_chat_picture(&mut self, number: u64, bytes: Vec<u8>) {
         self.preview_requests.issue_preview();
         let cap = self.gpu.device().limits().max_texture_dimension_2d;
         let job = super::svg_run::Job { ask: super::svg_wire::Ask::Picture { cap }, svg: bytes.into() };
-        if let Err(why) = self.svg_draws.submit(super::svg_preview::CHAT_PICTURE_KEY.into(), self.preview_source.generation(), job) {
+        if let Err(why) = self.svg_draws.submit(format!("{}{number}", super::svg_preview::CHAT_PICTURE_KEY), self.preview_source.generation(), job) {
             self.status.set(format!("picture not opened: {why}"));
         }
     }
@@ -103,11 +107,10 @@ impl State {
                 self.install_chat_picture("image/png".into(), png);
                 self.status.set("picture shown in the preview");
             }
-            Outcome::Picture { .. } => self.status.set("picture not opened: the drawing's reply was not what was asked"),
+            // A PNG that is not of its named size; pixels, which the runner never takes for a picture ask (`Ask::accepts`).
+            Outcome::Picture { .. } | Outcome::Drawn { .. } => self.status.set("picture not opened: the drawing's reply was not what was asked"),
             Outcome::Refused(why) | Outcome::Ended(why) => self.status.set(format!("picture not opened: {why}")),
             Outcome::Stale => self.status.set("picture not opened: the preview moved on before it was drawn"),
-            // The runner takes pixels only for an ask that wants them (`Ask::accepts`), which a picture ask does not.
-            Outcome::Drawn { .. } => self.status.set("picture not opened: the drawing's reply was not what was asked"),
         }
         self.window.request_redraw();
     }

@@ -90,12 +90,15 @@ pub(super) struct ChatPictures {
     /// The original of the wanted file as it came: the host and row it was opened for and its bytes, until State hands them
     /// to the window's bounded child (`take_opened`). The window's own process never decodes them.
     opened: Option<(HostKey, String, Vec<u8>)>,
+    /// How many originals have been handed on: each is the child's job of that number, and only the newest one's outcome is
+    /// shown, so a picture opened while another is with the child is the one the person sees.
+    handed: u64,
 }
 
 impl Default for ChatPictures {
     fn default() -> Self {
         let (entries, finals, order, connected, unsupported) = (HashMap::new(), HashMap::new(), VecDeque::new(), HashSet::new(), HashSet::new());
-        Self { entries, finals, order, placement: 0, connected, unsupported, decode, wanted: None, opening: None, opened: None }
+        Self { entries, finals, order, placement: 0, connected, unsupported, decode, wanted: None, opening: None, opened: None, handed: 0 }
     }
 }
 
@@ -217,8 +220,15 @@ impl ChatPictures {
     }
 
     /// The checked original of the wanted file, once.
-    pub(super) fn take_opened(&mut self) -> Option<(HostKey, String, Vec<u8>)> {
-        self.opened.take()
+    pub(super) fn take_opened(&mut self) -> Option<(u64, HostKey, String, Vec<u8>)> {
+        let (host, row, bytes) = self.opened.take()?;
+        self.handed += 1;
+        Some((self.handed, host, row, bytes))
+    }
+
+    /// Whether the child's job `number` is of the newest original handed on.
+    pub(super) fn is_newest(&self, number: u64) -> bool {
+        number == self.handed
     }
 
     /// When an ask is next owed: the earliest `due` of the last placement's wanted pictures on a connected host that knows the

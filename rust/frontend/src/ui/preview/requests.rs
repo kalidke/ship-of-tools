@@ -150,7 +150,9 @@ impl PreviewRequests {
         self.clear_page_requests();
     }
 
-    pub(in crate::ui) fn fired_target(&self) -> Option<&str> { self.preview_target_fired.as_deref() }
+    /// The node the latest preview request asked for: what a refetch (a reconnect, a `preview.changed`, a page turn) and a
+    /// reply's own match read. A reader of what the pane shows reads `State::shown_target` instead.
+    pub(in crate::ui) fn refetch_target(&self) -> Option<&str> { self.preview_target_fired.as_deref() }
 
     /// A preview request for `node_id` went out (or, for a capture, was asked for).
     pub(in crate::ui) fn record_fired(&mut self, node_id: String) {
@@ -161,7 +163,7 @@ impl PreviewRequests {
     /// The daemon refused the request for `node_id`: the pane keeps its old content, now marked while it is the fired
     /// target. A refusal of any other node leaves the mark as it was.
     pub(in crate::ui) fn refuse(&mut self, node_id: Option<&str>) {
-        if node_id.is_some() && node_id == self.fired_target() {
+        if node_id.is_some() && node_id == self.refetch_target() {
             self.preview_refused = true;
         }
     }

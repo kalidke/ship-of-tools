@@ -149,7 +149,6 @@ impl FigureStore {
                 self.fail(done.key);
                 Settled::Failed(why)
             }
-            // A picture's PNG answers only a picture ask (`Ask::accepts`), which a figure never makes.
             Outcome::Stale | Outcome::Picture { .. } => {
                 self.pending.remove(&done.key);
                 Settled::Unhandled

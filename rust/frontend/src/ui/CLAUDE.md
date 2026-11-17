@@ -1434,8 +1434,11 @@ methods are `pub(super)`, so no other ui code can drop the requests they return.
   below, through the real child and through stand-ins. Cost of an ordinary 40-megapixel JPEG (measured 2026-11-17 in release
   on one Linux computer): about 520 ms in the child (its start, the decode, the fit to 5016 x 3344 and the PNG encode, 22 MB),
   off the UI thread; then the window decodes that PNG (about 80 ms) and uploads it, and its bytes stay in the installed
-  source and the row's parked view, as any preview's do. Limits: a draw of the picture that ends at a bound counts as one of
-  the pane's generation's two strikes (`svg_draws`), so a redraw of that pane's own SVG may then be refused; an open the
+  source and the row's parked view, as any preview's do. A picture ask is neither counted as one of the pane's generation's two
+  strikes nor refused by them (`svg_draws`, `a_picture_ask_neither_strikes_nor_is_refused_by_the_panes_strikes`). Each original
+  handed on is the child's job of a number under `CHAT_PICTURE_KEY`, and only the newest number's outcome is settled, an
+  older one's dropped unsaid, so a picture opened while another is with the child is the one shown (the native fixture,
+  red when every outcome is settled). Limits: an open the
   child refuses leaves a preview reply it outdated dropped, so the pane keeps what it showed while the fired target is the
   cursored file. State installs the picture only while
   its row is the one the chat shows (`take_opened`, `with_chat`), through `State::install_chat_picture`: `issue_preview`
@@ -1444,12 +1447,13 @@ methods are `pub(super)`, so no other ui code can drop the requests they return.
   acts on what is shown reads `State::shown_target`, the fired target unless the pane shows bytes with no node: the visible
   region (the crop and its paste to the agent, fe-state, the saved view's record and restore), the scale prompt, the title,
   the caption, the editor and the page re-raster; so over a chat picture they act on nothing, while the refetches (a
-  reconnect, a `preview.changed`, a page turn) keep the fired target. A cursor move, a switch to another row or a
+  reconnect, a `preview.changed`, a page turn) and a reply's own match read `PreviewRequests::refetch_target`, the name that
+  says it is not what is shown. A cursor move, a switch to another row or a
   `preview.changed` for the fired node shows a file again. The native fixture
   `a_chats_pictures_show_and_one_opens_in_the_preview` runs it through the window: `Primary+o` on the marked message asks
   one original while a preview of the cursored file is in flight, whose late reply comes while the child works and is
   dropped; the child's PNG is then the preview's source and raster, with no node and the fired target as it was (it prints
-  `chat-open child_ms=…`); no region, no title and no scale prompt follow; an open cut by a link change is said, not asked
+  `chat-open child_ms=…`); no region, no title, no scale prompt, no caption of the fired file and no `e` read of it follow; an open cut by a link change is said, not asked
   again after the link's return, and the next `Primary+o` asks one (red when the link change keeps the original in flight);
   and with the worker's draw replaced by a stand-in child that exits, outlasts a 1 s wall, or answers a PNG reply that is no
   PNG, each open is a status-line refusal while frames present and the shown picture stays (red when the header check is

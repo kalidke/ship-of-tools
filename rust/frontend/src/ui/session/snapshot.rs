@@ -107,7 +107,7 @@ impl State {
                 // (the map's key), which is `active_host` by construction
                 // at snapshot time.
                 bl_pane_target: self.agent_pane.snapshot_target(),
-                preview_node_id_fired: self.preview_requests.fired_target().map(str::to_owned),
+                preview_node_id_fired: self.preview_requests.refetch_target().map(str::to_owned),
                 preview_refused: self.preview_requests.fired_refused(),
                 pinned_preview_node_id: self.nav_cursor.pinned().clone(),
                 source: self.preview_source.clone(),

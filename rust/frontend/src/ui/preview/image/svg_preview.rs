@@ -22,8 +22,9 @@ use crate::ui::preview::markdown::media_store::{is_math_job, MarkdownMedia};
 /// The preview's key at the worker. A figure's key is a URL that resolved to a project file, and none holds `://`
 /// (`resolve_figure_node_id`), so no figure has this one.
 pub(super) const PREVIEW_KEY: &str = "://preview";
-/// The worker's key for a chat picture's original (`State::draw_chat_picture`): never a URL, as the preview's is not.
-pub(in crate::ui) const CHAT_PICTURE_KEY: &str = "://chat-picture";
+/// The worker's key for a chat picture's original (`State::draw_chat_picture`), followed by its job's number: never a URL, as
+/// the preview's is not.
+pub(in crate::ui) const CHAT_PICTURE_KEY: &str = "://chat-picture/";
 
 /// How many outcomes are kept.
 const KEPT: usize = 2;
@@ -153,7 +154,6 @@ impl SvgPreview {
                 self.keep(Kept::Refused { digest, why: why.clone() });
                 Some(Step::Refused(why))
             }
-            // A picture's PNG answers only a picture ask (`Ask::accepts`), which the preview's SVG never makes.
             Outcome::Stale | Outcome::Picture { .. } => None,
         }
     }
@@ -177,8 +177,8 @@ pub(in crate::ui) struct Frame {
     pub figures: Vec<(String, Settled)>,
     pub math: Vec<((String, bool), Settled)>,
     pub preview: Option<Step>,
-    /// A chat picture's outcome, the last of the frame's.
-    pub chat: Option<Outcome>,
+    /// The chat pictures' outcomes, each with its job's number.
+    pub chat: Vec<(u64, Outcome)>,
 }
 
 /// The top of a frame: the worker is told the pane's `generation`, then every outcome it has returned goes to its
@@ -189,14 +189,14 @@ pub(in crate::ui) fn settle_frame(
     draws.advance(generation);
     let mut done = Vec::new();
     draws.drain(|each| done.push(each));
-    let mut frame = Frame { figures: Vec::new(), math: Vec::new(), preview: None, chat: None };
+    let mut frame = Frame { figures: Vec::new(), math: Vec::new(), preview: None, chat: Vec::new() };
     for each in done {
         if each.key == PREVIEW_KEY {
             frame.preview = preview.settle(each).or(frame.preview);
             continue;
         }
-        if each.key == CHAT_PICTURE_KEY {
-            frame.chat = Some(each.outcome);
+        if let Some(number) = each.key.strip_prefix(CHAT_PICTURE_KEY).and_then(|n| n.parse().ok()) {
+            frame.chat.push((number, each.outcome));
             continue;
         }
         if is_math_job(&each.key) {

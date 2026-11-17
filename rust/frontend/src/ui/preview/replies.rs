@@ -221,7 +221,7 @@ impl State {
                 && mime != "text/markdown"
                 && mime != "text/x-markdown");
         let matches_req =
-            node_id.as_deref() == self.preview_requests.fired_target();
+            node_id.as_deref() == self.preview_requests.refetch_target();
         self.shaped.settle_anchor(is_code && matches_req);
         requests::continue_page_request(self);
     }
@@ -361,7 +361,7 @@ impl State {
         // reconnect re-fetch uses); hold the current page so a
         // paginated preview doesn't snap back to page 1.
         if (kind == "modified" || kind == "created")
-            && self.preview_requests.fired_target() == Some(node_id.as_str())
+            && self.preview_requests.refetch_target() == Some(node_id.as_str())
         {
             let (fit_w, fit_h) = self.preview_fit_px();
             let generation = self.next_preview_gen();

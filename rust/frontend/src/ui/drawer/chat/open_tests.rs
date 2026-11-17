@@ -175,7 +175,7 @@ fn one_open_is_in_flight_and_a_late_reply_is_dropped() {
     answer(&mut d, first, png(8, 8), at);
     assert!(d.take_opened().is_none());
     let thumb = files(&answer(&mut d, next[0].clone(), png(6, 5), at), ChatFileVariant::Thumb).remove(0);
-    let (row, bytes) = d.take_opened().expect("the wanted picture");
+    let (_, row, bytes) = d.take_opened().expect("the wanted picture");
     assert_eq!((row.host.as_str(), row.workspace_id.as_str(), bytes), ("a", "ROW1", png(6, 5)), "the original as it came, undecoded");
     assert!(d.take_opened().is_none());
     // A row change gives the wanted open up: its reply installs nothing.

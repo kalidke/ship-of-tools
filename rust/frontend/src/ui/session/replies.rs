@@ -235,7 +235,7 @@ impl State {
             // disconnected actually show up. The fired target
             // is the source of truth for "what the preview pane is
             // showing right now".
-            if let Some(node_id) = self.preview_requests.fired_target().map(str::to_owned) {
+            if let Some(node_id) = self.preview_requests.refetch_target().map(str::to_owned) {
                 let (fit_w, fit_h) = self.preview_fit_px();
                 let generation = self.next_preview_gen();
                 let _ = self.send(crate::net::transport::OutgoingReq::PreviewGet {

@@ -19,6 +19,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use sot_protocol::ir::PREVIEW_BINARY_CAP;
 
 use super::svg_run::{Job, Outcome, Stop};
+use super::svg_wire::Ask;
 
 /// Input waiting at once: what the child would take in one request.
 pub(crate) const QUEUED_BYTES: usize = PREVIEW_BINARY_CAP;
@@ -184,7 +185,7 @@ impl Worker {
         // The generation that has struck, and how many of its draws ended at a bound.
         let mut strikes = (0u64, 0u32);
         loop {
-            let (batch, stop, struck) = {
+            let (batch, stop, struck, picture) = {
                 let mut held = self.shared.held();
                 loop {
                     if held.quit {
@@ -199,12 +200,14 @@ impl Worker {
                             batch.extend(with);
                         }
                         held.waiting -= batch.iter().map(|entry| entry.job.svg.len()).sum::<usize>();
-                        let struck = strikes.0 == batch[0].generation && strikes.1 >= SVG_STRIKES;
+                        // A picture ask (a chat picture, one per click) neither counts as a strike nor is refused for them.
+                        let picture = matches!(batch[0].job.ask, Ask::Picture { .. });
+                        let struck = !picture && strikes.0 == batch[0].generation && strikes.1 >= SVG_STRIKES;
                         let stop = Stop::default();
                         if !struck {
                             held.running = Some(stop.clone());
                         }
-                        break (batch, stop, struck);
+                        break (batch, stop, struck, picture);
                     }
                     held = self.shared.ready.wait(held).unwrap_or_else(PoisonError::into_inner);
                 }
@@ -222,7 +225,7 @@ impl Worker {
             let outcomes = catch_unwind(AssertUnwindSafe(|| (self.draw)(jobs, &stop))).unwrap_or_default();
             self.shared.held().running = None;
             // One child, one strike, however many of its jobs ended with it.
-            if outcomes.iter().any(|outcome| matches!(outcome, Outcome::Ended(_))) {
+            if !picture && outcomes.iter().any(|outcome| matches!(outcome, Outcome::Ended(_))) {
                 strikes = (generation, if strikes.0 == generation { strikes.1 + 1 } else { 1 });
             }
             let mut outcomes = outcomes.into_iter();

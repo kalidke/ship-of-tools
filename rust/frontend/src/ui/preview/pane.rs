@@ -235,7 +235,7 @@ impl State {
     /// the editor. The refetches (a reconnect, a `preview.changed`, a page turn) read the fired target itself.
     pub(in crate::ui) fn shown_target(&self) -> Option<&str> {
         let nodeless = self.preview_source.bytes().is_some() && self.preview_source.node_id().is_none();
-        self.preview_requests.fired_target().filter(|_| !nodeless)
+        self.preview_requests.refetch_target().filter(|_| !nodeless)
     }
 
     /// Display name for the preview-pane title: the **basename** of the file
