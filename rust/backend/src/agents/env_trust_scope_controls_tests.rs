@@ -176,11 +176,12 @@ fn a_claude_preparation_marks_its_trust_file_and_no_other_file() {
 }
 
 /// A fixture: a ready layer under the guarded comm folder (outside any declared prefix), and a declaration of `prefix`
-/// when asked. Returns the home, the row's folder, the layer and the trust file.
-fn layer_fixture(declare: bool) -> (PathBuf, PathBuf, PathBuf, PathBuf) {
+/// when asked. Returns the folder that keeps the home alive, the row's folder, the layer as the leg's `--add-dir` names
+/// it (the spelling Claude Code looks the added folder up by, which is not always the canonical one: a macOS temporary
+/// folder is spelled through `/var`, which is a link) and the trust file.
+fn layer_fixture(declare: bool) -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {
     let temp = tempfile::tempdir().unwrap();
     let home = platform_spelling(temp.path());
-    std::mem::forget(temp);
     std::env::set_var("HOME", &home);
     std::env::set_var("USERPROFILE", &home);
     std::env::set_var("XDG_CONFIG_HOME", home.join("config"));
@@ -193,7 +194,9 @@ fn layer_fixture(declare: bool) -> (PathBuf, PathBuf, PathBuf, PathBuf) {
     let skill = comm.join("claude-layer").join(".claude").join("skills").join("sot-session-start");
     std::fs::create_dir_all(&skill).unwrap();
     std::fs::write(skill.join("SKILL.md"), "---\nname: sot-session-start\n---\n").unwrap();
-    let layer = platform_spelling(&comm.join("claude-layer"));
+    let layer = crate::agents::layer::layer_under(&comm).expect("the fixture's layer is ready");
+    let arg = crate::agents::layer::add_dir_arg(&layer);
+    let layer = PathBuf::from(arg.strip_prefix("--add-dir=").expect("one-token flag"));
     assert!(!layer.starts_with(&prefix), "the layer lies outside the declared prefix");
     if declare {
         let config = crate::rows::store::app_config_dir();
@@ -202,12 +205,13 @@ fn layer_fixture(declare: bool) -> (PathBuf, PathBuf, PathBuf, PathBuf) {
         std::fs::write(config.join("settings.toml"), text).unwrap();
     }
     let trust_file = home.join(".claude.json");
-    (home, inside, layer, trust_file)
+    (temp, inside, layer, trust_file)
 }
 
 fn accepted(file: &Path, folder: &Path) -> bool {
     let doc: serde_json::Value = serde_json::from_slice(&std::fs::read(file).unwrap()).unwrap();
-    doc["projects"][folder.to_str().unwrap()]["hasTrustDialogAccepted"] == serde_json::Value::Bool(true)
+    let key = crate::agents::folder_trust::claude_project_key(&folder.to_string_lossy(), cfg!(windows));
+    doc["projects"][key.as_str()]["hasTrustDialogAccepted"] == serde_json::Value::Bool(true)
 }
 
 #[test]
@@ -218,7 +222,7 @@ fn a_declared_box_records_the_ready_layer_beside_the_row_and_an_undeclared_one_n
         return;
     }
     let _guard = self_file_env_guarded();
-    let (_home, inside, layer, trust_file) = layer_fixture(true);
+    let (_temp, inside, layer, trust_file) = layer_fixture(true);
     let capture = sot_platform::test_log::capture();
     account_spawn_env("claude", "default", &inside, "fixture-row").unwrap();
     let log = capture.text();
@@ -228,7 +232,7 @@ fn a_declared_box_records_the_ready_layer_beside_the_row_and_an_undeclared_one_n
     let lines: Vec<&str> = log.lines().filter(|l| l.contains("folder trust")).collect();
     assert_eq!(lines.len(), 2, "one line per folder: {log}");
     assert!(lines.iter().all(|l| l.contains("INFO") && l.contains("outcome=Recorded") && l.contains("fixture-row")), "{log}");
-    assert!(lines.iter().any(|l| l.contains(layer.to_str().unwrap())), "one line names the layer: {log}");
+    assert!(lines.iter().any(|l| l.contains(&format!("{layer:?}"))), "one line names the layer: {log}");
 
     // A second spawn rewrites nothing.
     let before = std::fs::read(&trust_file).unwrap();
@@ -236,12 +240,12 @@ fn a_declared_box_records_the_ready_layer_beside_the_row_and_an_undeclared_one_n
     assert_eq!(std::fs::read(&trust_file).unwrap(), before, "both already trusted: byte-identical");
 
     // A Codex row has no such dialog and no layer.
-    let (_home, inside, _layer, trust_file) = layer_fixture(true);
+    let (_temp, inside, _layer, trust_file) = layer_fixture(true);
     account_spawn_env("codex", "default", &inside, "fixture-row").unwrap();
     assert!(!trust_file.exists(), "a Codex preparation records nothing");
 
     // No declaration: the owner has not opted in, for the layer as for the row.
-    let (_home, inside, _layer, trust_file) = layer_fixture(false);
+    let (_temp, inside, _layer, trust_file) = layer_fixture(false);
     account_spawn_env("claude", "default", &inside, "fixture-row").unwrap();
     assert!(!trust_file.exists(), "undeclared records neither the row's folder nor the layer");
 }
@@ -252,9 +256,32 @@ fn a_layer_that_is_not_ready_is_not_recorded() {
         return;
     }
     let _guard = self_file_env_guarded();
-    let (_home, inside, layer, trust_file) = layer_fixture(true);
+    let (_temp, inside, layer, trust_file) = layer_fixture(true);
     std::fs::remove_dir_all(layer.join(".claude")).unwrap();
     account_spawn_env("claude", "default", &inside, "fixture-row").unwrap();
     assert!(accepted(&trust_file, &inside));
     assert!(!accepted(&trust_file, &layer), "a leg without the layer adds no folder, so none needs a record");
+}
+
+/// The key is the spelling the leg's `--add-dir` carries, which Claude Code looks the added folder up by (measured:
+/// a record under a link's spelling and one under its target's each suppress the dialog). A comm folder reached through
+/// a link, as macOS's temporary folders are, is recorded as spelled, never resolved.
+#[cfg(unix)]
+#[test]
+fn the_layer_is_recorded_under_the_spelling_its_add_dir_carries() {
+    if !sot_platform::test_isolated::run_isolated(
+        "agents::env::trust_scope_controls::the_layer_is_recorded_under_the_spelling_its_add_dir_carries",
+    ) {
+        return;
+    }
+    let _guard = self_file_env_guarded();
+    let (temp, inside, real_layer, trust_file) = layer_fixture(true);
+    let link = temp.path().join("comm-link");
+    std::os::unix::fs::symlink(std::env::var_os("SOT_COMM_HOME").unwrap(), &link).unwrap();
+    std::env::set_var("SOT_COMM_HOME", &link);
+    let linked = crate::agents::layer::layer_under(&link).unwrap();
+    assert_ne!(linked, real_layer);
+    account_spawn_env("claude", "default", &inside, "fixture-row").unwrap();
+    assert!(accepted(&trust_file, &linked), "recorded as the add-dir argument spells it");
+    assert!(!accepted(&trust_file, &real_layer), "and not as its target");
 }

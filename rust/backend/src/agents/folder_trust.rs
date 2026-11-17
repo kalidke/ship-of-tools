@@ -174,7 +174,7 @@ fn record_accepted(path: &Path, root: &Path) -> Result<TrustOutcome, String> {
 /// its own keys read `C:/Users/...` (forward slashes), while a root may
 /// arrive with `\`; spelled differently, the entry would never be found
 /// and the dialog would still appear. Elsewhere the root is the key as is.
-fn claude_project_key(root: &str, windows: bool) -> String {
+pub(crate) fn claude_project_key(root: &str, windows: bool) -> String {
     if windows {
         root.replace('\\', "/")
     } else {
