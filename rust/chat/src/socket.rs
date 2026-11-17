@@ -1,7 +1,8 @@
 //! The Socket Mode listener (docs/history/slack-client-plan.md, rules C11 to C13): one websocket opened through
 //! `apps.connections.open`, every envelope acknowledged before any event work, normalized events handed on through a
-//! bounded queue, one socket at a time, and a visible gap whenever anything was lost. No configuration, no lock, no
-//! delivery and no daemon link: the caller hands in the app `Secret` and the bot identity.
+//! bounded queue, one socket at a time, and a visible gap whenever anything was lost. A frame of another app than the
+//! bot's, and a refused app-level token, end it for good. No configuration, no lock, no delivery and no daemon link:
+//! the caller hands in the app `Secret` and the bot identity.
 
 use std::collections::VecDeque;
 use std::fmt;
@@ -20,6 +21,7 @@ use tokio_tungstenite::tungstenite::{Error as WsError, Message};
 use crate::api::{Identity, READ_DEADLINE};
 use crate::http::{Http, HttpError, Request, Secret, Websocket};
 use crate::normalize::{normalize, valid_id, Context, Normalized};
+use crate::service::{End, APP_TOKEN_REFUSED, WRONG_APP};
 
 pub use crate::http::MAX_MESSAGE;
 /// Events waiting for the caller; the next one is dropped and latches a gap.
@@ -219,21 +221,23 @@ impl Shared {
 /// in order.
 pub struct Socket {
     shared: Arc<Shared>,
-    stop: watch::Sender<bool>,
+    /// Its stop signal, and the end it may come to on its own.
+    end: Arc<End>,
     task: Option<JoinHandle<()>>,
     timing: Timing,
 }
 
 impl Socket {
     /// Start the listener. `app` is the app-level token; `own` is the bot identity (normalization decides own posts
-    /// by it alone). Events for `workspace` leave through `take`.
+    /// by it alone, and a frame naming another app than `own.app_id` ends the listener). Events for `workspace` leave
+    /// through `take`.
     pub fn start(
         http: Http,
         app: Secret,
         own: Identity,
         workspace: &str,
     ) -> Result<Socket, SocketError> {
-        Socket::launch(http, app, own, workspace, BASE.into(), Timing::PRODUCT, Box::new(()))
+        Socket::launch(http, app, own, workspace, BASE.into(), Timing::PRODUCT, Box::new(()), End::detached())
     }
 
     /// The fixture's logical base URL and short waits; the product has neither.
@@ -246,11 +250,14 @@ impl Socket {
         base: String,
         timing: Timing,
     ) -> Result<Socket, SocketError> {
-        Socket::launch(http, app, own, workspace, base, timing, Box::new(()))
+        Socket::launch(http, app, own, workspace, base, timing, Box::new(()), End::detached())
     }
 
     /// The one constructor: `base` and `timing` are the product's from `start`, the fixture's from a test, and `held`
     /// lives exactly as long as the listener's task (dropped when the task ends or is aborted, never while it can run).
+    /// `end` is the service's: its signal stops the task, and the listener ends it on another app's frame or a refused
+    /// app token.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn launch(
         http: Http,
         app: Secret,
@@ -259,6 +266,7 @@ impl Socket {
         base: String,
         timing: Timing,
         held: Box<dyn Send + Sync>,
+        end: Arc<End>,
     ) -> Result<Socket, SocketError> {
         if !valid_id(workspace) {
             return Err(SocketError::BadRequest);
@@ -267,7 +275,7 @@ impl Socket {
             state: Mutex::new(State::default()),
             ready: Notify::new(),
         });
-        let (stop, stopped) = watch::channel(false);
+        let stopped = end.subscribe();
         let worker = Worker {
             shared: shared.clone(),
             http,
@@ -276,12 +284,13 @@ impl Socket {
             workspace: workspace.into(),
             base,
             timing,
+            end: end.clone(),
             _held: held,
         };
         let task = tokio::spawn(worker.run(stopped));
         Ok(Socket {
             shared,
-            stop,
+            end,
             task: Some(task),
             timing,
         })
@@ -346,6 +355,17 @@ impl Socket {
         self.shared.state.lock().unwrap().status
     }
 
+    /// The end the listener came to on its own (`WRONG_APP`, `APP_TOKEN_REFUSED`), or its service's.
+    #[cfg(test)]
+    pub(crate) fn ended(&self) -> Option<&'static str> {
+        self.end.code()
+    }
+
+    /// The task is gone (its future dropped, and `held` with it).
+    pub(crate) fn finished(&self) -> bool {
+        self.task.as_ref().is_none_or(JoinHandle::is_finished)
+    }
+
     /// Stop: no further connect, the open socket retired within its close bound, the task joined within `stop`.
     pub async fn stop(self) {
         let within = self.timing.stop;
@@ -354,7 +374,7 @@ impl Socket {
 
     /// `stop` with the join bound given: after it the task is gone, ended or aborted and awaited.
     pub async fn stop_within(mut self, within: Duration) {
-        let _ = self.stop.send(true);
+        self.end.stop();
         // A wait in flight looks, and finds the service stopped.
         self.shared.ready.notify_one();
         // The handle stays in `self`, so a stop future dropped mid-wait drops the socket and `Drop` aborts the task.
@@ -370,7 +390,7 @@ impl Socket {
     #[cfg(test)]
     pub(crate) fn inert() -> Socket {
         let shared = Arc::new(Shared { state: Mutex::new(State::default()), ready: Notify::new() });
-        Socket { shared, stop: watch::channel(false).0, task: None, timing: Timing::PRODUCT }
+        Socket { shared, end: End::detached(), task: None, timing: Timing::PRODUCT }
     }
 
     /// Queue an event as the listener would.
@@ -409,13 +429,15 @@ struct Worker {
     workspace: String,
     base: String,
     timing: Timing,
+    end: Arc<End>,
     /// Dropped with the task's future, after its last poll.
     _held: Box<dyn Send + Sync>,
 }
 
 /// Whether an app-level token opens Socket Mode connections (guarantee 28): one `apps.connections.open`, whose URL must
 /// pass the websocket destination policy and is then dropped, never dialed. Limits: an undialed URL is assumed to cost
-/// nothing at Slack; an app token of another app than the bot token's is not detected.
+/// nothing at Slack; an app token of another app than the bot token's is not detected here (the listener ends on it,
+/// `wrong_app`, at its first frame naming the app).
 pub async fn check_app_token(http: &Http, app: Secret) -> Result<(), SocketError> {
     check_app_token_at(http, app, BASE).await
 }
@@ -471,8 +493,20 @@ enum Next {
     Continue,
     /// `hello`: the connection is live.
     Hello,
-    /// Slack asked for a reconnect (`disconnect`), or the acknowledgement could not be written.
+    /// Slack asked for a reconnect (`disconnect`), or the acknowledgement could not be written; or the listener has
+    /// ended, and no next socket opens.
     Retire,
+}
+
+/// The app a frame names, when it names one by an id: a `hello`'s `connection_info.app_id`, an event's
+/// `payload.api_app_id`.
+fn named_app(frame: &Value) -> Option<&str> {
+    let at = match frame.get("type").and_then(Value::as_str) {
+        Some("hello") => "/connection_info/app_id",
+        Some("events_api") => "/payload/api_app_id",
+        _ => return None,
+    };
+    frame.pointer(at).and_then(Value::as_str).filter(|a| valid_id(a))
 }
 
 async fn stopped(stop: &mut watch::Receiver<bool>) {
@@ -514,6 +548,11 @@ impl Worker {
                 }
                 Err(error) => {
                     self.shared.state.lock().unwrap().status.error = Some(error);
+                    if error == SocketError::Rejected {
+                        // Slack named the app token bad: no later open would differ.
+                        self.end.end(APP_TOKEN_REFUSED);
+                        break;
+                    }
                     self.next_backoff(&mut backoff)
                 }
             };
@@ -523,6 +562,8 @@ impl Worker {
                 _ = tokio::time::sleep(wait) => {}
             }
         }
+        // A wait in flight looks, and finds the service stopped or ended.
+        self.shared.ready.notify_one();
     }
 
     fn next_backoff(&self, backoff: &mut Duration) -> Duration {
@@ -598,12 +639,20 @@ impl Worker {
         helloed
     }
 
-    /// One text frame. The acknowledgement goes out before anything else is done with it.
+    /// One text frame. The acknowledgement goes out before anything else is done with it, unless the frame names
+    /// another app than the bot's: that one is not acknowledged (Slack can give it to its own app's consumer) and ends
+    /// the listener. A frame naming no app, or a bot whose app is unknown, is checked no further.
     async fn handle(&self, ws: &mut Websocket, text: &str) -> Next {
         let Ok(frame) = serde_json::from_str::<Value>(text) else {
             self.shared.latch(GapCause::Failed);
             return Next::Continue;
         };
+        if let (Some(own), Some(named)) = (self.own.app_id.as_deref(), named_app(&frame)) {
+            if named != own {
+                self.end.end(WRONG_APP);
+                return Next::Retire;
+            }
+        }
         if let Some(id) = frame.get("envelope_id").and_then(Value::as_str) {
             if id.len() > MAX_ENVELOPE_ID {
                 self.shared.latch(GapCause::Failed);

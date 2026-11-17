@@ -45,7 +45,7 @@ async fn start(script: impl Fn(&crate::fake_slack::Seen) -> Reply + Send + Sync 
     let api = Api::new(fake.http(), Secret::new("sentinel-bot-token-not-a-credential"), WS)
         .unwrap()
         .with_base(fake.url("slack.com", "/api/"))
-        .with_identity(Identity { user_id: "U0BOT".into(), bot_id: Some("B0BOT".into()) });
+        .with_identity(Identity { user_id: "U0BOT".into(), bot_id: Some("B0BOT".into()), app_id: None });
     (fake, api)
 }
 

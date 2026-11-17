@@ -1,12 +1,15 @@
 //! The chat service: the one running listener for the one configured workspace, its Slack API, a status and a bounded
 //! stop. The workspace's lock is taken before any socket opens or any call is made, and it is owned by the listener's
-//! task, so it is released only when no listener can still be running.
+//! task, so it is released only when no listener can still be running. A service also ends on its own, for good, when
+//! its tokens are refused or its socket is another app's (`End`).
 
 use std::fmt;
 use std::path::Path;
 use std::sync::atomic::{AtomicU8, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
+
+use tokio::sync::watch;
 
 use sot_platform::host::lock_supervisor;
 use sot_platform::Error as PlatformError;
@@ -67,6 +70,57 @@ pub(crate) const FREE: u8 = 0;
 pub(crate) const HELD: u8 = 1;
 pub(crate) const ENDED: u8 = 2;
 
+// The ends a service comes to on its own (`Service::ended`): fixed codes for the daemon to log and act on.
+/// A `hello` or an envelope named another app than the bot's: the app-level token is another app's.
+pub const WRONG_APP: &str = "wrong_app";
+/// Slack refused `apps.connections.open` as a bad app-level token.
+pub const APP_TOKEN_REFUSED: &str = "app_token_refused";
+/// Slack refused a bot-token call with a code of `api::TOKEN_REFUSALS`.
+pub const BOT_TOKEN_REFUSED: &str = "bot_token_refused";
+/// No end: `auth.test` named no bot, so `bots.info` could not be asked and the app is unchecked (`app_unchecked`).
+pub const NO_BOT_ID: &str = "no_bot_id";
+
+/// A service's end of its own: the first code, never undone, seen by its `Api`, its listener and every caller. It ends
+/// the claim, so every channel of the service's `Watches` owes a snapshot, and raises the listener's stop signal, so
+/// its task ends and releases the lock. A stop that began first (the claim already ended) is no end.
+pub(crate) struct End {
+    code: OnceLock<&'static str>,
+    claim: Arc<AtomicU8>,
+    /// The listener's one stop signal: a stop and an end both raise it.
+    signal: watch::Sender<bool>,
+}
+
+impl End {
+    pub(crate) fn new(claim: Arc<AtomicU8>) -> Arc<End> {
+        Arc::new(End { code: OnceLock::new(), claim, signal: watch::channel(false).0 })
+    }
+
+    /// An end no service reads: an `Api` or a `Socket` made alone.
+    pub(crate) fn detached() -> Arc<End> {
+        End::new(Arc::new(AtomicU8::new(FREE)))
+    }
+
+    pub(crate) fn end(&self, code: &'static str) {
+        if self.claim.load(Ordering::SeqCst) != ENDED && self.code.set(code).is_ok() {
+            self.claim.store(ENDED, Ordering::SeqCst);
+            self.signal.send_replace(true);
+        }
+    }
+
+    pub(crate) fn code(&self) -> Option<&'static str> {
+        self.code.get().copied()
+    }
+
+    /// Raise the stop signal with no end.
+    pub(crate) fn stop(&self) {
+        self.signal.send_replace(true);
+    }
+
+    pub(crate) fn subscribe(&self) -> watch::Receiver<bool> {
+        self.signal.subscribe()
+    }
+}
+
 enum Phase {
     Running(Socket),
     Stopping,
@@ -78,6 +132,9 @@ pub struct Service {
     phase: Mutex<Phase>,
     /// Set while a `Watches` made by `watches` lives: the one reader of this service's events.
     claim: Arc<AtomicU8>,
+    end: Arc<End>,
+    /// Why the bot's app is unknown, so no frame's app is checked (`app_unchecked`).
+    unchecked: Option<&'static str>,
 }
 
 /// The lock file's name: built from the validated workspace id alone.
@@ -86,8 +143,8 @@ fn lock_name(workspace: &str) -> String {
 }
 
 impl Service {
-    /// Take the workspace's lock in `dir` (a private folder the caller owns), then read the bot's identity, then
-    /// listen. A second service for the workspace is `Held` before any socket opens or any call is made. Opens no
+    /// Take the workspace's lock in `dir` (a private folder the caller owns), then read the bot's identity and its app,
+    /// then listen. A second service for the workspace is `Held` before any socket opens or any call is made. Opens no
     /// secret file: the caller reads `Credentials`.
     pub async fn start(
         config: &Config,
@@ -154,18 +211,53 @@ impl Service {
                 PlatformError::State(_) => ServiceError::Held,
                 _ => ServiceError::Lock,
             })?;
+        let claim = Arc::new(AtomicU8::new(FREE));
+        let end = End::new(claim.clone());
+        let api = api.with_end(end.clone());
         // From here an early return drops the lock; the socket, once started, owns it.
-        let own = api.auth_test().await.map_err(ServiceError::Api)?;
-        let socket = Socket::launch(http, app, own, workspace, base, timing, Box::new(lock)).map_err(ServiceError::Socket)?;
-        Ok(Service { api: Arc::new(api), phase: Mutex::new(Phase::Running(socket)), claim: Arc::new(AtomicU8::new(FREE)) })
+        let mut own = api.auth_test().await.map_err(ServiceError::Api)?;
+        // The bot's app, which every frame's is checked against; unknown, nothing is checked (fails open).
+        let unchecked = match own.bot_id {
+            None => Some(NO_BOT_ID),
+            Some(_) => match api.bot_app().await {
+                Ok(app) => {
+                    own.app_id = Some(app);
+                    None
+                }
+                Err(e) => Some(e.code()),
+            },
+        };
+        let socket =
+            Socket::launch(http, app, own, workspace, base, timing, Box::new(lock), end.clone()).map_err(ServiceError::Socket)?;
+        Ok(Service { api: Arc::new(api), phase: Mutex::new(Phase::Running(socket)), claim, end, unchecked })
+    }
+
+    /// The first end this service came to on its own (`WRONG_APP`, `APP_TOKEN_REFUSED`, `BOT_TOKEN_REFUSED`), for
+    /// good; an ended service answers as a stopped one. `None` for one that runs or was stopped.
+    pub fn ended(&self) -> Option<&'static str> {
+        self.end.code()
+    }
+
+    /// Why the bot's app is unknown (`NO_BOT_ID`, or `bots.info`'s failure as `ApiError::code`), so no frame's app is
+    /// checked; `None` when it is known.
+    pub fn app_unchecked(&self) -> Option<&'static str> {
+        self.unchecked
+    }
+
+    /// Running, and not ended on its own.
+    fn live<'a>(&self, phase: &'a Phase) -> Option<&'a Socket> {
+        match phase {
+            Phase::Running(s) if self.end.code().is_none() => Some(s),
+            _ => None,
+        }
     }
 
     /// The Slack API, or `Stopped`. A call already begun runs to its own deadline; a mutation already sent is neither
     /// cancelled nor resent.
     pub fn api(&self) -> Result<Arc<Api>, ServiceError> {
-        match *self.phase.lock().unwrap() {
-            Phase::Running(_) => Ok(self.api.clone()),
-            _ => Err(ServiceError::Stopped),
+        match self.live(&self.phase.lock().unwrap()) {
+            Some(_) => Ok(self.api.clone()),
+            None => Err(ServiceError::Stopped),
         }
     }
 
@@ -186,22 +278,16 @@ impl Service {
     /// The wake, for this service's `Watches` while running; `Watches::wait` is its one caller, so one wait is ever in
     /// flight.
     pub(crate) fn waiter(&self, by: &Watches) -> Option<Waiter> {
-        match &*self.phase.lock().unwrap() {
-            Phase::Running(s) if self.owns(by) => Some(s.waiter()),
-            _ => None,
-        }
+        self.live(&self.phase.lock().unwrap()).filter(|_| self.owns(by)).map(Socket::waiter)
     }
 
     pub(crate) fn running(&self) -> bool {
-        matches!(&*self.phase.lock().unwrap(), Phase::Running(_))
+        self.live(&self.phase.lock().unwrap()).is_some()
     }
 
-    /// The socket's gap, for `Watches::loaded`; none once stopped.
+    /// The socket's gap, for `Watches::loaded`; none once stopped or ended.
     pub fn gap(&self) -> Option<Gap> {
-        match &*self.phase.lock().unwrap() {
-            Phase::Running(s) => s.gap(),
-            _ => None,
-        }
+        self.live(&self.phase.lock().unwrap()).and_then(Socket::gap)
     }
 
     /// `Socket::take` for the `Watches` this service made, which takes and applies in one call; empty for any other
@@ -210,22 +296,24 @@ impl Service {
         if !self.owns(by) {
             return Taken::default();
         }
-        match &*self.phase.lock().unwrap() {
-            Phase::Running(s) => s.take(),
-            _ => Taken::default(),
-        }
+        self.live(&self.phase.lock().unwrap()).map(Socket::take).unwrap_or_default()
     }
 
-    /// `Socket::reconciled`, for `Watches::reconcile`; a service that is stopping or stopped clears nothing.
+    /// `Socket::reconciled`, for `Watches::reconcile`; a service that is stopping, stopped or ended clears nothing.
     pub(crate) fn reconciled(&self, gap: Gap) -> bool {
-        match &*self.phase.lock().unwrap() {
-            Phase::Running(s) => s.reconciled(gap),
-            _ => false,
-        }
+        self.live(&self.phase.lock().unwrap()).is_some_and(|s| s.reconciled(gap))
     }
 
+    /// An ended service is `Stopping` until its listener's task is gone (the lock with it), then `Stopped`.
     pub fn status(&self) -> Status {
         match &*self.phase.lock().unwrap() {
+            Phase::Running(s) if self.end.code().is_some() => {
+                if s.finished() {
+                    Status::Stopped
+                } else {
+                    Status::Stopping
+                }
+            }
             Phase::Running(s) => Status::Running { socket: s.status(), gap: s.gap().is_some() },
             Phase::Stopping => Status::Stopping,
             Phase::Stopped => Status::Stopped,
@@ -257,7 +345,9 @@ impl Service {
     /// A service over a socket with no task, for the test to push events and latch gaps into.
     #[cfg(test)]
     pub(crate) fn inert(api: Arc<Api>) -> Service {
-        Service { api, phase: Mutex::new(Phase::Running(Socket::inert())), claim: Arc::new(AtomicU8::new(FREE)) }
+        let claim = Arc::new(AtomicU8::new(FREE));
+        let end = End::new(claim.clone());
+        Service { api, phase: Mutex::new(Phase::Running(Socket::inert())), claim, end, unchecked: None }
     }
 
     #[cfg(test)]

@@ -279,6 +279,7 @@ async fn history_pages_exact_query_without_silent_completion() {
             .with_identity(crate::api::Identity {
                 user_id: OWN_USER.into(),
                 bot_id: Some(OWN_BOT.into()),
+                app_id: None,
             });
         assert_eq!(
             elsewhere.history(&q, Some(&cont)).await.unwrap_err(),
@@ -1349,6 +1350,7 @@ async fn identify_answers_the_tokens_workspace_and_no_error_carries_a_token() {
                 own: crate::api::Identity {
                     user_id: OWN_USER.into(),
                     bot_id: Some(OWN_BOT.into()),
+                    app_id: None,
                 },
             }
         );
@@ -3063,7 +3065,8 @@ async fn with_no_person_token_a_persons_post_is_refused_unsent_and_a_refused_tok
         let api = new_api(&fake);
         let got = api.post("C0REVOKED", None, PostKind::Row, "build-7", "hi").await;
         assert_eq!(got, Ok(PostOutcome::Refused("token_revoked".into())));
-        assert!(held(&api).await, "a row's refusal is the bot token's");
+        // (The bot's token refused also closes the client, guarantee 22, so the person's token is read, not posted with.)
+        assert!(api.holds_person_token(), "a row's refusal is the bot token's");
         fake.shutdown().await;
     })
     .await;
@@ -3114,6 +3117,56 @@ async fn a_persons_file_share_uses_their_token_and_carries_the_comment_alone() {
             assert_eq!(share(&api, "C0CHAN", None, "fig.png", None).await, Err(ApiError::NoPersonToken), "{code}");
             assert_eq!(fake.seen().len(), before, "{code}: nothing sent");
         }
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+/// PS8: the bot's app is `bots.info`'s `bot.app_id` for `auth.test`'s `bot_id`, asked under the bot's token and kept in
+/// the identity; any failure (Slack's refusal, a token's included, no app, an app that is no id, a transport failure)
+/// leaves it unknown and ends nothing, so the check it serves fails open; a bot with no `bot_id` is not asked.
+#[tokio::test]
+async fn the_bots_app_is_read_at_start_and_a_failure_leaves_it_unknown() {
+    bounded(async {
+        let answer = Arc::new(Mutex::new(json!({"ok": true, "bot": {"id": OWN_BOT, "app_id": "A0OWN"}})));
+        let a = answer.clone();
+        let fake = FakeSlack::start(Identity::Trusted, move |seen, _| {
+            auth(seen).unwrap_or_else(|| match seen.path().as_str() {
+                "/api/bots.info" => {
+                    let v = a.lock().unwrap().clone();
+                    if v.is_null() { Reply::Drop } else { Reply::json(&v) }
+                }
+                _ => Reply::json(&json!({"ok": true, "channels": [], "response_metadata": {"next_cursor": ""}})),
+            })
+        })
+        .await;
+        let api = ready(&fake).await;
+        assert_eq!(api.bot_app().await, Ok("A0OWN".to_string()));
+        let asked: Vec<Seen> = fake.seen().into_iter().filter(|s| s.path() == "/api/bots.info").collect();
+        assert_eq!(asked.len(), 1);
+        assert_eq!(asked[0].param("bot").as_deref(), Some(OWN_BOT));
+        assert_eq!(asked[0].authorization.as_deref(), Some(&*format!("Bearer {TOKEN}")));
+        for (reply, want) in [
+            (json!({"ok": false, "error": "invalid_auth"}), ApiError::Slack("invalid_auth".into())),
+            (json!({"ok": false, "error": "missing_scope"}), ApiError::Slack("missing_scope".into())),
+            (json!({"ok": true, "bot": {"id": OWN_BOT}}), ApiError::Malformed),
+            (json!({"ok": true, "bot": {"id": OWN_BOT, "app_id": "not an id"}}), ApiError::Malformed),
+        ] {
+            *answer.lock().unwrap() = reply;
+            assert_eq!(api.bot_app().await, Err(want));
+        }
+        *answer.lock().unwrap() = Value::Null;
+        assert!(matches!(api.bot_app().await, Err(ApiError::Http(_))));
+        // A refused `bots.info` ended nothing: the client still reads.
+        assert!(api.channels().await.is_ok(), "a failed bots.info closed the client");
+        // With no bot id there is nothing to ask.
+        let botless = Api::new(fake.http(), Secret::new(TOKEN), WS)
+            .unwrap()
+            .with_base(fake.url("slack.com", "/api/"))
+            .with_identity(crate::api::Identity { user_id: OWN_USER.into(), bot_id: None, app_id: None });
+        let before = calls(&fake, "bots.info");
+        assert_eq!(botless.bot_app().await, Err(ApiError::NoIdentity));
+        assert_eq!(calls(&fake, "bots.info"), before, "a bot with no id was asked about");
         fake.shutdown().await;
     })
     .await;
