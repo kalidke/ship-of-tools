@@ -538,14 +538,19 @@ fn two_writers_of_one_name_each_publish_a_whole_file() {
         let reader = sc.spawn(|| {
             let mut reads = 0;
             while !done.load(std::sync::atomic::Ordering::SeqCst) {
-                match std::fs::read(root.join("f.txt")) {
+                // `std::fs::read`'s open and read made one at a time, so a refusal says which call it was.
+                let read = std::fs::File::open(root.join("f.txt")).map_err(|e| ("open", e)).and_then(|mut file| {
+                    let mut got = Vec::new();
+                    io::Read::read_to_end(&mut file, &mut got).map(|_| got).map_err(|e| ("read", e))
+                });
+                match read {
                     Ok(got) => {
                         assert!(contents.iter().any(|c| *c == got), "a read of {} bytes is neither writer's", got.len());
                         reads += 1;
                     }
                     // A network folder may answer a stale handle for a name replaced under the read.
-                    Err(e) if e.kind() == io::ErrorKind::StaleNetworkFileHandle => {}
-                    Err(e) => panic!("a read answered {e:?}"),
+                    Err((_, e)) if e.kind() == io::ErrorKind::StaleNetworkFileHandle => {}
+                    Err((call, e)) => panic!("a read answered {e:?} at its {call}"),
                 }
             }
             reads

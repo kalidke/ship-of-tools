@@ -193,10 +193,11 @@ fn write_and_rename<'a>(dir: &File, mut file: &File, last: &'a str, bytes: &[u8]
 }
 
 /// Renames the open `file` to `name` in `dir`, replacing an entry there; retried while a scanner holds the name. The
-/// rename with POSIX semantics goes first: it unlinks the replaced file from the name at once, so a reader opening the
-/// name meanwhile gets the old or the new file, and it replaces a name another program holds open with delete sharing,
-/// or a link to a folder. The classic replace leaves the old file delete-pending under the name, which fails a
-/// concurrent open as access denied, so it is the answer only where the file system or Windows has no POSIX rename.
+/// rename with POSIX semantics goes first: it replaces a name another program holds open with delete sharing, or a link
+/// to a folder (the first is tested). It is not known to spare a reader anything: a reader's open at the instant of a
+/// replace was refused as access denied once in 300 hosted runs with it (the call and the cause inferred, under
+/// measurement). The classic replace is the answer only where the file system or Windows has no POSIX rename (run by
+/// no test).
 /// Each attempt is made in the writer's turn at `name`, which `Ok` returns still held; the wait for a turn is another
 /// writer's rename and close, not a scanner's hold, and is not counted in the retry window.
 fn rename_into<'a>(file: &File, dir: &File, name: &'a str) -> io::Result<Turn<'a>> {
