@@ -538,8 +538,10 @@ fn two_writers_of_one_name_each_publish_a_whole_file() {
         let reader = sc.spawn(|| {
             let mut reads = 0;
             while !done.load(std::sync::atomic::Ordering::SeqCst) {
-                // `std::fs::read`'s open and read made one at a time, so a refusal says which call it was.
-                let read = std::fs::File::open(root.join("f.txt")).map_err(|e| ("open", e)).and_then(|mut file| {
+                // Platform's own open: Windows can refuse the open of a name at the instant the name is replaced, and
+                // `open_regular` asks again. The open and the read are made one at a time, so a refusal says which
+                // call it was.
+                let read = crate::host::open_regular(&root.join("f.txt")).map_err(|e| ("open", e)).and_then(|mut file| {
                     let mut got = Vec::new();
                     io::Read::read_to_end(&mut file, &mut got).map(|_| got).map_err(|e| ("read", e))
                 });
