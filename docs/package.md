@@ -174,10 +174,17 @@ earlier text of the sections above and the integration-test assignment by pass.
 ## State
 
 v0.7.0 is published (2026-11-05), and a plain install moves a computer to it; `docs/UPDATE-AGENT.md` is the one update
-procedure an agent follows, from any 0.6 or 0.7 install. v0.7.1-rc.11 (2026-11-17) is an unpublished draft,
-cut on the maintainer's word from his decision card and installed by archive by their own sessions on two window
-computers and by the maintaining session on the hub, where the daemon moved off rc.7 and the rows' open REPLs ended, on
-his word; a third window computer was not reachable. It carries the chat set up from the window (the Connect step and
+procedure an agent follows, from any 0.6 or 0.7 install. v0.7.1-rc.12 (2026-11-17) is an unpublished draft, cut
+early on the maintainer's word in a session's pane, because Claude Code 2.1.326 stopped every new Claude leg on a
+question about the folder `--add-dir` adds (the comm folder's agent layer) and a leg cannot answer it: the spawn now
+records that folder's trust beside the row's, under the same declared prefix (agents guarantee 6;
+LAYER-ADD-DIR-TRUST-STOP). It also carries a chat picture opened full size in the preview, its original decoded only in
+the window's bounded drawing child, which completes the figures plan. It was installed by archive by its own session on
+one window computer and by the maintaining session on the hub, where the daemon restarted and the rows' open REPLs
+ended, on his word, and a new Claude row on the hub then started to work with no question. v0.7.1-rc.11 (2026-11-17)
+is an unpublished draft, cut on the maintainer's word from his decision card and installed by archive by their own
+sessions on two window computers and by the maintaining session on the hub, where the daemon moved off rc.7 and the
+rows' open REPLs ended, on his word; a third window computer was not reachable. It carries the chat set up from the window (the Connect step and
 the channel picker), a person's post under their own Slack user token (CHAT-PERSON-POST-NOT-ANSWERED stays open: its
 premise is unmeasured until a person's first post), a row's post of a file, pictures as tiles in the Chat drawer, a
 person's post of the previewed file, and, on Windows, the writers' turn and the reader's retry when a name is replaced;
@@ -198,8 +205,12 @@ attach client that keeps reading with input around an attach never sent blind or
 unit no longer restarting forever against another daemon; two parts no test reproduced stay open
 (RELAY-SOCKET-HANG's long wait, KEYS-DROPPED-WHILE-A-ROW-ATTACHES's window warning). rc.4 (2026-11-11) carried the
 preview that follows its row, the pane's copy and the chat drawer's look (rc.3 the drawer; rc.1 and rc.2 selection and
-drawing). `main` carries 0.7.1-rc.12-dev, with what rc.11 does not: a chat picture opens full size in the preview, its
-original decoded only in the window's bounded drawing child, which completes the figures plan. rc.11 carries what the
+drawing). `main` carries 0.7.1-rc.13-dev, with what rc.12 does not: a Socket Mode listener serves only its own app (an
+envelope of another app ends it unacknowledged, `wrong_app`), a token Slack refuses by its own code ends the chat's
+service instead of a retry forever (`app_token_refused`, `bot_token_refused`), the daemon turns the chat off with that
+code before a watcher is told, and the window resolves the row again and brings the Connect step, which says whose
+token it was; and the Connect step's refusal of a second workspace says the hub connects one for now. Several
+workspaces on one hub, one per project, are in progress, in landings. rc.11 carries what the
 maintainer asked of the Chat drawer on rc.10 (2026-11-15): Up and Down ease the view to a marked message out of view,
 and Left over an empty draft leaves an open thread, as the nav pane's Left does. The `release/0.6.6` branch is closed to
 all but fixes found in use. A
