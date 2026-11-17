@@ -686,6 +686,7 @@ fn a_held_chat_chord_never_posts_again() {
         (Action::ChatSend, ChatChord::Send),
         (Action::ChatPostFile, ChatChord::PostFile),
         (Action::ChatSetup, ChatChord::Setup),
+        (Action::ChatOpenImage, ChatChord::OpenImage),
         (Action::ChatCopySelection, ChatChord::Copy),
         (Action::Paste, ChatChord::Paste),
     ];

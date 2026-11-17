@@ -82,7 +82,13 @@ impl SelectionContext for State {
         self.chat.hit(self.pointer.at_px())
     }
     fn press_chat(&mut self, hit: Option<ChatHit>) {
+        let opens = hit.is_some();
         if self.chat.press(hit) { self.window.request_redraw(); }
+        // A press on a picture's tile opens it in the preview; it selected nothing above (the band holds no text).
+        if opens {
+            let at = self.pointer.at_px();
+            self.with_chat(|c, now| c.open_at(at, now));
+        }
     }
 }
 

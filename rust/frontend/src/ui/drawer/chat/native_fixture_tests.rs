@@ -19,6 +19,8 @@ struct Seen {
     threads: u32,
     posts: Vec<(String, Option<String>)>,
     connects: u32,
+    /// The files whose original was asked for.
+    originals: Vec<String>,
 }
 
 /// What the stand-in daemon holds: a channel of `top` messages, `ts(1)` the oldest, and what the connection carried.
@@ -112,6 +114,9 @@ impl Daemon {
                 Some(ChatEvt::Posted { req, reply })
             }
             OutgoingReq::ChatFile { req } if self.figures => {
+                if req.variant == sot_protocol::ops::ChatFileVariant::Original {
+                    self.seen.originals.push(req.file.clone());
+                }
                 let mut bytes = std::io::Cursor::new(Vec::new());
                 image::RgbaImage::from_pixel(64, 48, image::Rgba(figure_color(&req.file))).write_to(&mut bytes, image::ImageFormat::Png).ok()?;
                 Some(ChatEvt::File { req, reply: ChatReply::Done(crate::net::transport::ChatPicture { mime: "image/png".into(), bytes: bytes.into_inner() }) })
@@ -216,6 +221,8 @@ impl State {
             anyhow::ensure!(self.leave_chat_thread(), "ArrowLeft closed no thread");
         } else if action == Some(Action::ChatSend) {
             self.send_chat_draft();
+        } else if action == Some(Action::ChatOpenImage) {
+            self.open_chat_image();
         } else if action == Some(Action::Paste) {
             let text = read_clipboard_text().ok_or_else(|| anyhow::anyhow!("the clipboard gave nothing back"))?;
             self.edit_chat_draft(Edit::Text(&text));
@@ -304,9 +311,10 @@ impl State {
     }
 
     /// The chat's pictures through the window's real frames: the tiles' boxes and the thumbnails' textures are drawn in the one
-    /// pass (every frame presents), a thumbnail's arrival moves no record or tile, and each picture shown gets a texture.
+    /// pass (every frame presents), a thumbnail's arrival moves no record or tile, and each picture shown gets a texture. Then
+    /// `Primary+o` on the marked message asks one original, and its answer is the preview's source, with no node.
     #[allow(dead_code, reason = "runs only inside a native State, from the window_minimized fixtures child")]
-    pub(in crate::ui) fn a_chats_thumbnails_are_drawn_and_move_nothing(&mut self) -> Result<()> {
+    pub(in crate::ui) fn a_chats_pictures_show_and_one_opens_in_the_preview(&mut self) -> Result<()> {
         self.witness_with(Self::figures_run)
     }
 
@@ -358,6 +366,19 @@ impl State {
         anyhow::ensure!(checked >= 2 && cut >= 1, "{checked} tile centers read, {cut} tiles cut by the body: the frame does not exercise the clip");
         let stray = shot.enumerate_pixels().filter(|(x, y, p)| is_figure(p) && !((bx..bx + bw).contains(x) && (by..by + bh).contains(y))).count();
         anyhow::ensure!(stray == 0, "{stray} figure-colored pixels lie outside the body");
+        // ArrowUp marks the newest, which shows two pictures; Primary+o asks its first one's original, once, and the answer is
+        // installed as the preview's source with no node, the fired target as it was.
+        self.preview_requests.record_fired("files:fig.png".into());
+        let fired = self.preview_requests.fired_target().map(str::to_owned);
+        self.witness_key(Key::Named(NamedKey::ArrowUp), (false, false), Some(Action::ChatMarkOlder))?;
+        self.witness_frame(&mut frames, &newest, "marked")?;
+        self.witness_key(Key::Character("o".into()), (true, false), Some(Action::ChatOpenImage))?;
+        self.witness_pump(events, sent, &mut daemon)?;
+        anyhow::ensure!(daemon.seen.originals == ["F6-0"], "originals asked: {:?}", daemon.seen.originals);
+        anyhow::ensure!(self.preview_source.node_id().is_none() && self.preview_source.mime() == Some("image/png"), "the preview shows {:?} of {:?}", self.preview_source.mime(), self.preview_source.node_id());
+        anyhow::ensure!(self.preview_requests.fired_target().map(str::to_owned) == fired, "the open changed the fired target");
+        anyhow::ensure!(self.raster.is_shown(), "the opened picture is not the pane's raster");
+        self.witness_frame(&mut frames, &newest, "opened")?;
         println!("chat-thumbnails tiles={} textures={made} centers={checked} cut={cut}", before.1);
         Ok(())
     }

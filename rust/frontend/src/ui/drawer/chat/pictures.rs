@@ -1,7 +1,7 @@
 //! The chat's pictures owner: the thumbnails of the image files the view places, asked for one at a time per host,
 //! decoded within bounds on the UI thread and held downscaled, at most `MAX_HELD`. It returns the requests to send and
 //! sends nothing itself; only `ChatDrawer` calls it. It also holds each held picture's texture, made at the picture's first
-//! draw and gone with its entry.
+//! draw and gone with its entry, and the one original the person opens in the preview, checked before State installs it.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Cursor;
@@ -34,6 +34,10 @@ const MAX_ALLOC: u64 = 32 * 1024 * 1024;
 const HELD_SIDE: u32 = 360;
 /// A `failed` thumbnail is asked again at most this many times, `PACE` apart.
 const RETRIES: u8 = 3;
+/// An original opened in the preview: its pixels by its header (the daemon's own drawing bound), checked before any pixel
+/// buffer, and what its decode may allocate (the image crate's default, stated here; 16-bit RGBA at the bound is 320 MB).
+const MAX_OPEN_PIXELS: u64 = 40_000_000;
+const MAX_OPEN_ALLOC: u64 = 512 * 1024 * 1024;
 
 /// A picture's identity: the host it was read from and its record's workspace, channel and file id.
 type Key = (HostKey, String, String, String);
@@ -83,12 +87,42 @@ pub(super) struct ChatPictures {
     unsupported: HashSet<HostKey>,
     /// The decode (`decode`; a test's stand-in).
     decode: fn(&[u8]) -> Option<RgbaImage>,
+    /// The original the person last asked to open, until its reply or a row change; and the one original in flight, which
+    /// counts against its host's `MAX_IN_FLIGHT` as a thumbnail does. They differ when a newer open replaced the wanted file.
+    wanted: Option<(HostKey, ChatFileReq)>,
+    opening: Option<(HostKey, ChatFileReq)>,
+    /// The checked original of the wanted file: the host and row it was opened for, its MIME and bytes, until State installs
+    /// it (`take_opened`).
+    opened: Option<(HostKey, String, String, Vec<u8>)>,
 }
 
 impl Default for ChatPictures {
     fn default() -> Self {
-        Self { entries: HashMap::new(), finals: HashMap::new(), order: VecDeque::new(), placement: 0, connected: HashSet::new(), unsupported: HashSet::new(), decode }
+        let (entries, finals, order, connected, unsupported) = (HashMap::new(), HashMap::new(), VecDeque::new(), HashSet::new(), HashSet::new());
+        Self { entries, finals, order, placement: 0, connected, unsupported, decode, wanted: None, opening: None, opened: None }
     }
+}
+
+/// Reads an original once as the preview will (one of wire's `PICTURE_MIMES` by its own bytes), under `Limits`: its header at
+/// most `MAX_OPEN_PIXELS` before any pixel buffer, every allocation within `MAX_OPEN_ALLOC`, and a decoder's panic caught.
+/// The pixels are dropped: the preview decodes the same bytes again with the same decoder, which allocates no more and does
+/// not panic where this did not. Its MIME, or the words of its refusal.
+pub(super) fn admit(bytes: &[u8]) -> Result<&'static str, &'static str> {
+    let read = || {
+        let mut r = ImageReader::new(Cursor::new(bytes)).with_guessed_format().map_err(|_| "it is not a picture")?;
+        let mime = r.format().map(|f| f.to_mime_type()).filter(|m| PICTURE_MIMES.contains(m)).ok_or("it is not a picture")?;
+        let mut limits = Limits::default();
+        limits.max_alloc = Some(MAX_OPEN_ALLOC);
+        r.limits(limits);
+        let decoder = r.into_decoder().map_err(|_| "it does not decode")?;
+        let (w, h) = image::ImageDecoder::dimensions(&decoder);
+        if u64::from(w) * u64::from(h) > MAX_OPEN_PIXELS {
+            return Err("it is over 40 megapixels");
+        }
+        image::DynamicImage::from_decoder(decoder).map_err(|_| "it does not decode")?;
+        Ok(mime)
+    };
+    catch_unwind(AssertUnwindSafe(read)).unwrap_or(Err("it does not decode"))
 }
 
 /// Decodes a thumbnail's bytes once: one of wire's `PICTURE_MIMES` by its own bytes, under `Limits` (`MAX_SIDE`, checked
@@ -148,7 +182,7 @@ impl ChatPictures {
         self.bound();
     }
 
-    /// Each host's requests in flight.
+    /// Each host's requests in flight, the original's included.
     fn flying(&self) -> HashMap<HostKey, usize> {
         let mut flying: HashMap<HostKey, usize> = HashMap::new();
         for (k, e) in &self.entries {
@@ -156,7 +190,56 @@ impl ChatPictures {
                 *flying.entry(k.0.clone()).or_default() += 1;
             }
         }
+        if let Some((h, _)) = &self.opening {
+            *flying.entry(h.clone()).or_default() += 1;
+        }
         flying
+    }
+
+    /// The person opens `file` of `target` on `host`: it becomes the one wanted, in place of any other, asked at the next
+    /// `asks` once no original is in flight and its host has room. Nothing is asked twice while in flight.
+    pub(super) fn open(&mut self, host: &HostKey, target: &ChatTarget, file: &str) {
+        self.wanted = Some((host.clone(), ChatFileReq { target: target.clone(), file: file.to_string(), variant: ChatFileVariant::Original }));
+    }
+
+    /// The wanted original is no one's (the row changed): a reply still coming for it is dropped.
+    pub(super) fn cancel_open(&mut self) {
+        self.wanted = None;
+    }
+
+    /// An original's reply, taken only for the one in flight. For the file still wanted, its bytes are checked (`admit`) and
+    /// kept for State (`take_opened`), or the words of its refusal are returned; a reply for a file no longer wanted is dropped.
+    /// Then the next asks.
+    pub(super) fn on_original(&mut self, host: &HostKey, req: &ChatFileReq, reply: ChatReply<ChatPicture>, now: Instant) -> (Vec<Out>, Option<String>) {
+        if self.opening.as_ref() != Some(&(host.clone(), req.clone())) {
+            return (Vec::new(), None);
+        }
+        self.opening = None;
+        let words = if self.wanted == Some((host.clone(), req.clone())) {
+            self.wanted = None;
+            match reply {
+                ChatReply::Done(p) => match admit(&p.bytes) {
+                    Ok(mime) => {
+                        self.opened = Some((host.clone(), req.target.row.clone(), mime.to_string(), p.bytes));
+                        None
+                    }
+                    Err(why) => Some(format!("picture not opened: {why}")),
+                },
+                ChatReply::Refused(code) => Some(format!("picture not opened: {}", code.text())),
+                ChatReply::Unsupported => {
+                    self.unsupported.insert(host.clone());
+                    Some("picture not opened: the hub must be updated to open it".into())
+                }
+            }
+        } else {
+            None
+        };
+        (self.asks(now), words)
+    }
+
+    /// The checked original of the wanted file, once.
+    pub(super) fn take_opened(&mut self) -> Option<(HostKey, String, String, Vec<u8>)> {
+        self.opened.take()
     }
 
     /// When an ask is next owed: the earliest `due` of the last placement's wanted pictures on a connected host that knows the
@@ -173,17 +256,24 @@ impl ChatPictures {
             .min()
     }
 
-    /// The thumbnails to ask for now: those of the last placement that are due, on a connected host that knows the op, at most
-    /// `MAX_IN_FLIGHT` in flight per host.
+    /// The requests to send now: the wanted original first, when none is in flight, then the thumbnails of the last placement
+    /// that are due; each on a connected host that knows the op, at most `MAX_IN_FLIGHT` in flight per host.
     pub(super) fn asks(&mut self, now: Instant) -> Vec<Out> {
         let mut flying = self.flying();
+        let mut outs = Vec::new();
+        if let (None, Some((h, req))) = (&self.opening, &self.wanted) {
+            if self.connected.contains(h) && !self.unsupported.contains(h) && flying.get(h).copied().unwrap_or(0) < MAX_IN_FLIGHT {
+                *flying.entry(h.clone()).or_default() += 1;
+                self.opening = self.wanted.clone();
+                outs.push((h.clone(), OutgoingReq::ChatFile { req: req.clone() }));
+            }
+        }
         let mut due: Vec<(&Key, &mut Entry)> = self
             .entries
             .iter_mut()
             .filter(|(k, e)| e.placed == self.placement && matches!(e.stand, Stand::Wanted { due, .. } if due <= now) && self.connected.contains(&k.0) && !self.unsupported.contains(&k.0))
             .collect();
         due.sort_by(|a, b| a.0.cmp(b.0));
-        let mut outs = Vec::new();
         for (k, e) in due {
             let n = flying.entry(k.0.clone()).or_default();
             if *n >= MAX_IN_FLIGHT {
@@ -283,6 +373,9 @@ impl ChatPictures {
             self.connected.remove(host);
         }
         self.unsupported.remove(host);
+        // No reply comes for an original in flight; one wanted on a link that went is given up.
+        self.opening = self.opening.take().filter(|(h, _)| h != host);
+        self.wanted = self.wanted.take().filter(|(h, _)| up || h != host);
         for (_, e) in self.entries.iter_mut().filter(|(k, _)| &k.0 == host) {
             if let Stand::Flight { failed } = e.stand {
                 e.stand = Stand::Wanted { due: now, failed };

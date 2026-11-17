@@ -1392,8 +1392,7 @@ methods are `pub(super)`, so no other ui code can drop the requests they return.
   `limited` after `LIMITED_PACE` (30 s: the refusal carries no wait); an unsupported answer stops that host until its link
   changes (`a_refusal_is_final_or_asked_again_by_its_code`). A link change makes that host's requests in flight wanted
   again, asked once the link is up, another host's left alone; a request State could not queue reads as `unavailable`
-  (`never_written`); only a thumbnail's reply reaches the owner, an original's is dropped until the drawer opens one
-  (`a_link_change_asks_again_what_was_in_flight`, through the drawer). `ChatDrawer::next_ask` joins the earliest ask owed
+  (`never_written`) (`a_link_change_asks_again_what_was_in_flight`, through the drawer). `ChatDrawer::next_ask` joins the earliest ask owed
   (`ChatPictures::next_ask`: a wanted picture of the last placement on a connected host with room in flight, `None` otherwise,
   so a host with one in flight owes no wake) to the idle loop's deadlines, so a placement's asks and a retry's go without
   waiting for input. Limits: a request whose reply
@@ -1403,6 +1402,33 @@ methods are `pub(super)`, so no other ui code can drop the requests they return.
   (`ChatPictures::draw`, from `ChatDrawer::paint_thumbs`) and gone with its entry; a texture the GPU refuses is not tried
   again (`a_thumbnail_arriving_moves_nothing` counts the attempts); the decoded pixels are held only until that first draw, which
   takes them, so a drawn picture holds its size and its texture alone.
+- Opening a picture (the plan's D10, `drawer/chat/pictures.rs` and `drawer.rs`): a left press on a tile (`ChatView::tile_at`,
+  from `State::press_chat` after the press, which selected nothing: the band holds no text) opens that file, and
+  `chat.open_image` (`Primary+o`, Chat scope) the marked message's first picture, never a deleted one's
+  (`open_tests::a_press_on_a_tile_opens_that_file_and_selects_nothing`, `the_key_opens_the_marked_messages_first_image`).
+  Only a file of the watched channel of the row the frame follows opens. The owner keeps the one file wanted, a newer open
+  replacing it, and one `chat.file {variant: original}` in flight; it counts against its host's one transfer, so it waits for
+  a thumbnail in flight and no thumbnail goes beside it, and a reply for a file no longer wanted is dropped
+  (`one_open_is_in_flight_and_a_late_reply_is_dropped`). A row change gives the wanted file up; a link change ends the one in
+  flight and, for a link that went, the wanted one. The original (at most `MAX_CHAT_FILE`, 16 MiB) is checked on the UI
+  thread before it is handed over (`admit`): one of `PICTURE_MIMES` by its own bytes, under `image::Limits` (512 MiB), its
+  header at most 40 megapixels (the daemon's drawing bound) before any pixel buffer, then decoded whole under
+  `catch_unwind` and dropped, so the preview's own decode of the same bytes allocates no more and does not panic
+  (`a_picture_over_40_megapixels_is_not_installed`); a refusal is `picture not opened: ...` on the status line. State
+  installs it only while its row is the one the chat shows (`take_opened`, `with_chat`), through
+  `State::install_chat_picture`: `issue_preview` advances the generation, so a preview reply in flight is stale, never
+  `forget_fired`, so the fired target stays (`requests_tests::a_chat_picture_outdates_the_reply_in_flight_and_keeps_the_fired_target`),
+  and `install_preview_reply` installs the bytes with no node (`InkLayer::install_preview` hides the canvas; drawing, crop,
+  scale and open act on nothing). A cursor move, a switch to another row or a `preview.changed` for the fired node shows a file again.
+  The native fixture `a_chats_pictures_show_and_one_opens_in_the_preview` runs it through the window: `Primary+o` on the
+  marked message asks one original, and the answer is the preview's source and raster, with no node and the fired target
+  as it was. Cost, at the 40-megapixel bound (measured 2026-11-16 in release on one Linux computer): the check's decode
+  about 120 ms for a JPEG and 250 ms for a PNG, then the preview's about 200 and 340 ms, both on the UI thread; the
+  check holds the decoded pixels (up to 320 MB for 16-bit RGBA) until it drops them, then the preview holds its decode
+  and its RGBA copy (up to 480 MB) while it makes the texture, and the bytes stay in the installed source and in the row's
+  parked view, as any preview's do. Limits: the press reaches `press_chat` only through `mouse_input`, which no test runs
+  (the drawer's `open_at` is tested); a cached image view of the fired node's folder whose size matches the picture's can
+  be restored over it (`RasterView::reset_view` keys on the fired target; read from the code, not seen).
 - The band of tiles (the plan's D9, `drawer/chat/view.rs`): each placed record that is not deleted shows its picture files
   (`ChatFile::is_picture`) as square tiles in a band below its text and meta lines, `THUMB_PX` (180) a side at text scale 1
   with `THUMB_GAP_PX` between, as many to a row as the text's width holds (a text narrower than a tile makes the tile its
@@ -1419,15 +1445,14 @@ methods are `pub(super)`, so no other ui code can drop the requests they return.
   `render_many` for each picture (a quad's vertex buffer holds one draw's rectangles, so a file shown twice is one call),
   and the scissor restored after. The band holds no text: a press on a tile focuses the drawer and selects nothing, a drag
   into it ends at the record's last text line, and a copy is the text's alone (`the_band_is_never_selected_or_copied`); the
-  header, lead and mark rules are as before. Pixels: the pass is read by the native fixture `a_chats_thumbnails_are_drawn_and_move_nothing`, which serves each file a
+  header, lead and mark rules are as before. Pixels: the pass is read by the native fixture `a_chats_pictures_show_and_one_opens_in_the_preview`, which serves each file a
   solid color, reads a frame back through the selfie, and asserts that each tile whose center is in the body shows its
   picture's color there (so the draw is over the boxes: red with the stage moved before the cell backgrounds), that the
   newest message's two tiles of one file both show it (red with one call a tile), that no figure-colored pixel lies outside
   the body rounded as `scissor_px` rounds it (red with the scissor widened), and that frames present, tiles and records stay
   where they were as each thumbnail arrives, and a texture is made once per picture. Each pass stage that clips to a pane (the preview's, the REPL's and the chat's) takes its scissor from
   `render::scissor::{scissor_px, set_scissor}`: each edge rounded to the nearest pixel, cut to the surface, empty when
-  nothing is left (`a_scissor_rounds_every_edge_and_is_cut_to_the_surface`). Limits: a tile cut by the body's edge shows the picture cut with it;
-  a picture has no hit yet (opening one is the next landing's).
+  nothing is left (`a_scissor_rounds_every_edge_and_is_cut_to_the_surface`). Limits: a tile cut by the body's edge shows the picture cut with it.
 
 Limits: for admitted or never-answered watches, a link that drops more often than every 26 s never shows a gap (a refused watch is a gap at once); records of the window's page below the daemon's own set (deletions between the daemon's read and the window's) are held and never updated; the `State` routing in `ui/events.rs` (`on_chat`, `on_chat_bus_lost`, `on_chat_connection`, `tick_chat`) and `with_chat` are run by the native fixture `a_chat_of_200_messages_scrolls_posts_and_recovers` (`drawer/chat/native_fixture_tests.rs`, in `run_state_fixtures`, so only under a display: it lists a row, shows Chat, answers each request the window sends by kind and value through the window's own event queue, pages to 200 records, scrolls (the wheel through `mouse_wheel`, the window's own adapter), opens and closes a thread, takes 256 records of 8 KiB and a canvas resize, types, pastes, posts once, and sends a `Disconnected`, a `Connected` and a `bus.lost`; it asserts that every frame presents, the requests the connection carried by kind (the link's return brings one watch and one read, `bus.lost` one watch), that the REPL's draft and scroll are unchanged (this guards the events and the frames and the wheel, not the key routing) and that each frame's prepared areas hold the anchored record, and prints `chat-witness frames=… max_ms=… p95_ms=… resize_ms=…`, asserting no time; it is red with `tick_chat`'s wanted row removed and with `Pane::of_drawer(Chat)` mapped to the REPL); its keys are resolved by the real bindings under the real help context and routed by `witness_key`, a copy of the Chat branch of `drawer_pane_key`, of `chat_key` and of `scroll_line_chords`' Alt+Up branch, which skips the layers that run before them in `route_key_layers`: a winit `KeyEvent` cannot be built outside the event loop, so those three functions are not run and breaking any of them leaves the fixture green (a key press carrying its data, as the reply bar's key does, would delete the copy; not built), and neither is the window's own `Resized` event (the resize is the canvas's, the X window is not changed); `tick_chat`'s own
 choice of the shown row is among them (swapping `chat_shown()` for "the drawer is Chat", or never watching, passes the

@@ -190,6 +190,7 @@ impl ChatDrawer {
             self.close_modal();
             self.dismissed = None;
             self.view.reset();
+            self.pictures.cancel_open();
             outs = self.owner_outs(ChatOwner::stop);
         }
         outs.extend(step.resolve);
@@ -432,8 +433,11 @@ impl ChatDrawer {
             ChatEvt::Posted { req, reply } => self.settle(host, Posting::Text(req), reply.into(), now),
             ChatEvt::FilePosted { req, reply } => self.settle(host, Posting::File(req), reply.into(), now),
             ChatEvt::File { req, reply } if req.variant == ChatFileVariant::Thumb => self.pictures.on_reply(host, &req, reply, now),
-            // No window opens a picture yet: that is the next landings'.
-            ChatEvt::File { .. } => Vec::new(),
+            ChatEvt::File { req, reply } => {
+                let (outs, words) = self.pictures.on_original(host, &req, reply, now);
+                self.notice = words.or(self.notice.take());
+                outs
+            }
             evt => self.owner_outs(|o| o.on_evt(host, evt, now)),
         }
     }
@@ -844,6 +848,35 @@ impl ChatDrawer {
     #[cfg(test)]
     pub(super) fn thread_len(&self) -> usize {
         self.thread.as_ref().map_or(0, Thread::len)
+    }
+
+    /// A left press at `at` on a tile opens its picture in the preview (`open`); a press anywhere else opens nothing.
+    pub(in crate::ui) fn open_at(&mut self, at: (f32, f32), now: Instant) -> Vec<Out> {
+        self.view.tile_at(at).map(|t| self.open(&t.workspace, &t.channel, &t.file, now)).unwrap_or_default()
+    }
+
+    /// `chat.open_image`: opens the marked message's first picture; the words when there is none to open.
+    pub(in crate::ui) fn open_marked(&mut self, now: Instant) -> Result<Vec<Out>, &'static str> {
+        let mark = self.view.mark.clone().ok_or("no message marked: ArrowUp marks one")?;
+        let records = self.thread.as_ref().map_or_else(|| self.owner.records(), Thread::records);
+        let (r, _) = records.into_iter().find(|(r, deleted)| r.ts == mark && !deleted).ok_or("the marked message has no picture")?;
+        let f = r.files.iter().find(|f| f.is_picture()).ok_or("the marked message has no picture")?;
+        let (ws, ch, file) = (r.workspace.clone(), r.channel.clone(), f.id.clone());
+        Ok(self.open(&ws, &ch, &file, now))
+    }
+
+    /// Asks for `file`'s original, when it is of the watched channel of the row the frame follows: it replaces any open still
+    /// wanted, and only one original is in flight (`ChatPictures::open`). The reply is installed by State (`take_opened`).
+    fn open(&mut self, workspace: &str, channel: &str, file: &str, now: Instant) -> Vec<Out> {
+        let Some(row) = self.rows.row().cloned() else { return Vec::new() };
+        let Some(target) = self.watch_for(&row).filter(|t| t.workspace == workspace && t.channel.as_str() == channel).cloned() else { return Vec::new() };
+        self.pictures.open(&row.host, &target, file);
+        self.pictures.asks(now)
+    }
+
+    /// The opened picture, checked, for State to install in the preview, once: the row it was opened for, its MIME and bytes.
+    pub(in crate::ui) fn take_opened(&mut self) -> Option<(ResultRowIdentity, String, Vec<u8>)> {
+        self.pictures.take_opened().map(|(host, workspace_id, mime, bytes)| (ResultRowIdentity { host, workspace_id }, mime, bytes))
     }
 
     /// The chat is not shown: no record is prepared.

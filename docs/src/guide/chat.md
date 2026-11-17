@@ -188,6 +188,18 @@ exactly as shown: a link's label, a mention's name and a style's text without it
 message's text, not its name and time line (a message without a header copies its whole text). `(edited)` is Slack's mark and not the message's text, so no copy holds it. With neither, the status line says there is nothing to copy. Ctrl+C in the
 agent pane, the Terminal and the Julia REPL is unchanged.
 
+## Pictures
+
+A message's PNG, JPEG, GIF and WebP files show below its text as square tiles, each with its thumbnail fitted in it once
+Slack's thumbnail has arrived; any other file stays a file line. A click on a tile opens that picture in the preview pane,
+and `Ctrl+O` (`Cmd+O` on macOS; `chat.open_image`) opens the marked message's first picture. The window reads the whole
+picture from Slack (at most 16 MiB) each time it opens one, and refuses one over 40 megapixels or one that does not decode,
+with the reason on the status line. The picture is not a project file: it has no name in the files tree, and drawing, crop,
+the scale and opening in another program do nothing over it. Moving the cursor in the files tree, switching to another row, or a
+change to the file the cursor is on shows a file again. One picture is read at a time; opening another while one is on its
+way waits for it, and only the last one you asked for is shown. A picture at the 40-megapixel bound takes about half a
+second of the window's time to check and show.
+
 ## Mail to the row
 
 When the hub's `chat.toml` sets `mail_after`, the daemon files each new post a channel member makes (or the drawer makes

@@ -674,6 +674,13 @@ impl ChatView {
         out
     }
 
+    /// The tile under `at`, where the body shows it.
+    pub(super) fn tile_at(&self, at: (f32, f32)) -> Option<Tile> {
+        let body = self.body?;
+        let inside = |r: ScreenRect| at.0 >= r.x && at.0 < r.x + r.w && at.1 >= r.y && at.1 < r.y + r.h;
+        self.tiles().into_iter().find(|t| inside(t.rect) && inside(body))
+    }
+
     /// The body the last layout placed the records in; none while the chat is hidden.
     pub(super) fn body(&self) -> Option<ScreenRect> {
         self.body

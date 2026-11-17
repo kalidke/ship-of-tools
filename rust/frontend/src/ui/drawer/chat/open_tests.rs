@@ -1,0 +1,151 @@
+//! Opening a chat picture in the preview (the plan's D10): a press on a tile or `chat.open_image` asks for its original, one
+//! in flight, and only a checked original of the file still wanted is handed to State.
+
+use std::io::Cursor;
+use std::time::{Duration, Instant};
+
+use cosmic_text::FontSystem;
+use image::{ImageEncoder, ImageFormat, RgbaImage};
+use sot_protocol::chat::{ChatFile, ChatRecord};
+use sot_protocol::ops::{ChatCode, ChatFileReq, ChatFileVariant};
+
+use super::drawer::ChatDrawer;
+use super::owner::Out;
+use super::pictures::admit;
+use super::thread_tests::{body, channel, shown};
+use crate::net::transport::{ChatEvt, ChatPicture, ChatReply, OutgoingReq};
+
+fn file(id: &str, mime: &str) -> ChatFile {
+    serde_json::from_value(serde_json::json!({ "id": id, "name": "figure", "mime": mime, "bytes": 100, "thumbnail": true })).unwrap()
+}
+
+fn record(ts: &str, files: &[ChatFile]) -> ChatRecord {
+    serde_json::from_value(serde_json::json!({ "workspace": "WS1", "channel": "CH1", "ts": ts, "thread_ts": ts,
+        "author": { "id": "U1", "name": "member one" }, "origin": "member", "text": "a figure", "reply_count": 0, "files": files })).unwrap()
+}
+
+fn png(w: u32, h: u32) -> Vec<u8> {
+    let mut out = Cursor::new(Vec::new());
+    RgbaImage::from_pixel(w, h, image::Rgba([200, 80, 60, 255])).write_to(&mut out, ImageFormat::Png).unwrap();
+    out.into_inner()
+}
+
+/// The `chat.file` requests among `outs`, by variant and file.
+fn files(outs: &[Out], variant: ChatFileVariant) -> Vec<ChatFileReq> {
+    outs.iter()
+        .filter_map(|(_, r)| match r {
+            OutgoingReq::ChatFile { req } if req.variant == variant => Some(req.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn originals(outs: &[Out]) -> Vec<String> {
+    files(outs, ChatFileVariant::Original).into_iter().map(|r| r.file).collect()
+}
+
+fn answer(d: &mut ChatDrawer, req: ChatFileReq, bytes: Vec<u8>, at: Instant) -> Vec<Out> {
+    d.on_evt(&"a".to_string(), ChatEvt::File { req, reply: ChatReply::Done(ChatPicture { mime: "image/png".into(), bytes }) }, at)
+}
+
+/// A drawer showing one record of two pictures after a PDF, laid out; the instant of its read.
+fn figures() -> (ChatDrawer, Instant, FontSystem) {
+    let mut fonts = FontSystem::new();
+    let (mut d, at) = channel(&[record("1700000001.000100", &[file("P1", "application/pdf"), file("F1", "image/png"), file("F2", "image/png")])]);
+    d.layout(&mut fonts, body(), 1.0, body());
+    (d, at, fonts)
+}
+
+fn center(r: crate::ui::render::quad::ScreenRect) -> (f32, f32) {
+    (r.x + r.w / 2.0, r.y + r.h / 2.0)
+}
+
+#[test]
+fn a_press_on_a_tile_opens_that_file_and_selects_nothing() {
+    let (mut d, at, _) = figures();
+    let tiles = d.tiles();
+    assert_eq!(tiles.iter().map(|t| t.file.as_str()).collect::<Vec<_>>(), ["F1", "F2"]);
+    // A press on the second tile: the drawer's press selects nothing (no line is under it), and it opens that file once.
+    let on = center(tiles[1].rect);
+    let hit = d.hit(on);
+    assert!(hit.is_some(), "a press on a tile is a press in the body");
+    d.press(hit);
+    d.extend_drag((on.0 + 40.0, on.1));
+    assert_eq!(d.copy_text(), None, "a press on a tile selected text");
+    assert_eq!(originals(&d.open_at(on, at)), ["F2"]);
+    // Pressed again while it is in flight, nothing more goes; a press beside the tiles opens nothing.
+    assert!(originals(&d.open_at(on, at)).is_empty());
+    let beside = (tiles[1].rect.x + tiles[1].rect.w + 2.0, on.1);
+    assert!(d.open_at(beside, at).is_empty());
+}
+
+#[test]
+fn the_key_opens_the_marked_messages_first_image() {
+    let (mut d, at, mut fonts) = figures();
+    assert_eq!(d.open_marked(at).err(), Some("no message marked: ArrowUp marks one"));
+    d.mark(true, Instant::now(), Duration::ZERO);
+    d.layout(&mut fonts, body(), 1.0, body());
+    // The first of its pictures, never the PDF before it.
+    assert_eq!(originals(&d.open_marked(at).unwrap()), ["F1"]);
+    // A marked message with no picture opens nothing.
+    let (mut plain, at) = channel(&[record("1700000001.000100", &[file("P1", "application/pdf")])]);
+    plain.layout(&mut fonts, body(), 1.0, body());
+    plain.mark(true, Instant::now(), Duration::ZERO);
+    plain.layout(&mut fonts, body(), 1.0, body());
+    assert_eq!(plain.open_marked(at).err(), Some("the marked message has no picture"));
+}
+
+#[test]
+fn one_open_is_in_flight_and_a_late_reply_is_dropped() {
+    let (mut d, at, _) = figures();
+    let tiles = d.tiles();
+    // A thumbnail in flight holds the host's one transfer: the open waits for its reply, then goes.
+    let thumb = files(&d.tick(shown("ROW1"), at).0, ChatFileVariant::Thumb).remove(0);
+    assert!(originals(&d.open_at(center(tiles[0].rect), at)).is_empty());
+    let outs = answer(&mut d, thumb, png(4, 4), at);
+    assert!(files(&outs, ChatFileVariant::Thumb).is_empty(), "a thumbnail went beside the original in flight");
+    let first = files(&outs, ChatFileVariant::Original).remove(0);
+    assert_eq!(first.file, "F1");
+    // A newer open replaces the wanted file but waits for the one in flight, whose reply is then dropped.
+    assert!(d.open_at(center(tiles[1].rect), at).is_empty(), "a second original went while one was in flight");
+    let next = files(&answer(&mut d, first.clone(), png(8, 8), at), ChatFileVariant::Original);
+    assert!(d.take_opened().is_none(), "a reply for a file no longer wanted was installed");
+    assert_eq!(next.iter().map(|r| r.file.as_str()).collect::<Vec<_>>(), ["F2"]);
+    // A second reply for the dropped one changes nothing; the wanted one's is handed over once, for its row.
+    answer(&mut d, first, png(8, 8), at);
+    assert!(d.take_opened().is_none());
+    let thumb = files(&answer(&mut d, next[0].clone(), png(6, 5), at), ChatFileVariant::Thumb).remove(0);
+    let (row, mime, bytes) = d.take_opened().expect("the wanted picture");
+    assert_eq!((row.host.as_str(), row.workspace_id.as_str(), mime.as_str(), bytes), ("a", "ROW1", "image/png", png(6, 5)));
+    assert!(d.take_opened().is_none());
+    // A row change gives the wanted open up: its reply installs nothing.
+    answer(&mut d, thumb, png(4, 4), at);
+    assert_eq!(originals(&d.open_at(center(tiles[0].rect), at)), ["F1"]);
+    d.tick(shown("ROW2"), at);
+    let req = ChatFileReq { file: "F1".into(), ..next[0].clone() };
+    answer(&mut d, req, png(6, 5), at);
+    assert!(d.take_opened().is_none(), "a picture opened for another row was installed");
+}
+
+#[test]
+fn a_picture_over_40_megapixels_is_not_installed() {
+    // Its header says 7000 x 6000; the body is cut short, so only the header's check can say why.
+    let mut huge = Vec::new();
+    image::codecs::png::PngEncoder::new(&mut huge).write_image(&vec![0u8; 7000 * 6000], 7000, 6000, image::ExtendedColorType::L8).unwrap();
+    huge.truncate(huge.len() / 2);
+    assert_eq!(admit(&huge), Err("it is over 40 megapixels"));
+    assert_eq!(admit(b"%PDF-1.4"), Err("it is not a picture"));
+    assert_eq!(admit(&png(64, 48)), Ok("image/png"));
+    // Through the drawer: refused on the status line, nothing to install; a refusal of the hub says its code.
+    let (mut d, at, _) = figures();
+    let tiles = d.tiles();
+    let req = files(&d.open_at(center(tiles[0].rect), at), ChatFileVariant::Original).remove(0);
+    answer(&mut d, req.clone(), huge, at);
+    assert!(d.take_opened().is_none());
+    assert_eq!(d.take_notice().as_deref(), Some("picture not opened: it is over 40 megapixels"));
+    let (mut d, at, _) = figures();
+    let req = files(&d.open_at(center(tiles[0].rect), at), ChatFileVariant::Original).remove(0);
+    d.on_evt(&"a".to_string(), ChatEvt::File { req, reply: ChatReply::Refused(ChatCode::TooLarge) }, at);
+    assert!(d.take_opened().is_none());
+    assert_eq!(d.take_notice(), Some(format!("picture not opened: {}", ChatCode::TooLarge.text())));
+}

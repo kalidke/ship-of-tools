@@ -107,6 +107,17 @@ impl State {
         requests::continue_preview_reply(self, event_host, workspace_id, generation, payload);
     }
 
+    /// A chat picture the person opened (`ChatDrawer::take_opened`, its bytes checked there): the request generation advances,
+    /// so a preview reply in flight is outdated while the fired target stays (`issue_preview`, never `forget_fired`, which would
+    /// fetch the cursored node again at once), and the bytes are installed with no node through the reply's own path, so the
+    /// canvas hides and drawing, crop, scale and open act on nothing. A cursor move, a row switch or a `preview.changed` for
+    /// the fired node shows a file again.
+    pub(in crate::ui) fn install_chat_picture(&mut self, mime: String, bytes: Vec<u8>) {
+        let generation = self.preview_requests.issue_preview();
+        let workspace_id = self.selected.workspace_id().clone();
+        self.install_preview_reply(PreviewReply { node_id: None, workspace_id, mime, bytes, extras: None, generation });
+    }
+
     fn install_preview_reply(&mut self, payload: PreviewReply) {
         let PreviewReply { node_id, workspace_id, mime, bytes, extras, generation } = payload;
         // Cache the source so a runtime font-size change

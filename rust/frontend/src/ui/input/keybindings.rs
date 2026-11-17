@@ -169,6 +169,7 @@ actions! {
     ChatMarkNewer, "chat.mark_newer", ["ArrowDown"], "Newer message", "Mark the next newer message in the Chat drawer, or the newest when none is marked; the view eases to show it.", "Chat", Chat;
     ChatThreadOpen, "chat.thread_open", ["ArrowRight"], "Open thread", "Open the marked message's thread in the Chat drawer, showing its parent and replies; Escape closes it.", "Chat", Chat;
     ChatThreadClose, "chat.thread_close", ["ArrowLeft"], "Close thread", "Close the open thread in the Chat drawer, as Escape does; only while the draft is empty.", "Chat", Chat;
+    ChatOpenImage, "chat.open_image", ["Primary+o"], "Open picture", "Open the marked message's first picture in the preview pane; a click on a picture opens that one.", "Chat", Chat;
     ChatCopySelection, "chat.copy_selection", ["Primary+c", "Primary+Shift+c"], "Copy selection", "Copy the text selected in a Chat message, or the marked message's text when none is selected.", "Chat", Chat;
     ChatSend, "chat.send", ["Enter"], "Post", "Post the chat draft to its channel under the name in settings.toml; the draft stays until the post is made.", "Chat", Chat;
     ChatPostFile, "chat.post_file", ["Primary+u"], "Post previewed file", "Post the file the preview shows to the chat channel, with the draft as its comment; the draft stays until the file is posted.", "Chat", Chat;

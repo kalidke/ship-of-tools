@@ -37,6 +37,8 @@ mod connect_tests;
 #[cfg(test)]
 mod mrkdwn_tests;
 #[cfg(test)]
+mod open_tests;
+#[cfg(test)]
 mod picker_tests;
 #[cfg(test)]
 mod project_tests;
@@ -55,7 +57,7 @@ mod native_fixture;
 impl State {
     /// Sends what the owner asked for; a request that cannot be queued is dropped with a warning (the owner's pace, or
     /// the next connection, ask again).
-    fn with_chat(&mut self, f: impl FnOnce(&mut ChatDrawer, Instant) -> Vec<Out>) {
+    pub(in crate::ui) fn with_chat(&mut self, f: impl FnOnce(&mut ChatDrawer, Instant) -> Vec<Out>) {
         for (host, req) in f(&mut self.chat, Instant::now()) {
             let unsent = drawer::never_written(&req);
             if let Err(e) = self.send_to(&host, req) {
@@ -69,6 +71,25 @@ impl State {
         if let Some(words) = self.chat.take_notice() {
             self.status.set(words);
         }
+        // An opened picture is installed only while its row is still the one the chat shows.
+        if let Some((row, mime, bytes)) = self.chat.take_opened() {
+            if wanted_row(self.layout_help.chat_shown(), || self.active_result_workspace()).as_ref() == Some(&row) {
+                self.install_chat_picture(mime, bytes);
+            }
+        }
+    }
+
+    /// `chat.open_image`: opens the marked message's first picture in the preview; the status line says why when it cannot.
+    pub(in crate::ui) fn open_chat_image(&mut self) {
+        let mut refused = None;
+        self.with_chat(|c, now| c.open_marked(now).unwrap_or_else(|words| {
+            refused = Some(words);
+            Vec::new()
+        }));
+        if let Some(words) = refused {
+            self.status.set(words);
+        }
+        self.window.request_redraw();
     }
 
     /// Whether the keys go to a modal screen that takes secrets: the Connect step, shown in the drawer that has the keys.
@@ -343,6 +364,7 @@ pub(in crate::ui) enum ChatChord {
     Send,
     PostFile,
     Setup,
+    OpenImage,
     Copy,
     Paste,
     Held,
@@ -353,6 +375,7 @@ pub(in crate::ui) fn chat_chord(action: Option<Action>, repeat: bool) -> Option<
         Action::ChatSend => ChatChord::Send,
         Action::ChatPostFile => ChatChord::PostFile,
         Action::ChatSetup => ChatChord::Setup,
+        Action::ChatOpenImage => ChatChord::OpenImage,
         Action::ChatCopySelection => ChatChord::Copy,
         Action::Paste => ChatChord::Paste,
         _ => return None,
@@ -367,6 +390,7 @@ pub(in crate::ui) fn chat_key(state: &mut State, key: KeyPress<'_>, label: Strin
         Some(ChatChord::Send) => state.send_chat_draft(),
         Some(ChatChord::PostFile) => state.send_chat_file(),
         Some(ChatChord::Setup) => state.open_chat_picker(),
+        Some(ChatChord::OpenImage) => state.open_chat_image(),
         Some(ChatChord::Copy) => state.status.set(copy_status(state.chat.copy_text(), |text| write_clipboard_text(text).map_err(|e| e.to_string()))),
         Some(ChatChord::Paste) => {
             if let Some(text) = read_clipboard_text() {

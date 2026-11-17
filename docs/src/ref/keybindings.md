@@ -188,6 +188,7 @@ Normal text entry and terminal-application controls retain their own input handl
 | `chat.mark_newer` | `ArrowDown` | Mark the next newer message in the Chat drawer, or the newest when none is marked; the view eases to show it. |
 | `chat.thread_open` | `ArrowRight` | Open the marked message's thread in the Chat drawer, showing its parent and replies; Escape closes it. |
 | `chat.thread_close` | `ArrowLeft` | Close the open thread in the Chat drawer, as Escape does; only while the draft is empty. |
+| `chat.open_image` | `Primary+o` | Open the marked message's first picture in the preview pane; a click on a picture opens that one. |
 | `chat.copy_selection` | `Primary+c` / `Primary+Shift+c` | Copy the text selected in a Chat message, or the marked message's text when none is selected. |
 | `chat.send` | `Enter` | Post the chat draft to its channel under the name in settings.toml; the draft stays until the post is made. |
 | `chat.post_file` | `Primary+u` | Post the file the preview shows to the chat channel, with the draft as its comment; the draft stays until the file is posted. |

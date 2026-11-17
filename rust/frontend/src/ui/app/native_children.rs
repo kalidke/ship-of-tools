@@ -182,8 +182,8 @@ fn run_state_fixtures(state: &mut State) -> Result<()> {
             State::a_chat_of_200_messages_scrolls_posts_and_recovers,
         ),
         (
-            "a_chats_thumbnails_are_drawn_and_move_nothing",
-            State::a_chats_thumbnails_are_drawn_and_move_nothing,
+            "a_chats_pictures_show_and_one_opens_in_the_preview",
+            State::a_chats_pictures_show_and_one_opens_in_the_preview,
         ),
         (
             "a_paste_in_the_connect_step_is_a_token_and_never_the_draft",
