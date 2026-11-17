@@ -108,7 +108,7 @@ pub(super) async fn slack(mode: &Arc<AtomicU8>) -> FakeSlack {
                 _ => Reply::json(&json!({"ok": true, "ts": "1700000000.000100"})),
             }
         } else {
-            Reply::json(&json!({"ok": false, "error": "invalid_auth"}))
+            Reply::json(&json!({"ok": false, "error": "unknown_method"}))
         }
     })
     .await
@@ -278,7 +278,7 @@ async fn slack_naming(channel: Option<&'static str>, private: bool) -> FakeSlack
                 None => Reply::Hang,
             }
         } else {
-            Reply::json(&json!({"ok": false, "error": "invalid_auth"}))
+            Reply::json(&json!({"ok": false, "error": "unknown_method"}))
         }
     })
     .await
@@ -727,7 +727,7 @@ async fn files_slack(files: Files) -> FakeSlack {
         if seen.path().ends_with("/auth.test") {
             return Reply::json(&json!({"ok": true, "team_id": "T0AAAA", "user_id": "U0BOT", "bot_id": "B0BOT"}));
         }
-        files.reply(seen, port).unwrap_or_else(|| Reply::json(&json!({"ok": false, "error": "invalid_auth"})))
+        files.reply(seen, port).unwrap_or_else(|| Reply::json(&json!({"ok": false, "error": "unknown_method"})))
     })
     .await
 }

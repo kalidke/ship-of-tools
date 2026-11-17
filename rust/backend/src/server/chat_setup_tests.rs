@@ -110,7 +110,7 @@ async fn slack() -> (FakeSlack, Arc<Slack>) {
                 }
             })
         } else {
-            Reply::json(&json!({"ok": false, "error": "invalid_auth"}))
+            Reply::json(&json!({"ok": false, "error": "unknown_method"}))
         }
     })
     .await;

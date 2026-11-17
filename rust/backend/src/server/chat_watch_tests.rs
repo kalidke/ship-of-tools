@@ -144,7 +144,7 @@ pub(super) async fn live() -> (FakeSlack, Levers) {
                 }
             });
         }
-        Reply::json(&json!({"ok": false, "error": "invalid_auth"}))
+        Reply::json(&json!({"ok": false, "error": "unknown_method"}))
     })
     .await;
     (fake, lv)
