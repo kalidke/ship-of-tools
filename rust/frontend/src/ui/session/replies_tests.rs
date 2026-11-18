@@ -43,3 +43,16 @@ fn a_disconnect_with_nothing_held_gives_way_to_the_connection_line() {
     s.show_state_at("connected · a:row · rev 2", t0 + Duration::from_secs(1));
     assert_eq!(s.text(), "connected · a:row · rev 2", "the disconnect line held the line against the reconnect");
 }
+
+/// Each disconnect line that carries a word holds the line again from its own instant: after disconnects at 5 s and 9 s,
+/// a state line at 12 s leaves the carried line.
+#[test]
+fn each_disconnect_line_that_carries_a_word_holds_the_line_again() {
+    let t0 = Instant::now();
+    let mut s = StatusLine::new("connected · a:row · rev 1");
+    s.set_at("pinned · files:a.txt", t0);
+    show_disconnect(&mut s, "eof", t0 + Duration::from_secs(5));
+    show_disconnect(&mut s, "dial failed", t0 + Duration::from_secs(9));
+    s.show_state_at("connected · a:row · rev 2", t0 + Duration::from_secs(12));
+    assert_eq!(s.text(), "disconnected \u{b7} dial failed \u{b7} pinned · files:a.txt", "the carry did not hold the line again");
+}

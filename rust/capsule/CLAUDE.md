@@ -137,7 +137,8 @@ A test of a Windows or macOS arm runs on the hosted runner for its OS;
    and the window has not read its demotion; nothing was written) takes the pen back and is sent once more, before the
    next frame; refused again it is `RefusedStale` and lost, as two windows trading the pen can lose one frame, and the window
    says so on its status line ("not sent: another client holds the row's input", `agent_pane::attach::input_outcome_notice`),
-   so nothing a person typed disappears unseen. One retake per frame is what keeps two clients from trading the pen
+   said once when the outcome comes, as a word that replaces whatever the line shows and holds it up to 10 s
+   (`agent_pane::owner_tests::a_refused_key_is_said_while_a_word_is_held`), so nothing a person typed disappears unseen. One retake per frame is what keeps two clients from trading the pen
    without end (`fe_attach::a_window_key_the_row_refuses_twice_is_given_up_after_one_retake`). The window says unknown delivery in its status line as well. Limits: written is not read, the agent may never read
    it; a thread that does not end within its bound is noted and left, holding the cloned terminal until the write
    fails.

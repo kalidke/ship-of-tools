@@ -4,8 +4,10 @@ use super::status::NOTIFY_STICKY;
 use std::time::Instant;
 
 /// One-line status string for the chrome. A word (`set`) replaces the text at once and holds it for `NOTIFY_STICKY`
-/// from its own write; a state line (`show_state`: one re-said by a timer, a frame, a redial or a re-list) is written
-/// only while no hold is live and holds nothing, so it never replaces a word before the word's hold ends.
+/// from its own write; the same words written again while they hold the line keep their first hold, so no writer that
+/// repeats them holds the line for longer. A state line (`show_state`: one re-said by a timer, a frame, a redial, a
+/// re-list or a transfer's chunks) is written only while no hold is live and holds nothing, so it never replaces a word
+/// before the word's hold ends.
 pub(in crate::ui) struct StatusLine {
     text: String,
     /// While `Some(t)` and `now < t`, the line holds the last word written, and a state line leaves it. Cleared, and
@@ -24,11 +26,15 @@ impl StatusLine {
     /// A word: replaces the text at once and holds it for `NOTIFY_STICKY`.
     pub(in crate::ui) fn set(&mut self, text: impl Into<String>) { self.set_at(text, Instant::now()); }
 
-    /// `set` at `now`.
+    /// `set` at `now`. The same words again, while they still hold the line, keep their first hold.
     pub(in crate::ui) fn set_at(&mut self, text: impl Into<String>, now: Instant) {
-        self.text = text.into();
+        let text = text.into();
+        let again = self.held(now) && self.note.is_none() && self.text == text;
+        self.text = text;
         self.note = None;
-        self.hold(now);
+        if !again {
+            self.hold(now);
+        }
     }
 
     /// A state line: written only while no word is held, and holds nothing.
@@ -63,6 +69,14 @@ impl StatusLine {
         self.text = text.into();
         self.note = Some(note);
         self.hold(now);
+    }
+
+    /// The selected computer's own reconnect: a disconnect line that carries a word is no longer true, so its hold ends
+    /// and the next state line (the connection line) is written; the word it carried was on the line all along.
+    pub(in crate::ui) fn reconnected(&mut self) {
+        if self.note.take().is_some() {
+            self.sticky_until = None;
+        }
     }
 
     /// Hold the text just written for `NOTIFY_STICKY` from `now`.

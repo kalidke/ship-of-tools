@@ -1919,3 +1919,61 @@ impl State {
         Ok(())
     }
 }
+
+impl State {
+    /// A word, then the selected computer's link drops (the disconnect line carries the word and holds the line), then the
+    /// link comes back: the reconnect's connection line replaces the disconnect line at once, and re-lists keep it.
+    #[allow(dead_code, reason = "runs only inside a native State, from the window_minimized fixtures child")]
+    pub(in crate::ui) fn a_reconnect_ends_a_disconnect_line_that_carried_a_word(&mut self) -> Result<()> {
+        let (near, far) = ("<host-carry-near>".to_string(), "<host-carry-far>".to_string());
+        let (near_tx, _near_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (far_tx, _far_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (events, receiver) = std::sync::mpsc::channel();
+        let saved = (
+            std::mem::replace(&mut self.conns, vec![(near.clone(), near_tx), (far.clone(), far_tx)]),
+            std::mem::replace(&mut self.evt_rx, receiver),
+            (self.selected.host().clone(), self.selected.workspace_id().clone()),
+        );
+        let result = self.carried_reconnect_run(&near, &far, &events);
+        let (conns, evt_rx, (host, row)) = saved;
+        (self.conns, self.evt_rx) = (conns, evt_rx);
+        self.selected.select(host, row);
+        result
+    }
+
+    fn carried_reconnect_run(&mut self, near: &HostKey, far: &HostKey, events: &std::sync::mpsc::Sender<(HostKey, crate::net::transport::IncomingEvt)>) -> Result<()> {
+        use crate::net::transport::IncomingEvt;
+        let send = |host: &HostKey, evt: IncomingEvt| events.send((host.clone(), evt)).map_err(|_| anyhow::anyhow!("the fixture's event channel closed"));
+        let hello = || IncomingEvt::Connected {
+            session_id: "session".into(), revision: 0, host: None, project_root: None, proxy: false,
+            resolved: crate::net::transport::ResolvedDial::Local, backend_version: "test".into(), repl_running: Vec::new(),
+            posts_as_person: true,
+        };
+        let listing = |slug: &str| IncomingEvt::Workspaces { workspaces: vec![ws_info(slug, &format!("attach-{slug}"))] };
+        send(near, hello())?;
+        send(far, hello())?;
+        send(near, listing("here"))?;
+        send(far, listing("there"))?;
+        self.drain_events();
+        self.switch_to_workspace(far.clone(), Some("there".into()), None, false);
+        let _ = self.expire_status_hold(std::time::Instant::now() + crate::ui::chrome::NOTIFY_STICKY);
+        // A word, then the far link drops: the drop carries it.
+        self.status.set("pinned · files:a.txt");
+        send(far, IncomingEvt::Disconnected { reason: "eof — retry in 250ms (F5 to retry now)".into(), refused: false })?;
+        self.drain_events();
+        let dropped = self.status.text().to_string();
+        // The far link comes back, and both computers re-list.
+        send(far, hello())?;
+        self.drain_events();
+        let reconnected = self.status.text().to_string();
+        send(near, listing("here"))?;
+        send(far, listing("there"))?;
+        self.drain_events();
+        let relisted = self.status.text().to_string();
+        println!("carried-reconnect dropped={dropped:?} reconnected={reconnected:?} relisted={relisted:?}");
+        anyhow::ensure!(dropped.starts_with("disconnected") && dropped.ends_with("pinned · files:a.txt"), "the drop shows {dropped:?}");
+        anyhow::ensure!(reconnected.starts_with("connected · "), "with the far link up again the line says {reconnected:?}");
+        anyhow::ensure!(relisted.starts_with("connected · "), "after the re-lists the line says {relisted:?}");
+        Ok(())
+    }
+}

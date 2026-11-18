@@ -54,3 +54,51 @@ fn a_clear_empties_the_line_and_ends_its_hold() {
     s.show_state_at("connected · a:row · rev 2", t0 + Duration::from_secs(1));
     assert_eq!(s.text(), "connected · a:row · rev 2", "a cleared line still held");
 }
+
+/// Words a writer says again and again (a watcher's failure at each write of the previewed file) keep their first hold:
+/// the connection line comes back when it ends, however long the writes go on.
+#[test]
+fn a_word_written_again_and_again_keeps_its_first_hold() {
+    let t = Instant::now();
+    let mut s = StatusLine::new("connected · h:row · rev 1");
+    let mut connection_shown = 0;
+    for k in 0..900u64 {
+        let now = t + Duration::from_secs(k);
+        if k % 4 == 0 {
+            s.set_at("preview failed · run.h5: kernel_unavailable", now);
+        }
+        s.show_state_at("connected · h:row · rev 2", now);
+        if s.expire_hold(now) {
+            s.show_state_at("connected · h:row · rev 2", now);
+        }
+        connection_shown += usize::from(s.text().starts_with("connected"));
+    }
+    assert!(connection_shown > 0, "15 minutes of a file rewritten every 4 s never showed the connection line");
+}
+
+/// A person repeating one action still sees its words: a second press after the first one's hold ended holds them again.
+#[test]
+fn the_same_words_after_their_hold_ended_hold_the_line_again() {
+    let t0 = Instant::now();
+    let mut s = StatusLine::new("");
+    s.set_at("pinned · files:a.txt", t0);
+    s.show_state_at("connected · h:row · rev 1", t0 + NOTIFY_STICKY);
+    assert_eq!(s.text(), "connected · h:row · rev 1");
+    s.set_at("pinned · files:a.txt", t0 + NOTIFY_STICKY + Duration::from_secs(1));
+    s.show_state_at("connected · h:row · rev 1", t0 + NOTIFY_STICKY + Duration::from_secs(9));
+    assert_eq!(s.text(), "pinned · files:a.txt", "the second press's words did not hold the line");
+}
+
+/// The selected computer's own reconnect ends the hold of a disconnect line that carries a word, so the connection line
+/// is written at once.
+#[test]
+fn a_reconnect_ends_the_hold_of_a_disconnect_line_that_carries_a_word() {
+    let t0 = Instant::now();
+    let mut s = StatusLine::new("connected · h:row · rev 1");
+    s.set_at("pinned · files:a.txt", t0);
+    let note = s.carried(t0 + Duration::from_secs(1)).expect("the word is carried");
+    s.set_carrying("disconnected · eof · pinned · files:a.txt", note, t0 + Duration::from_secs(1));
+    s.reconnected();
+    s.show_state_at("connected · h:row · rev 2", t0 + Duration::from_secs(2));
+    assert_eq!(s.text(), "connected · h:row · rev 2", "the disconnect line held the line after the reconnect");
+}

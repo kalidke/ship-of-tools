@@ -523,3 +523,14 @@ fn a_switch_to_a_row_on_the_down_computer_shows_its_disconnect_words() {
     rebuild_at(&mut s, "far", &links, "there", t0);
     assert_eq!(s.text(), "disconnected · dial failed", "the switch to far's row said far is connected");
 }
+
+/// A computer that has not answered yet (its first dial neither up nor failed) gets no line: the line is left as it is.
+#[test]
+fn a_computer_that_has_not_answered_yet_writes_nothing() {
+    use crate::ui::chrome::StatusLine;
+    let links: Links = ([("near".to_string(), true)].into(), Default::default());
+    assert_eq!(connection_line(&"far".to_string(), &links.0, &links.1, Some("far"), "row", 3), None);
+    let mut s = StatusLine::new("offline · no transport");
+    rebuild_at(&mut s, "far", &links, "row", std::time::Instant::now());
+    assert_eq!(s.text(), "offline · no transport");
+}

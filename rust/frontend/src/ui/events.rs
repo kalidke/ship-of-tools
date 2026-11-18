@@ -5,9 +5,8 @@
 use super::*;
 
 impl State {
-    /// A computer's link came or went. A destroy written on a link that ended gets no answer, so its outcome is
-    /// unknown and the rows noted as destroyed for that computer are taken as alive.
-    /// A host's link came up (`Ok`) or went down with its reason (`Err`).
+    /// A computer's link came up (`Ok`) or went down with its reason (`Err`). A destroy written on a link that ended
+    /// gets no answer, so its outcome is unknown and the rows noted as destroyed for that computer are taken as alive.
     pub(in crate::ui) fn note_connection(&mut self, host: &HostKey, link: Result<(), &str>) {
         self.hosts.host_connected.insert(host.clone(), link.is_ok());
         if let Err(reason) = link {

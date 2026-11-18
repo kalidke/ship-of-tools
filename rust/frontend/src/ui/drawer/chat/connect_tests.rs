@@ -835,6 +835,9 @@ fn no_project_word_reaches_a_screen() {
         said.extend(post_words(&PostShown::Refused(code), code == ChatCode::BadRequest, "a"));
     }
     said.push(compose_rows(&ComposeText::of(None, None, true, Some(true), "a", true), 200, 10).join(" "));
+    // A file post with no file of the project in the preview: nothing, or a picture opened from the chat.
+    let key = crate::ui::input::keybindings::KeyBindings::defaults().first_label(crate::ui::input::keybindings::Action::ChatPostFile);
+    said.extend([super::drawer::NO_FILE_WORDS.to_string(), super::drawer::chat_picture_words(&key)]);
     // The Connect step: each first screen, the steps, a refused code of each kind, connecting and connected, and a post's.
     let mut screens = Vec::new();
     for reason in [ChatUnconfigured::NotConnected, ChatUnconfigured::TokensRefused, ChatUnconfigured::StartFailed, ChatUnconfigured::WrongApp, ChatUnconfigured::Other] {

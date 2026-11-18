@@ -105,6 +105,8 @@ impl State {
         // above) doesn't re-fire the active workspace's resume
         // flow redundantly.
         if event_host == *self.selected.host() {
+            // A disconnect line carrying a word is no longer true: the connection line below replaces it.
+            self.status.reconnected();
             // Changes made while the connection was down were never sent: the drift cache and the cursored
             // annotation read are of unknown age, so each file parses (and the annotation reads) again on view.
             self.drift.clear();

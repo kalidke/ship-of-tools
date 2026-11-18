@@ -191,9 +191,12 @@ pub(in crate::ui) enum Previewed<'a> {
     Nothing,
 }
 
+/// The status line's words for `chat.post_file` with nothing in the preview, or only the window's start-up picture.
+pub(super) const NO_FILE_WORDS: &str = "not posted: the preview shows no file";
+
 /// The status line's words for `chat.post_file` over a picture opened from the chat: what the preview shows, why it is not
 /// posted, and what to do.
-fn chat_picture_words(key: &str) -> String {
+pub(super) fn chat_picture_words(key: &str) -> String {
     format!("not posted: the preview shows a picture opened from the chat, which is not a file of this project; show a file in the preview, then press {key}")
 }
 
@@ -569,7 +572,7 @@ impl ChatDrawer {
         let node = match previewed {
             Previewed::File(node) => node,
             Previewed::ChatPicture { key } => return Err(chat_picture_words(key)),
-            Previewed::Nothing => return Err("not posted: the preview shows no file".into()),
+            Previewed::Nothing => return Err(NO_FILE_WORDS.into()),
         };
         if self.owner.posting_row().is_some() {
             return Err("posting…".into());

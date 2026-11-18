@@ -95,7 +95,8 @@ impl State {
         if eof {
             self.status.set(format!("downloaded · {name} ({written} bytes)"));
         } else {
-            self.status.set(format!("download · {name} {written}/{total}"));
+            // A progress line, re-said at each chunk: a state line, so a long transfer never holds the line.
+            self.status.show_state(format!("download · {name} {written}/{total}"));
         }
         self.window.request_redraw();
     }

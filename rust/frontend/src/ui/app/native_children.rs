@@ -119,7 +119,12 @@ impl ApplicationHandler for FixturesDriver {
 }
 
 fn run_state_fixtures(state: &mut State) -> Result<()> {
-    let fixtures: [(&str, fn(&mut State) -> Result<()>); 29] = [
+    let fixtures: [(&str, fn(&mut State) -> Result<()>); 31] = [
+        // First: the window's start-up picture is still the preview's.
+        (
+            "primary_u_over_the_start_picture_says_the_preview_shows_no_file",
+            State::primary_u_over_the_start_picture_says_the_preview_shows_no_file,
+        ),
         ("result_target_uses_host_and_listed_identity", State::result_target_uses_host_and_listed_identity),
         ("passing_a_result_row_keeps_its_badge", State::passing_a_result_row_keeps_its_badge),
         (
@@ -202,6 +207,10 @@ fn run_state_fixtures(state: &mut State) -> Result<()> {
         (
             "the_connection_line_never_says_connected_for_a_computer_whose_link_is_down",
             State::the_connection_line_never_says_connected_for_a_computer_whose_link_is_down,
+        ),
+        (
+            "a_reconnect_ends_a_disconnect_line_that_carried_a_word",
+            State::a_reconnect_ends_a_disconnect_line_that_carried_a_word,
         ),
     ];
     // Every fixture runs and reports; the child fails after the last if any failed.

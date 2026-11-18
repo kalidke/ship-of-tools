@@ -462,12 +462,61 @@ fn unknown_delivery_is_reported_by_the_pump() {
     let t = Instant::now();
     let mut p = Pane::new(None);
     let wire = ready(&mut p, "h", "row", b"", t);
-    for (outcome, words) in [(InputOutcome::DeliveryUnknown, "delivery unknown"), (InputOutcome::RunEnded, "run ended"),
-                             (InputOutcome::Recorded, "attached"), (InputOutcome::RefusedStale, "not sent")] {
+    for (outcome, words) in [(InputOutcome::DeliveryUnknown, Some("delivery unknown")), (InputOutcome::RunEnded, Some("run ended")),
+                             (InputOutcome::Recorded, None), (InputOutcome::RefusedStale, Some("not sent"))] {
         let effect = step(&mut p, &wire, Step { outcome: Some(outcome), ..Default::default() }, t);
-        assert!(effect.status.unwrap().contains(words));
-        assert!(p.pump(|| t).status.is_none());
+        assert_eq!(effect.status.as_deref(), Some("attached"), "{outcome:?}: the client's line");
+        assert_eq!(effect.notice.is_some(), words.is_some(), "{outcome:?}");
+        assert!(words.is_none_or(|w| effect.notice.unwrap().contains(w)), "{outcome:?}");
+        let quiet = p.pump(|| t);
+        assert!(quiet.status.is_none() && quiet.notice.is_none());
     }
+}
+
+/// An outcome stands until the next input, and the row may print at every frame meanwhile: its words are said once, so they
+/// cannot renew a hold at each frame; an input answered with nothing to say lets the next refusal be said again.
+#[test]
+fn an_input_outcome_is_said_once_however_many_frames_it_stands() {
+    let t = Instant::now();
+    let mut p = Pane::new(None);
+    let wire = ready(&mut p, "h", "row", b"", t);
+    let first = step(&mut p, &wire, Step { outcome: Some(InputOutcome::RefusedStale), ..Default::default() }, t);
+    assert!(first.notice.is_some_and(|n| n.contains("not sent")));
+    for k in 1..=30 {
+        let frame = step(&mut p, &wire, Step { output: b"x", ..Default::default() }, after(t, k * 16));
+        assert!(frame.status.is_some() && frame.notice.is_none(), "frame {k} said the standing outcome again");
+    }
+    assert!(step(&mut p, &wire, Step { outcome: Some(InputOutcome::Recorded), ..Default::default() }, t).notice.is_none());
+    let again = step(&mut p, &wire, Step { outcome: Some(InputOutcome::RefusedStale), ..Default::default() }, t);
+    assert!(again.notice.is_some_and(|n| n.contains("not sent")), "a later refusal was not said");
+}
+
+/// A key the row did not take, while a word holds the status line, is still said (as State writes the pump's effect: the
+/// client's line as a state line, the outcome as a word), and the idle tick's connection line does not hide it unseen.
+#[test]
+fn a_refused_key_is_said_while_a_word_is_held() {
+    use crate::ui::chrome::StatusLine;
+    let t = Instant::now();
+    let s = |k: u64| t + Duration::from_secs(k);
+    let mut p = Pane::new(None);
+    let wire = ready(&mut p, "h", "row", b"", t);
+    let mut status = StatusLine::new("connected · h:row · rev 1");
+    let glue = |status: &mut StatusLine, effect: PumpEffect, at: Instant| {
+        if let Some(line) = effect.status { status.show_state_at(line, at); }
+        if let Some(words) = effect.notice { status.set_at(words, at); }
+    };
+    status.set_at("copied 12 characters from the row to the clipboard", t);
+    let effect = step(&mut p, &wire, Step { outcome: Some(InputOutcome::RefusedStale), ..Default::default() }, s(1));
+    glue(&mut status, effect, s(1));
+    let mut seen = vec![status.text().to_string()];
+    for k in 2..=60 {
+        let effect = p.pump(|| s(k));
+        glue(&mut status, effect, s(k));
+        if status.expire_hold(s(k)) { status.show_state_at("connected · h:row · rev 1", s(k)); }
+        seen.push(status.text().to_string());
+    }
+    seen.dedup();
+    assert!(seen.iter().any(|l| l.contains("not sent")), "the refused key was never said in 60 s: {seen:?}");
 }
 
 #[test]

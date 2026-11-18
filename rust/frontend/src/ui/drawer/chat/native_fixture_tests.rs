@@ -565,6 +565,38 @@ impl State {
         Ok(())
     }
 
+    /// `Primary+u` over the window's start-up picture (a raster with no node and no installed source, shown until a preview
+    /// installs) sends nothing and says the preview shows no file, not that a chat picture is shown. Runs first, while the
+    /// start-up picture is still the preview's.
+    #[allow(dead_code, reason = "runs only inside a native State, from the window_minimized fixtures child")]
+    pub(in crate::ui) fn primary_u_over_the_start_picture_says_the_preview_shows_no_file(&mut self) -> Result<()> {
+        self.witness_with(Self::start_picture_run)
+    }
+
+    fn start_picture_run(&mut self, host: &HostKey, events: &Sender<(HostKey, IncomingEvt)>, sent: &mut Requests) -> Result<()> {
+        let mut daemon = Daemon { host: host.clone(), top: 3, seen: Seen::default(), unconfigured: false, figures: false };
+        let mut row = crate::ui::nav::ws_info("chat", "chat-session");
+        row.workspace_id = "ROW1".into();
+        self.on_workspaces(host.clone(), vec![row]);
+        // As the window's start selects its resumed row: no switch, so no preview is installed.
+        self.selected.select(host.clone(), Some("chat".into()));
+        self.layout_help.toggle_drawer(DrawerContent::Chat, self.focus_prompts.focus());
+        self.set_focus(PaneFocus::Repl);
+        events.send((host.clone(), connected())).map_err(|_| anyhow::anyhow!("the fixture's event channel closed"))?;
+        self.drain_events();
+        std::thread::sleep(crate::ui::app::NAV_FIRE_DEBOUNCE + std::time::Duration::from_millis(100));
+        self.witness_pump(events, sent, &mut daemon)?;
+        let premise = (self.raster.is_shown(), self.preview_source.node_id().is_none(), self.preview_source.mime().is_none());
+        anyhow::ensure!(premise == (true, true, true), "the start-up picture is not what the preview shows: {premise:?}");
+        while sent.try_recv().is_ok() {}
+        self.witness_key(Key::Character("u".into()), (true, false), Some(Action::ChatPostFile))?;
+        let said = self.status.text().to_string();
+        let posts = std::iter::from_fn(|| sent.try_recv().ok()).filter(|r| matches!(r, OutgoingReq::ChatPostFile { .. })).count();
+        println!("start-picture-post-file posts={posts} said={said:?}");
+        anyhow::ensure!(posts == 0 && said == super::drawer::NO_FILE_WORDS, "over the start-up picture the key says {said:?} ({posts} posts)");
+        Ok(())
+    }
+
     fn connect_run(&mut self, host: &HostKey, events: &Sender<(HostKey, IncomingEvt)>, sent: &mut Requests) -> Result<()> {
         let mut daemon = Daemon { host: host.clone(), top: 3, seen: Seen::default(), unconfigured: false, figures: false };
         let send = |evt: IncomingEvt| events.send((host.clone(), evt)).map_err(|_| anyhow::anyhow!("the fixture's event channel closed"));

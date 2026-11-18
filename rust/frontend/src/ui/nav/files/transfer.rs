@@ -215,7 +215,8 @@ impl State {
                 } else {
                     // Multi-file batches prefix `file i/N ·`; a lone file omits it.
                     let prefix = self.file_ops.progress_prefix();
-                    self.status.set(format!("upload · {prefix}{name} {sent}/{total}"));
+                    // A progress line, re-said at each chunk: a state line, so a long transfer never holds the line.
+                    self.status.show_state(format!("upload · {prefix}{name} {sent}/{total}"));
                 }
             }
             Err((name, e)) => {

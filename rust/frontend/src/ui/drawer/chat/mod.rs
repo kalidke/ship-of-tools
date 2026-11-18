@@ -133,10 +133,11 @@ impl State {
         let row = wanted_row(self.layout_help.chat_shown(), || self.active_result_workspace());
         let node = self.preview_source.node_id().map(str::to_owned);
         let key = self.bindings.first_label(Action::ChatPostFile);
-        // A picture shown with no node is one opened from the chat: no file of the project.
+        // A picture installed with no node is one opened from the chat: no file of the project. The window's start-up
+        // picture is a raster with no installed source, so it is no file either, and not the chat's.
         let previewed = match node.as_deref() {
             Some(node) => Previewed::File(node),
-            None if self.raster.is_shown() => Previewed::ChatPicture { key: &key },
+            None if self.raster.is_shown() && self.preview_source.mime().is_some() => Previewed::ChatPicture { key: &key },
             None => Previewed::Nothing,
         };
         let mut refused = None;
