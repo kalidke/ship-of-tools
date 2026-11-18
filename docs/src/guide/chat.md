@@ -170,6 +170,8 @@ never the chat's own configuration files. It waits as a post does, and only a re
 draft, and the status line then says `shared <name> to <channel>`; any other outcome keeps it, with the same words on
 the status line. Holding the key posts once. With nothing in the preview, on an older hub, or while the channel picker
 or the name prompt is open, nothing is sent and the status line says why (unmeasured against Slack itself until a person's first use).
+A picture opened from the chat is not a file of the project, so with one in the preview nothing is sent and the status
+line says so: show a file in the preview, then press the key again.
 
 ## Selecting
 

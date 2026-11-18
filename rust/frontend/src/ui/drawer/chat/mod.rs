@@ -24,7 +24,7 @@ mod thread;
 mod view;
 pub(in crate::ui) use compose::{compose_rows, ComposeText, Edit};
 pub(in crate::ui) use connect::connect_key;
-pub(in crate::ui) use drawer::ChatDrawer;
+pub(in crate::ui) use drawer::{ChatDrawer, Previewed};
 pub(in crate::ui) use picker::Body;
 pub(in crate::ui) use view::{ChatHit, Step};
 #[cfg(test)]
@@ -132,8 +132,15 @@ impl State {
     pub(in crate::ui) fn send_chat_file(&mut self) {
         let row = wanted_row(self.layout_help.chat_shown(), || self.active_result_workspace());
         let node = self.preview_source.node_id().map(str::to_owned);
+        let key = self.bindings.first_label(Action::ChatPostFile);
+        // A picture shown with no node is one opened from the chat: no file of the project.
+        let previewed = match node.as_deref() {
+            Some(node) => Previewed::File(node),
+            None if self.raster.is_shown() => Previewed::ChatPicture { key: &key },
+            None => Previewed::Nothing,
+        };
         let mut refused = None;
-        self.with_chat(|c, now| c.send_file(row.as_ref(), node.as_deref(), now).unwrap_or_else(|words| {
+        self.with_chat(|c, now| c.send_file(row.as_ref(), previewed, now).unwrap_or_else(|words| {
             refused = Some(words);
             Vec::new()
         }));

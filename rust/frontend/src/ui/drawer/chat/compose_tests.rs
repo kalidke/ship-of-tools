@@ -7,7 +7,7 @@ use super::compose::{compose_rows, Compose, Edit};
 use super::{apply_name, prompt_step, PromptStep};
 use crate::ui::persist::settings::Settings;
 use sot_protocol::chat::MAX_NAME;
-use super::drawer::ChatDrawer;
+use super::drawer::{ChatDrawer, Previewed};
 use super::draft_edit;
 use super::row_channel_tests::{answer, mapped};
 use crate::net::transport::{ChatEvt, ChatReply, OutgoingReq};
@@ -532,7 +532,7 @@ fn the_foot_explains_until_the_first_proved_post() {
     // A file's share is a post too, in a window that has had none.
     let (mut d, at) = watching_as_person();
     d.edit(Some(&r), Edit::Text("the fit")).unwrap();
-    let req = file_posted(d.send_file(Some(&r), Some("files:figs/fit.png"), at).unwrap());
+    let req = file_posted(d.send_file(Some(&r), Previewed::File("files:figs/fit.png"), at).unwrap());
     d.on_evt(&"a".to_string(), ChatEvt::FilePosted { req, reply: ChatReply::Done(ChatPostFileRes::Posted { file: "F0FILE".into(), ts: None }) }, at);
     assert_eq!(said(&d), [prompt]);
     assert!(d.take_first_post());
@@ -705,10 +705,10 @@ fn the_previewed_file_posts_once_with_the_draft_as_its_comment() {
     let r = row("R");
     let (mut d, at) = watching_as_person();
     d.edit(Some(&r), Edit::Text("the fit")).unwrap();
-    let req = file_posted(d.send_file(Some(&r), Some("files:figs/fit.png"), at).unwrap());
+    let req = file_posted(d.send_file(Some(&r), Previewed::File("files:figs/fit.png"), at).unwrap());
     assert_eq!((req.node_id.as_str(), req.comment.as_deref(), req.kind), ("files:figs/fit.png", Some("the fit"), ChatPostKind::Person));
     assert_eq!((req.target.channel.as_str(), req.thread.as_ref(), req.name.as_str()), ("C1", None, ""));
-    assert_eq!(d.send_file(Some(&r), Some("files:figs/fit.png"), at).unwrap_err(), "posting…", "no second post");
+    assert_eq!(d.send_file(Some(&r), Previewed::File("files:figs/fit.png"), at).unwrap_err(), "posting…", "no second post");
     assert_eq!(d.send(Some(&r), Some("tester"), at).unwrap_err(), "posting…", "nor a text post beside it");
     assert_eq!(d.edit(Some(&r), Edit::Text("x")), Err("posting…"));
 
@@ -717,24 +717,38 @@ fn the_previewed_file_posts_once_with_the_draft_as_its_comment() {
     answer(&mut d, &req, ChatReply::Done(ChatPostFileRes::Refused { code: ChatCode::NotAFile }));
     assert_eq!(d.take_notice().as_deref(), Some(&*format!("not posted: {}", ChatCode::NotAFile.text())));
     assert_eq!(d.draft(), Some(("the fit", "C1")));
-    let req = file_posted(d.send_file(Some(&r), Some("files:figs/fit.png"), at).unwrap());
+    let req = file_posted(d.send_file(Some(&r), Previewed::File("files:figs/fit.png"), at).unwrap());
     answer(&mut d, &req, ChatReply::Done(ChatPostFileRes::Unknown));
     assert!(d.take_notice().unwrap().starts_with("may have been posted"));
     assert_eq!(d.draft(), Some(("the fit", "C1")));
 
     // Shared, even with no `ts`: the draft is gone, and the status line says what went where.
-    let req = file_posted(d.send_file(Some(&r), Some("files:figs/fit.png"), at).unwrap());
+    let req = file_posted(d.send_file(Some(&r), Previewed::File("files:figs/fit.png"), at).unwrap());
     answer(&mut d, &req, ChatReply::Done(ChatPostFileRes::Posted { file: "F0FILE".into(), ts: None }));
     assert_eq!(d.draft(), None);
     assert_eq!(d.take_notice().as_deref(), Some("shared fit.png to C1"));
     // A file post's `bad_request` is the file's name, never `[chat] name`, which it does not send.
-    let req = file_posted(d.send_file(Some(&r), Some("files:a.png"), at).unwrap());
+    let req = file_posted(d.send_file(Some(&r), Previewed::File("files:a.png"), at).unwrap());
     answer(&mut d, &req, ChatReply::Done(ChatPostFileRes::Refused { code: ChatCode::BadRequest }));
     assert_eq!(d.take_notice().as_deref(), Some("not posted: the file's name is not one the chat can send"));
 
     // No draft: the watched channel, and no comment.
-    let req = file_posted(d.send_file(Some(&r), Some("files:a.png"), at).unwrap());
+    let req = file_posted(d.send_file(Some(&r), Previewed::File("files:a.png"), at).unwrap());
     assert_eq!((req.target.channel.as_str(), req.comment), ("C1", None));
+}
+
+/// A picture opened from the chat in the preview is no file of the project: nothing is posted, and the status line says what
+/// the preview shows, why it is not posted and what to do, naming the post key by its binding's label.
+#[test]
+fn a_picture_opened_from_the_chat_posts_nothing_and_says_what_to_do() {
+    let r = row("R");
+    let (mut d, at) = watching_as_person();
+    let key = crate::ui::input::keybindings::KeyBindings::defaults().first_label(Action::ChatPostFile);
+    assert!(key.ends_with("+u"), "the post key is written {key}");
+    assert_eq!(
+        d.send_file(Some(&r), Previewed::ChatPicture { key: &key }, at).unwrap_err(),
+        format!("not posted: the preview shows a picture opened from the chat, which is not a file of this project; show a file in the preview, then press {key}")
+    );
 }
 
 /// A preview with no node (nothing shown) posts nothing, and neither does a hub whose hello does not say it posts as the
@@ -744,12 +758,12 @@ fn a_preview_with_no_node_posts_nothing() {
     let r = row("R");
     let (mut d, at) = watching_as_person();
     d.edit(Some(&r), Edit::Text("the fit")).unwrap();
-    assert_eq!(d.send_file(Some(&r), None, at).unwrap_err(), "not posted: the preview shows no file");
-    assert_eq!(d.send_file(None, Some("files:a.png"), at).unwrap_err(), "no project is selected to post for");
-    assert_eq!(d.send_file(Some(&row("S")), Some("files:a.png"), at).unwrap_err(), "not posted: no channel to write to");
+    assert_eq!(d.send_file(Some(&r), Previewed::Nothing, at).unwrap_err(), "not posted: the preview shows no file");
+    assert_eq!(d.send_file(None, Previewed::File("files:a.png"), at).unwrap_err(), "no project is selected to post for");
+    assert_eq!(d.send_file(Some(&row("S")), Previewed::File("files:a.png"), at).unwrap_err(), "not posted: no channel to write to");
     assert_eq!(d.draft(), Some(("the fit", "C1")));
     let (mut old, at) = watching();
-    assert_eq!(old.send_file(Some(&r), Some("files:a.png"), at).unwrap_err(), "not posted: update Ship of Tools on a, then post again");
+    assert_eq!(old.send_file(Some(&r), Previewed::File("files:a.png"), at).unwrap_err(), "not posted: update Ship of Tools on a, then post again");
     // Nothing waits: a text post still goes.
     old.edit(Some(&r), Edit::Text("hi")).unwrap();
     assert!(matches!(old.send(Some(&r), Some("tester"), at).unwrap().as_slice(), [(_, OutgoingReq::ChatPost { .. })]));
@@ -777,7 +791,7 @@ fn no_post_key_posts_behind_the_picker_or_the_name_prompt() {
                 }
                 Held::Prompt => assert!(d.send(Some(&r), None, at).unwrap().is_empty()),
             }
-            let sent = if file { d.send_file(Some(&r), Some("files:a.png"), at) } else { d.send(Some(&r), Some("tester"), at) };
+            let sent = if file { d.send_file(Some(&r), Previewed::File("files:a.png"), at) } else { d.send(Some(&r), Some("tester"), at) };
             match (held, sent) {
                 (Held::Plain, Ok(outs)) => assert_eq!(outs.len(), 1, "{held:?} {file}"),
                 (Held::Plain, Err(e)) => panic!("{held:?} {file}: {e}"),

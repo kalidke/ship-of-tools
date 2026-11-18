@@ -555,6 +555,9 @@ impl State {
         println!("chat-post-file-over-picture posts={posts} relists={relists} said={said:?} after_relist={after:?}");
         anyhow::ensure!(posts == 0, "{posts} file posts went with no file in the preview");
         anyhow::ensure!(!said.is_empty() && !said.starts_with("connected"), "the key said nothing: the status line says {said:?}");
+        let key = self.bindings.first_label(Action::ChatPostFile);
+        anyhow::ensure!(said.contains("a picture opened from the chat") && said.ends_with(&format!("press {key}")),
+            "the status line says {said:?}, not that the chat's picture is no file and to press {key}");
         anyhow::ensure!(relists == 1 && after == said, "after {relists} re-list the status line says {after:?}, not {said:?}");
         // The hold's end brings the connection line back.
         anyhow::ensure!(self.expire_status_hold(Instant::now() + crate::ui::chrome::NOTIFY_STICKY), "the key's words held nothing");

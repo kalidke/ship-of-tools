@@ -5,7 +5,7 @@ use sot_protocol::chat::{ChatRecord, Ts};
 use sot_protocol::ops::{ChatCode, ChatHistoryReq, ChatHistoryRes, ChatPostFileRes, ChatPostReq, ChatPostRes, ChatTarget, ChatWatchRes, ChatWatchState};
 
 use super::compose::{compose_rows, Edit};
-use super::drawer::ChatDrawer;
+use super::drawer::{ChatDrawer, Previewed};
 use super::owner::Out;
 use super::row_channel_tests::answer;
 use super::view::Step;
@@ -844,7 +844,7 @@ fn a_post_of_either_kind_settles_by_one_table() {
             let outs = open(&mut d, &mut fonts, &[true, true]);
             on(&mut d, &history(&outs), page(&[], None), at);
             d.edit(shown("ROW1").as_ref(), Edit::Text("hi")).unwrap();
-            let sent = if file { d.send_file(shown("ROW1").as_ref(), Some("files:figs/fit.png"), at) } else { d.send(shown("ROW1").as_ref(), Some("tester"), at) };
+            let sent = if file { d.send_file(shown("ROW1").as_ref(), Previewed::File("files:figs/fit.png"), at) } else { d.send(shown("ROW1").as_ref(), Some("tester"), at) };
             let outs = answer_post(&mut d, &sent.unwrap(), answer, at);
             let case = format!("file {file}, {answer:?}");
             let notice = d.take_notice();
@@ -880,7 +880,7 @@ fn a_file_with_no_draft_goes_to_the_open_thread_and_a_blank_draft_is_no_comment(
     let (mut d, at) = channel_on(&held, None, true);
     let outs = open(&mut d, &mut fonts, &[true, true]);
     on(&mut d, &history(&outs), page(&[], None), at);
-    let req = match d.send_file(shown("ROW1").as_ref(), Some("files:a.png"), at).unwrap().as_slice() {
+    let req = match d.send_file(shown("ROW1").as_ref(), Previewed::File("files:a.png"), at).unwrap().as_slice() {
         [(_, OutgoingReq::ChatPostFile { req })] => req.clone(),
         other => panic!("one chat.post_file expected, got {} requests", other.len()),
     };
@@ -889,7 +889,7 @@ fn a_file_with_no_draft_goes_to_the_open_thread_and_a_blank_draft_is_no_comment(
     let (mut d, at) = channel_on(&held, None, true);
     d.edit(shown("ROW1").as_ref(), Edit::Text("  ")).unwrap();
     d.edit(shown("ROW1").as_ref(), Edit::Newline).unwrap();
-    let req = match d.send_file(shown("ROW1").as_ref(), Some("files:a.png"), at).unwrap().as_slice() {
+    let req = match d.send_file(shown("ROW1").as_ref(), Previewed::File("files:a.png"), at).unwrap().as_slice() {
         [(_, OutgoingReq::ChatPostFile { req })] => req.clone(),
         other => panic!("one chat.post_file expected, got {} requests", other.len()),
     };

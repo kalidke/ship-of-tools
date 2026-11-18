@@ -179,6 +179,24 @@ pub(super) fn post_words(shown: &PostShown, file: bool, host: &str) -> Option<St
     })
 }
 
+/// What the preview shows when `chat.post_file` asks for its file.
+#[derive(Clone, Copy, Debug)]
+pub(in crate::ui) enum Previewed<'a> {
+    /// A file of the row's project: its node.
+    File(&'a str),
+    /// A picture opened from the chat, which shows with no node since it is no file of the project; `key` is the post key's
+    /// label, as its binding names it.
+    ChatPicture { key: &'a str },
+    /// Nothing.
+    Nothing,
+}
+
+/// The status line's words for `chat.post_file` over a picture opened from the chat: what the preview shows, why it is not
+/// posted, and what to do.
+fn chat_picture_words(key: &str) -> String {
+    format!("not posted: the preview shows a picture opened from the chat, which is not a file of this project; show a file in the preview, then press {key}")
+}
+
 /// The status line's words for a rate limit: the seconds left, with `about` when the wait is a guess.
 pub(super) fn wait_words(secs: u64, assumed: bool) -> String {
     format!("not posted: Slack asked for a pause; wait {}{secs} s", if assumed { "about " } else { "" })
@@ -541,14 +559,18 @@ impl ChatDrawer {
         }
     }
 
-    /// `chat.post_file`: posts the file the preview shows (`node`, the installed node of the row the chat shows) once, under the
+    /// `chat.post_file`: posts the file the preview shows (`previewed`, the installed node of the row the chat shows) once, under the
     /// person's own Slack token, with `row`'s draft as its comment, into the draft's destination, else the watched channel and
     /// the open thread. It takes the one post slot; only a reply that proves the share clears the draft. A preview with no
-    /// node (nothing shown) posts nothing.
-    pub(in crate::ui) fn send_file(&mut self, row: Option<&ResultRowIdentity>, node: Option<&str>, now: Instant) -> Result<Vec<Out>, String> {
+    /// file (nothing shown, or a picture opened from the chat) posts nothing and says why.
+    pub(in crate::ui) fn send_file(&mut self, row: Option<&ResultRowIdentity>, previewed: Previewed<'_>, now: Instant) -> Result<Vec<Out>, String> {
         let Some(row) = row else { return Err("no project is selected to post for".into()) };
         self.may_post()?;
-        let Some(node) = node else { return Err("not posted: the preview shows no file".into()) };
+        let node = match previewed {
+            Previewed::File(node) => node,
+            Previewed::ChatPicture { key } => return Err(chat_picture_words(key)),
+            Previewed::Nothing => return Err("not posted: the preview shows no file".into()),
+        };
         if self.owner.posting_row().is_some() {
             return Err("posting…".into());
         }
