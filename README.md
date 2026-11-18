@@ -54,9 +54,9 @@ Compared with Claude Code next to a REPL in tmux, or with VS Code, its Julia ext
 **Slack** (0.7.1)
 - A project's [Slack channel](https://kalidke.github.io/ship-of-tools/dev/guide/chat) in a Chat drawer (`Ctrl+k`): messages, threads, posts.
 - The chat is set up from the window (`Ctrl+Shift+k`); each project can use a channel of a different workspace.
-- Posts from the drawer are made from the person's own Slack account.
-- Pictures in the channel show in the drawer; a click or `Ctrl+o` opens one in the preview.
-- The previewed file can be posted to the channel (`Ctrl+u`).
+- A post from the drawer appears in the channel as the person's own message, from their Slack account.
+- Pictures in the channel show in the drawer; a click on one, or `Ctrl+o` in the drawer, opens it in the preview.
+- From the drawer, `Ctrl+u` posts the previewed file to the channel.
 - A session's agent, when asked, can post text and files to its project's channel.
 
 **Drawing** (0.7.1)
@@ -64,13 +64,13 @@ Compared with Claude Code next to a REPL in tmux, or with VS Code, its Julia ext
 - A blank canvas to draw on (`Shift+d`), given to the agent the same way.
 
 **Session ordering**
-- The session strip's order: by state, alphabetical or by recent activity (`Ctrl+Shift+o`).
+- The session strip has three orders, by state, alphabetical and by recent activity; `Ctrl+Shift+o` moves to the next.
 
 **Other** (0.7.1)
-- Smoother scrolling: a scroll glides to its place in the preview, the agent pane and the Terminal and REPL drawers.
+- Smoother scrolling in the preview, the agent pane and the Terminal and REPL drawers; the Chat drawer scrolls the same way.
 - Text selected in the preview is given to a Claude Code session's agent at its next prompt.
 - SVG files preview as pictures.
-- PDF pages and a video's poster frame preview on a computer with no poppler or ffmpeg installed.
+- PDF pages and a video's poster frame preview on a computer with no poppler or ffmpeg installed: Julia's copy is downloaded once, at the first such preview.
 
 **Machines**
 - The backend runs where the data and GPUs are; the window runs on your laptop and attaches over SSH.

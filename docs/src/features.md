@@ -98,10 +98,10 @@ workspace. See [Setting up Slack](guide/chat-setup.md) and
 
 ### More on Slack
 
-- **Pictures.** A message's pictures show in the drawer; a click or `Ctrl+o`
-  opens one in the preview. See [Pictures](guide/chat.md#Pictures).
-- **The previewed file.** `Ctrl+u` posts the file the preview shows to the
-  channel. See [Posting a file](guide/chat.md#Posting-a-file).
+- **Pictures.** A message's pictures show in the drawer; a click on one, or
+  `Ctrl+o` in the drawer, opens it in the preview. See [Pictures](guide/chat.md#Pictures).
+- **The previewed file.** From the drawer, `Ctrl+u` posts the file the
+  preview shows to the channel. See [Posting a file](guide/chat.md#Posting-a-file).
 - **Posts from the agent.** A session's agent posts text and files to its
   project's channel with `sot-fe chat post`. See
   [The agent in the channel](guide/chat.md#The-agent-in-the-channel).
@@ -245,8 +245,9 @@ list.
 - **Watching the machines.** The Monitor drawer (`Ctrl+m`) shows CPU, GPU and
   memory across your Linux hosts, for example while a training run is going.
 - **Smoother scrolling.** A scroll in the preview, the agent pane and the
-  Chat, Terminal and REPL drawers glides to its place; `smooth_scroll_ms`
-  under `[display]` sets how long it takes, and `0` moves at once. See
+  Chat, Terminal and REPL drawers arrives over a short time instead of
+  jumping; `smooth_scroll_ms` under `[display]` sets how long, and `0` moves
+  at once. See
   [Configuration files](ref/config.md#display).
 - **Keybindings.** Named actions can be rebound in a keybindings file;
   anything you do not override keeps its default. See
