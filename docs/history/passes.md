@@ -2848,3 +2848,16 @@ the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the sa
     hub moved by a plain install at 11:33 (the pin of rc.14 ended), and two window computers were asked through their
     own sessions. A lesson for the next final: dispatch the release gate when the last candidate is cut, not at the
     final, so that a fault in a test that only it runs is found a day early.
+  - The manual after 0.7.1, 2026-11-18: the maintainer asked whether the manual showed what the release adds. It
+    did in the reference pages and three guides, and not on the pages a new reader meets first. One builder, four
+    rounds: a what's-new page, a guide of its own for drawing and for showing the agent a selection (moved out of
+    Previews), and entries on the home page, "What it does", "Your first session" and the README. Two fresh readers
+    of the two new pages: 27 places not followed, then 16, the builder answering those in a last round no reader
+    re-read. Scoped gate passed; landed 12:06 as 3ba6a8f39 to 538344468 on his word that the pages were finished.
+  - The stable manual, the same day: the site's root and the README led to `/stable/`, which still held the 0.6.6
+    manual, deployed on 2026-10-21 from the branch `release/0.6.6` that `docs/make.jl` named. On the maintainer's word
+    (a workflow change), `docs/make.jl` deploys `/stable/` from a branch named `stable` and `/dev/` from `main`, a
+    push to `stable` runs the docs job alone, and the release skill moves `stable` after a publish. Scoped gate
+    passed; landed 12:12 as c1012808a. The branch was created at that commit; the push started no run (a new branch
+    at a commit `main` holds shows no changed path), so the run was dispatched by hand, 6 minutes to the deploy, and
+    the live site served the 0.7.1 manual under `/stable/` at 12:20, with `/dev/` deployed from `main` beside it.

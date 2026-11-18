@@ -180,7 +180,9 @@ notes once the release workflow's builds, smokes and install smokes had passed a
 ended with 22 of 25 jobs green; its three red jobs were faults in tests, corrected on `main` after the tag and green
 there (the pane-timing test looked for the daemon and the capsule two folders above its own binary, which a newer
 Cargo no longer puts there; three chat fixtures pressed Ctrl for keys bound to Primary, which is Cmd on a Mac). The
-hub moved to it by a plain install the same hour. v0.7.0 was published 2026-11-05. v0.7.1-rc.14 (2026-11-18) is an unpublished draft, cut on
+hub moved to it by a plain install the same hour. The manual's `/stable/` on the site is the published release's,
+deployed from the branch `stable`, which moves after a publish (it had held the 0.6.6 manual until that day), and
+`/dev/` is `main`'s. v0.7.0 was published 2026-11-05. v0.7.1-rc.14 (2026-11-18) is an unpublished draft, cut on
 the maintainer's word in a session's pane once everything his use of rc.13 found was on `main`, and installed by archive
 by their own sessions on two window computers and by the maintaining session on the hub, where the daemon restarted and
 the rows' open REPLs ended, on his word; a third window computer was not reachable. What it carries past rc.13 is listed
