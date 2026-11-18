@@ -56,3 +56,19 @@ fn each_disconnect_line_that_carries_a_word_holds_the_line_again() {
     s.show_state_at("connected · a:row · rev 2", t0 + Duration::from_secs(12));
     assert_eq!(s.text(), "disconnected \u{b7} dial failed \u{b7} pinned · files:a.txt", "the carry did not hold the line again");
 }
+
+/// Another program's words can begin with `disconnected`: a link lost behind such a word is on the line at once, with the
+/// word carried, and redials never grow the line.
+#[test]
+fn a_link_lost_behind_a_word_that_begins_with_disconnected_shows_at_once() {
+    let t0 = Instant::now();
+    let mut s = StatusLine::new("connected · a:row · rev 1");
+    s.set_at("disconnected the pump from the controller; retrying", t0);
+    show_disconnect(&mut s, "eof", t0 + Duration::from_secs(1));
+    let first = "disconnected \u{b7} eof \u{b7} disconnected the pump from the controller; retrying";
+    assert_eq!(s.text(), first, "the loss of the link is not on the line behind the held word");
+    for k in 2..40 {
+        show_disconnect(&mut s, "eof", t0 + Duration::from_secs(k));
+    }
+    assert_eq!(s.text(), first, "a redial that fails again grew or changed the line");
+}

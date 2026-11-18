@@ -55,13 +55,13 @@ impl StatusLine {
         self.sticky_until = None;
     }
 
-    /// The text a disconnect line must carry: the note an earlier one carried, else the text held now (never a
-    /// disconnect line itself), while the hold lasts.
+    /// The text a disconnect line must carry: the note an earlier one carried, else the text held now, while the hold
+    /// lasts. A disconnect line is held only with its note, so a held text with no note is a word, whatever it says.
     pub(in crate::ui) fn carried(&mut self, now: Instant) -> Option<String> {
         if !self.held(now) {
             return None;
         }
-        self.note.clone().or_else(|| Some(self.text.clone()).filter(|t| !t.starts_with("disconnected")))
+        self.note.clone().or_else(|| Some(self.text.clone()))
     }
 
     /// Write `text` carrying `note`, and hold it.

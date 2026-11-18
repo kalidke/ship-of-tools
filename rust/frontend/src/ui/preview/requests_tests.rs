@@ -523,3 +523,45 @@ fn a_refetch_is_unasked_until_the_next_request() {
     assert!(r.issue_preview() > refetch);
     assert!(!r.latest_is_unasked(), "the person's request kept the re-fetch's mark");
 }
+
+/// A re-fetch issued while the person's own request (a selection) has no answer yet outdates that request, so its reply
+/// answers the person: a reconnect, or a watcher's change of the same file, seconds after a selection.
+#[test]
+fn a_refetch_while_the_persons_request_waits_answers_the_person() {
+    let mut r = PreviewRequests::default();
+    r.issue_preview();
+    r.record_fired("files:docs/run.h5".into());
+    r.issue_refetch();
+    assert!(!r.latest_is_unasked(), "a selection's first answer, the re-fetch's reply, was left to the box");
+    // Once it is answered, the next re-fetch is another program's again; so it is after a refusal.
+    r.clear_refusal();
+    r.issue_refetch();
+    assert!(r.latest_is_unasked(), "a re-fetch of an answered pane is not unasked");
+    r.issue_preview();
+    r.refuse(Some("files:docs/run.h5"));
+    r.issue_refetch();
+    assert!(r.latest_is_unasked(), "a re-fetch after the person's request was refused is not unasked");
+    // A row restored from its snapshot has nothing waiting.
+    r.issue_preview();
+    r.restore_fired(Some("files:docs/run.h5".into()), false);
+    r.issue_refetch();
+    assert!(r.latest_is_unasked(), "a restored row's re-fetch is not unasked");
+}
+
+/// A page turn after a watcher's re-fetch is the person's own request: its failure is said on the status line.
+#[test]
+fn a_page_turn_after_a_refetch_is_asked() {
+    let mut r = PreviewRequests::default();
+    r.issue_preview();
+    r.record_fired("files:paper.pdf".into());
+    r.clear_refusal();
+    r.issue_refetch();
+    r.clear_refusal();
+    assert!(r.latest_is_unasked());
+    r.turn_page(1, 5, true);
+    assert_eq!(r.next_page_request(1).map(|(page, _)| page), Some(2));
+    assert!(!r.latest_is_unasked(), "the person's page turn kept the re-fetch's mark");
+    r.refuse(Some("files:paper.pdf"));
+    r.issue_refetch();
+    assert!(r.latest_is_unasked());
+}

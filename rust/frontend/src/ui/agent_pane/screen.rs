@@ -153,11 +153,9 @@ pub(in crate::ui) fn pane_reason_line(
         .or_else(|| dial_error.map(str::to_owned))
 }
 
-/// The agent pane's overlay, one row each, top down: why it is not live,
-/// then the discarded-input count. Separate rows, so a long reason never
-/// truncates the count off the pane and the count never hides the reason.
-/// The pane's overlay rows: the reason it shows no live screen, the row's answer to the last input while a person must see
-/// it, and the discarded-input notice, last (its row is the one a click dismisses).
+/// The pane's overlay rows, top down: the reason it shows no live screen, the row's answer to the last input while a person
+/// must see it, and the discarded-input notice, last (its row is the one a click dismisses). Separate rows, so a long
+/// row never truncates another off the pane.
 pub(in crate::ui) fn pane_overlay_lines(reason: Option<String>, outcome: Option<&str>, notice: Option<String>) -> Vec<String> {
     reason.into_iter().chain(outcome.map(str::to_string)).chain(notice).collect()
 }

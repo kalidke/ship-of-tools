@@ -1,7 +1,7 @@
 //! The preview pane's subject: which node is shown, how its bytes route to a renderer, and its pin.
 
 use crate::ui::*;
-use crate::ui::preview::image::svg::{svg_not_drawn, NO_PANE};
+use crate::ui::preview::image::svg::NO_PANE;
 use crate::ui::preview::image::svg_preview::Step;
 use crate::ui::preview::image::svg_wire::Ask;
 
@@ -487,8 +487,7 @@ impl State {
         };
         tracing::warn!(why, "svg preview not drawn");
         // Over a re-fetch the person did not ask for (another program rewriting the file), the box alone says it.
-        let unasked = self.preview_requests.latest_is_unasked();
-        crate::ui::preview::replies::route_preview_message(&mut self.preview_notice, &mut self.status, svg_not_drawn(&why), std::time::Instant::now(), unasked);
+        crate::ui::preview::replies::say_svg_not_drawn(&mut self.preview_notice, &mut self.status, &self.preview_requests, &why, std::time::Instant::now());
         self.window.request_redraw();
         false
     }

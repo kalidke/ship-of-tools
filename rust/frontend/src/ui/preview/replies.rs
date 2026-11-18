@@ -5,15 +5,24 @@
 use crate::ui::*;
 use super::requests::{self, RequestReplyContext, PreviewRequests};
 
-/// A preview fetch's failure: in the preview's box, and on the status line as well only when the fetch answered the person's
-/// own act; one answering a re-fetch the person did not ask for (`unasked`: a watcher's change, a reconnect) stays in the
-/// box, so another program writing the file never holds the status line.
+/// A preview fetch's failure: in the preview's box, and on the status line as well when the fetch answered the person's own
+/// act (a selection, a page turn, a zoom); one answering a re-fetch the person did not ask for (a watcher's change, a
+/// reconnect: `requests.latest_is_unasked()`) stays in the box, so another program writing the file never holds the status
+/// line.
 pub(in crate::ui) fn say_preview_failure(
-    notice: &mut super::notice::PreviewNotice, status: &mut StatusLine, node_id: Option<&str>, message: &str, unasked: bool,
-    now: std::time::Instant,
+    notice: &mut super::notice::PreviewNotice, status: &mut StatusLine, requests: &PreviewRequests, node_id: Option<&str>,
+    message: &str, now: std::time::Instant,
 ) {
     let name = node_id.and_then(|id| id.rsplit(['/', '\\']).next()).unwrap_or("preview");
-    route_preview_message(notice, status, format!("preview failed · {name}: {message}"), now, unasked);
+    route_preview_message(notice, status, format!("preview failed · {name}: {message}"), now, requests.latest_is_unasked());
+}
+
+/// An SVG that could not be drawn: told as a preview's failure is, by whose request it answers.
+pub(in crate::ui) fn say_svg_not_drawn(
+    notice: &mut super::notice::PreviewNotice, status: &mut StatusLine, requests: &PreviewRequests, why: &str,
+    now: std::time::Instant,
+) {
+    route_preview_message(notice, status, super::image::svg::svg_not_drawn(why), now, requests.latest_is_unasked());
 }
 
 /// Where a preview message shows: in the box over the preview pane, and with it, unless `box_only`, on the status line.
@@ -522,8 +531,7 @@ impl State {
         // above; the preview pane itself is left as whatever it
         // already showed (no blank/stale flash) rather than
         // inventing a new error widget for it.
-        let unasked = self.preview_requests.latest_is_unasked();
-        say_preview_failure(&mut self.preview_notice, &mut self.status, node_id.as_deref(), &message, unasked, std::time::Instant::now());
+        say_preview_failure(&mut self.preview_notice, &mut self.status, &self.preview_requests, node_id.as_deref(), &message, std::time::Instant::now());
         self.window.request_redraw();
         self.preview_requests.refuse(node_id.as_deref());
         if self.preview_requests.fail_page_reply() {

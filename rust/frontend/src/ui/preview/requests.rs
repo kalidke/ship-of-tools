@@ -29,6 +29,9 @@ pub(in crate::ui) struct PreviewRequests {
     /// The latest preview request re-fetches what the pane shows, unasked by the person (a watcher's change, a
     /// reconnect): what its reply raises goes to the preview's box alone.
     preview_unasked: bool,
+    /// A request the person's own act made (a selection, a page turn, a zoom) has no answer yet: a re-fetch issued
+    /// meanwhile outdates it, so that re-fetch's reply answers the person.
+    person_waiting: bool,
 }
 
 /// A prepared change can be committed only by consuming its token after a successful send.
@@ -50,18 +53,22 @@ pub(in crate::ui) struct ClearConceptCaches;
 impl PreviewRequests {
     pub(in crate::ui) fn issue_preview(&mut self) -> u64 {
         self.preview_unasked = false;
+        self.person_waiting = true;
         self.clear_page_requests();
         self.advance_preview_generation()
     }
 
-    /// `issue_preview` for a re-fetch the person did not ask for (a watcher's change, a reconnect).
+    /// `issue_preview` for a re-fetch of what the pane shows (a watcher's change, a reconnect): unasked by the person,
+    /// unless a request of theirs still waits for its answer, which this one now carries.
     pub(in crate::ui) fn issue_refetch(&mut self) -> u64 {
+        let waiting = self.person_waiting;
         let generation = self.issue_preview();
-        self.preview_unasked = true;
+        self.person_waiting = waiting;
+        self.preview_unasked = !waiting;
         generation
     }
 
-    /// Whether the latest preview request was a re-fetch the person did not ask for.
+    /// Whether the latest preview request was a re-fetch the person did not ask for, and none of theirs waits behind it.
     pub(in crate::ui) fn latest_is_unasked(&self) -> bool {
         self.preview_unasked
     }
@@ -176,16 +183,20 @@ impl PreviewRequests {
         self.preview_refused = false;
     }
 
-    /// The daemon refused the request for `node_id`: the pane keeps its old content, now marked while it is the fired
-    /// target. A refusal of any other node leaves the mark as it was.
+    /// The daemon refused the request for `node_id`, which answers whoever waits for it: the pane keeps its old content,
+    /// now marked while it is the fired target. A refusal of any other node leaves the mark as it was.
     pub(in crate::ui) fn refuse(&mut self, node_id: Option<&str>) {
+        self.person_waiting = false;
         if node_id.is_some() && node_id == self.refetch_target() {
             self.preview_refused = true;
         }
     }
 
     /// A reply installed, so the pane shows what was asked for.
-    pub(in crate::ui) fn clear_refusal(&mut self) { self.preview_refused = false; }
+    pub(in crate::ui) fn clear_refusal(&mut self) {
+        self.preview_refused = false;
+        self.person_waiting = false;
+    }
 
     pub(in crate::ui) fn fired_refused(&self) -> bool { self.preview_refused }
 
@@ -200,6 +211,7 @@ impl PreviewRequests {
     /// a refused node and the older bytes comes back marked.
     pub(in crate::ui) fn restore_fired(&mut self, node_id: Option<String>, refused: bool) {
         self.preview_refused = refused && node_id.is_some();
+        self.person_waiting = false;
         self.preview_target_fired = node_id;
         self.clear_page_requests();
     }
@@ -223,6 +235,8 @@ impl PreviewRequests {
             return None;
         }
         self.page_in_flight = Some(target);
+        self.preview_unasked = false;
+        self.person_waiting = true;
         Some((target, self.advance_preview_generation()))
     }
 

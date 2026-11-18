@@ -107,7 +107,14 @@ impl State {
                 return;
             }
         };
-        // The start's words: the chunks' progress lines are state lines, so they wait behind a word still held.
+        self.begin_uploads(files, dir, dir_node_id);
+    }
+
+    /// The picked files go up to `dir` one after another: the start's words, then the first file's first chunk. The
+    /// chunks' progress lines are state lines, so they wait behind the start's words while those are held.
+    pub(in crate::ui) fn begin_uploads(
+        &mut self, files: std::collections::VecDeque<std::path::PathBuf>, dir: String, dir_node_id: String,
+    ) {
         self.status.set(upload_start_words(&files, &dir));
         self.file_ops.begin_batch(
             self.selected.host().clone(), self.selected.workspace_id().clone(), dir, dir_node_id, files,

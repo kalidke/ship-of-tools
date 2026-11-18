@@ -12,10 +12,12 @@ fn a_refetch_failure_whose_words_change_never_holds_the_status_line() {
     let mut status = StatusLine::new("connected · h:row · rev 1");
     let mut notice = PreviewNotice::default();
     let mut connection_s = 0;
+    let mut requests = PreviewRequests::default();
+    requests.issue_refetch();
     for k in 0..900u64 {
         let now = t + Duration::from_secs(k);
         let message = if k < 450 { ["kernel_unavailable", "too large"][(k % 2) as usize].to_string() } else { format!("try {k}") };
-        say_preview_failure(&mut notice, &mut status, Some("files:out/run.h5"), &message, true, now);
+        say_preview_failure(&mut notice, &mut status, &requests, Some("files:out/run.h5"), &message, now);
         if status.expire_hold(now) {
             status.show_state_at("connected · h:row · rev 1", now);
         }
@@ -31,9 +33,26 @@ fn a_failure_answering_the_persons_own_fetch_is_a_word_on_the_status_line() {
     let t = Instant::now();
     let mut status = StatusLine::new("connected · h:row · rev 1");
     let mut notice = PreviewNotice::default();
-    say_preview_failure(&mut notice, &mut status, Some("files:out/run.h5"), "kernel_unavailable", false, t);
+    let mut requests = PreviewRequests::default();
+    requests.issue_preview();
+    say_preview_failure(&mut notice, &mut status, &requests, Some("files:out/run.h5"), "kernel_unavailable", t);
     assert_eq!(status.text(), "preview failed · run.h5: kernel_unavailable");
     assert_eq!(notice.text(), Some("preview failed · run.h5: kernel_unavailable"));
     status.show_state_at("connected · h:row · rev 1", t + Duration::from_secs(5));
     assert_eq!(status.text(), "preview failed · run.h5: kernel_unavailable", "the person's failure did not hold the line");
+}
+
+/// An SVG that could not be drawn is told by whose request it answers, as a failed fetch is.
+#[test]
+fn an_svg_not_drawn_is_said_by_whose_request_it_answers() {
+    let t = Instant::now();
+    let mut requests = PreviewRequests::default();
+    let (mut status, mut notice) = (StatusLine::new("connected · h:row · rev 1"), PreviewNotice::default());
+    requests.issue_refetch();
+    say_svg_not_drawn(&mut notice, &mut status, &requests, "bad path data", t);
+    assert_eq!(notice.text(), Some("svg not drawn: bad path data"));
+    assert_eq!(status.text(), "connected · h:row · rev 1", "another program's rewrite wrote the status line");
+    requests.issue_preview();
+    say_svg_not_drawn(&mut notice, &mut status, &requests, "bad path data", t);
+    assert_eq!(status.text(), "svg not drawn: bad path data", "the person's own request was not said on the status line");
 }

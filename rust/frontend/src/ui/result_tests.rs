@@ -1989,3 +1989,104 @@ impl State {
         Ok(())
     }
 }
+
+impl State {
+    /// A fetch's failure is said on the status line when it answers the person's own request, and in the preview's box
+    /// alone when it answers a re-fetch that no request of theirs waits behind: after a reconnect and after a watcher's
+    /// change, each with the person's selection unanswered and answered. The pane the box leaves behind is still marked
+    /// stale in its title once the box is gone. An upload says what it sends when it starts, before any progress line.
+    #[allow(dead_code, reason = "runs only inside a native State, from the window_minimized fixtures child")]
+    pub(in crate::ui) fn a_refetch_failure_is_said_by_whose_request_it_answers(&mut self) -> Result<()> {
+        let a = "<host-refetch>".to_string();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (events, receiver) = std::sync::mpsc::channel();
+        let saved = (
+            std::mem::replace(&mut self.conns, vec![(a.clone(), tx)]),
+            std::mem::replace(&mut self.evt_rx, receiver),
+            (self.selected.host().clone(), self.selected.workspace_id().clone()),
+        );
+        let result = self.refetch_failure_run(&a, &mut rx, &events);
+        let (conns, evt_rx, (host, row)) = saved;
+        (self.conns, self.evt_rx) = (conns, evt_rx);
+        self.selected.select(host, row);
+        self.preview_requests.forget_fired();
+        self.preview_notice.clear();
+        self.file_ops.abort_upload();
+        result
+    }
+
+    fn refetch_failure_run(
+        &mut self, a: &HostKey, rx: &mut ProbeRx, events: &std::sync::mpsc::Sender<(HostKey, crate::net::transport::IncomingEvt)>,
+    ) -> Result<()> {
+        use crate::net::transport::IncomingEvt;
+        let node = "files:out/run.h5".to_string();
+        let hello = || IncomingEvt::Connected {
+            session_id: "session".into(), revision: 0, host: None, project_root: None, proxy: false,
+            resolved: crate::net::transport::ResolvedDial::Local, backend_version: "test".into(), repl_running: Vec::new(),
+            posts_as_person: true,
+        };
+        let mut default = ws_info("default", "attach-default");
+        default.is_default = true;
+        default.agent = "none".into();
+        self.on_workspaces(a.clone(), vec![default, probe_row("s1", "id-s1", false)]);
+        self.switch_to_workspace(a.clone(), Some("s1".into()), None, false);
+        let _ = previews_asked(rx);
+        let changed = |state: &mut State| {
+            let row = state.selected.workspace_id().clone();
+            state.on_preview_changed(a.clone(), serde_json::json!({ "kind": "modified", "workspace_id": row, "node_id": node }));
+        };
+        let reconnected = |state: &mut State| -> Result<()> {
+            events.send((a.clone(), hello())).map_err(|_| anyhow::anyhow!("the fixture's event channel closed"))?;
+            state.drain_events();
+            Ok(())
+        };
+        // For each way a re-fetch is issued, the person's selection first unanswered and then answered: the re-fetch it
+        // sends, failed, with what the status line and the box then say.
+        let mut said = Vec::new();
+        for (way, issue) in [("a reconnect", &reconnected as &dyn Fn(&mut State) -> Result<()>), ("a watcher's change", &|state: &mut State| { changed(state); Ok(()) })] {
+            for answered in [false, true] {
+                self.status.clear();
+                self.preview_notice.clear();
+                self.preview_requests.record_fired(node.clone());
+                let selection = self.next_preview_gen();
+                if answered {
+                    self.probe_install_preview(a, &node, selection);
+                }
+                issue(self)?;
+                let (_, _, generation) = previews_asked(rx)
+                    .into_iter()
+                    .rev()
+                    .find(|(asked, _, _)| *asked == node)
+                    .ok_or_else(|| anyhow::anyhow!("{way} sent no re-fetch of {node}"))?;
+                self.on_preview_get_failed(a.clone(), Some(node.clone()), self.selected.workspace_id().clone(), generation, "kernel_unavailable".into());
+                let on_line = self.status.text().contains("preview failed");
+                let in_box = self.preview_notice.text().is_some_and(|text| text.contains("preview failed"));
+                println!("refetch-failure way={way:?} selection_answered={answered} on_the_line={on_line} in_the_box={in_box}");
+                said.push((way, answered, on_line, in_box));
+                if answered {
+                    // The box fades and is gone; the pane is still the old content, and its title says it was refused.
+                    self.preview_notice.clear();
+                    let title = self.preview_pane_name().unwrap_or_default();
+                    anyhow::ensure!(title.contains("REFUSED"), "after {way}'s failure and the box gone the title reads {title:?}");
+                }
+            }
+        }
+        for (way, answered, on_line, in_box) in said {
+            // Unanswered: the failure answers the person, who is told on the line. Answered: another program's, the box alone.
+            anyhow::ensure!(in_box && on_line == !answered, "{way}, selection answered {answered}: on the line {on_line}, in the box {in_box}");
+        }
+        // The upload's start words are on the line right after the start; a progress line waits behind them.
+        let file = std::env::temp_dir().join(format!("sot-fixture-upload-{}.txt", std::process::id()));
+        std::fs::write(&file, b"x")?;
+        self.status.clear();
+        self.begin_uploads([file.clone()].into(), "/data/run".into(), "files:run".into());
+        let after_start = self.status.text().to_string();
+        let _ = std::fs::remove_file(&file);
+        println!("upload-start line={after_start:?}");
+        anyhow::ensure!(
+            after_start == format!("upload · {} → /data/run", file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()),
+            "an upload's start said {after_start:?}"
+        );
+        Ok(())
+    }
+}

@@ -129,7 +129,9 @@ modes. Details of each built-in mode are on the [Modes](modes.md) page.
   it; then the connection line comes back. A link that drops meanwhile shows as
   `disconnected · <reason> · <message>`. While the link to the computer of the
   shown row is down, the line reads `disconnected · <reason>`, never
-  `connected`, until that computer connects again. The line stays at the top of
+  `connected`, until that computer connects again; a message written while the
+  link is already down shows alone for its 10 seconds, and then the line reads
+  `disconnected · <reason>` again. The line stays at the top of
   the pane while a long tree scrolls beneath it.
 - **`annotation:`** below the tree is the [concept annotation](concept-layer.md)
   status of the cursored entry: `present`, `(none)` when no annotation file

@@ -562,11 +562,17 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   chunks is a state line. What a re-render or a re-fetch the person did not ask for raises goes to the preview's box
   alone (`route_preview_message`'s `box_only`), as the refusal of `d` does: a failed equation always
   (`markdown::replies::say_math_failure`, every render asks for its equations again), and a preview's fetch failure and
-  an SVG it could not draw when the latest preview request was a re-fetch for a watcher's change or a reconnect
-  (`PreviewRequests::issue_refetch`, `latest_is_unasked`, `replies::say_preview_failure`); a failure answering the
-  person's own fetch (selecting the file) is a word on the status line as well. `clear` empties the line and ends the
-  hold. A disconnect while words are held carries them (`disconnected · <reason> · <words>`,
-  `session::replies::show_disconnect`, held again at each disconnect line); the selected computer's own reconnect
+  an SVG it could not draw when the latest preview request was a re-fetch for a watcher's change or a reconnect and no
+  request of the person's (a selection, a page turn, a zoom) waits for its answer: `PreviewRequests::issue_refetch`
+  keeps `person_waiting` through the re-fetch, which outdates that request and so answers it, and a page turn sets it;
+  `latest_is_unasked`, which `replies::say_preview_failure` and `say_svg_not_drawn` read from the owner themselves. A
+  failure answering the person's own request is a word on the status line as well. After the box has faded nothing is
+  said on the line, and the pane's title keeps saying the pane is old (`REFUSED, view not updated` while the failed node
+  is the fired target, `PreviewRequests::refuse`). `clear` empties the line and ends the hold. A disconnect while words
+  are held carries them (`disconnected · <reason> · <words>`, `session::replies::show_disconnect`, held again at each
+  disconnect line); a held text with no note is a word whatever it says (another program's words may begin with
+  `disconnected`), and a disconnect line is held only with its note, so a redial never carries the earlier disconnect
+  line and the line does not grow; the selected computer's own reconnect
   (`resume_view_if_active`) and a switch to a row of another computer (`retarget_workspace`) end that hold
   (`StatusLine::end_carry`), so the connection line replaces the carried line at once (the carried word was on the
   line since it was written). The idle tick runs `State::expire_status_hold`, which ends an elapsed hold once and
@@ -582,13 +588,22 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   `preview::markdown::replies::tests::two_broken_equations_saved_again_and_again_never_hold_the_status_line`,
   `preview::replies::routing_tests::{a_refetch_failure_whose_words_change_never_holds_the_status_line,
   a_failure_answering_the_persons_own_fetch_is_a_word_on_the_status_line}`,
-  `preview::requests::tests::a_refetch_is_unasked_until_the_next_request`,
+  `preview::replies::routing_tests::an_svg_not_drawn_is_said_by_whose_request_it_answers`,
+  `preview::requests::tests::{a_refetch_is_unasked_until_the_next_request,
+  a_refetch_while_the_persons_request_waits_answers_the_person, a_page_turn_after_a_refetch_is_asked}`,
+  `session::replies::tests::a_link_lost_behind_a_word_that_begins_with_disconnected_shows_at_once`,
   `nav::files::transfer::tests::an_upload_says_what_it_sends_when_it_starts`, and the native State fixtures
+  `a_refetch_failure_is_said_by_whose_request_it_answers` (a reconnect's and a watcher's re-fetch, each with the person's
+  selection unanswered, said on the line, and answered, in the box alone; the title marked once the box is gone; an
+  upload's start words through `begin_uploads`, ahead of its first progress line),
   `primary_u_over_a_chat_picture_keeps_its_words_through_a_relist_until_the_hold_ends` (the key's words through a
   re-list, then the connection line at the hold's end) and `a_reconnect_ends_a_disconnect_line_that_carried_a_word`
-  (the reconnect, then a switch to the other computer's row); the attach, pump, Terminal, hello and progress sites, and
-  the calls of the box-only routes from `on_math_render_failed`, `install_preview_failure`, `apply_svg_step` and the
-  two re-fetches, rest on reading. Limits: a held word keeps the connection line and the pane's attach status off the
+  (the reconnect, then a switch to the other computer's row); the attach, pump, Terminal, hello and download-progress
+  sites, `on_math_render_failed`'s call of the equation route, `apply_svg_step`'s call of `say_svg_not_drawn` (a drawing
+  runs in the worker's child, which no fixture starts) and `start_upload`'s call of `begin_uploads` (it waits on the
+  system's file dialog) rest on reading; a fixture runs the calls from `install_preview_failure` and the two re-fetches.
+  A chat picture's draw (`draw_chat_picture`) that fails is no answer, so it leaves `person_waiting` set: the next
+  re-fetch's failure is said on the line once, and that answer ends it. Limits: a held word keeps the connection line and the pane's attach status off the
   line up to 10 s (the pane's overlay shows its attach reason); a writer saying the same words again takes the line
   back at its first saying after each hold ends; another program whose words change at each saying keeps the line:
   an agent's commands (a notify loop sending ever-different words, its nav, show-result, preview and `open_url`
@@ -618,7 +633,8 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   draw on (a PDF page, an SVG, a video frame, no picture, the connection notice over the preview: `State::refuse_draw`),
   since it answers a key pressed over the preview and the status line above the nav pane keeps what it held, and for what a
   re-render or a re-fetch the person did not ask for raises (a failed equation always; a preview that failed and
-  `svg not drawn` when the latest request re-fetched for a watcher's change or a reconnect; see `StatusLine` above).
+  `svg not drawn` when the latest request re-fetched for a watcher's change or a reconnect and none of the person's
+  waits; see `StatusLine` above).
   Boxed: the drawing's lines and its share replies, the canvas, `svg not drawn`, a crop's refusal and progress, the scale
   bar's save and refusals, a preview that failed and a failed equation. Left on the status line alone, by choice: a text
   selection's share replies (they follow every release and each reconnect, and the box would cover the text being read), the
@@ -1201,7 +1217,8 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   bytes and returns with them; a reply that installs, a new request or a first visit clears it. A reply for a newer
   generation than a badged result's attempt satisfies the attempt (`preview_installed`). Tests:
   `preview::requests::tests::a_refused_preview_of_the_fired_node_is_marked_until_something_replaces_it`, the native
-  fixture `passing_a_result_row_keeps_its_badge`, `session::result_ledger::tests::a_newer_reply_for_the_attempts_node_satisfies_it`.
+  fixtures `passing_a_result_row_keeps_its_badge` and `a_refetch_failure_is_said_by_whose_request_it_answers` (a watcher's
+  or a reconnect's failed re-fetch marks the title, which stays after the box fades), `session::result_ledger::tests::a_newer_reply_for_the_attempts_node_satisfies_it`.
 - Help is one chord: `help.toggle` = `Primary+?` and `drawer.help` = `F1` (input/keybindings.rs). There is no bare `?`
   binding and no "press ?" wording in hints; a bare-text chord never fires where the pane consumes typed text
   (`Chord::is_bare_text`). A `keybindings.toml` entry replaces that action's default chords. If Ctrl+? fails on a
