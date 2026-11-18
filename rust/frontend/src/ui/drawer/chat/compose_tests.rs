@@ -744,7 +744,8 @@ fn a_picture_opened_from_the_chat_posts_nothing_and_says_what_to_do() {
     let r = row("R");
     let (mut d, at) = watching_as_person();
     let key = crate::ui::input::keybindings::KeyBindings::defaults().first_label(Action::ChatPostFile);
-    assert!(key.ends_with("+u"), "the post key is written {key}");
+    // The label is the platform's: `Ctrl+u`, and `⌘u` on a Mac. Either ends in the lowercase letter.
+    assert!(key.ends_with('u'), "the post key is written {key}");
     assert_eq!(
         d.send_file(Some(&r), Previewed::ChatPicture { key: &key }, at).unwrap_err(),
         format!("not posted: the preview shows a picture opened from the chat, which is not a file of this project; show a file in the preview, then press {key}")
