@@ -180,19 +180,15 @@ pub(in crate::ui) fn strip_visible(left: f32, w: f32, win_w: f32) -> bool {
 /// `State::active_host`, the box your keystrokes actually reach, which stays
 /// right even when the active session's row has just dropped out of
 /// `workspace_slugs` (a lookup-by-index fallback would then mark the wrong
-/// ship). `reachable` culls an unreachable box's ship, STRIP-LOCALLY: the
-/// mock's rule is that the ship is simply gone, and this is the only place
-/// that may act on it — filtering `workspace_slugs` was reverted in
-/// `39def8d8` because three other consumers read that list. The steered box
-/// keeps its ship whatever its link is doing, which is what makes the cull
-/// safe where the filter was not: the one ship that must stay drawn is the one
-/// whose name says where the keystrokes are going.
+/// ship). Every group of session names gets its ship, whatever its box's
+/// link is doing: the strip keeps an unreachable box's rows (`39def8d8`), so a
+/// ship culled for its link left those names afloat with no hull under them,
+/// the state `strip_items` rules out. The Sessions tree says which box is down.
 pub(in crate::ui) fn ship_marks(
     items: &[StripItem],
     item_positions: &[f32],
     item_widths: &[f32],
     steered: &HostKey,
-    reachable: impl Fn(&HostKey) -> bool,
     logo_w: f32,
     cell_w: f32,
     bar_w: f32,
@@ -213,9 +209,6 @@ pub(in crate::ui) fn ship_marks(
             continue;
         };
         let steering = host == steered;
-        if !steering && !reachable(host) {
-            continue;
-        }
         let bow_left = strip_screen_left(bow_x, scroll, win_w);
         // `\__|`, left to right. The rake reaches back across the inter-ship
         // gap and puts its foot on the wheel's left edge, so the wheel sits
