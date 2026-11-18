@@ -236,6 +236,13 @@ impl State {
         self.witness_chord(key, Modifiers { ctrl, alt, shift: false, super_: false }, expect)
     }
 
+    /// `witness_key` for a chord bound to Primary, which is Cmd on a Mac and Ctrl elsewhere: a fixture that pressed Ctrl
+    /// for one resolved no action on a Mac.
+    fn witness_primary(&mut self, letter: &str, expect: Option<Action>) -> Result<()> {
+        let mac = cfg!(target_os = "macos");
+        self.witness_chord(Key::Character(letter.into()), Modifiers { ctrl: !mac, alt: false, shift: false, super_: mac }, expect)
+    }
+
     /// `witness_key` with any modifiers (Shift too).
     fn witness_chord(&mut self, key: Key, mods: Modifiers, expect: Option<Action>) -> Result<()> {
         let (ctrl, alt) = (mods.ctrl, mods.alt);
@@ -409,7 +416,7 @@ impl State {
         self.witness_frame(&mut frames, &newest, "marked")?;
         // A preview of the cursored file is in flight when the picture is opened: its late reply must not replace the picture.
         let in_flight = self.next_preview_gen();
-        self.witness_key(Key::Character("o".into()), (true, false), Some(Action::ChatOpenImage))?;
+        self.witness_primary("o", Some(Action::ChatOpenImage))?;
         self.witness_pump(events, sent, &mut daemon)?;
         anyhow::ensure!(daemon.seen.originals == ["SAME"], "originals asked: {:?}", daemon.seen.originals);
         // The original is with the window's own bounded child: the cursored file's late reply comes meanwhile and is dropped.
@@ -442,7 +449,7 @@ impl State {
         // An original cut by a link change is given up at State, said on the status line, and never asked again by itself;
         // the host's one transfer is free again, so the next Primary+o asks one.
         let asked = |sent: &mut Requests| std::iter::from_fn(|| sent.try_recv().ok()).filter(|r| matches!(r, OutgoingReq::ChatFile { req } if req.variant == sot_protocol::ops::ChatFileVariant::Original)).count();
-        self.witness_key(Key::Character("o".into()), (true, false), Some(Action::ChatOpenImage))?;
+        self.witness_primary("o", Some(Action::ChatOpenImage))?;
         self.drain_events();
         anyhow::ensure!(asked(sent) == 1, "the open was not asked");
         anyhow::ensure!(self.status.text() == "opening the picture…", "the status line says {:?}", self.status.text());
@@ -453,7 +460,7 @@ impl State {
         send(connected())?;
         self.witness_pump(events, sent, &mut daemon)?;
         anyhow::ensure!(daemon.seen.originals == ["SAME"], "an original was asked again by itself: {:?}", daemon.seen.originals);
-        self.witness_key(Key::Character("o".into()), (true, false), Some(Action::ChatOpenImage))?;
+        self.witness_primary("o", Some(Action::ChatOpenImage))?;
         self.witness_pump(events, sent, &mut daemon)?;
         anyhow::ensure!(daemon.seen.originals == ["SAME", "SAME"], "after the link's return, originals asked: {:?}", daemon.seen.originals);
         self.witness_settle(&mut frames, &newest, "drawn again")?;
@@ -470,13 +477,13 @@ impl State {
             outcomes
         });
         let real = std::mem::replace(&mut self.svg_draws, crate::ui::preview::image::svg_draws::SvgDraws::new(crate::ui::preview::image::svg_draws::QUEUED_BYTES, || {}, draw));
-        self.witness_key(Key::Character("o".into()), (true, false), Some(Action::ChatOpenImage))?;
+        self.witness_primary("o", Some(Action::ChatOpenImage))?;
         self.witness_pump(events, sent, &mut daemon)?;
         for _ in 0..2 {
             self.witness_key(Key::Named(NamedKey::ArrowUp), (false, false), Some(Action::ChatMarkOlder))?;
             self.witness_frame(&mut frames, &newest, "marked an older one")?;
         }
-        self.witness_key(Key::Character("o".into()), (true, false), Some(Action::ChatOpenImage))?;
+        self.witness_primary("o", Some(Action::ChatOpenImage))?;
         self.witness_pump(events, sent, &mut daemon)?;
         anyhow::ensure!(daemon.seen.originals.ends_with(&["SAME".to_string(), "F4-0".to_string()]), "originals asked: {:?}", daemon.seen.originals);
         let settled = self.witness_settle(&mut frames, &newest, "two opens");
@@ -501,7 +508,7 @@ impl State {
             });
             let real = std::mem::replace(&mut self.svg_draws, crate::ui::preview::image::svg_draws::SvgDraws::new(crate::ui::preview::image::svg_draws::QUEUED_BYTES, || {}, draw));
             let shown = self.preview_source.generation();
-            self.witness_key(Key::Character("o".into()), (true, false), Some(Action::ChatOpenImage))?;
+            self.witness_primary("o", Some(Action::ChatOpenImage))?;
             self.witness_pump(events, sent, &mut daemon)?;
             let settled = self.witness_settle(&mut frames, &newest, script);
             self.svg_draws = real;
@@ -531,7 +538,7 @@ impl State {
         // The newest message's picture, opened from the drawer: the preview shows it, with no file under it.
         self.witness_key(Key::Named(NamedKey::ArrowUp), (false, false), Some(Action::ChatMarkOlder))?;
         self.witness_frame(&mut frames, &newest, "marked")?;
-        self.witness_key(Key::Character("o".into()), (true, false), Some(Action::ChatOpenImage))?;
+        self.witness_primary("o", Some(Action::ChatOpenImage))?;
         self.witness_pump(events, sent, &mut daemon)?;
         self.witness_settle(&mut frames, &newest, "the picture")?;
         anyhow::ensure!(self.preview_source.node_id().is_none() && self.raster.is_shown(), "no chat picture is shown: {:?}", self.status.text());
@@ -539,7 +546,7 @@ impl State {
         // Any hold already on the line (the picture's own words, an earlier fixture's) ends, so only the key's words hold it.
         let _ = self.expire_status_hold(Instant::now() + crate::ui::chrome::NOTIFY_STICKY);
         // Primary+u with the drawer focused and an empty draft, as the person pressed it.
-        self.witness_key(Key::Character("u".into()), (true, false), Some(Action::ChatPostFile))?;
+        self.witness_primary("u", Some(Action::ChatPostFile))?;
         let said = self.status.text().to_string();
         let posts = std::iter::from_fn(|| sent.try_recv().ok()).filter(|r| matches!(r, OutgoingReq::ChatPostFile { .. })).count();
         // A row on the computer changes state: its `workspace.changed`, the window's re-list, and the list's reply.
@@ -589,7 +596,7 @@ impl State {
         let premise = (self.raster.is_shown(), self.preview_source.node_id().is_none(), self.preview_source.mime().is_none());
         anyhow::ensure!(premise == (true, true, true), "the start-up picture is not what the preview shows: {premise:?}");
         while sent.try_recv().is_ok() {}
-        self.witness_key(Key::Character("u".into()), (true, false), Some(Action::ChatPostFile))?;
+        self.witness_primary("u", Some(Action::ChatPostFile))?;
         let said = self.status.text().to_string();
         let posts = std::iter::from_fn(|| sent.try_recv().ok()).filter(|r| matches!(r, OutgoingReq::ChatPostFile { .. })).count();
         println!("start-picture-post-file posts={posts} said={said:?}");
