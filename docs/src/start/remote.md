@@ -66,7 +66,7 @@ under its own supervisor on the server (see
 
 ## Browser pages
 
-`o` opens HTML, video and Pluto pages in your own browser, `Shift+W` opens a
+`o` opens HTML, video and Pluto pages in your own browser, `Shift+w` opens a
 file's built documentation site, and `wglshow` opens an interactive WGLMakie
 figure. These work the same with a remote backend and need no extra SSH
 setup. How the traffic is carried is described under

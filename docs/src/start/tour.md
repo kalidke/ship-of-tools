@@ -47,7 +47,7 @@ nothing runs there until you create a session.
    into it as you would into Claude Code or Codex in a terminal; it is the same
    program.
 3. **It runs code in your REPL.** A Claude Code session runs Julia in the
-   session's persistent REPL, the one `Ctrl+J` opens, and each of its runs
+   session's persistent REPL, the one `Ctrl+j` opens, and each of its runs
    appears in that drawer. See
    [How agents use the REPL](@ref agents-repl).
 4. **It shows you figures.** A figure the agent produces is saved to a file,
@@ -70,7 +70,7 @@ selected file: markdown rendered, images shown, `.jl` files
 syntax-highlighted, PDF pages rasterized, and a poster frame for video.
 
 To edit a file yourself, move focus to the preview (`Ctrl+Right`) and press
-`e`: the file opens in the built-in editor in the preview pane. `Ctrl+S`
+`e`: the file opens in the built-in editor in the preview pane. `Ctrl+s`
 saves; `Escape` closes it, and asks first if there are unsaved edits. When the
 entry has a concept annotation, `e` edits the annotation instead.
 
@@ -93,12 +93,12 @@ switching `f` ↔ `m` returns you to where you were in each.
 
 The full set of modes and their column shapes is in [Modes](../guide/modes.md).
 
-## The REPL drawer — `Ctrl+J`
+## The REPL drawer — `Ctrl+j`
 
-Press `Ctrl+J` to open the **REPL** in the bottom drawer: a persistent Julia
+Press `Ctrl+j` to open the **REPL** in the bottom drawer: a persistent Julia
 session that persists across drawer switches and frontend restarts. From Files mode you can run a whole
 `.jl` file in it without retyping — `r` runs it in a fresh REPL (this also
-clears what the agent built in `Main`), `Shift+R` includes it in the current one. At the prompt, type an expression and press Enter to run
+clears what the agent built in `Main`), `Shift+r` includes it in the current one. At the prompt, type an expression and press Enter to run
 it (Shift+Enter inserts a newline); values, printed output, errors and images
 appear below it as they arrive.
 
@@ -109,17 +109,17 @@ appear below it as they arrive.
 For file dispatch and the display protocol, see
 [The REPL](../guide/repl.md).
 
-## The Terminal drawer — `Ctrl+T`
+## The Terminal drawer — `Ctrl+t`
 
-Press `Ctrl+T` for a local **Terminal** — an OS shell on the frontend machine,
+Press `Ctrl+t` for a local **Terminal** — an OS shell on the frontend machine,
 typically used to SSH out to backend hosts. The REPL and Terminal share one
-physical drawer slot: `Ctrl+J` and `Ctrl+T` each toggle their own pane, and
+physical drawer slot: `Ctrl+j` and `Ctrl+t` each toggle their own pane, and
 pressing the other key swaps the content. See
 [The interface](../guide/interface.md#The-Terminal-Drawer).
 
-## The Monitor drawer — `Ctrl+M`
+## The Monitor drawer — `Ctrl+m`
 
-Press `Ctrl+M` for the **Monitor** drawer: CPU, memory and GPU history for
+Press `Ctrl+m` for the **Monitor** drawer: CPU, memory and GPU history for
 your Linux hosts, read from `/proc` and `nvidia-smi` with no extra privileges
 (the sampler is a Linux script; a macOS host has no `/proc` to read). Which
 hosts it shows is configured in `hosts.toml`; see
@@ -160,7 +160,7 @@ A few global keys manage the window itself:
 | Restore layout | `Esc` | one layer per press: un-maximize first, then exit wide-preview (only while maximized or in wide-preview) |
 | Font scale | `Ctrl+=` / `Ctrl+-` | zoom the UI font up / down (`Ctrl+0` resets) |
 | Reconnect | `F5` | reconnect the transport after a drop |
-| Quit | `Ctrl+Q` | close the window, asking whether to keep the daemon and sessions running (every pane but the agent and the Terminal drawer) |
+| Quit | `Ctrl+q` | close the window, asking whether to keep the daemon and sessions running (every pane but the agent and the Terminal drawer) |
 
 Plain arrows move within a pane, `Ctrl+Arrow` moves *between* panes, and
 `Shift+Arrow` switches sessions. The same chords are scoped so they do not

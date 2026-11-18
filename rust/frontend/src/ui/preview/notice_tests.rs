@@ -63,7 +63,7 @@ fn a_cleared_notice_shows_nothing() {
 fn the_box_sits_at_the_panes_foot_inside_it_and_wraps_to_it() {
     let t = Instant::now();
     let text = "Can't draw on this SVG. Drawing (d) marks up an image file (PNG, JPEG, TIFF and the like) for this row's agent, \
-        which sees your marks with your next prompt. To draw anyway, open a PNG of it, or press Shift+D for a blank canvas.";
+        which sees your marks with your next prompt. To draw anyway, open a PNG of it, or press Shift+d for a blank canvas.";
     let b = shown(text, t).boxed(PANE, t).expect("a box");
     assert!(b.lines.len() > 1 && b.lines.len() <= PANE.height as usize / 2, "{:?}", b.lines);
     assert!(b.lines.iter().all(|l| l.chars().count() <= PANE.width as usize - 4), "{:?}", b.lines);
@@ -132,7 +132,7 @@ fn the_rows_are_cell_safe_whatever_the_text() {
 fn the_drawing_refusal_keeps_its_remedy_in_a_narrow_pane() {
     let t = Instant::now();
     let text = "Can't draw on this SVG. Drawing (d) marks up an image file (PNG, JPEG, TIFF and the like) for this row's agent, \
-        which sees your marks with your next prompt. To draw anyway, open a PNG of it, or press Shift+D for a blank canvas.";
+        which sees your marks with your next prompt. To draw anyway, open a PNG of it, or press Shift+d for a blank canvas.";
     for (width, height) in [(70, 30), (50, 14), (40, 30), (36, 30), (30, 30)] {
         let b = shown(text, t).boxed(Rect { x: 0, y: 0, width, height }, t).expect("a box");
         assert!(b.lines.join(" ").ends_with("for a blank canvas."), "{width}x{height}: {:?}", b.lines);

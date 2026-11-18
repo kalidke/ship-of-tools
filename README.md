@@ -40,10 +40,10 @@ Compared with Claude Code next to a REPL in tmux, or with VS Code, its Julia ext
 - Claude Code sessions run Julia in the session's persistent REPL, and each run appears in your REPL drawer.
 - Sessions message each other over a built-in relay and can start sessions for worktrees and other repos.
 - An agent can open a file or figure in your preview pane to show you what it produced, and you can hand it a file path or a cropped region of an image.
-- There is no diff view of its own: you review the agent's edits in the preview pane, which follows a file as it changes on disk, in the REPL drawer, which shows every run the agent made, and with `git` in a shell session. To change a file yourself, focus the preview and press `e` for the built-in editor; `Ctrl+S` saves.
+- There is no diff view of its own: you review the agent's edits in the preview pane, which follows a file as it changes on disk, in the REPL drawer, which shows every run the agent made, and with `git` in a shell session. To change a file yourself, focus the preview and press `e` for the built-in editor; `Ctrl+s` saves.
 
 **Julia live loop**
-- A persistent REPL per session. `r` on a `.jl` file runs it in a fresh REPL, restarting the session's REPL and dropping whatever the agent had built in `Main`; `Shift+R` includes it in the current one. The drawer is Ship of Tools' own input line, with pkg mode (`]`) and history, but no `?` help, `;` shell or Tab completion. See [Dispatching code](https://kalidke.github.io/ship-of-tools/stable/guide/repl#Dispatching-code).
+- A persistent REPL per session. `r` on a `.jl` file runs it in a fresh REPL, restarting the session's REPL and dropping whatever the agent had built in `Main`; `Shift+r` includes it in the current one. The drawer is Ship of Tools' own input line, with pkg mode (`]`) and history, but no `?` help, `;` shell or Tab completion. See [Dispatching code](https://kalidke.github.io/ship-of-tools/stable/guide/repl#Dispatching-code).
 - CairoMakie figures render in the window. `wglshow(fig)` opens an interactive WGLMakie figure in your browser; Pluto notebooks run on the backend host.
 
 **Previews**
@@ -109,7 +109,7 @@ Run `sot-launch` (or the desktop entry). Then:
 |---|---|
 | `s`, then `[+ create new]` | Start a session in a project directory ([Quickstart](https://kalidke.github.io/ship-of-tools/stable/start/quickstart)) |
 | `f` / `m` | Files mode / Modules mode in the navigation pane; the preview follows the cursor |
-| `Ctrl+J` | Show or hide the Julia REPL |
+| `Ctrl+j` | Show or hide the Julia REPL |
 | `Ctrl+?` / `F1` | The focused pane's actions / the searchable Help drawer |
 
 The full walkthrough is [Your first session](https://kalidke.github.io/ship-of-tools/stable/start/tour); every key is in [Keybindings](https://kalidke.github.io/ship-of-tools/stable/ref/keybindings).

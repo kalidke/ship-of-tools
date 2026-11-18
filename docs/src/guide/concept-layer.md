@@ -130,7 +130,7 @@ accurate, so it is a deliberate act, not an automatic one.
 
 That one-key re-stamp is not yet built. Today you reconcile a stale annotation by
 editing it in place (`e`), updating its `synced_against` in the frontmatter, and
-saving (`Ctrl+S`); `Esc` discards. A background staleness sweep is also
+saving (`Ctrl+s`); `Esc` discards. A background staleness sweep is also
 explicitly deferred; refresh is on-demand only.
 
 ## Reference verification (planned)

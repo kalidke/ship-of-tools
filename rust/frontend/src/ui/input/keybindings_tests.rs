@@ -535,15 +535,15 @@ fn primary_uses_frontend_os_and_control_never_becomes_command() {
     assert_eq!(primary.ctrl, !cfg!(target_os = "macos"));
     let control = Chord::parse("Control+p").unwrap();
     assert!(control.ctrl && !control.super_);
-    assert_eq!(control.label(true), "⌃P");
+    assert_eq!(control.label(true), "⌃p");
     let command = Chord::parse("Command+p").unwrap();
     assert!(command.super_ && !command.ctrl);
-    assert_eq!(command.label(true), "⌘P");
+    assert_eq!(command.label(true), "⌘p");
     let win = Chord::parse("Win+p").unwrap();
     assert_eq!(win, command);
     assert_eq!(
         win.label(false),
-        if cfg!(windows) { "Win+P" } else { "Super+P" }
+        if cfg!(windows) { "Win+p" } else { "Super+p" }
     );
 }
 
@@ -720,7 +720,7 @@ fn the_quit_hint_names_the_bound_chord() {
     let mut b = KeyBindings::defaults();
     let default = b.first_label(Action::Quit);
     // A Mac labels every chord in its glyphs (docs/src/ref/keybindings.md), Command as `⌘`.
-    assert_eq!(default, if cfg!(target_os = "macos") { "⌘Q" } else { "Ctrl+Q" });
+    assert_eq!(default, if cfg!(target_os = "macos") { "⌘q" } else { "Ctrl+q" });
     assert!(quit_hint(&default).starts_with(&default));
     b.merge_text("quit = \"Alt+F4\"\n");
     let rebound = b.first_label(Action::Quit);
@@ -739,4 +739,73 @@ fn the_chat_border_names_the_chord_and_goes_quiet_while_the_picker_is_open() {
     assert!(shown.contains(&format!("{} {}", b.first_label(Action::ChatSetup), Action::ChatSetup.spec().label)), "{shown}");
     let picking = border(&Context { chat_picking: true, ..chat }, &b, 200);
     assert!(!picking.contains("Post") && !picking.contains(&Action::ChatSetup.spec().label.to_string()), "{picking}");
+}
+
+/// The rule for every key name a person reads: a letter key is written small after its modifier (`Ctrl+Shift+k`, `⌘c`), since a
+/// capital reads as Shift; a named key keeps its form. The rule finds each way a capital is written, and none of the fine ones.
+#[test]
+fn the_capital_key_rule_finds_a_planted_capital() {
+    let texts = |t: &[&str]| t.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    for planted in ["press Ctrl+Shift+K to move", "Cmd+C", "open it (Ctrl+Shift+K, or Cmd+Shift+K on a Mac)", "Ctrl+V  paste", "{x} Alt+K.", "Primary+K", "Win+K",
+        "Super+Shift+K", "⌘Q", "⌃⇧K to move", "Ctrl+Q"] {
+        assert_eq!(key_name_capitals(&texts(&[planted])).len(), 1, "{planted}");
+    }
+    for fine in ["press Ctrl+Shift+k to move", "Cmd+c", "Shift+Enter  Esc", "Ctrl+Shift+k, or Cmd+Shift+k", "Ctrl+K2", "Cmd+Kx", "⌘q", "⌃p", "Ctrl+?", "Ctrl+Shift+PageUp",
+        "F5  Ctrl+F5", "Shift+ArrowDown", "Ctrl+Alt+Delete"] {
+        assert!(key_name_capitals(&texts(&[fine])).is_empty(), "{fine}");
+    }
+}
+
+/// No key name anywhere in the window has a capital letter key after a modifier: not a default binding's label (on either
+/// notation, Help and every pane's hint border read it from `Chord::label`), not an action's name or description, and not
+/// a word the window's own code spells by hand, which is every string literal in the frontend's product source.
+#[test]
+fn no_key_name_in_the_window_has_a_capital_letter_key() {
+    use crate::ui::input::help::{border, Context, Pane};
+    let b = KeyBindings::defaults();
+    let mut texts = Vec::new();
+    for spec in ACTIONS {
+        for mac in [false, true] {
+            texts.push(b.labels_for(spec.action, mac));
+        }
+        texts.push(spec.label.to_string());
+        texts.push(spec.detail.to_string());
+    }
+    // The hint border of every pane, as the Help overlay and drawer name the same chords.
+    for pane in [Pane::Nav, Pane::Preview, Pane::Repl, Pane::Agent, Pane::Terminal, Pane::Monitor, Pane::Chat, Pane::Help] {
+        texts.push(border(&Context { pane, ..Context::default() }, &b, 300));
+    }
+    // A binding a person spells with capitals is still shown small.
+    for spelled in ["Ctrl+K", "Primary+Shift+S", "Shift+D", "R"] {
+        let chord = Chord::parse(spelled).unwrap();
+        texts.extend([chord.label(false), chord.label(true)]);
+    }
+    assert_eq!(key_name_capitals(&texts), Vec::<String>::new(), "a labeled key");
+
+    let mut literals = Vec::new();
+    let mut folders = vec![std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src")];
+    while let Some(folder) = folders.pop() {
+        for entry in std::fs::read_dir(&folder).unwrap() {
+            let path = entry.unwrap().path();
+            let name = path.file_name().unwrap().to_string_lossy().to_string();
+            if path.is_dir() {
+                folders.push(path);
+            } else if name.ends_with(".rs") && !name.ends_with("tests.rs") {
+                // Comment lines and trailing comments are not shown; what is between the quotes of the rest is.
+                let code: String = std::fs::read_to_string(&path)
+                    .unwrap()
+                    .lines()
+                    .filter(|l| !l.trim_start().starts_with("//"))
+                    .map(|l| l.split(" //").next().unwrap_or("").replace("'\"'", "").replace("\\\"", ""))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                for (i, piece) in code.split('"').enumerate() {
+                    if i % 2 == 1 && key_name_capitals(&[piece.to_string()]).len() == 1 {
+                        literals.push(format!("{}: {piece}", path.display()));
+                    }
+                }
+            }
+        }
+    }
+    assert!(literals.is_empty(), "a capital letter key in a string a person reads:\n{}", literals.join("\n"));
 }

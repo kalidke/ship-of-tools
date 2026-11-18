@@ -165,26 +165,44 @@ pub(in crate::ui) fn load_from(path: &std::path::Path) -> GlobalState {
     g
 }
 
-/// Write the global state whole and durably (platform's `write_durable`).
-/// Failures are logged warns; resume just won't work next launch.
+/// Write the global state atomically (temp + rename). Failures are logged warns; resume just won't work next launch. It
+/// runs on every window move and resize, so it flushes nothing. `chat_posted` is one way: a state that does not carry it
+/// (a window that has not posted, or another window's) keeps what the file holds, so no full save erases it.
 pub fn save(state: &GlobalState) {
-    if let Err(e) = save_to(&state_path(), state) {
+    let path = state_path();
+    let state = GlobalState { chat_posted: state.chat_posted.or_else(|| load_from(&path).chat_posted), ..state.clone() };
+    if let Err(e) = save_to(&path, &state) {
         tracing::warn!(error = %e, "state write failed");
     }
 }
 
-/// The first post from the Chat drawer was proved made: `chat_posted = true` goes into the file with every other key as
-/// it is. The words for a failure; the file is then as it was, and the foot explains again at the next start.
-pub(in crate::ui) fn record_chat_posted() -> Result<(), String> {
-    record_chat_posted_at(&state_path())
+/// A window's start: whether an earlier window on this computer had a post from the Chat drawer proved made, which ends
+/// the foot's explanation. A harness run reads no saved state.
+pub(in crate::ui) fn chat_posted_at_start(ephemeral: bool) -> bool {
+    !ephemeral && load().chat_posted == Some(true)
 }
 
+/// The first post from the Chat drawer was proved made: keep it in this computer's state file, so no later window
+/// explains again. A harness run writes no saved state, and a file that cannot be written is logged and only leaves the
+/// explanation to show at the next start.
+pub(in crate::ui) fn keep_chat_posted(ephemeral: bool) {
+    if ephemeral {
+        return;
+    }
+    if let Err(e) = record_chat_posted_at(&state_path()) {
+        tracing::warn!(error = %e, "chat post not recorded");
+    }
+}
+
+/// `chat_posted = true` goes into the file at `path` with the other keys the window keeps. It runs once per computer, never
+/// on a move or a resize, and writes as `save` does (temp file and rename, no flush): a record lost to a crash only shows the
+/// foot's explanation once more. The words for a failure; the file is then as it was.
 pub(in crate::ui) fn record_chat_posted_at(path: &std::path::Path) -> Result<(), String> {
     let state = GlobalState { chat_posted: Some(true), ..load_from(path) };
     save_to(path, &state).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-/// `save` to `path`, whole and durably (platform's `write_durable`): the failure, with the file as it was.
+/// `save` to `path`, whole, by temp file and rename: the failure, with the file as it was.
 pub(in crate::ui) fn save_to(path: &std::path::Path, state: &GlobalState) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -233,7 +251,9 @@ pub(in crate::ui) fn save_to(path: &std::path::Path, state: &GlobalState) -> std
     if let Some(v) = state.chat_posted {
         body.push_str(&format!("chat_posted = {v}\n"));
     }
-    sot_platform::host::write_durable(path, body.as_bytes())
+    let tmp = path.with_extension("toml.tmp");
+    std::fs::write(&tmp, body.as_bytes())?;
+    std::fs::rename(&tmp, path)
 }
 
 fn strip_quotes(s: &str) -> &str {

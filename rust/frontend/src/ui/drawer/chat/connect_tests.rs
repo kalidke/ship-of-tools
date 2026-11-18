@@ -14,7 +14,7 @@ use super::row_channel_tests::answer;
 use super::thread_tests::{body, channel, shown, top};
 use crate::net::dial::HostKey;
 use crate::net::transport::{ChatEvt, ChatReply, OutgoingReq};
-use crate::ui::input::keybindings::Action;
+use crate::ui::input::keybindings::{key_name_capitals, Action};
 
 const LOGIN: &str = "lab-user";
 const NAME: &str = "Ship of Tools (lab-user)";
@@ -969,38 +969,6 @@ fn no_project_word_reaches_a_screen() {
     hits.dedup();
     assert!(hits.is_empty(), "{} project words on screens:\n{}", hits.len(), hits.join("\n"));
     assert_eq!(key_name_capitals(&said), Vec::<String>::new(), "a modifier followed by a capital letter key on a screen");
-}
-
-/// The texts of `said` that write a letter key in capitals after a modifier (`Ctrl+Shift+K`, `Cmd+C`): a capital reads as
-/// Shift, so a key letter is written lowercase and a named key (`Enter`, `Esc`) keeps its form.
-fn key_name_capitals(said: &[String]) -> Vec<String> {
-    let mut found: Vec<String> = said
-        .iter()
-        .filter(|text| {
-            text.match_indices('+').any(|(at, _)| {
-                let (head, rest) = (&text[..at], &text[at + 1..]);
-                let mut next = rest.chars();
-                let letter = next.next().is_some_and(|c| c.is_ascii_uppercase()) && !next.next().is_some_and(char::is_alphanumeric);
-                letter && ["Ctrl", "Cmd", "Alt", "Shift", "Primary"].iter().any(|m| head.ends_with(m))
-            })
-        })
-        .cloned()
-        .collect();
-    found.dedup();
-    found
-}
-
-/// The rule itself: a capital letter key after a modifier is found, in any form it is written; the lowercase and the named keys
-/// are not.
-#[test]
-fn the_capital_key_rule_finds_a_planted_capital() {
-    let texts = |t: &[&str]| t.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-    for planted in ["press Ctrl+Shift+K to move", "Cmd+C", "open it (Ctrl+Shift+K, or Cmd+Shift+K on a Mac)", "Ctrl+V  paste", "{x} Alt+K."] {
-        assert_eq!(key_name_capitals(&texts(&[planted])).len(), 1, "{planted}");
-    }
-    for fine in ["press Ctrl+Shift+k to move", "Cmd+c", "Shift+Enter  Esc", "Ctrl+Shift+k, or Cmd+Shift+k", "Ctrl+K2", "Cmd+Kx"] {
-        assert!(key_name_capitals(&texts(&[fine])).is_empty(), "{fine}");
-    }
 }
 
 const SETUP: Option<Action> = Some(Action::ChatSetup);

@@ -92,6 +92,6 @@ pub(super) fn stay_line(intent: LeaveIntent) -> &'static str {
          open; ask for the relaunch again"
     } else {
         "keep not done: this computer's backend did not answer the window lease in time, so the window stayed open \
-         and the sessions run on; Ctrl+Q then Yes tries again"
+         and the sessions run on; Ctrl+q then Yes tries again"
     }
 }

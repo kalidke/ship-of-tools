@@ -124,7 +124,7 @@ pub(in crate::ui) fn ink_key(state: &mut State, key: KeyPress<'_>, label: String
             let canvas = !state.ink.canvas();
             state.ink.set_canvas(canvas);
             state.preview_says(if canvas {
-                "canvas: draw with the pointer; u undo, Delete clear, Shift+D back".to_string()
+                "canvas: draw with the pointer; u undo, Delete clear, Shift+d back".to_string()
             } else {
                 "canvas hidden".to_string()
             });
@@ -148,25 +148,25 @@ pub(in crate::ui) fn ink_key(state: &mut State, key: KeyPress<'_>, label: String
 mod tests {
     use super::*;
 
-    const TAIL: &str = ". Drawing (d) marks up an image file (PNG, JPEG, TIFF and the like) for this row's agent, which sees your marks with your next prompt. To draw anyway, open a PNG of it, or press Shift+D for a blank canvas.";
+    const TAIL: &str = ". Drawing (d) marks up an image file (PNG, JPEG, TIFF and the like) for this row's agent, which sees your marks with your next prompt. To draw anyway, open a PNG of it, or press Shift+d for a blank canvas.";
 
     #[test]
     fn drawing_over_a_picture_that_is_not_an_image_file_names_the_two_ways_to_draw() {
         for (node, name) in [("files:fig/a.SVG", "this SVG"), ("files:doc.pdf", "this PDF page"), ("files:clip.mp4", "this video frame"),
             ("files:clip.M4V", "this video frame"), ("files:x.bin", "this picture")] {
-            assert_eq!(no_base_line(false, true, Some(node), "Shift+D"), format!("Can't draw on {name}{TAIL}"), "{node}");
+            assert_eq!(no_base_line(false, true, Some(node), "Shift+d"), format!("Can't draw on {name}{TAIL}"), "{node}");
         }
-        assert!(no_base_line(false, true, Some("files:a.svg"), "Ctrl+K").ends_with("press Ctrl+K for a blank canvas."));
+        assert!(no_base_line(false, true, Some("files:a.svg"), "Ctrl+k").ends_with("press Ctrl+k for a blank canvas."));
     }
 
     #[test]
     fn the_connection_notice_and_no_picture_have_their_own_words() {
         let notice = "Can't draw while the connection notice covers the preview.";
-        assert_eq!(no_base_line(true, true, Some("files:a.png"), "Shift+D"), notice);
-        assert_eq!(no_base_line(true, true, Some("files:a.svg"), "Shift+D"), notice);
+        assert_eq!(no_base_line(true, true, Some("files:a.png"), "Shift+d"), notice);
+        assert_eq!(no_base_line(true, true, Some("files:a.svg"), "Shift+d"), notice);
         let none = "Can't draw here: there is no image file to draw on.";
-        assert_eq!(no_base_line(false, true, Some("files:a.png"), "Shift+D"), none);
-        assert_eq!(no_base_line(false, true, None, "Shift+D"), none);
-        assert_eq!(no_base_line(false, false, Some("files:a.svg"), "Shift+D"), none);
+        assert_eq!(no_base_line(false, true, Some("files:a.png"), "Shift+d"), none);
+        assert_eq!(no_base_line(false, true, None, "Shift+d"), none);
+        assert_eq!(no_base_line(false, false, Some("files:a.svg"), "Shift+d"), none);
     }
 }

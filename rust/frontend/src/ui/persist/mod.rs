@@ -8,15 +8,9 @@ pub(crate) mod resume;
 pub(crate) mod settings;
 
 impl State {
-    /// The first post from the Chat drawer was proved made: keep it in the per-host state file, so no later window on this
-    /// computer explains again. A file that cannot be written only leaves the explanation to show at the next start.
+    /// The first post from the Chat drawer was proved made: keep it in the per-host state file.
     pub(super) fn keep_chat_posted(&self) {
-        if self.ephemeral {
-            return;
-        }
-        if let Err(e) = crate::ui::persist::resume::record_chat_posted() {
-            tracing::warn!(error = %e, "chat post not recorded");
-        }
+        resume::keep_chat_posted(self.ephemeral);
     }
 
     /// B5: persist (last_mode, last_bl_target) so a fresh launch resumes

@@ -150,7 +150,7 @@ name = "Ada"                    # the author a chat post carries; quote it
 ## `hosts.toml`
 
 The declared topology: which host is the relay hub, which hosts run a
-daemon, which run a frontend, and which hosts a `Ctrl+M` monitor drawer
+daemon, which run a frontend, and which hosts a `Ctrl+m` monitor drawer
 samples. `sot_topology` (Rust) is the **one parser** for this
 file — the daemon's `sotd topology plan|status|sync|relay-endpoint` CLI is
 the one way anything reads it. Neither the frontend nor the PowerShell
@@ -218,7 +218,7 @@ navigation still refreshes previews reactively.
 
 ### `[monitor]`
 
-The hosts sampled for the `Ctrl+M` server-monitor drawer. **Hub-scoped:**
+The hosts sampled for the `Ctrl+m` server-monitor drawer. **Hub-scoped:**
 declared once, but only the declared `hub` executes it — every non-hub daemon
 samples just the host it runs on, regardless of what this table says, so the
 roster's ssh aliases need only resolve **on the hub**. The drawer itself

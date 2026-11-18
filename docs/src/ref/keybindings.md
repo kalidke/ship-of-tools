@@ -19,7 +19,7 @@ use arrows to select, Tab to switch between this pane and all panes, and Enter
 to open the selected action's manual section. A shadowed shortcut is identified
 instead of being advertised as working. Embedded terminal applications own
 their own shortcuts; the catalog describes SoT controls around them.
-**Primary+p** (`Ctrl+p` on Windows/Linux, `⌘P` on macOS) in the Help drawer
+**Primary+p** (`Ctrl+p` on Windows/Linux, `⌘p` on macOS) in the Help drawer
 writes a printable cheat sheet of the loaded bindings and opens it in the
 browser; print it or save it as PDF there.
 
@@ -86,7 +86,7 @@ All shortcuts can be reassigned for layouts or OS shortcuts that conflict.
 macOS reserves some chords at the system level regardless of what SoT binds:
 Control+Arrow switches Spaces or opens Mission Control, and F11 shows the
 desktop, which is why pane focus is `⌘Arrow` there and fullscreen also accepts
-`Ctrl+Cmd+F` (F11 still works if that system shortcut is off). `⌘Q` and `⌘H`
+`Ctrl+Cmd+f` (F11 still works if that system shortcut is off). `⌘q` and `⌘h`
 are handled by the OS-level application menu, not by SoT's own key dispatch.
 `⇧⌘/` is the system Help-menu shortcut, on by default, and never reaches the
 app at all — that is why `help.toggle`'s macOS default is the bare `⌘/`
@@ -117,8 +117,8 @@ Normal text entry and terminal-application controls retain their own input handl
 | `pane.maximize` | `Alt+=` | Fill the window with the focused pane. |
 | `pane.restore` | `Escape` | Undo maximization, then wide preview, one layer at a time. |
 | `layout.wide_preview` | `Alt++` | Hide or show the agent column to give the preview more room. |
-| `view.selfie` | `Primary+Shift+S` | Save a PNG of the whole frontend window. |
-| `strip.cycle_order` | `Primary+Shift+O` | Cycle the session strip's order: by state, alphabetical, by recent activity. |
+| `view.selfie` | `Primary+Shift+s` | Save a PNG of the whole frontend window. |
+| `strip.cycle_order` | `Primary+Shift+o` | Cycle the session strip's order: by state, alphabetical, by recent activity. |
 | `drawer.repl` | `Primary+j` | Show or hide the Julia REPL. Changing drawer views keeps Julia running. |
 | `drawer.terminal` | `Primary+t` | Show or hide the frontend-local terminal. |
 | `drawer.monitor` | `Primary+m` | Show or hide host resource charts. |
@@ -132,7 +132,7 @@ Normal text entry and terminal-application controls retain their own input handl
 | `session.create_bare` | `Shift+Enter` | Create a workspace in the selected folder with a shell and no agent. |
 | `session.create` | `Enter` | Create a workspace in the selected folder with a Claude Code agent. |
 | `session.account_next` | `Tab` | Cycle which login account the new session will use. Hidden when only one account is discovered. |
-| `quit` | `Primary+q` | Close the window from any pane but the agent and the Terminal drawer, whose programs keep Ctrl+Q, asking whether to keep the daemon and sessions running. |
+| `quit` | `Primary+q` | Close the window from any pane but the agent and the Terminal drawer, whose programs keep Ctrl+q, asking whether to keep the daemon and sessions running. |
 | `files.copy_path` | `Primary+c` / `c` | Copy the selected file's backend path to the clipboard. |
 | `files.new` | `Primary+n` | Create a file, or a folder when the name ends with /, in the selected directory. |
 | `files.delete` | `Primary+d` | Delete the selected file after confirmation. Directories are refused. |

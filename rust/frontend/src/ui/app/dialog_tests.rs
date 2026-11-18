@@ -35,7 +35,7 @@ fn assert_centred(area: Rect, d: &CloseDialog) {
 #[test]
 fn the_close_question_sits_in_the_middle_of_the_window_with_its_answers() {
     let notice = "keep not done: this computer's backend did not answer the window lease in time, so the window \
-            stayed open and the sessions run on; Ctrl+Q then Yes tries again";
+            stayed open and the sessions run on; Ctrl+q then Yes tries again";
     for area in [Rect::new(0, 0, 200, 56), Rect::new(0, 0, 120, 36), Rect::new(0, 0, 80, 24)] {
         for (keep, notice) in [(false, None), (true, None), (true, Some(notice))] {
             let d = close_dialog(area, CloseDialogText::Ask { keep, notice });
@@ -97,7 +97,7 @@ fn the_dialog_shows_the_question_or_the_leave() {
 /// dialog text outranks it.
 #[test]
 fn the_quit_hint_sits_in_the_middle_of_the_window_and_gives_way_to_the_question() {
-    let hint = crate::ui::input::global_keys::quit_hint("Ctrl+Q");
+    let hint = crate::ui::input::global_keys::quit_hint("Ctrl+q");
     for area in [Rect::new(0, 0, 200, 56), Rect::new(0, 0, 120, 36), Rect::new(0, 0, 80, 24)] {
         let d = close_dialog(area, CloseDialogText::Hint(&hint));
         assert_centred(area, &d);

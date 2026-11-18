@@ -304,12 +304,12 @@ impl ReplModel {
             ..Default::default()
         };
         if let Some(sent) = sent.filter(|_| success) {
-            tracing::info!(force = sent.force, "repl.interrupt dispatched (Ctrl+C)");
+            tracing::info!(force = sent.force, "repl.interrupt dispatched (Ctrl+c)");
             self.interrupted = sent.ids;
             effects.status = Some(if sent.force {
                 "forcing the interrupt... (can crash or hang the REPL inside C code; r on a .jl file restarts it)"
             } else {
-                "interrupting... (Ctrl+C again forces it if the eval does not stop)"
+                "interrupting... (Ctrl+c again forces it if the eval does not stop)"
             }.to_string());
         }
         self.scroll_to_tail();

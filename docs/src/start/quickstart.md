@@ -124,7 +124,7 @@ In scripts/route.jl, add a bar chart of the distance of each leg, saved as data/
 ```
 
 A Claude Code session runs the code in the session's persistent Julia REPL,
-the same one you open with `Ctrl+J`, and every run it makes shows up in that
+the same one you open with `Ctrl+j`, and every run it makes shows up in that
 drawer. That REPL starts in the session root's project — `~/DemoProject`'s
 `Project.toml` here. The drawer is Ship of Tools' own input line, not Julia's
 REPL: no `?` help, no `;` shell and no Tab completion; use the Terminal
@@ -136,11 +136,11 @@ See [How agents use the REPL](@ref agents-repl).
 
 ## 6. End a session, close the window
 
-- In Sessions mode, `Shift+D` pressed twice on a session's row ends that
+- In Sessions mode, `Shift+d` pressed twice on a session's row ends that
   session; any other command in between cancels.
 - Closing the last window on the computer that runs the backend ends that backend and every session it runs; the next
   window starts with none. A window on another computer never ends them: they keep running, and the next window
-  reattaches. `Ctrl+Q`, in any pane but the agent
+  reattaches. `Ctrl+q`, in any pane but the agent
   and the Terminal drawer, asks first, in a dialog in the middle of the window: **Keep the
   daemon and sessions running?** No is the
   default; `Tab` selects Yes, `Enter` confirms, `Esc` cancels. See

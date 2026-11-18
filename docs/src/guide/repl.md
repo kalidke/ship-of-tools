@@ -9,12 +9,12 @@ your interactive Julia session — the same bindings, the same loaded packages �
 but its output is structured, and the figures it produces render inline in the
 native window rather than as text.
 
-The REPL drawer toggles with `Ctrl+J`.
+The REPL drawer toggles with `Ctrl+j`.
 
 The drawer is Ship of Tools' own input line, not Julia's REPL: `]` at the
 start of an empty line enters pkg mode (`pkg>`, run through
 `Pkg.REPLMode`), Backspace on an empty pkg line leaves it, Up/Down recall
-earlier inputs, and Ctrl+C interrupts a running evaluation. There is no `?`
+earlier inputs, and Ctrl+c interrupts a running evaluation. There is no `?`
 help mode, no `;` shell mode and no Tab completion; use the Terminal drawer
 or the agent pane for shell commands.
 
@@ -48,7 +48,7 @@ which goes with its process; other content on disk always does.)
 
 You drive the REPL two ways, without retyping code:
 
-- **Run a whole `.jl` file** from Files mode. `Shift+R` `include`s the cursored file
+- **Run a whole `.jl` file** from Files mode. `Shift+r` `include`s the cursored file
   into the current persistent session, so its definitions land in your
   interactive state. `r` first resets the REPL into the file's own project —
   walking up to the nearest `Project.toml` — then runs it there.
@@ -75,7 +75,7 @@ next safepoint, which stops an allocating or calling loop, and holds it through 
 code (BLAS), compiling and garbage collection until they return. The REPL keeps
 everything it defined. Code with no safepoint at all (`while true end`) ignores that
 one signal, and the interrupt is answered with an error that says so. A second
-`Ctrl+C` in the drawer while the same evaluations run, or `sot-fe repl interrupt
+`Ctrl+c` in the drawer while the same evaluations run, or `sot-fe repl interrupt
 <ws> --force`, forces it: a burst of signals, which Julia forces into code with
 none (it prints `WARNING: Force throwing a SIGINT` in the evaluation's output).
 Under heavy CPU load forcing may not stop it (`sot-fe repl interrupt --force` then
@@ -90,7 +90,7 @@ a server an earlier evaluation left running with `run(cmd; wait = false)` includ
 and a console program's default Ctrl+Break handler ends it. Code that catches the
 `InterruptException` and goes on still holds the REPL (`sot-fe repl interrupt` says
 so after 10 s); a restart ends it at once: `r` on a `.jl` file in Files mode, or
-`sot-fe repl run <ws> <path> --fresh`, whose run every window's drawer shows. On Julia 1.12, 1 of 20 interrupts of a loop that ends on its own at that very moment was answered with an error (`InterruptException`, code `repl_exception`) while the REPL kept running and kept its state; a signal that arrives as the REPL idles between evaluations can end it on 1.12, which only a synthetic signal has produced. `Ctrl+C` in the drawer names, by number, the
+`sot-fe repl run <ws> <path> --fresh`, whose run every window's drawer shows. On Julia 1.12, 1 of 20 interrupts of a loop that ends on its own at that very moment was answered with an error (`InterruptException`, code `repl_exception`) while the REPL kept running and kept its state; a signal that arrives as the REPL idles between evaluations can end it on 1.12, which only a synthetic signal has produced. `Ctrl+c` in the drawer names, by number, the
 evaluations the drawer shows as running, and stops the running evaluation only if
 its number is one of them (an interrupt that names other evaluations sends no
 signal); each window numbers its own evaluations, so two windows on one REPL can

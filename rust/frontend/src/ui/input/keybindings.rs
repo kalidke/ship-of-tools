@@ -98,8 +98,8 @@ actions! {
     MaximizePane, "pane.maximize", ["Alt+="], "Maximize pane", "Fill the window with the focused pane.", "Window", Global;
     RestoreLayout, "pane.restore", ["Escape"], "Restore layout", "Undo maximization, then wide preview, one layer at a time.", "Window", Restore;
     ToggleWidePreview, "layout.wide_preview", ["Alt++"], "Wide preview", "Hide or show the agent column to give the preview more room.", "Window", Global;
-    Selfie, "view.selfie", ["Primary+Shift+S"], "Screenshot", "Save a PNG of the whole frontend window.", "Window", Global;
-    StripCycleOrder, "strip.cycle_order", ["Primary+Shift+O"], "Session order", "Cycle the session strip's order: by state, alphabetical, by recent activity.", "Window", Global;
+    Selfie, "view.selfie", ["Primary+Shift+s"], "Screenshot", "Save a PNG of the whole frontend window.", "Window", Global;
+    StripCycleOrder, "strip.cycle_order", ["Primary+Shift+o"], "Session order", "Cycle the session strip's order: by state, alphabetical, by recent activity.", "Window", Global;
     ToggleReplDrawer, "drawer.repl", ["Primary+j"], "Julia drawer", "Show or hide the Julia REPL. Changing drawer views keeps Julia running.", "Drawers", Global;
     ToggleTerminalDrawer, "drawer.terminal", ["Primary+t"], "Terminal drawer", "Show or hide the frontend-local terminal.", "Drawers", Global;
     ToggleMonitorDrawer, "drawer.monitor", ["Primary+m"], "Monitor drawer", "Show or hide host resource charts.", "Drawers", Global;
@@ -113,7 +113,7 @@ actions! {
     SessionCreateBare, "session.create_bare", ["Shift+Enter"], "Create without agent", "Create a workspace in the selected folder with a shell and no agent.", "Picker", Picker;
     SessionCreate, "session.create", ["Enter"], "Create with Claude", "Create a workspace in the selected folder with a Claude Code agent.", "Picker", Picker;
     SessionAccountNext, "session.account_next", ["Tab"], "Next account", "Cycle which login account the new session will use. Hidden when only one account is discovered.", "Picker", Picker;
-    Quit, "quit", ["Primary+q"], "Quit SoT", "Close the window from any pane but the agent and the Terminal drawer, whose programs keep Ctrl+Q, asking whether to keep the daemon and sessions running.", "Navigation", Quit;
+    Quit, "quit", ["Primary+q"], "Quit SoT", "Close the window from any pane but the agent and the Terminal drawer, whose programs keep Ctrl+q, asking whether to keep the daemon and sessions running.", "Navigation", Quit;
     CopyPath, "files.copy_path", ["Primary+c", "c"], "Copy path", "Copy the selected file's backend path to the clipboard.", "Files", FileNav;
     NewFile, "files.new", ["Primary+n"], "New file or folder", "Create a file, or a folder when the name ends with /, in the selected directory.", "Files", Files;
     DeleteFile, "files.delete", ["Primary+d"], "Delete file", "Delete the selected file after confirmation. Directories are refused.", "Files", FileNav;
@@ -403,13 +403,8 @@ impl Chord {
             }
         }
         parts.push(match &self.key {
-            ChordKey::Char(s) => {
-                if self.ctrl || self.alt || self.shift || self.super_ {
-                    s.to_uppercase()
-                } else {
-                    s.clone()
-                }
-            }
+            // A letter key is written small, however a binding spells it: a capital reads as Shift.
+            ChordKey::Char(s) => s.to_ascii_lowercase(),
             ChordKey::Named(n) => match n {
                 NamedKey::ArrowUp => "↑".into(),
                 NamedKey::ArrowDown => "↓".into(),
@@ -648,6 +643,24 @@ fn parse_value(v: &str) -> Vec<String> {
     } else {
         vec![strip_quotes(v)]
     }
+}
+
+/// The texts that write a letter key in capitals after a modifier (`Ctrl+Shift+K`, `Cmd+C`, `⌘Q`): a key letter is written
+/// small, since a capital reads as Shift, and a named key (`Enter`, `Esc`) keeps its form. The rule every screen's words are
+/// held to.
+#[cfg(test)]
+pub(in crate::ui) fn key_name_capitals(texts: &[String]) -> Vec<String> {
+    let capital = |after: &str| {
+        let mut c = after.chars();
+        c.next().is_some_and(|c| c.is_ascii_uppercase()) && !c.next().is_some_and(char::is_alphanumeric)
+    };
+    let found = |text: &str| {
+        text.match_indices('+').any(|(at, _)| text[..at].ends_with(char::is_alphanumeric) && capital(&text[at + 1..]))
+            || text.char_indices().any(|(at, c)| "⌃⌥⇧⌘".contains(c) && capital(&text[at + c.len_utf8()..]))
+    };
+    let mut hits: Vec<String> = texts.iter().filter(|t| found(t)).cloned().collect();
+    hits.dedup();
+    hits
 }
 
 #[cfg(test)]

@@ -67,7 +67,7 @@ kill domain.
 
 ## A browser page says `127.0.0.1 refused to connect`
 
-`Shift+W` (built docs), `o` (video playback, Pluto) and `wglshow` pages are
+`Shift+w` (built docs), `o` (video playback, Pluto) and `wglshow` pages are
 relayed through the frontend↔daemon connection, over the same `ssh` child that
 connection already dialled for that host — not a separate port forward. A
 failed dial shows up the same way any dial failure does: that child's last

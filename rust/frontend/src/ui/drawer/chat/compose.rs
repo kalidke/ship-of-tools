@@ -102,8 +102,8 @@ pub(in crate::ui) enum ComposeText {
     Hint { focused: bool, as_person: Option<bool>, host: String, explain: bool },
 }
 
-/// What an empty draft shows after `> `, and under it, how the post appears and how the channel is changed (the chord is the
-/// default's, `Cmd` on macOS).
+/// What an empty draft shows after `> `; under it, until this computer's first post, how the post appears and how the channel
+/// is changed (the chord is the default's, `Cmd` on macOS).
 const PLACEHOLDER: &str = "type a message and press Enter to post it";
 /// `as_person`: what the connection's hello said of whether the daemon posts under the person's own Slack token (an older
 /// daemon's post goes out as the app, and the hint says so); `None`, with no hello read (a link down, one not up yet), the

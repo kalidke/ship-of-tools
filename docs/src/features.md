@@ -44,7 +44,7 @@ In Files mode, `c` copies the selected file's path to the clipboard for
 pasting into the agent's prompt.
 
 ```@raw html
-<DemoLoop name="copy" caption="Pressing c in Files mode copies the selected file's path; Ctrl+V pastes it into the Claude Code session in the agent pane; asked what the script does, it answers in one sentence." />
+<DemoLoop name="copy" caption="Pressing c in Files mode copies the selected file's path; Ctrl+v pastes it into the Claude Code session in the agent pane; asked what the script does, it answers in one sentence." />
 ```
 
 ### Crop an image for the agent
@@ -122,7 +122,7 @@ elsewhere; it still updates as it changes on disk.
 ### Edit a file yourself
 
 With the preview focused (`Ctrl+Right`), `e` opens the displayed file in the
-built-in editor in the preview pane; `Ctrl+S` saves and `Escape` closes it,
+built-in editor in the preview pane; `Ctrl+s` saves and `Escape` closes it,
 asking first if there are unsaved edits. When the entry has a concept
 annotation (a note about it, written by you or the agent and kept under
 `.concept/`), `e` edits the annotation instead; see
@@ -153,7 +153,7 @@ shows every run the agent made, and with `git` in a shell session.
 ### Run code, see figures inline
 
 A persistent Julia REPL per session. Run a whole `.jl` file (`r` into a
-fresh REPL — this also clears what the agent built in `Main` — `Shift+R`
+fresh REPL — this also clears what the agent built in `Main` — `Shift+r`
 into the current session) or type at the prompt.
 CairoMakie figures render inline in the drawer as images, not through a
 terminal graphics protocol. See [The REPL](guide/repl.md).
@@ -182,14 +182,14 @@ list.
 <DemoLoop name="help" caption="The Help drawer (Ctrl+? twice): Tab widens the scope to all panes, typing zoom filters the actions, Down steps through them." />
 ```
 
-- **A local terminal.** `Ctrl+T` opens the Terminal drawer, an OS
+- **A local terminal.** `Ctrl+t` opens the Terminal drawer, an OS
   shell on the frontend machine, typically used to SSH out to backend hosts.
 - **Fill the window.** `Alt+=` maximizes the focused pane,
   `Escape` restores.
 
 ### More on the window
 
-- **Watching the machines.** The Monitor drawer (`Ctrl+M`) shows CPU, GPU and
+- **Watching the machines.** The Monitor drawer (`Ctrl+m`) shows CPU, GPU and
   memory across your Linux hosts, for example while a training run is going.
 - **Keybindings.** Named actions can be rebound in a keybindings file;
   anything you do not override keeps its default. See
@@ -216,7 +216,7 @@ The setup is in [Going remote](start/remote.md).
   supervisor, and their REPLs under the backend daemon, so a dropped
   connection stops nothing, and with a remote backend neither does closing the
   laptop lid or the window; the next launch reattaches. Closing the last window
-  on the computer that runs the backend ends its sessions; `Ctrl+Q` can keep them.
+  on the computer that runs the backend ends its sessions; `Ctrl+q` can keep them.
   See [Sessions and persistence](concepts/sessions.md).
 
 ```@raw html

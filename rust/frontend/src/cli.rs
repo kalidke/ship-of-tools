@@ -216,7 +216,7 @@ Display:
   --start-fullscreen    start borderless-fullscreen on the active monitor
   --start-maximized     maximize the focused pane (as Alt+=); see --start-focus
   --start-focus <p>     nav|preview|llm|repl, the pane focused at start (default nav)
-  --start-monitor       open the server-monitor drawer (as Ctrl+M)
+  --start-monitor       open the server-monitor drawer (as Ctrl+m)
   --start-mode <m>      files|modules|sessions|hosts
   --start-path <p>      cursor a path         --start-help        open the Help drawer
 

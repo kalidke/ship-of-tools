@@ -406,12 +406,9 @@ fn apply_startup_strip_order(state: &mut State) {
     }
 }
 
-/// Whether a post from the Chat drawer was proved made on this computer, which ends the foot's explanation. Harness runs
-/// skip it, as they skip the other saved state.
+/// Whether a post from the Chat drawer was proved made on this computer, which ends the foot's explanation.
 fn apply_startup_chat_posted(state: &mut State) {
-    if !state.ephemeral {
-        state.chat.set_posted_before(crate::ui::persist::resume::load().chat_posted == Some(true));
-    }
+    state.chat.set_posted_before(crate::ui::persist::resume::chat_posted_at_start(state.ephemeral));
 }
 
 fn apply_startup_font_scale(state: &mut State, cli: &crate::cli::Cli) {

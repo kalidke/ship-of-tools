@@ -123,3 +123,44 @@ fn a_state_file_without_strip_order_loads_as_none() {
     save(&GlobalState { last_mode: Some("sessions".to_string()), ..Default::default() });
     assert!(load().strip_order.is_none());
 }
+
+/// No full save erases the first post's record: a window that has not posted (it started before the record, or is another
+/// window on this computer) saves its state on every move and leaves `chat_posted = true` in the file.
+#[test]
+fn a_full_save_keeps_the_first_posts_record() {
+    let _g = set_test_env();
+    save(&GlobalState { last_mode: Some("files".to_string()), ..Default::default() });
+    assert_eq!(load().chat_posted, None, "nothing posted: nothing recorded");
+    save(&GlobalState { chat_posted: Some(true), ..Default::default() });
+    save(&GlobalState { last_mode: Some("sessions".to_string()), window_w: Some(900.0), ..Default::default() });
+    let kept = load();
+    assert_eq!((kept.chat_posted, kept.last_mode.as_deref(), kept.window_w), (Some(true), Some("sessions"), Some(900.0)));
+}
+
+/// Only `chat_posted = true` is a post: another value is none yet.
+#[test]
+fn a_chat_posted_value_that_is_not_true_is_no_post() {
+    let _g = set_test_env();
+    let path = state_path();
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    for value in ["false", "maybe", ""] {
+        std::fs::write(&path, format!("chat_posted = {value}\n")).unwrap();
+        assert_ne!(load().chat_posted, Some(true), "{value:?}");
+        assert!(!chat_posted_at_start(false), "{value:?}");
+    }
+    std::fs::write(&path, "chat_posted = true\n").unwrap();
+    assert_eq!(load().chat_posted, Some(true));
+}
+
+/// A harness run reads no saved state and writes none; a real window records the first post and the next start reads it.
+#[test]
+fn the_first_post_is_recorded_and_read_by_a_real_window_only() {
+    let _g = set_test_env();
+    assert!(!chat_posted_at_start(false), "no file: no post yet");
+    keep_chat_posted(true);
+    assert!(!state_path().exists(), "a harness run writes nothing");
+    keep_chat_posted(false);
+    assert!(state_path().exists());
+    assert!(chat_posted_at_start(false), "the next real start reads the record");
+    assert!(!chat_posted_at_start(true), "a harness start reads nothing");
+}

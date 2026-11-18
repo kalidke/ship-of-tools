@@ -10,7 +10,7 @@ rebindable; see [Keybindings](../ref/keybindings.md).
 <DemoShot path="layout-labelled.png" caption="The default layout with the Julia drawer open." />
 ```
 
-`Ctrl+J`, `Ctrl+T`, `Ctrl+M`, `Ctrl+K` and `F1` swap the REPL, Terminal,
+`Ctrl+j`, `Ctrl+t`, `Ctrl+m`, `Ctrl+k` and `F1` swap the REPL, Terminal,
 Monitor, Chat and Help into the drawer. Column order, widths and the drawer height come from the
 [layout preset](../ref/config.md#layout); the portrait preset drops the agent
 column.
@@ -40,15 +40,15 @@ than stacking:
 
 | Drawer | Toggle | What it is |
 |--------|--------|------------|
-| [REPL](#The-REPL-Pane) | `Ctrl+J` | persistent Julia session; values, stdout, and figures stream back as structured frames |
-| [Terminal](#The-Terminal-Drawer) | `Ctrl+T` | a local OS shell on the *frontend* machine — canonical use is SSHing out to backend hosts |
-| [Monitor](#The-Monitor-Drawer) | `Ctrl+M` | CPU / GPU / RAM history across your configured hosts |
+| [REPL](#The-REPL-Pane) | `Ctrl+j` | persistent Julia session; values, stdout, and figures stream back as structured frames |
+| [Terminal](#The-Terminal-Drawer) | `Ctrl+t` | a local OS shell on the *frontend* machine — canonical use is SSHing out to backend hosts |
+| [Monitor](#The-Monitor-Drawer) | `Ctrl+m` | CPU / GPU / RAM history across your configured hosts |
 | [Help](#Help-drawer) | `F1`, or `Ctrl+?` twice | the focused pane's actions and their bindings, searchable |
-| [Chat](chat.md) | `Ctrl+K` | the held messages of the selected row's Slack channel, newest at the bottom; no key typed there reaches the REPL |
+| [Chat](chat.md) | `Ctrl+k` | the held messages of the selected row's Slack channel, newest at the bottom; no key typed there reaches the REPL |
 
 Each session keeps its own drawer: whether it is open and which content it shows come back as you left them when you switch back to the session. A session you have not visited yet starts with the drawer closed; the session the window opened on keeps the drawer the window opened with. The Terminal is one shell for the window, so two sessions that show it show the same shell. The drawer's height, maximize and the wide preview belong to the window, not to a session, and a switch closes the Help drawer. The sessions' drawers are not kept across a window restart.
 
-Drawer toggles are **global** — they fire even when another pane holds focus. The drawer keys take their chords from the panes: while one is held, `Ctrl+K` (like `Ctrl+J`, `Ctrl+T` and `Ctrl+M`) opens its drawer and does not reach the agent pane, the REPL or the Terminal.
+Drawer toggles are **global** — they fire even when another pane holds focus. The drawer keys take their chords from the panes: while one is held, `Ctrl+k` (like `Ctrl+j`, `Ctrl+t` and `Ctrl+m`) opens its drawer and does not reach the agent pane, the REPL or the Terminal.
 
 ## Help drawer
 
@@ -250,7 +250,7 @@ In Files mode, `c` copies the selected file's path to the clipboard for
 pasting into the agent's prompt.
 
 ```@raw html
-<DemoLoop name="copy" caption="Pressing c in Files mode copies the selected file's path; Ctrl+V pastes it into the Claude Code session in the agent pane; asked what the script does, it answers in one sentence." />
+<DemoLoop name="copy" caption="Pressing c in Files mode copies the selected file's path; Ctrl+v pastes it into the Claude Code session in the agent pane; asked what the script does, it answers in one sentence." />
 ```
 
 With the preview focused (`Ctrl+Right`), `c` on a zoomed image crops the
@@ -264,7 +264,7 @@ region, and the crop saved under `.sot/captures/`.
 
 ## The REPL Pane
 
-*Bottom drawer — `Ctrl+J`.* The REPL pane is a **persistent Julia session**
+*Bottom drawer — `Ctrl+j`.* The REPL pane is a **persistent Julia session**
 available throughout a session: the same bindings, the same loaded packages — but
 its output is structured, and the figures it produces render **inline in the
 native window** rather than as terminal text. It shares the bottom drawer slot
@@ -292,7 +292,7 @@ recover from a wedged computation without losing the project view.
 
 Two ways to drive it, without retyping:
 
-- **Run a `.jl` file** from Files mode — `Shift+R` `include`s it into the current
+- **Run a `.jl` file** from Files mode — `Shift+r` `include`s it into the current
   session; `r` first resets the REPL into the file's own project, then runs it.
 - **Type at the prompt** — `Enter` submits, `Shift+Enter` inserts a newline.
 
@@ -303,7 +303,7 @@ A long-running evaluation runs on its own task, so you can interrupt it mid-eval
 whenever it yields (`sleep`, I/O that waits, `yield()`) — a real `InterruptException`,
 the same as `Ctrl-C` in the stock REPL. One that never yields but allocates or calls (a `sin` loop)
 is stopped by the one interrupt signal the daemon sends, as in the stock REPL; code with no
-safepoint (an integer loop) ignores it, and a second `Ctrl+C` forces it, which can crash or hang the REPL inside C
+safepoint (an integer loop) ignores it, and a second `Ctrl+c` forces it, which can crash or hang the REPL inside C
 code, compiling or garbage collection, and under heavy CPU load may not stop it (`r` on a `.jl` file restarts the REPL
 and ends it).
 
@@ -319,19 +319,19 @@ degraded terminal-graphics protocol.
 
 ## The Terminal Drawer
 
-*Bottom drawer — `Ctrl+T`.* The Terminal is a **local OS shell on the frontend
+*Bottom drawer — `Ctrl+t`.* The Terminal is a **local OS shell on the frontend
 machine**. Its canonical use is SSHing outward to backend hosts, and because it is
 local — **not** proxied through the daemon — it works even when the backend is
-unreachable. It shares the bottom drawer slot with the [REPL](#The-REPL-Pane) (`Ctrl+J`)
-and the [Monitor](#The-Monitor-Drawer) (`Ctrl+M`): each key toggles its own content, and
+unreachable. It shares the bottom drawer slot with the [REPL](#The-REPL-Pane) (`Ctrl+j`)
+and the [Monitor](#The-Monitor-Drawer) (`Ctrl+m`): each key toggles its own content, and
 pressing another swaps it in place.
 
-`Ctrl+T` opens the Terminal drawer, a shell in the project root.
+`Ctrl+t` opens the Terminal drawer, a shell in the project root.
 
 | Key | Drawer closed | Showing this content | Showing other content |
 |-----|---------------|----------------------|-----------------------|
-| `Ctrl+T` | → Terminal | → closed | → Terminal |
-| `Ctrl+J` | → REPL | → closed | → REPL |
+| `Ctrl+t` | → Terminal | → closed | → Terminal |
+| `Ctrl+j` | → REPL | → closed | → REPL |
 
 ### Scrollback
 
@@ -353,10 +353,10 @@ A scroll down that reaches the live tail ends on it, whatever the shell printed 
 
 ## The Monitor Drawer
 
-*Bottom drawer — `Ctrl+M`.* The Monitor shows **CPU / GPU / RAM history across all
+*Bottom drawer — `Ctrl+m`.* The Monitor shows **CPU / GPU / RAM history across all
 your hosts at once** — small-multiples, one compact panel per host (a multi-GPU
 box shows each GPU as its own trace). It shares the bottom drawer slot with the
-[REPL](#The-REPL-Pane) (`Ctrl+J`) and the [Terminal](#The-Terminal-Drawer) (`Ctrl+T`); the toggle
+[REPL](#The-REPL-Pane) (`Ctrl+j`) and the [Terminal](#The-Terminal-Drawer) (`Ctrl+t`); the toggle
 is global, so it opens even when another pane has focus.
 
 
