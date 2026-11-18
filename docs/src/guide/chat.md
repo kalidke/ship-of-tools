@@ -82,7 +82,7 @@ row. Its title is `chat · #<channel name>`; when more than one Slack workspace 
 | `Ship of Tools on <computer> has no chat: update it` | the row's daemon is too old | at a link change |
 | `the chat is not running on <computer>` | the log on that computer says why | each minute |
 | `not up to date: <reason>` | the channel could not be read whole (`no messages read yet` when the hub never answered) | each minute |
-| `your Slack app cannot read this channel` | Slack says the connected Slack app is not in the channel: a private channel it was never invited to, or a new app (connecting Slack with a new app leaves it in no channel). The panel says what to type in the channel in Slack, `/invite @` and your app's name, and shows the channel within two minutes after | each minute |
+| `your Slack app cannot read this channel` | Slack says the connected Slack app is not in the channel: a private channel it was never invited to, or a new app (connecting Slack with a new app leaves it in no channel). The panel says what to type in the channel in Slack, `/invite @` and the name Slack gives that app's bot (as the hub knows it, else your app's name from the setup), and shows the channel within two minutes after | each minute |
 | `the row is gone or was replaced`, `the row now maps to another channel` or `the row's folder maps to no channel`, after the channel | the hub refused the watch for good | at a row or link change |
 
 ## Slack's markup

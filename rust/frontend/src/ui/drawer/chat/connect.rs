@@ -8,9 +8,10 @@
 //! step as it ends any modal screen, dropping whatever it holds.
 
 use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 use sot_protocol::chat::{slack_app_manifest, slack_app_name, slack_app_url};
-use sot_protocol::ops::{ChatCode, ChatConnectRes, ChatToken, ChatUnconfigured, ChatWorkspacesRes};
+use sot_protocol::ops::{ChatCode, ChatConnectRes, ChatToken, ChatUnconfigured, ChatWorkspaceInfo, ChatWorkspacesRes};
 
 use crate::net::dial::HostKey;
 use crate::net::transport::{ChatReply, OutgoingReq};
@@ -26,6 +27,10 @@ use super::{prompt_step, PromptStep};
 
 /// Slack's list of the person's apps, which the refused tokens' screen opens.
 const SLACK_APPS: &str = "https://api.slack.com/apps";
+/// How often, and how many times, the connected screen asks `chat.workspaces` while its entry does not yet say which mapped
+/// channels the Slack app connected can read: the hub's reads take at most 10 s after its reply (`UNREAD_WAIT`).
+const UNREAD_PACE: Duration = Duration::from_secs(1);
+const UNREAD_ASKS: u8 = 12;
 const BOT_PREFIX: &str = "xoxb-";
 const USER_PREFIX: &str = "xoxp-";
 const APP_PREFIX: &str = "xapp-";
@@ -44,9 +49,8 @@ pub(super) enum Screen {
     /// Step 3: the app-level token.
     App,
     Connecting,
-    /// The workspace the hub's reply named, its name when the reply gave one, and the mapped channels its Slack app cannot
-    /// read, as the title names a channel (`#name`, else the id).
-    Connected(String, Option<String>, Vec<String>),
+    /// The workspace the hub's reply named, and its name when the reply gave one.
+    Connected(String, Option<String>),
 }
 
 /// Which token Slack refused, for its step's words until a new one is pasted.
@@ -80,10 +84,16 @@ pub(super) struct Connect {
     /// The step began from the hub's `unconfigured`, so another answer ends it while the person is still pasting; a step a
     /// person asked for (`Connect Slack again`) or a refused post brought stays until they leave it.
     follows: bool,
-    /// The step began from a person's post the hub refused `no_user_token`: its first screen is the post-as-you screen, with
-    /// the refused tokens' keys. The workspace the post went to, and the name Slack gives the bot of the Slack app it is
-    /// connected to once `chat.workspaces` says it (`on_workspaces`), which the screen names as the app to keep.
-    post_in: Option<(String, Option<String>)>,
+    /// The step began from a person's post into this workspace, which the hub refused `no_user_token`: its first screen is
+    /// the post-as-you screen, with the refused tokens' keys.
+    post_in: Option<String>,
+    /// What `chat.workspaces` last said of the workspace the screen is about (the post's, or the one connected) while it
+    /// runs: the Slack app it is connected to, which the post-as-you screen names and opens as the one to keep, and the
+    /// mapped channels that app cannot read, which the connected screen names.
+    about: Option<ChatWorkspaceInfo>,
+    /// While the connected screen waits for `about` to say which mapped channels its Slack app cannot read: when it next asks
+    /// `chat.workspaces` (none: at once) and how many asks are left.
+    asking: Option<(Option<Instant>, u8)>,
     screen: Screen,
     bot: Option<ChatToken>,
     user: Option<ChatToken>,
@@ -114,6 +124,8 @@ impl Connect {
             reason,
             follows,
             post_in: None,
+            about: None,
+            asking: None,
             screen: Screen::First,
             bot: None,
             user: None,
@@ -131,12 +143,27 @@ impl Connect {
         Connect { failed_in: workspace.map(|w| (w, None)), ..self }
     }
 
-    /// The hub's running workspaces: for a refused post, the name of the Slack app its workspace is connected to; for a
-    /// failed workspace, whether another runs, and the failed one's name.
+    /// The hub's running workspaces: for a refused post or a connect made, what the hub says of that workspace (its Slack
+    /// app, and once known the channels that app cannot read, which ends the connected screen's asks); for a failed
+    /// workspace, whether another runs, and the failed one's name. An older hub, which has no such answer, ends the asks.
     pub(super) fn on_workspaces(&mut self, reply: &ChatReply<ChatWorkspacesRes>) {
-        let ChatReply::Done(res) = reply else { return };
-        if let Some((workspace, app)) = self.post_in.as_mut() {
-            *app = res.workspaces.iter().find(|w| &w.id == workspace && w.running).and_then(|w| w.app_name.clone());
+        let res = match reply {
+            ChatReply::Done(res) => res,
+            ChatReply::Unsupported => {
+                self.asking = None;
+                return;
+            }
+            ChatReply::Refused(_) => return,
+        };
+        let about = match &self.screen {
+            Screen::Connected(w, _) => Some(w),
+            _ => self.post_in.as_ref(),
+        };
+        if let Some(w) = about {
+            self.about = res.workspaces.iter().find(|e| &e.id == w && e.running).cloned();
+        }
+        if self.about.as_ref().is_some_and(|a| a.unread.is_some()) {
+            self.asking = None;
         }
         let Some((failed, name)) = self.failed_in.as_mut() else { return };
         self.elsewhere = res.workspaces.iter().any(|w| w.running && &w.id != failed);
@@ -162,7 +189,37 @@ impl Connect {
     /// The step a person's refused post into `workspace` brings: the hub holds no token that posts as them, or Slack stopped
     /// accepting it. The caller asks `chat.workspaces`, whose answer names the Slack app to keep.
     pub(super) fn for_post(host: HostKey, login: &str, workspace: String) -> Connect {
-        Connect { post_in: Some((workspace, None)), ..Connect::new(host, ChatUnconfigured::NotConnected, login, false) }
+        Connect { post_in: Some(workspace), ..Connect::new(host, ChatUnconfigured::NotConnected, login, false) }
+    }
+
+    /// The connected screen's next `chat.workspaces`, when one is due at `now`: at once after the reply, then each
+    /// `UNREAD_PACE`, at most `UNREAD_ASKS` in all, until the answer says which channels the Slack app cannot read.
+    pub(super) fn ask_unread(&mut self, now: Instant) -> Option<Out> {
+        let (due, left) = self.asking.as_mut()?;
+        if due.is_some_and(|d| now < d) {
+            return None;
+        }
+        if *left == 0 {
+            self.asking = None;
+            return None;
+        }
+        (*due, *left) = (Some(now + UNREAD_PACE), *left - 1);
+        Some((self.host.clone(), OutgoingReq::ChatWorkspaces))
+    }
+
+    /// When the connected screen next asks, for the window to wake then.
+    pub(super) fn next_ask(&self) -> Option<Instant> {
+        self.asking.and_then(|(due, _)| due)
+    }
+
+    /// The page Enter opens on a screen whose Slack app exists: that app's own permissions page when the hub gave the id of
+    /// the app the post's workspace is connected to, else the person's list of Slack apps.
+    fn apps_page(&self) -> String {
+        let id = self.post_in.as_ref().and(self.about.as_ref()).and_then(|a| a.app_id.as_deref());
+        match id.filter(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric())) {
+            Some(id) => format!("{SLACK_APPS}/{id}/oauth"),
+            None => SLACK_APPS.into(),
+        }
     }
 
     /// Whether any token is pasted: a late reply to an older post leaves such a step alone.
@@ -228,7 +285,7 @@ impl Connect {
                 asks.notice = Some("copied your Slack app's description: paste it in Slack's From a manifest".into());
             }
             // The refused tokens' screen: Enter opens the person's apps for steps 2 and 3, Left makes the app again.
-            (Some(Action::ChatSend), Screen::First) if refused => (asks.open, self.screen) = (Some(SLACK_APPS.into()), Screen::Tokens),
+            (Some(Action::ChatSend), Screen::First) if refused => (asks.open, self.screen) = (Some(self.apps_page()), Screen::Tokens),
             (Some(Action::ChatThreadClose), Screen::First) if refused => (asks.open, self.screen) = (Some(slack_app_url(&self.name())), Screen::Make),
             (Some(Action::ChatSend), Screen::First) => (asks.open, self.screen) = (Some(slack_app_url(&self.name())), Screen::Make),
             (Some(Action::ChatThreadOpen), Screen::First) if !refused => self.screen = Screen::Tokens,
@@ -294,8 +351,8 @@ impl Connect {
         let words = match reply {
             ChatReply::Done(res) => {
                 (self.bot, self.user, self.app) = (None, None, None);
-                let unread = res.unread.iter().map(|u| u.name.as_deref().map_or_else(|| u.id.as_str().to_string(), |n| format!("#{}", cell_row(n)))).collect();
-                self.screen = Screen::Connected(res.workspace, res.name, unread);
+                // Nothing is known yet of the Slack app the hub now runs: the screen asks.
+                (self.screen, self.about, self.asking) = (Screen::Connected(res.workspace, res.name), None, Some((None, UNREAD_ASKS)));
                 return;
             }
             ChatReply::Refused(ChatCode::BotTokenRefused) => {
@@ -355,17 +412,28 @@ impl Connect {
             Screen::First if refused => {
                 out.push(if self.reason == ChatUnconfigured::WrongApp {
                     format!("The chat stopped: the \"App-Level Token\" it holds belongs to another Slack app than your Slack app (the bot that reads the channel and posts for your agents), so the chat would have received that other app's messages. To fix it, paste your own Slack app's codes: press Enter, and your list of Slack apps opens in your browser. Click {name}, then copy its three Slack codes again, as steps 2 and 3 show (they follow here).")
-                } else if let Some((_, connected)) = &self.post_in {
-                    let why = format!("Ship of Tools posts your messages in Slack as you, so the people and bots in the channel see them as yours. For that it needs a Slack code from {APP}, and {c} holds none that works: it was connected before Ship of Tools posted as you, or Slack stopped accepting the one it had.");
-                    match connected.as_deref().map(cell_row) {
-                        // The Slack app connected now, by the name Slack gives its bot: keeping it keeps every channel it is in.
-                        Some(app) => format!("{why} Keep the Slack app {c} is connected to now: Slack calls it {app}, though your list of Slack apps may show it under another name. A new Slack app is in none of your private channels, so they would show nothing here until you invited it to each. Press Enter: your list of Slack apps opens in your browser. In it, click that app. Then, on its page, add the permissions to post as you and install it again, as step 2 shows (it follows here), and copy its codes into this panel. Press Left to make a new Slack app (step 1) only if that app is no longer in the list."),
-                        None => format!("{why} Press Enter: your list of Slack apps opens in your browser. In it, click {name}. Then copy its codes again, as steps 2 and 3 show (they follow here), and paste each into this panel. If {name} is not in the list, press Left to make your Slack app again (step 1)."),
+                } else if self.post_in.is_some() {
+                    let why = format!("Why: Ship of Tools posts your messages in Slack as you, and {c} holds no Slack code that works for that: it was connected before Ship of Tools posted as you, or Slack stopped accepting the code it had.");
+                    let app = self.about.as_ref().filter(|a| a.app_id.is_some());
+                    let keep = match app.and_then(|a| a.app_name.as_deref()).map(cell_row) {
+                        // The Slack app connected now, which keeping keeps in every channel it is in; its page opens by its id.
+                        Some(named) => format!("Keep {APP}, the one {c} is connected to now, whose messages in Slack show the name {named}."),
+                        None if app.is_some() => format!("Keep {APP}, the one {c} is connected to now."),
+                        None => String::new(),
+                    };
+                    if keep.is_empty() {
+                        format!("Press Enter: your list of Slack apps opens in your browser. In it, click {name}, {APP}, and copy its codes again, as steps 2 and 3 show (they follow here). If {name} is not in the list, look there for the Slack app this workspace was connected with under another name. Press Left to make a new one (step 1) only if there is none: a new Slack app is in none of your private channels.\n\n{why}")
+                    } else {
+                        format!("{keep} Press Enter to open its page in Slack, add the permissions to post as you and install it again (step 2 shows how), then paste its codes here. Do not make a new Slack app: it would be in none of your private channels. Press Left to make one only if that Slack app is gone.\n\n{why}")
                     }
                 } else {
                     format!("Slack no longer accepts the Slack codes Ship of Tools holds. Press Enter: your list of Slack apps opens in your browser. If {name}, {APP}, is in it, click it and copy its three codes again (steps 2 and 3 follow here). If it is not, press Left here to make your Slack app again (step 1).")
                 });
-                format!("Enter  open your Slack apps    Left  make your Slack app again{away}    Esc  close")
+                match (self.post_in.is_some(), self.apps_page() == SLACK_APPS) {
+                    (true, true) => format!("Enter  open your Slack apps    Left  make a new Slack app{away}    Esc  close"),
+                    (true, false) => format!("Enter  open your Slack app's page    Left  make a new Slack app{away}    Esc  close"),
+                    _ => format!("Enter  open your Slack apps    Left  make your Slack app again{away}    Esc  close"),
+                }
             }
             Screen::First => {
                 out.push("This panel shows a Slack channel beside this project: you read it and post to it here. First, connect Ship of Tools to the Slack workspace the channel is in. You do this once for each Slack workspace you use, in three steps on Slack's website. Every project with a channel in that workspace then uses that connection, and each project picks its own channel afterward.".into());
@@ -408,29 +476,47 @@ impl Connect {
                 out.push("Slack is checking the three codes.".into());
                 "Esc  close; the check goes on".to_string()
             }
-            Screen::Connected(id, wname, unread) => {
+            Screen::Connected(id, wname) => {
                 let (w, label) = (workspace_words(id, wname.as_deref()), workspace_label(id, wname.as_deref()));
-                out.push(format!("Ship of Tools is connected to {w}. It keeps that workspace's three Slack codes on {c}, readable only by your login there. Other projects keep the channels they have. Next, press Enter to choose this project's channel in {label}; each project picks its own."));
-                if let Some(words) = unread_words(unread, &name, &c) {
-                    out.push(words);
+                let kept = format!("Ship of Tools is connected to {w}. It keeps that workspace's three Slack codes on {c}, readable only by your login there.");
+                let unread = self.about.as_ref().and_then(|a| a.unread.as_deref());
+                match unread {
+                    // What a person must do first leads: invite the Slack app where it is not, and choose no other channel.
+                    Some(list) if !list.is_empty() => {
+                        let app = self.about.as_ref().and_then(|a| a.app_name.as_deref()).map_or(name, |n| cell_row(n).into_owned());
+                        let labels: Vec<String> = list.iter().map(|u| u.name.as_deref().map_or_else(|| format!("the channel with ID {}", u.id.as_str()), |n| format!("#{}", cell_row(n)))).collect();
+                        out.push(unread_words(&labels, &app));
+                        out.push(kept);
+                        "Enter  open the channel list    Esc  close".to_string()
+                    }
+                    // Until the hub says which channels the Slack app reads, nothing is said of the other projects' channels.
+                    known => {
+                        let others = if known.is_some() { " Other projects keep the channels they have." } else { "" };
+                        out.push(format!("{kept}{others} Next, press Enter to choose this project's channel in {label}; each project picks its own."));
+                        format!("Enter  choose this project's channel in {label}    Esc  close")
+                    }
                 }
-                format!("Enter  choose this project's channel in {label}    Esc  close")
             }
         };
         Body { head: out.join("\n\n"), pin: keys, ..Body::default() }
     }
 }
 
-/// What the connected screen says of the mapped channels the connected Slack app cannot read (`app`, its name; `c`, the
-/// computer): which, why, and what to type in Slack to keep them. None when it can read them all.
-fn unread_words(unread: &[String], app: &str, c: &str) -> Option<String> {
-    let (last, rest) = unread.split_last()?;
-    let (list, what) = match rest {
-        [] => (last.clone(), format!("the channel of a project on {c}, so that project shows nothing until it is")),
-        _ => (format!("{} and {last}", rest.join(", ")), format!("channels of projects on {c}, so those projects show nothing until it is")),
-    };
-    let (keep, place) = if rest.is_empty() { ("it", "that channel") } else { ("them", "each of those channels") };
-    Some(format!("Your Slack app (the bot that reads the channel and posts for your agents) is not in {list}, {what}: a private channel lets in only the Slack apps its members invite, and a new Slack app is in no channel until it is invited. To keep {keep}, in {place} in Slack, type /invite @{app}, instead of choosing another channel here."))
+/// What the connected screen says first of the mapped channels the Slack app connected cannot read (`labels`, each as a
+/// sentence names a channel; `app`, the name to invite it by): which, what that costs, and what to type in Slack, before
+/// any choice of channel. Never empty.
+fn unread_words(labels: &[String], app: &str) -> String {
+    match labels {
+        [one] => format!("{} is not in {one} yet, so that project shows nothing. To keep its channel, open {one} in Slack and type /invite @{app}. Do not choose another channel here. (A new Slack app is in no channel until someone in the channel invites it.)", cap(APP)),
+        [rest @ .., last] => format!("{} is not in {} and {last} yet, so those projects show nothing. To keep them, open each of those channels in Slack and type /invite @{app}. Do not choose other channels here. (A new Slack app is in no channel until someone in the channel invites it.)", cap(APP), rest.join(", ")),
+        [] => String::new(),
+    }
+}
+
+/// `text` with its first letter a capital, for a sentence it begins.
+fn cap(text: &str) -> String {
+    let mut chars = text.chars();
+    chars.next().map(|c| c.to_uppercase().chain(chars).collect()).unwrap_or_default()
 }
 
 /// The name the person signs in to this computer with, which their app is named for: read once, by exact name. A missing

@@ -669,3 +669,52 @@ fn a_paste_waits_for_the_workspaces_and_a_copy_link_pairs_in_the_one_shown() {
     let sent = d.picker_paste("https://lab-beta.slack.com/archives/C0456EFGH").unwrap();
     assert_eq!(pairs(&sent), [("ROW1".to_string(), Some("C0456EFGH".to_string()), Some("TBBBB2222".to_string()))]);
 }
+
+/// S6: the head says the project's channel is missing only from a whole list of the project's own workspace: a list cut at
+/// its bound may hold it further on, and another workspace's list never holds it.
+#[test]
+fn the_missing_channel_is_said_only_of_a_whole_list_of_its_own_workspace() {
+    let missing = "This project's channel, CH1, is not in this list";
+    let head = |d: &ChatDrawer| d.body().unwrap().lines(2000, 60).join(" ");
+    let opened = |all: &[(&str, Option<&str>, bool)]| {
+        let (mut d, at) = channel(&[]);
+        d.open_picker(shown("ROW1").as_ref()).unwrap();
+        d.on_evt(&host(), workspaces("WS1", all), at);
+        (d, at)
+    };
+    let (mut d, at) = opened(&[("WS1", Some("Alpha Lab"), true)]);
+    d.on_evt(&host(), listed_in("WS1", false), at);
+    assert!(head(&d).starts_with(missing), "a whole list of its own workspace: {}", head(&d));
+    let (mut d, at) = opened(&[("WS1", Some("Alpha Lab"), true)]);
+    d.on_evt(&host(), listed_in("WS1", true), at);
+    assert!(!head(&d).contains(missing), "a list cut at its bound: {}", head(&d));
+    let (mut d, at) = opened(&[("WS1", Some("Alpha Lab"), true), ("WS2", Some("Beta Lab"), true)]);
+    d.on_evt(&host(), listed_in("WS1", false), at);
+    assert!(head(&d).starts_with(missing), "{}", head(&d));
+    assert_eq!(asked(&d.picker_move(true).unwrap()), [Some("WS2".to_string())]);
+    d.on_evt(&host(), listed_in("WS2", false), at);
+    assert!(!head(&d).contains(missing), "another workspace's list: {}", head(&d));
+}
+
+/// S2: the picker's invites name the shown workspace's Slack app as the hub names it (Slack's name for its bot), and the
+/// person's (`slack_app_name` of the login) only for a workspace whose entry names none.
+#[test]
+fn the_pickers_invites_name_the_slack_app_the_hub_names() {
+    let (mut d, at) = channel(&[]);
+    d.open_picker(shown("ROW1").as_ref()).unwrap();
+    let res = serde_json::from_value(serde_json::json!({ "default": "WS1", "workspaces": [
+        { "id": "WS1", "name": "Alpha Lab", "running": true, "app_name": "Ship of Tools (lab-user)" },
+        { "id": "WS2", "name": "Beta Lab", "running": true } ] })).unwrap();
+    d.on_evt(&host(), ChatEvt::Workspaces { reply: ChatReply::Done(res) }, at);
+    d.on_evt(&host(), listed_in("WS1", false), at);
+    let said = d.body().unwrap().lines(2000, 60).join(" ");
+    assert!(said.contains("To keep it, in that channel in Slack, type /invite @Ship of Tools (lab-user), then press Esc."), "{said}");
+    assert!(said.contains("A private channel is listed only once someone in it invites your Slack app: in that channel in Slack, type /invite @Ship of Tools (lab-user), then open this list again."), "{said}");
+    assert_eq!(d.picker_paste("C0456EFGH").unwrap().len(), 1);
+    d.on_evt(&host(), paired("ROW1", Some("C0456EFGH"), ChatReply::Refused(ChatCode::NoSuchChannel)), at);
+    assert!(d.take_notice().is_some_and(|n| n.ends_with("type /invite @Ship of Tools (lab-user), then pick it again")));
+    // Another workspace whose entry names no Slack app: the person's.
+    d.picker_move(true).unwrap();
+    d.on_evt(&host(), listed_in("WS2", false), at);
+    assert!(d.body().unwrap().lines(2000, 60).join(" ").contains("type /invite @Ship of Tools, then open this list again."));
+}

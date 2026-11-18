@@ -13,7 +13,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use anyhow::Result;
-use sot_chat::api::{ApiError, Channel, Identified, JoinOutcome, TOKEN_REFUSALS};
+use sot_chat::api::{Api, ApiError, Channel, Identified, JoinOutcome, TOKEN_REFUSALS};
 use sot_chat::config::{self, ConfigError, PairError, Secrets, Writers};
 use sot_chat::http::{Http, Secret};
 use sot_chat::service::{Service, APP_TOKEN_REFUSED, BOT_TOKEN_REFUSED, WRONG_APP};
@@ -166,12 +166,13 @@ pub(crate) async fn connect(req_id: u64, payload: serde_json::Value, chat: &Arc<
     chat.remember_name(&workspace, name.clone());
     let status = chat.status_of(&workspace);
     tracing::info!(workspace, %status, "project chat: a window's connect saved the tokens and reloaded");
-    let unread = unread(chat, &workspace, mapped).await;
-    reply(req_id, NAME, &ChatConnectRes { workspace, name, unread })
+    // The reply waits on no Slack read: which of them the app now running cannot read is a task's, told by `chat.workspaces`.
+    find_unread(chat, &workspace, mapped);
+    reply(req_id, NAME, &ChatConnectRes { workspace, name })
 }
 
-/// How long a connect's reply waits, after the reload, for the reads that find the mapped channels its app cannot read.
-const UNREAD_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+/// How long the reads of a connect's task (`find_unread`) may take in all.
+pub(crate) const UNREAD_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// The channels `workspace`'s mappings name, once each, with the name its running app's cache holds for each.
 fn mapped_channels(chat: &Arc<Chat>, workspace: &str) -> Vec<(String, Option<String>)> {
@@ -187,30 +188,55 @@ fn mapped_channels(chat: &Arc<Chat>, workspace: &str) -> Vec<(String, Option<Str
     out
 }
 
-/// Of `channels`, those the app `workspace` runs now cannot read, at most `MAX_WATCHED`: one `Api::channel` each, all within
-/// `UNREAD_WAIT`. A channel Slack says the app is not in, or does not show it (`channel_not_found`, its answer for a
-/// private channel the app is not in), is one, named as the app before had it, else as Slack names it; any other answer,
-/// and a read the wait cut off, names none.
-async fn unread(chat: &Arc<Chat>, workspace: &str, channels: Vec<(String, Option<String>)>) -> Vec<ChatUnread> {
-    let Some(api) = chat.service_of(workspace).and_then(|s| s.api().ok()) else { return Vec::new() };
+/// Starts, on a task of its own, the reads that find which of `channels` (each with the name the app before had for it)
+/// the Slack app `workspace` runs now cannot read, kept for `chat.workspaces` against that app's service
+/// (`Chat::keep_unread`); nothing when the workspace does not run. The task holds the chat and the service only weakly, so
+/// neither waits on it, and a stopped service's reads end at once.
+fn find_unread(chat: &Arc<Chat>, workspace: &str, channels: Vec<(String, Option<String>)>) {
+    let Some(service) = chat.service_of(workspace) else { return };
+    let Ok(api) = service.api() else { return };
+    let (held, of, workspace, wait) = (Arc::downgrade(chat), Arc::downgrade(&service), workspace.to_string(), chat.unread_wait());
+    drop(service);
+    drop(tokio::spawn(async move {
+        if let (Some(found), Some(chat)) = (unread(&api, channels, wait).await, held.upgrade()) {
+            chat.keep_unread(&workspace, &of, found);
+        }
+        // A test's hold point, keyed by the chat's address: the reads have ended, and what they found is kept or not.
+        sot_platform::hold_point_async!("chat.unread.found", held.as_ptr() as usize);
+    }));
+}
+
+/// `find_unread`'s reads: one `Api::channel` each, in order, all within `wait`, ending once `MAX_WATCHED` are found. A
+/// channel Slack says the app is not in, or does not show it (`channel_not_found`, its answer for a private channel the
+/// app is not in), is one, named as the app before had it, else as Slack names it (each name already cut to `MAX_NAME`).
+/// Known when Slack answered every channel in time; a read `wait` cut off, or answered any other way (a rate limit, an
+/// outage), leaves it known only when it found one, so an empty list always means the app reads every mapped channel.
+async fn unread(api: &Api, channels: Vec<(String, Option<String>)>, wait: std::time::Duration) -> Option<Vec<ChatUnread>> {
     let found = std::sync::Mutex::new(Vec::new());
     let reads = async {
+        let mut whole = true;
         for (id, name) in channels {
             let name = match api.channel(&id).await {
                 Ok(c) if c.member => continue,
                 Ok(c) => name.or(Some(c.name)),
                 Err(ApiError::Slack(code)) if code == "channel_not_found" => name,
-                Err(_) => continue,
+                Err(_) => {
+                    whole = false;
+                    continue;
+                }
             };
-            if let Ok(id) = ChatChannel::try_from(id) {
-                found.lock().unwrap_or_else(|e| e.into_inner()).push(ChatUnread { id, name });
+            let Ok(id) = ChatChannel::try_from(id) else { continue };
+            let mut found = found.lock().unwrap_or_else(|e| e.into_inner());
+            found.push(ChatUnread { id, name });
+            if found.len() == MAX_WATCHED {
+                break;
             }
         }
+        whole
     };
-    let _ = tokio::time::timeout(UNREAD_WAIT, reads).await;
-    let mut found = found.into_inner().unwrap_or_else(|e| e.into_inner());
-    found.truncate(MAX_WATCHED);
-    found
+    let whole = tokio::time::timeout(wait, reads).await.unwrap_or(false);
+    let found = found.into_inner().unwrap_or_else(|e| e.into_inner());
+    (whole || !found.is_empty()).then_some(found)
 }
 
 /// Why the connect's writes did not happen: the reply's code and, for the caller to log, a fixed reason with the load's

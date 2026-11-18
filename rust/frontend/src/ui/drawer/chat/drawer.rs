@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use sot_protocol::chat::{Ts, MAX_NAME};
 use sot_protocol::chat::slack_app_name;
-use sot_protocol::ops::{ChatChannel, ChatCode, ChatFileVariant, ChatHistoryReq, ChatPairRes, ChatPostFileReq, ChatPostFileRes, ChatPostKind, ChatPostReq, ChatPostRes, ChatResolveRes, ChatService, ChatTarget, ChatUnconfigured};
+use sot_protocol::ops::{ChatChannel, ChatCode, ChatFileVariant, ChatHistoryReq, ChatPairRes, ChatPostFileReq, ChatPostFileRes, ChatPostKind, ChatPostReq, ChatPostRes, ChatResolveRes, ChatService, ChatTarget, ChatUnconfigured, ChatWorkspaceInfo};
 
 use crate::net::dial::HostKey;
 use crate::net::transport::{ChatEvt, ChatReply, OutgoingReq};
@@ -118,6 +118,11 @@ pub(in crate::ui) struct ChatDrawer {
     /// foot's explanation is shown only while none has. `first_post` holds the proof from this run until State has kept it.
     posted_before: bool,
     first_post: bool,
+    /// The last `chat.workspaces` answer of each host whose link is up, whatever asked it: the one source of the name a
+    /// line inviting a workspace's Slack app gives it (`app_name`). `asked`: the hosts asked on the drawer's own behalf
+    /// (a channel its Slack app cannot read), once per link.
+    workspaces: HashMap<HostKey, Vec<ChatWorkspaceInfo>>,
+    asked: std::collections::HashSet<HostKey>,
 }
 
 /// What holds the drawer's body in place of the records, one at a time. Whatever it is, the drawer parks the channel's view
@@ -231,10 +236,26 @@ impl ChatDrawer {
             let row = self.rows.row().cloned();
             outs.extend(self.open_picker(row.as_ref()).unwrap_or_default());
         }
+        if let Some(Modal { kind: Kind::Connect(c), .. }) = self.modal.as_mut() {
+            outs.extend(c.ask_unread(now));
+        }
+        // A channel its Slack app cannot read names that app in its words: the hub is asked which it is, once per link.
+        if let Some(host) = self.rows.row().map(|r| r.host.clone()).filter(|h| self.unreadable() && !self.workspaces.contains_key(h)) {
+            if self.asked.insert(host.clone()) {
+                outs.push((host, OutgoingReq::ChatWorkspaces));
+            }
+        }
         outs.extend(self.owner_outs(|o| o.tick(now)));
         outs.extend(self.thread_outs(|t| t.tick(now)));
         outs.extend(self.pictures.asks(now));
         (outs, step.settling)
+    }
+
+    /// The name a line inviting `workspace`'s Slack app on `host` gives it: Slack's name for that app's bot, as the hub's
+    /// last `chat.workspaces` answer gave it, else the name the setup gives the person's Slack app (`slack_app_name`).
+    fn app_name(&self, host: &str, workspace: Option<&str>) -> String {
+        let entry = self.workspaces.get(host).and_then(|l| l.iter().find(|w| Some(w.id.as_str()) == workspace && w.running));
+        entry.and_then(|w| w.app_name.as_deref()).map_or_else(|| slack_app_name(self.login), |n| crate::ui::chrome::cell_row(n).into_owned())
     }
 
     /// The Connect step follows the row's stand: `unconfigured` begins it (in place of the picker, but for one the step
@@ -390,7 +411,7 @@ impl ChatDrawer {
     /// name (`RowChannel::next_ask`), or a placed picture is next asked for (`ChatPictures::next_ask`), whichever is first:
     /// the instant to wake the window for.
     pub(in crate::ui) fn next_ask(&self) -> Option<Instant> {
-        [self.owner.next_ask(), self.rows.next_ask(), self.pictures.next_ask()].into_iter().flatten().min()
+        [self.owner.next_ask(), self.rows.next_ask(), self.pictures.next_ask(), self.connect().and_then(Connect::next_ask)].into_iter().flatten().min()
     }
 
     /// A link coming up, with its hello's word on whether the daemon posts as the person (`posts_as_person`, which the compose
@@ -402,6 +423,9 @@ impl ChatDrawer {
         } else {
             self.posts_as_person.remove(host);
         }
+        // What the host said of its workspaces is the last link's.
+        self.workspaces.remove(host);
+        self.asked.remove(host);
         self.cancel_name();
         // A link change of a modal screen's host ends it, and any token it holds.
         if self.modal.as_ref().is_some_and(|m| m.host() == host) {
@@ -426,6 +450,22 @@ impl ChatDrawer {
         self.owner_outs(|o| o.on_bus_lost(host, bus, now))
     }
 
+    /// Which workspaces run: the picker asks one's channels; the Connect step learns whether another runs, and what the
+    /// hub says of the Slack app of the workspace it is about.
+    fn on_workspaces(&mut self, host: &HostKey, reply: ChatReply<sot_protocol::ops::ChatWorkspacesRes>) -> Vec<Out> {
+        match self.modal.as_mut().map(|m| &mut m.kind) {
+            Some(Kind::Picker(p)) if &p.row.host == host => match p.on_workspaces(reply) {
+                Some(workspace) => vec![(host.clone(), OutgoingReq::ChatChannels { workspace })],
+                None => Vec::new(),
+            },
+            Some(Kind::Connect(c)) if c.host() == host => {
+                c.on_workspaces(&reply);
+                Vec::new()
+            }
+            _ => Vec::new(),
+        }
+    }
+
     pub(super) fn on_evt(&mut self, host: &HostKey, evt: ChatEvt, now: Instant) -> Vec<Out> {
         match evt {
             // The wanted row's answer decides its watch: `mapped` watches, anything else (unmapped, invalid, refused, an
@@ -442,17 +482,12 @@ impl ChatDrawer {
             }
             ChatEvt::Resolved { .. } => Vec::new(),
             // Which workspaces run: the picker asks one's channels; the Connect step learns whether another runs.
-            ChatEvt::Workspaces { reply } => match self.modal.as_mut().map(|m| &mut m.kind) {
-                Some(Kind::Picker(p)) if &p.row.host == host => match p.on_workspaces(reply) {
-                    Some(workspace) => vec![(host.clone(), OutgoingReq::ChatChannels { workspace })],
-                    None => Vec::new(),
-                },
-                Some(Kind::Connect(c)) if c.host() == host => {
-                    c.on_workspaces(&reply);
-                    Vec::new()
+            ChatEvt::Workspaces { reply } => {
+                if let ChatReply::Done(res) = &reply {
+                    self.workspaces.insert(host.clone(), res.workspaces.clone());
                 }
-                _ => Vec::new(),
-            },
+                self.on_workspaces(host, reply)
+            }
             ChatEvt::Channels { workspace, reply } => {
                 if let Some(p) = self.picker_mut().filter(|p| &p.row.host == host) {
                     p.on_channels(workspace.as_deref(), reply);
@@ -463,13 +498,16 @@ impl ChatDrawer {
             // it (`connect_sent`), so only that step reads it.
             ChatEvt::Connect { reply } => {
                 self.connect_sent = self.connect_sent.take().filter(|h| h != host);
+                let mut outs = Vec::new();
                 if let Some(Kind::Connect(c)) = self.modal.as_mut().map(|m| &mut m.kind) {
                     if c.host() == host {
                         c.answered(reply);
+                        // The connected screen asks at once which channels the Slack app connected cannot read.
+                        outs.extend(c.ask_unread(now));
                     }
                 }
                 self.rows.ask_again(host);
-                Vec::new()
+                outs
             }
             ChatEvt::ConnectUnknown => {
                 self.connect_sent = self.connect_sent.take().filter(|h| h != host);
@@ -747,7 +785,13 @@ impl ChatDrawer {
         let private = ours && channel.is_some_and(|c| self.picker().is_some_and(|p| p.is_private(c)));
         let words = match reply {
             Some(ChatReply::Refused(ChatCode::NoSuchChannel)) if ours => self.picker().map(Picker::no_such_channel),
-            Some(reply) => pair_words(reply, private, &slack_app_name(self.login), host),
+            Some(reply) => {
+                let app = match self.picker().filter(|_| ours) {
+                    Some(p) => p.invite_app(),
+                    None => self.app_name(host, self.owner.target().filter(|t| t.row == row).map(|t| t.workspace.as_str())),
+                };
+                pair_words(reply, private, &app, host)
+            }
             None => Some("the channel may have been set: the panel's top line shows which one".into()),
         };
         if ours {
@@ -798,7 +842,7 @@ impl ChatDrawer {
         };
         format!(
             "Your Slack app (the bot that reads the channel and posts for your agents) cannot read {channel}: Slack says it is not in that channel, or that the channel no longer exists. A private channel lets in only the Slack apps its members invite, and a new Slack app is in no channel until it is invited. To fix it, {}; this panel then shows the channel within two minutes.",
-            invite(&slack_app_name(self.login))
+            invite(&self.app_name(self.rows.host(), Some(t.workspace.as_str())))
         )
     }
 

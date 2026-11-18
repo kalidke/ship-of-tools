@@ -14,7 +14,7 @@ use tokio::sync::watch;
 use sot_platform::host::lock_supervisor;
 use sot_platform::Error as PlatformError;
 
-use crate::api::{Api, ApiError, Transfers};
+use crate::api::{Api, ApiError, BotApp, Transfers};
 use crate::config::Credentials;
 use crate::http::{Http, Secret};
 use crate::socket::{self, Gap, Socket, SocketError, Taken, Timing, Waiter, BASE};
@@ -134,8 +134,8 @@ pub struct Service {
     end: Arc<End>,
     /// Why the bot's app is unknown, so no frame's app is checked (`app_unchecked`).
     unchecked: Option<&'static str>,
-    /// The name Slack gave the bot at the start (`app_name`).
-    app_name: Option<String>,
+    /// The bot's app as `bots.info` gave it at the start, its id and its name (`app`).
+    app: Option<BotApp>,
     /// Why the person's user token was dropped at the start (`person_dropped`).
     dropped: Option<&'static str>,
 }
@@ -223,19 +223,19 @@ impl Service {
         let api = api.with_end(end.clone());
         // From here an early return drops the lock; the socket, once started, owns it.
         let mut own = api.auth_test().await.map_err(ServiceError::Api)?;
-        // The bot's app, which every frame's is checked against; unknown, nothing is checked (fails open). Its name is what a
-        // window names the connected app by.
-        let (unchecked, app_name) = match api.bot_app().await {
+        // The bot's app, which every frame's is checked against; unknown, nothing is checked (fails open). A window names
+        // the connected app by its name and opens its page by its id.
+        let (unchecked, bot_app) = match api.bot_app().await {
             Ok(bot) => {
-                own.app_id = Some(bot.id);
-                (None, bot.name)
+                own.app_id = Some(bot.id.clone());
+                (None, Some(bot))
             }
             Err(e) => (Some(e.code()), None),
         };
         let dropped = api.check_person().await;
         let socket =
             Socket::launch(http, app, own, workspace, base, timing, Box::new(lock), end.clone()).map_err(ServiceError::Socket)?;
-        Ok(Service { api: Arc::new(api), phase: Mutex::new(Phase::Running(socket)), claim, end, unchecked, app_name, dropped })
+        Ok(Service { api: Arc::new(api), phase: Mutex::new(Phase::Running(socket)), claim, end, unchecked, app: bot_app, dropped })
     }
 
     /// The workspace this service serves.
@@ -266,9 +266,9 @@ impl Service {
         self.unchecked
     }
 
-    /// The name Slack gave the bot at the start (`BotApp::name`); `None` when `bots.info` gave none or failed.
-    pub fn app_name(&self) -> Option<String> {
-        self.app_name.clone()
+    /// The bot's app as `bots.info` gave it at the start; `None` when `bots.info` failed (`app_unchecked` says why).
+    pub fn app(&self) -> Option<BotApp> {
+        self.app.clone()
     }
 
     /// Running, and not ended on its own.
@@ -375,7 +375,7 @@ impl Service {
     pub(crate) fn inert(api: Arc<Api>) -> Service {
         let claim = Arc::new(AtomicU8::new(FREE));
         let end = End::new(claim.clone());
-        Service { api, phase: Mutex::new(Phase::Running(Socket::inert())), claim, end, unchecked: None, app_name: None, dropped: None }
+        Service { api, phase: Mutex::new(Phase::Running(Socket::inert())), claim, end, unchecked: None, app: None, dropped: None }
     }
 
     #[cfg(test)]

@@ -12,13 +12,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 use std::time::Duration;
 
-use sot_chat::api::Transfers;
+use sot_chat::api::{BotApp, Transfers};
 use sot_chat::config::{self, Config, ConfigError, Credentials, Plan, Reader, Resolution, Secrets};
 use sot_chat::delivery::Timing;
 use sot_chat::http::Http;
 use sot_chat::service::Service;
 use sot_platform::host::env::Env;
-use sot_protocol::ops::{ChatCode, ChatTarget, ChatWorkspaceInfo};
+use sot_protocol::ops::{ChatCode, ChatTarget, ChatUnread, ChatWorkspaceInfo};
 use tokio::runtime::Handle;
 use tokio::sync::Notify;
 use tokio::task::AbortHandle;
@@ -45,8 +45,9 @@ pub(crate) trait Listener: Send + Sync + 'static {
     fn ended(&self) -> bool {
         false
     }
-    /// The name Slack gave the connected Slack app's bot at the start, which `chat.workspaces` carries.
-    fn app_name(&self) -> Option<String> {
+    /// The connected Slack app as `bots.info` gave it at the start (its id and its bot's name), which `chat.workspaces`
+    /// carries.
+    fn app(&self) -> Option<BotApp> {
         None
     }
 }
@@ -58,8 +59,8 @@ impl Listener for Service {
     fn ended(&self) -> bool {
         Service::ended(self).is_some()
     }
-    fn app_name(&self) -> Option<String> {
-        Service::app_name(self)
+    fn app(&self) -> Option<BotApp> {
+        Service::app(self)
     }
 }
 
@@ -364,6 +365,24 @@ pub(crate) struct Chat<L: Listener = Service> {
     check: Duration,
     /// One reload at a time.
     setup: tokio::sync::Mutex<()>,
+    /// What the task a connect starts after its reload found of the workspace's mapped channels its Slack app cannot read.
+    unread: Mutex<Unread<L>>,
+}
+
+/// The connects' finds (`setup::find_unread`), and the bound on one task's reads.
+struct Unread<L> {
+    /// Per workspace, the service the task read through and the channels it found: `chat.workspaces` carries them only
+    /// while that service runs, so a later start says nothing of them. One entry per workspace a connect reached since the
+    /// daemon started, each at most `MAX_WATCHED` channels.
+    found: BTreeMap<String, (Weak<L>, Vec<ChatUnread>)>,
+    /// How long one task's reads may take in all: `setup::UNREAD_WAIT`, which a test shortens.
+    wait: Duration,
+}
+
+impl<L> Unread<L> {
+    fn new() -> Mutex<Self> {
+        Mutex::new(Unread { found: BTreeMap::new(), wait: setup::UNREAD_WAIT })
+    }
 }
 
 impl<L: Listener> Chat<L> {
@@ -441,6 +460,7 @@ impl<L: Listener> Chat<L> {
             verify,
             check,
             setup: Default::default(),
+            unread: Unread::new(),
         });
         if !hub {
             return this;
@@ -588,6 +608,7 @@ impl<L: Listener> Chat<L> {
             verify: setup::Verifier::none(),
             check: HUB_CHECK,
             setup: Default::default(),
+            unread: Unread::new(),
         })
     }
 
@@ -622,20 +643,42 @@ impl<L: Listener> Chat<L> {
         self.units().map.values().any(|u| matches!(*u.lock(), Phase::Running(_)))
     }
 
-    /// `chat.toml`'s workspace and every connected workspace with its last name, whether it runs and, while it runs, the
-    /// name Slack gave its Slack app's bot at the start, for `chat.workspaces`; `None` while no `chat.toml` is admitted.
+    /// `chat.toml`'s workspace and every connected workspace with its last name, whether it runs and, while it runs, its
+    /// Slack app as `bots.info` gave it at the start and what a connect's task found that app cannot read (kept by
+    /// `keep_unread` for the service running now, else not known), for `chat.workspaces`; `None` while no `chat.toml` is
+    /// admitted.
     pub(crate) fn workspaces(&self) -> Option<(String, Vec<ChatWorkspaceInfo>)> {
         let default = self.default_workspace()?;
         let names = self.names.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let found = self.unread.lock().unwrap_or_else(|e| e.into_inner()).found.clone();
         let units = self.units();
         let admitted = units.map.iter().filter(|(w, _)| units.plans.contains_key(*w));
         let list = admitted
             .map(|(w, u)| {
-                let running = u.service();
-                ChatWorkspaceInfo { id: w.clone(), name: names.get(w).cloned(), running: running.is_some(), app_name: running.and_then(|s| s.app_name()) }
+                let service = u.service();
+                let running = service.is_some();
+                let (app_name, app_id) = service.as_ref().and_then(|s| s.app()).map_or((None, None), |a| (a.name, Some(a.id)));
+                let unread = service.and_then(|s| found.get(w).filter(|(of, _)| std::ptr::eq(of.as_ptr(), Arc::as_ptr(&s))).map(|(_, l)| l.clone()));
+                ChatWorkspaceInfo { id: w.clone(), name: names.get(w).cloned(), running, app_name, app_id, unread }
             })
             .collect();
         Some((default, list))
+    }
+
+    /// Keeps what a connect's task found `workspace`'s Slack app cannot read, read through `service`, in place of what an
+    /// earlier task found.
+    pub(crate) fn keep_unread(&self, workspace: &str, service: &Weak<L>, channels: Vec<ChatUnread>) {
+        self.unread.lock().unwrap_or_else(|e| e.into_inner()).found.insert(workspace.to_string(), (service.clone(), channels));
+    }
+
+    /// How long one connect's task may read in all.
+    pub(crate) fn unread_wait(&self) -> Duration {
+        self.unread.lock().unwrap_or_else(|e| e.into_inner()).wait
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_unread_wait(&self, wait: Duration) {
+        self.unread.lock().unwrap_or_else(|e| e.into_inner()).wait = wait;
     }
 
     /// `workspace`'s last name, only while more than one workspace is admitted: a window names the workspace in its title

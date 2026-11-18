@@ -183,7 +183,7 @@ pub enum ChatResolveRes {
     /// one (the one whose connection failed); absent from an older daemon and for a row with no mapping.
     Unconfigured {
         reason: ChatUnconfigured,
-        #[serde(default, deserialize_with = "named_workspace", skip_serializing_if = "Option::is_none")]
+        #[serde(default, deserialize_with = "named_id", skip_serializing_if = "Option::is_none")]
         workspace: Option<String>,
     },
     /// Also a state added later: a reader takes it as no usable mapping (an older window shows `unconfigured` as its
@@ -252,21 +252,17 @@ pub struct ChatConnectReq {
 }
 
 /// Reply to `chat.connect`: the Slack workspace the bot token belongs to, and its name as Slack gave it (absent from an
-/// older daemon and when Slack gave none; read as a resolve's channel `name` is, so a bad one is no name). `unread`: the
-/// workspace's mapped channels its app cannot read after this connect (a new Slack app is in none yet), at most
-/// `MAX_WATCHED`; absent from an older daemon and when there is none, and a reader keeps the entries it can read.
+/// older daemon and when Slack gave none; read as a resolve's channel `name` is, so a bad one is no name).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChatConnectRes {
     #[serde(deserialize_with = "within::<_, MAX_ID>")]
     pub workspace: String,
     #[serde(default, deserialize_with = "channel_name", skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    #[serde(default, deserialize_with = "unread_list", skip_serializing_if = "Vec::is_empty")]
-    pub unread: Vec<ChatUnread>,
 }
 
-/// A mapped channel the connected app cannot read: its id, and its name as the app connected before had it (absent when
-/// none was known; read as a resolve's `name` is).
+/// A mapped channel the running Slack app cannot read: its id, and its name as the app connected before had it, else as
+/// Slack gave it (absent when neither was known; read as a resolve's `name` is).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChatUnread {
     pub id: ChatChannel,
@@ -274,10 +270,13 @@ pub struct ChatUnread {
     pub name: Option<String>,
 }
 
-/// The readable entries of a connect's `unread`, the first `MAX_WATCHED` of them.
-fn unread_list<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<ChatUnread>, D::Error> {
-    let all = Vec::<serde_json::Value>::deserialize(d)?;
-    Ok(all.into_iter().filter_map(|v| serde_json::from_value(v).ok()).take(MAX_WATCHED).collect())
+/// An entry's `unread`: a list is known (empty or not), of its readable entries the first `MAX_WATCHED`; absent, null or
+/// any other value is not known.
+fn unread_list<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Vec<ChatUnread>>, D::Error> {
+    Ok(match serde_json::Value::deserialize(d)? {
+        serde_json::Value::Array(all) => Some(all.into_iter().filter_map(|v| serde_json::from_value(v).ok()).take(MAX_WATCHED).collect()),
+        _ => None,
+    })
 }
 
 /// `chat.channels`: the channels the picker offers, of `workspace` (absent: `chat.toml`'s own, as an older window asks).
@@ -294,9 +293,9 @@ fn workspace_id<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>
     Ok(Option::<Id>::deserialize(d)?.map(|i| i.0))
 }
 
-/// A workspace a reply names for words and a choice: one that is no id reads as none, never a reason to refuse the reply
-/// it rides on.
-fn named_workspace<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+/// An id a reply names for words, a choice or an address (a workspace, a Slack app): one that is no id reads as none,
+/// never a reason to refuse the reply it rides on.
+fn named_id<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
     Ok(match serde_json::Value::deserialize(d)? {
         serde_json::Value::String(s) if is_id(&s) => Some(s),
         _ => None,
@@ -308,8 +307,10 @@ fn named_workspace<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Stri
 pub struct ChatWorkspacesReq {}
 
 /// One connected workspace: its id, its name as Slack last gave it (a reader shows the id without one), whether its chat
-/// runs now, and, while it runs, `app_name`: the name Slack gives the bot of the Slack app it is connected to (absent when
-/// Slack gave none, while it does not run, and from an older daemon; read as `name` is).
+/// runs now, and, while it runs, of the Slack app it is connected to: `app_name`, the name Slack gives that app's bot
+/// (read as `name` is), `app_id`, the app's id (read as an id: one that is not is none), and `unread`, the workspace's
+/// mapped channels that app cannot read, once known (a list, empty when it reads them all). Each is absent while not
+/// known, while the workspace does not run, and from an older daemon.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChatWorkspaceInfo {
     #[serde(deserialize_with = "an_id")]
@@ -319,6 +320,10 @@ pub struct ChatWorkspaceInfo {
     pub running: bool,
     #[serde(default, deserialize_with = "channel_name", skip_serializing_if = "Option::is_none")]
     pub app_name: Option<String>,
+    #[serde(default, deserialize_with = "named_id", skip_serializing_if = "Option::is_none")]
+    pub app_id: Option<String>,
+    #[serde(default, deserialize_with = "unread_list", skip_serializing_if = "Option::is_none")]
+    pub unread: Option<Vec<ChatUnread>>,
 }
 
 /// Reply to `chat.workspaces`: `chat.toml`'s workspace (the one a request naming none means) and every connected

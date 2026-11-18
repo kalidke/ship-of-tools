@@ -12,7 +12,7 @@ use crate::net::transport::ChatReply;
 use crate::ui::chrome::{cell_row, wrap_status};
 use crate::ui::ResultRowIdentity;
 
-/// How a person invites their Slack app (`name`, `slack_app_name`) to a channel.
+/// How a person invites a Slack app (`name`, the one the hub names, else `slack_app_name`'s) to a channel.
 pub(super) fn invite(name: &str) -> String {
     format!("in that channel in Slack, type /invite @{name}")
 }
@@ -100,7 +100,8 @@ pub(super) struct Picker {
     away: bool,
     /// This picker sent the pair in flight (`ChatDrawer::pair_sent`), so its reply is this picker's to close on.
     pairing: bool,
-    /// The person's app, as the invite names it.
+    /// The name the setup gives the person's Slack app (`slack_app_name`): an invite says it only when the shown workspace's
+    /// entry names no Slack app (`invite_app`).
     app: String,
     /// The row's channel now, for a mapped row: its workspace, its id and its label (`#name`, else the id).
     current: Option<(String, ChatChannel, String)>,
@@ -137,8 +138,14 @@ impl Picker {
         let List::Listed { channels, more: false } = &self.list else { return None };
         let here = self.asked().is_none_or(|w| &w == workspace);
         (here && !channels.iter().any(|c| &c.id == id)).then(|| {
-            format!("This project's channel, {label}, is not in this list: your Slack app (the bot that reads the channel and posts for your agents) is not in it, so this panel cannot show it. To keep it, {}, then press Esc. To change it, pick another channel below.\n\n", invite(&self.app))
+            format!("This project's channel, {label}, is not in this list: your Slack app (the bot that reads the channel and posts for your agents) is not in it, so this panel cannot show it. To keep it, {}, then press Esc. To change it, pick another channel below.\n\n", invite(&self.invite_app()))
         })
+    }
+
+    /// The Slack app an invite names: the shown workspace's, by the name Slack gives its bot when the hub gave one, else the
+    /// person's (`app`).
+    pub(super) fn invite_app(&self) -> String {
+        self.shown().and_then(|w| w.app_name.as_deref()).map_or_else(|| self.app.clone(), |n| cell_row(n).into_owned())
     }
 
     /// The picker opening on `start` when that workspace runs.
@@ -350,7 +357,7 @@ impl Picker {
     pub(super) fn no_such_channel(&self) -> String {
         let name = if self.shown().is_some() { self.shown_words() } else { "this Slack workspace".into() };
         let others = if self.several() { "; Left and Right show the channels of the other Slack workspaces" } else { "" };
-        format!("not set: that channel is not in {name}{others}; if it is a private channel, your Slack app is not in it: {}, then pick it again", invite(&self.app))
+        format!("not set: that channel is not in {name}{others}; if it is a private channel, your Slack app is not in it: {}, then pick it again", invite(&self.invite_app()))
     }
 
     pub(super) fn title(&self) -> String {
@@ -369,7 +376,7 @@ impl Picker {
     /// The listed head: the row's channel when the list lacks it, whose channels these are, how to reach the others, what
     /// your Slack app is, and why a private channel may be missing.
     fn listed_head(&self) -> String {
-        let private = private_words(&self.app);
+        let private = private_words(&self.invite_app());
         // `your Slack app` is said what it is at its first use: in the missing channel's words when they lead.
         let missing = self.missing_words();
         let app = if missing.is_some() { "your Slack app" } else { APP_IS };
