@@ -86,10 +86,10 @@ fn where_julia_counts_every_signal_the_burst_ends_inside_its_half_second() {
 #[test]
 fn each_answer_says_what_is_left() {
     let plain = unanswered(false);
-    assert!(plain.contains("second Ctrl+C") && plain.contains("--force") && plain.contains("crash"), "{plain}");
+    assert!(plain.contains("second Ctrl+c") && plain.contains("--force") && plain.contains("crash"), "{plain}");
     assert!(plain.contains("--fresh"));
     let forced = unanswered(true);
-    assert!(forced.contains("forced") && forced.contains("--fresh") && !forced.contains("second Ctrl+C"), "{forced}");
+    assert!(forced.contains("forced") && forced.contains("--fresh") && !forced.contains("second Ctrl+c"), "{forced}");
     assert!(forced.contains("heavy CPU load"), "{forced}");
     let none = not_sent("Access is denied");
     assert!(none.contains("no interrupt signal could be sent") && none.contains("Access is denied"), "{none}");

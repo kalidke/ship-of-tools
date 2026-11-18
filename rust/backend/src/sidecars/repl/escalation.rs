@@ -145,7 +145,7 @@ pub(super) fn unanswered(force: bool) -> String {
     } else {
         format!(
             "the eval did not stop at the interrupt signal: code with no safepoint, and C code, compiling and garbage \
-             collection, take it only when they return (wait for that call to return, or force it). A second Ctrl+C in the window, or `sot-fe repl interrupt \
+             collection, take it only when they return (wait for that call to return, or force it). A second Ctrl+c in the window, or `sot-fe repl interrupt \
              --force`, forces it; forcing inside C code (BLAS), while compiling or while collecting garbage can crash \
              or hang the REPL, and {RESTART}"
         )

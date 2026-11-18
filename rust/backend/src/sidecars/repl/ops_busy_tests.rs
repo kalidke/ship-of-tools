@@ -69,13 +69,13 @@ async fn an_interrupt_the_signal_does_not_stop_says_so() {
     let waited = t0.elapsed();
     assert_eq!(code_of(&plain), "repl_interrupt_failed");
     let error = plain[0].0.payload["error"].as_str().unwrap_or("").to_string();
-    assert!(error.contains("second Ctrl+C") && error.contains("--force") && error.contains("--fresh"), "{error}");
+    assert!(error.contains("second Ctrl+c") && error.contains("--force") && error.contains("--fresh"), "{error}");
     assert!(waited < Duration::from_secs(6), "answered by the daemon, not at the bound: {waited:?}");
     let forced = json!({ "workspace_id": row.id, "force": true });
     let forced = handle_repl_interrupt(2, forced, &row.session, &row.workspaces, &conn);
     let forced = bounded("a forced interrupt", forced).await.expect("handler");
     let error = forced[0].0.payload["error"].as_str().unwrap_or("").to_string();
-    assert!(error.contains("forced") && error.contains("--fresh") && !error.contains("second Ctrl+C"), "{error}");
+    assert!(error.contains("forced") && error.contains("--fresh") && !error.contains("second Ctrl+c"), "{error}");
     println!("repl-busy: an interrupt the signal does not stop -> {error} after {waited:?} (first)");
 }
 

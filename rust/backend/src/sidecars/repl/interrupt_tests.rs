@@ -82,7 +82,7 @@ async fn a_loop_with_no_safepoint_needs_the_force() {
     let (mut reply, collector) = start(&fixture, 2, "println(\"spinning\"); while true end", "spinning").await;
     let answer = fixture.repl.request_if_running("repl.interrupt", json!({})).await;
     let error = format!("{:#}", answer.expect_err("one ordinary signal does not stop this loop"));
-    assert!(error.contains("second Ctrl+C") && error.contains("--force"), "the answer names the force: {error}");
+    assert!(error.contains("second Ctrl+c") && error.contains("--force"), "the answer names the force: {error}");
     assert!(error.contains("--fresh"), "and the restart: {error}");
     assert!(tokio::time::timeout(Duration::from_secs(3), &mut reply).await.is_err(), "the loop runs on");
     assert!(!interrupted(&collector));
