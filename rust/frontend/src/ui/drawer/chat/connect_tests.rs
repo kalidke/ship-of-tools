@@ -283,25 +283,28 @@ fn the_other_slack_apps_screen_says_whose_codes_these_are_and_how_to_keep_everyt
     let c = asked_with(other_app());
     assert_eq!(c.title(), " chat · a different Slack app ");
     let b = c.body();
-    let first = "These Slack codes belong to a different Slack app than the one connected to Alpha Lab now, which Slack calls Alpha Lab chat. To keep everything as it is, press Enter and paste the codes of Alpha Lab chat instead. The new Slack app is in no channel yet, so if you connect it, each project's channel shows nothing until someone invites the new Slack app in it in Slack; the next screen names each channel and what to type.";
+    let first = "These Slack codes belong to a different Slack app than Alpha Lab chat, the Slack app connected to Alpha Lab now. To keep everything as it is, press Enter and paste the codes of Alpha Lab chat instead. The new Slack app is in no channel yet, so if you connect it, each project's channel shows nothing until someone invites the new Slack app to it in Slack; the next screen names each channel and what to type.";
     let right = right_label();
-    let then = format!("Enter opens that Slack app's page in your browser, where its codes are; steps 2 and 3 show which (they follow here). To connect the new Slack app anyway, press {right} (the Right arrow key).");
+    let then = format!("Enter opens the page of Alpha Lab chat in your browser, where its codes are; steps 2 and 3 show which (they follow here). To connect the new Slack app anyway, press {right} (the Right arrow key).");
     assert_eq!(b.head, format!("{first}\n\n{then}"));
     assert_eq!(b.pin, format!("Enter  keep the Slack app connected now\n{right} (Right)  connect the new Slack app anyway    Esc  close"));
     let rows = b.lines(60, 12);
     assert_eq!(rows[10..], [String::from("Enter  keep the Slack app connected now"), format!("{right} (Right)  connect the new Slack app anyway    Esc  close")], "each key whole on its row");
     let above = above_the_keys(&c);
-    for said in ["These Slack codes belong to a different Slack app than the one connected to Alpha Lab now, which Slack calls Alpha Lab chat.", "To keep everything as it is, press Enter and paste the codes of Alpha Lab chat instead.", "The new Slack app is in no channel yet", "shows nothing until someone invites the new Slack app in it in Slack; the next screen names each channel and what to type."] {
+    for said in ["These Slack codes belong to a different Slack app than Alpha Lab chat, the Slack app connected to Alpha Lab now.", "To keep everything as it is, press Enter and paste the codes of Alpha Lab chat instead.", "The new Slack app is in no channel yet", "shows nothing until someone invites the new Slack app to it in Slack; the next screen names each channel and what to type."] {
         assert!(above.contains(said), "{said:?} is not in the first rows at 60 by 12: {above}");
     }
     // Nothing named but the workspace: the words leave the names out.
     let c = asked_with(ChatOtherApp { workspace: Some("TAAAA1".into()), new_app_known: true, ..ChatOtherApp::default() });
     let head = c.body().head;
-    assert!(head.starts_with("These Slack codes belong to a different Slack app than the one connected to workspace TAAAA1 now. To keep"), "{head}");
+    assert!(head.starts_with("These Slack codes belong to a different Slack app than the Slack app connected to workspace TAAAA1 now. To keep"), "{head}");
     assert!(head.contains("press Enter and paste the codes of the Slack app connected now instead."), "{head}");
     assert!(head.contains("\n\nEnter opens your list of Slack apps in your browser: click the one connected now there"), "no id: {head}");
     let c = asked_with(ChatOtherApp { new_app_known: true, ..ChatOtherApp::default() });
-    assert!(c.body().head.starts_with("These Slack codes belong to a different Slack app than the one connected to this Slack workspace now."), "{}", c.body().head);
+    assert!(c.body().head.starts_with("These Slack codes belong to a different Slack app than the Slack app connected to this Slack workspace now."), "{}", c.body().head);
+    // An app with a page and no name: Enter's page is the Slack app connected now's.
+    let c = asked_with(ChatOtherApp { app_name: None, ..other_app() });
+    assert!(c.body().head.contains("\n\nEnter opens the page of the Slack app connected now in your browser, where its codes are;"), "{}", c.body().head);
 }
 
 /// Neither question screen names a Slack app to invite, whatever names the hub gave: this flow names every app it makes
@@ -313,14 +316,15 @@ fn the_question_screens_name_no_slack_app_to_invite() {
             let c = asked_with(ChatOtherApp { app_name: app_name.map(Into::into), new_app_name: new_app_name.map(Into::into), ..asked.clone() });
             let head = c.body().head;
             assert!(!head.contains("/invite"), "{app_name:?} {new_app_name:?}: the question names an app to invite: {head}");
-            assert!(above_the_keys(&c).contains("until someone invites the new Slack app in it in Slack"), "{app_name:?} {new_app_name:?}");
+            assert!(above_the_keys(&c).contains("until someone invites the new Slack app to it in Slack"), "{app_name:?} {new_app_name:?}");
         }
     }
 }
 
 /// When Slack did not say which Slack app the tokens are for, the screen says so truly, names the app connected now, and
 /// offers to ask again: Enter sends the same three with no word to replace, nothing dropped and nothing remembered, and
-/// `chat.thread_open`'s key connects these codes anyway. In a panel 60 cells by 12 all of it is above the keys. No step
+/// `chat.thread_open`'s key connects these codes anyway, which the screen offers for when it comes back and the codes
+/// were copied from the connected app's own page. In a panel 60 cells by 12 all of it is above the keys. No step
 /// then names the connected app as the one whose codes to paste: a code Slack refuses goes back to its step as in any
 /// connect.
 #[test]
@@ -329,14 +333,14 @@ fn the_screen_says_when_ship_of_tools_could_not_tell_whose_codes_these_are() {
     assert_eq!(c.title(), " chat · a different Slack app ");
     let b = c.body();
     let right = right_label();
-    let first = format!("Ship of Tools could not tell whether these Slack codes belong to Alpha Lab chat, the Slack app connected to Alpha Lab now: Slack did not answer. Press Enter to ask Slack again. To connect them anyway, press {right} (the Right arrow key); if they are a new Slack app's, it is in no channel yet, so each project's channel shows nothing until someone invites the new Slack app in it in Slack; the next screen names each channel and what to type.");
+    let first = format!("Ship of Tools could not tell whether these Slack codes belong to Alpha Lab chat, the Slack app connected to Alpha Lab now: Slack did not say. Press Enter to ask Slack again. If this screen comes back and you copied the codes from that Slack app's own page, press {right} (the Right arrow key) to connect them; if they are a new Slack app's, it is in no channel yet, so each project's channel shows nothing until someone invites the new Slack app to it in Slack; the next screen names each channel and what to type.");
     assert_eq!(b.head, first);
     assert_eq!(b.pin, format!("Enter  ask Slack again\n{right} (Right)  connect these codes anyway    Esc  close"));
     let rows = b.lines(60, 12);
     assert_eq!(rows[10..], [String::from("Enter  ask Slack again"), format!("{right} (Right)  connect these codes anyway    Esc  close")], "each key whole on its row");
     assert_eq!(above_the_keys(&c).split_whitespace().collect::<Vec<_>>(), first.split_whitespace().collect::<Vec<_>>(), "the whole screen is above the keys at 60 by 12");
     // A bare refusal is the weaker claim: an app not told, nothing named.
-    assert!(asked_with(ChatOtherApp::default()).body().head.starts_with("Ship of Tools could not tell whether these Slack codes belong to the Slack app connected to this Slack workspace now: Slack did not answer. Press Enter to ask Slack again."));
+    assert!(asked_with(ChatOtherApp::default()).body().head.starts_with("Ship of Tools could not tell whether these Slack codes belong to the Slack app connected to this Slack workspace now: Slack did not say. Press Enter to ask Slack again. If this screen comes back and you copied the codes from that Slack app's own page, press "));
     // The other key connects the held three, saying to replace.
     let mut c = asked_with(untold());
     assert!(replacing(&c.key(RIGHT, None, false).0.into_iter().collect::<Vec<_>>()) == [(bot(), user(), app())], "the other key sent no replacing connect of the three held");
@@ -449,7 +453,7 @@ fn the_other_slack_apps_keys_keep_the_codes_or_connect_anyway_once() {
 /// the words go. After the other Slack app's screen named the app to keep, the step names it as the one to copy from.
 #[test]
 fn a_set_of_two_slack_apps_codes_goes_back_to_the_app_level_token_with_the_other_two_kept() {
-    let wire = "the \"App-Level Token\" belongs to a different Slack app than the \"Bot User OAuth Token\", so nothing was changed; paste the three codes of one Slack app";
+    let wire = "the \"App-Level Token\" belongs to a different Slack app than the \"Bot User OAuth Token\", so nothing was changed; all three codes must come from one Slack app";
     assert_eq!(ChatCode::MixedApps.text(), wire);
     let mut c = step(ChatUnconfigured::NotConnected);
     for t in [bot(), user(), app()] {
@@ -459,7 +463,7 @@ fn a_set_of_two_slack_apps_codes_goes_back_to_the_app_level_token_with_the_other
     assert_eq!((c.screen(), c.title().as_str()), (&Screen::App, " chat · set up Slack · step 3 of 3: the last Slack code "));
     assert!(c.held() == (Some(bot().as_str()), Some(user().as_str()), None), "the odd code is held, or one of the other two is not");
     let b = c.body();
-    let lead = format!("Not connected: {wire}. Copy the \"App-Level Token\" again, from the same Slack app as the two codes of step 2; or, if the two codes of step 2 are the other Slack app's, go back to step 2 and paste the right two there. On Slack's page:");
+    let lead = format!("Not connected: {wire}. Copy the \"App-Level Token\" again, from the same Slack app as the two codes of step 2; or, if the two codes of step 2 came from the wrong Slack app, press Left, paste the right two there, then paste this one again. On Slack's page:");
     assert!(b.head.starts_with(&format!("{lead}\n\n  1. In the menu on the left, click Basic Information.")), "{}", b.head);
     assert!(b.head.ends_with("App-Level Token   not pasted yet"), "{}", b.head);
     assert_eq!(b.pin, format!("{P}+v  paste    Left/Right  move between steps    Esc  close"));
@@ -469,7 +473,7 @@ fn a_set_of_two_slack_apps_codes_goes_back_to_the_app_level_token_with_the_other
     let pin_at = rows.iter().position(|r| r.starts_with(&keys)).unwrap_or_else(|| panic!("the keys are not in view at 60 by 12: {rows:#?}"));
     assert_eq!(rows[pin_at..].join(" ").split_whitespace().collect::<Vec<_>>(), b.pin.split_whitespace().collect::<Vec<_>>(), "the keys are cut at 60 by 12: {rows:#?}");
     let first = above(&c, &keys);
-    for said in [format!("Not connected: {wire}."), "Copy the \"App-Level Token\" again, from the same Slack app as the two codes of step 2".to_string(), "go back to step 2 and paste the right two there.".to_string()] {
+    for said in [format!("Not connected: {wire}."), "Copy the \"App-Level Token\" again, from the same Slack app as the two codes of step 2".to_string(), "press Left, paste the right two there, then paste this one again.".to_string()] {
         assert!(first.contains(&said), "{said:?} is not in the first rows at 60 by 12: {first}");
     }
     assert!(!leaks(&b.head), "the screen draws a held code");
@@ -589,7 +593,7 @@ fn every_way_to_a_mixed_set_sends_it_once_and_shows_the_hubs_refusal() {
     assert!(key(&mut d, ESC).1.close);
     d.hide();
     d.on_evt(&host(), refused(ChatCode::MixedApps), at);
-    assert_eq!(d.take_notice(), Some(format!("Slack not connected: {}", ChatCode::MixedApps.text())));
+    assert_eq!(d.take_notice(), Some(format!("Slack not connected: the \"App-Level Token\" belongs to a different Slack app than the \"Bot User OAuth Token\", so nothing was changed; all three codes must come from one Slack app. Open the channel list ({P}+Shift+k), choose Connect a Slack workspace and paste the three codes of one Slack app")));
 }
 
 /// The drawer hands the hub's `other_app` to the step that is connecting, and the step's next key sends again; with the

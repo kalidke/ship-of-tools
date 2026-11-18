@@ -134,8 +134,8 @@ pub struct Service {
     end: Arc<End>,
     /// Why the bot's app is unknown, so no frame's app is checked (`app_unchecked`).
     unchecked: Option<&'static str>,
-    /// The bot's app as `bots.info` gave it at the start, its id and its name (`app`).
-    app: Option<BotApp>,
+    /// The bot's app as `bots.info` gave it, its id and its name (`app`): at the start, or at a later ask (`learn_app`).
+    app: std::sync::OnceLock<BotApp>,
     /// Why the person's user token was dropped at the start (`person_dropped`).
     dropped: Option<&'static str>,
 }
@@ -235,7 +235,7 @@ impl Service {
         let dropped = api.check_person().await;
         let socket =
             Socket::launch(http, app, own, workspace, base, timing, Box::new(lock), end.clone()).map_err(ServiceError::Socket)?;
-        Ok(Service { api: Arc::new(api), phase: Mutex::new(Phase::Running(socket)), claim, end, unchecked, app: bot_app, dropped })
+        Ok(Service { api: Arc::new(api), phase: Mutex::new(Phase::Running(socket)), claim, end, unchecked, app: bot_app.map(Into::into).unwrap_or_default(), dropped })
     }
 
     /// The workspace this service serves.
@@ -260,15 +260,28 @@ impl Service {
         self.end.code()
     }
 
-    /// Why the bot's app is unknown (`bots.info`'s failure as `ApiError::code`, `no_identity` when `auth.test` named no
-    /// bot), so no frame's app is checked; `None` when it is known.
+    /// Why the start could not tell the bot's app (`bots.info`'s failure as `ApiError::code`, `no_identity` when
+    /// `auth.test` named no bot), so no frame's app is checked; `None` when the start told it.
     pub fn app_unchecked(&self) -> Option<&'static str> {
         self.unchecked
     }
 
-    /// The bot's app as `bots.info` gave it at the start; `None` when `bots.info` failed (`app_unchecked` says why).
+    /// The bot's app as `bots.info` gave it, at the start or since (`learn_app`); `None` while no ask has told it
+    /// (`app_unchecked` says why the start's did not).
     pub fn app(&self) -> Option<BotApp> {
-        self.app.clone()
+        self.app.get().cloned()
+    }
+
+    /// The bot's app, asked again when it is not known: one `bots.info` under the service's own bot token (`Api::bot_app`,
+    /// a read), whose answer is kept for `app` from then on. A failure keeps nothing, so a later call asks again. The
+    /// listener's check of each frame's app stays as the start left it (`app_unchecked`).
+    pub async fn learn_app(&self) -> Option<BotApp> {
+        if self.app.get().is_none() {
+            if let Ok(told) = self.api.bot_app().await {
+                let _ = self.app.set(told);
+            }
+        }
+        self.app()
     }
 
     /// Running, and not ended on its own.
@@ -375,7 +388,7 @@ impl Service {
     pub(crate) fn inert(api: Arc<Api>) -> Service {
         let claim = Arc::new(AtomicU8::new(FREE));
         let end = End::new(claim.clone());
-        Service { api, phase: Mutex::new(Phase::Running(Socket::inert())), claim, end, unchecked: None, app: None, dropped: None }
+        Service { api, phase: Mutex::new(Phase::Running(Socket::inert())), claim, end, unchecked: None, app: Default::default(), dropped: None }
     }
 
     #[cfg(test)]

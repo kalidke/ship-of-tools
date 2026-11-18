@@ -115,7 +115,8 @@ pub enum ChatCode {
     /// body says what a window asks with (`ChatOtherApp`).
     OtherApp,
     /// A `chat.connect`, with `replace_app` or without, whose app-level token is another Slack app's than its bot token's:
-    /// nothing was saved. A window sends the person back to the app-level token's step, the other two kept.
+    /// nothing was saved. A window sends the person back to the app-level token's step, the other two kept, and shows the
+    /// text there and on its status line.
     MixedApps,
     Failed,
     #[serde(other)]
@@ -149,7 +150,7 @@ impl ChatCode {
             ChatCode::TooLarge => "the file is larger than the chat carries",
             ChatCode::NotAnImage => "that file is not a picture the chat can show",
             ChatCode::OtherApp => "these Slack codes may belong to a different Slack app than the one this Slack workspace is connected with now; nothing was changed",
-            ChatCode::MixedApps => "the \"App-Level Token\" belongs to a different Slack app than the \"Bot User OAuth Token\", so nothing was changed; paste the three codes of one Slack app",
+            ChatCode::MixedApps => "the \"App-Level Token\" belongs to a different Slack app than the \"Bot User OAuth Token\", so nothing was changed; all three codes must come from one Slack app",
             ChatCode::Failed | ChatCode::Other => "the chat request failed",
         }
     }

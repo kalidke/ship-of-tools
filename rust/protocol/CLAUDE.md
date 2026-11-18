@@ -131,7 +131,7 @@ name is in this crate's one op table.
     `{workspace, name?}` (`name`: the workspace's as Slack gave it, read as the resolve's `name` is, so a bad one is none and
     an older daemon's reply has none; an unknown field is ignored), or is refused `mixed_apps` (the app-level token is another Slack app's than the
     bot token's, whatever `replace_app` says, and nothing was saved; chat guarantee 34; no body; its text is what a window
-    shows: which code is the odd one, and to paste the three codes of one Slack app), or is refused `other_app` (CHAT-CONNECT-MAKES-A-NEW-APP:
+    shows: which code is the odd one, and that all three codes must come from one Slack app), or is refused `other_app` (CHAT-CONNECT-MAKES-A-NEW-APP:
     the tokens are another Slack app's than the one their workspace runs or starts with now, or Slack did not tell whose
     they are or which app runs, and nothing was saved; chat guarantee 31), a refusal whose body beside `error` and `code` is `ChatOtherApp {workspace?,
     name?, app_id?, app_name?, new_app_known?, new_app_name?}`: the workspace and its name, the app connected now (its id

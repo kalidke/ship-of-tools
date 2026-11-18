@@ -639,7 +639,7 @@ fn every_code_has_its_one_text() {
         (ChatCode::TooLarge, "the file is larger than the chat carries"),
         (ChatCode::NotAnImage, "that file is not a picture the chat can show"),
         (ChatCode::OtherApp, "these Slack codes may belong to a different Slack app than the one this Slack workspace is connected with now; nothing was changed"),
-        (ChatCode::MixedApps, "the \"App-Level Token\" belongs to a different Slack app than the \"Bot User OAuth Token\", so nothing was changed; paste the three codes of one Slack app"),
+        (ChatCode::MixedApps, "the \"App-Level Token\" belongs to a different Slack app than the \"Bot User OAuth Token\", so nothing was changed; all three codes must come from one Slack app"),
         (ChatCode::Failed, "the chat request failed"),
         (ChatCode::Other, "the chat request failed"),
     ];

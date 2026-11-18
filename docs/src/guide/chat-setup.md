@@ -257,21 +257,22 @@ not say which app they belong to, nothing is changed yet: the panel asks first. 
 `chat · a different Slack app`, and it names the app connected now as Slack calls it. It has two forms.
 
 **The codes belong to a different app.** The screen says so, and that a new app is in no channel yet, so each project's
-channel would show nothing until someone invites the new app in it in Slack.
+channel would show nothing until someone invites the new app to it in Slack.
 
 - **Enter keeps everything as it is.** Your browser opens the page of the app connected now, the panel shows step 2,
   and the codes you pasted are dropped: paste that app's three codes (steps 2 and 3).
 - **Right (`→`) connects the codes you pasted anyway**, in place of the app connected now. The connected screen follows
   (below).
 
-**Ship of Tools could not tell whose codes these are.** Slack did not answer when it was asked which app the codes
-belong to, or which app the workspace is connected to.
+**Ship of Tools could not tell whose codes these are.** Slack did not say which app the codes belong to, or which app
+the workspace is connected to.
 
-- **Enter asks Slack again**, with the same three codes. If Slack then says they belong to the app connected now, they
-  are saved; if it says they belong to a different app, the screen above shows; if it still does not answer, this
-  screen shows again.
-- **Right (`→`) connects the codes you pasted anyway.** If they belong to a new app, it is in no channel yet; if the
-  three are not from one app, the chat stops a moment later (below).
+- **Enter asks Slack again**, with the same three codes: which app they belong to, and which app the workspace is
+  connected to if that is not known yet. If Slack then says they belong to the app connected now, they are saved; if it
+  says they belong to a different app, the screen above shows; if it still does not say, this screen shows again.
+- **Right (`→`) connects the codes you pasted anyway.** Use it when this screen comes back and you copied the codes
+  from the connected app's own page. If they belong to a new app, it is in no channel yet; if the three are not from
+  one app, the chat stops a moment later (below).
 
 ### If the three codes are not from one app
 
@@ -280,9 +281,11 @@ the Bot User OAuth Token of step 2 (for example, the last code you copied from a
 when you pasted the old app's two), nothing is saved and the workspace keeps its connection. The panel shows step 3
 again with the App-Level Token dropped and the other two kept, and says first:
 `Not connected: the "App-Level Token" belongs to a different Slack app than the "Bot User OAuth Token", so nothing was
-changed; paste the three codes of one Slack app.` Copy the App-Level Token again from the same app as the two codes of
-step 2 and paste it; or, if the two codes of step 2 are the wrong app's, press Left and paste the right two there. If
-you closed the panel while the codes were checked, the status line says the same.
+changed; all three codes must come from one Slack app.` Copy the App-Level Token again from the same app as the two
+codes of step 2 and paste it; or, if the two codes of step 2 came from the wrong app, press Left, paste the right two
+there, then paste the App-Level Token again. If you closed the panel while the codes were checked, the status line
+says the same, and to open the channel list (`Ctrl+Shift+k`), choose `Connect a Slack workspace` and paste the three
+codes of one app. The User OAuth Token must come from that app too, though Ship of Tools cannot check it.
 
 This holds for every way of pasting them, the first time you connect a workspace too. The computer that runs your
 sessions checks it when it can tell both apps; if Slack does not say which app one of the codes belongs to while

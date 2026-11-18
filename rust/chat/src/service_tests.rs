@@ -721,6 +721,9 @@ async fn a_bot_token_refusal_ends_the_service_and_a_missing_scope_does_not() {
 
         let service = start_with_user().await.expect("service");
         assert_eq!(service.app_unchecked(), None, "the bot's app was not read at the start");
+        // An app the start told is not asked for again.
+        let asked = || fake.seen().iter().filter(|s| s.path() == "/api/bots.info").count();
+        assert_eq!((service.learn_app().await.map(|a| a.id).as_deref(), asked()), (Some("A0OWN"), 1));
         let api = service.api().unwrap();
         *refusal.lock().unwrap() = Some("missing_scope");
         assert_eq!(api.channels().await, Err(ApiError::Slack("missing_scope".into())));
@@ -762,6 +765,10 @@ async fn a_bot_token_refusal_ends_the_service_and_a_missing_scope_does_not() {
         let other = holding_fake(WS).await;
         let service = start(&other, &dir.0).await.expect("service");
         assert_eq!((service.app_unchecked(), service.ended()), (Some("slack"), None));
+        // Asked again, it is asked of Slack each time while Slack does not tell it, and nothing is kept.
+        let asked = || other.seen().iter().filter(|s| s.path() == "/api/bots.info").count();
+        assert_eq!((service.learn_app().await, service.learn_app().await, service.app(), asked()), (None, None, None, 3));
+        assert_eq!(service.ended(), None, "an ask Slack did not answer ended the service");
         service.stop(Duration::from_secs(3)).await;
         other.shutdown().await;
     })

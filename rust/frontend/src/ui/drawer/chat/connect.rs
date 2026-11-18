@@ -425,7 +425,7 @@ impl Connect {
     fn send(&mut self, busy: bool, asks: &mut Asks, replace: bool) -> Option<Out> {
         let (Some(bot), Some(user), Some(app)) = (&self.bot, &self.user, &self.app) else { return None };
         if busy {
-            asks.notice = Some("Slack is still checking the codes sent before: wait a few seconds for its answer, then press Enter again".into());
+            asks.notice = Some("Slack is still checking the codes sent before: wait for its answer, then press Enter again".into());
             return None;
         }
         let out = (self.host.clone(), OutgoingReq::ChatConnect { bot_token: bot.clone(), user_token: user.clone(), app_token: app.clone(), replace_app: replace });
@@ -570,7 +570,7 @@ impl Connect {
                     // After a set that was not all one Slack app's, the hub's own words lead, then what to do: this code
                     // again from the right app, or step 2's two.
                     out.push(if self.mixed {
-                        format!("Not connected: {}. Copy the \"App-Level Token\" again, from {same}; or, if the two codes of step 2 are the other Slack app's, go back to step 2 and paste the right two there. On Slack's page:", ChatCode::MixedApps.text())
+                        format!("Not connected: {}. Copy the \"App-Level Token\" again, from {same}; or, if the two codes of step 2 came from the wrong Slack app, press Left, paste the right two there, then paste this one again. On Slack's page:", ChatCode::MixedApps.text())
                     } else {
                         format!("One more code, the \"App-Level Token\": it lets Ship of Tools see new messages as they arrive. Copy it from {same}. On Slack's page:")
                     });
@@ -590,23 +590,25 @@ impl Connect {
                 let a = self.asked.clone().unwrap_or_default();
                 let w = asked_place(&a);
                 let now = a.app_name.as_deref().map(cell_row);
-                let cost = "each project's channel shows nothing until someone invites the new Slack app in it in Slack; the next screen names each channel and what to type";
+                let cost = "each project's channel shows nothing until someone invites the new Slack app to it in Slack; the next screen names each channel and what to type";
                 let right = key_label(Action::ChatThreadOpen);
+                // The app connected now, by the name Slack calls it when the hub gave one, with its place.
+                let whose = now.as_ref().map_or_else(|| format!("the Slack app connected to {w} now"), |n| format!("{n}, the Slack app connected to {w} now"));
                 if a.new_app_known {
-                    let named = now.as_ref().map(|n| format!(", which Slack calls {n}")).unwrap_or_default();
                     let keep = now.map_or_else(|| "the Slack app connected now".to_string(), |n| n.into_owned());
                     let page = if page_of(a.app_id.as_deref()) == SLACK_APPS {
-                        "Enter opens your list of Slack apps in your browser: click the one connected now there, and copy its codes as steps 2 and 3 show (they follow here)."
+                        "Enter opens your list of Slack apps in your browser: click the one connected now there, and copy its codes as steps 2 and 3 show (they follow here).".to_string()
                     } else {
-                        "Enter opens that Slack app's page in your browser, where its codes are; steps 2 and 3 show which (they follow here)."
+                        format!("Enter opens the page of {keep} in your browser, where its codes are; steps 2 and 3 show which (they follow here).")
                     };
-                    out.push(format!("These Slack codes belong to a different Slack app than the one connected to {w} now{named}. To keep everything as it is, press Enter and paste the codes of {keep} instead. The new Slack app is in no channel yet, so if you connect it, {cost}."));
+                    out.push(format!("These Slack codes belong to a different Slack app than {whose}. To keep everything as it is, press Enter and paste the codes of {keep} instead. The new Slack app is in no channel yet, so if you connect it, {cost}."));
                     out.push(format!("{page} To connect the new Slack app anyway, press {right} (the Right arrow key)."));
                     // One key a row, so at 60 cells no key is parted from its words.
                     format!("Enter  keep the Slack app connected now\n{right} (Right)  connect the new Slack app anyway    Esc  close")
                 } else {
-                    let whose = now.map_or_else(|| format!("the Slack app connected to {w} now"), |n| format!("{n}, the Slack app connected to {w} now"));
-                    out.push(format!("Ship of Tools could not tell whether these Slack codes belong to {whose}: Slack did not answer. Press Enter to ask Slack again. To connect them anyway, press {right} (the Right arrow key); if they are a new Slack app's, it is in no channel yet, so {cost}."));
+                    // Enter asks the hub again, and the hub asks Slack each of its questions again (whose the codes are,
+                    // and which app runs when it never learned that); the other key is for a Slack that still does not say.
+                    out.push(format!("Ship of Tools could not tell whether these Slack codes belong to {whose}: Slack did not say. Press Enter to ask Slack again. If this screen comes back and you copied the codes from that Slack app's own page, press {right} (the Right arrow key) to connect them; if they are a new Slack app's, it is in no channel yet, so {cost}."));
                     format!("Enter  ask Slack again\n{right} (Right)  connect these codes anyway    Esc  close")
                 }
             }

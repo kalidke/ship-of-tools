@@ -723,9 +723,9 @@ enum Says {
     EnvelopeFirst,
     /// The hello, then an envelope at once.
     EnvelopeAfter,
-    /// A hello that names no app.
+    /// A hello that names no app, then an envelope that names one.
     NoApp,
-    /// A first text frame that is not JSON.
+    /// A first text frame that is not JSON, then a hello that names an app.
     NotJson,
     /// Nothing, and no answer to a close.
     Silent,
@@ -733,8 +733,10 @@ enum Says {
 
 /// A probe socket never acknowledges: an envelope Slack hands it, before its hello or after, gets no frame back but the
 /// close, so Slack can send it again to a connection of its app; the app is the first text frame's (an envelope's
-/// `payload.api_app_id` as a hello's `connection_info.app_id`). A socket that names no app, says nothing in time or does
-/// not open tells no app, within the probe's two waits, and is no error.
+/// `payload.api_app_id` as a hello's `connection_info.app_id`). The probe stops at that first text frame: when it names
+/// no app, or is no JSON, the answer is no app at once, well inside the probe's wait, and a frame that follows and names
+/// one is never read. A socket that says nothing in time or does not open tells no app, within the probe's two waits,
+/// and is no error.
 #[tokio::test]
 async fn a_probe_socket_acknowledges_no_envelope_and_an_untold_app_is_none_within_its_waits() {
     bounded(async {
@@ -764,8 +766,14 @@ async fn a_probe_socket_acknowledges_no_envelope_and_an_untold_app_is_none_withi
                             peer.send(&named).await;
                             peer.send(&envelope_for("E2", 2, "A0APP")).await;
                         }
-                        Says::NoApp => peer.send(&hello()).await,
-                        Says::NotJson => peer.send_text("hello".into()).await,
+                        Says::NoApp => {
+                            peer.send(&hello()).await;
+                            peer.send(&envelope_for("E3", 3, "A0LATER")).await;
+                        }
+                        Says::NotJson => {
+                            peer.send_text("hello".into()).await;
+                            peer.send(&named).await;
+                        }
                         Says::Silent => {
                             peer.ignore_until_gone().await;
                             heard.lock().unwrap().push((says, None));
@@ -783,15 +791,17 @@ async fn a_probe_socket_acknowledges_no_envelope_and_an_untold_app_is_none_withi
         let mut told = Vec::new();
         for n in 0..6 {
             // Each check within the probe's two waits, the fifth (a silent peer) at their end.
-            let waits = probe().hello + probe().close;
+            let (waits, t0) = (probe().hello + probe().close, Instant::now());
             let checked = tokio::time::timeout(waits + SEC, check_app_token_at(&http, Secret::new(APP), &base, probe())).await;
             assert!(checked.is_ok(), "check {n}: a probe socket outlasted its waits of {waits:?}");
+            // A first frame that tells nothing ends the read: the probe does not wait out its bound for another.
+            assert!(!matches!(order.get(n), Some(Says::NoApp | Says::NotJson)) || t0.elapsed() < probe().hello, "check {n}: the probe read on past its first frame");
             told.extend(checked);
             // Its socket is gone before the next check, as before a connect's write.
             eventually("the probe's socket gone", || fake.sockets().0 == 0).await;
         }
         let app = |a: &str| Ok(Some(a.to_string()));
-        assert_eq!(told, [app("A0ENV"), app("A0APP"), Ok(None), Ok(None), Ok(None), Ok(None)]);
+        assert_eq!(told, [app("A0ENV"), app("A0APP"), Ok(None), Ok(None), Ok(None), Ok(None)], "the app is not the first text frame's alone");
         eventually("every script's end", || got.lock().unwrap().len() == 5).await;
         for (says, frame) in got.lock().unwrap().iter() {
             assert_eq!(*frame, None, "{says:?}: the probe wrote a text frame, which is how an envelope is acknowledged");

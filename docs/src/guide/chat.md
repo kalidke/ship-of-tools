@@ -293,7 +293,7 @@ messages to be missed, the top line says `not up to date`.
 | `copied chat text`, `nothing to copy: select text or mark a message` | |
 | `not set: <reason>` | The channel was not picked; the list stays open and the reason says what to do. |
 | `Slack not connected: those codes may belong to a different Slack app than the one connected now, and nothing changed. ...` | The panel was closed while the codes were checked. Open the channel list (`Ctrl+Shift+k`), choose `Connect a Slack workspace`, paste the three codes again, and choose on the screen that asks. |
-| `Slack not connected: the "App-Level Token" belongs to a different Slack app than the "Bot User OAuth Token", ...` | The panel was closed while the codes were checked, and the three codes were not from one Slack app; nothing was changed. Paste the three codes of one app ([Setting up Slack](chat-setup.md#If-the-three-codes-are-not-from-one-app)). |
+| `Slack not connected: the "App-Level Token" belongs to a different Slack app than the "Bot User OAuth Token", ...` | The panel was closed while the codes were checked, and the three codes were not from one Slack app; nothing was changed. Open the channel list (`Ctrl+Shift+k`), choose `Connect a Slack workspace` and paste the three codes of one app ([Setting up Slack](chat-setup.md#If-the-three-codes-are-not-from-one-app)). |
 
 ## Moving the chat to another computer
 

@@ -45,10 +45,13 @@ pub(crate) trait Listener: Send + Sync + 'static {
     fn ended(&self) -> bool {
         false
     }
-    /// The connected Slack app as `bots.info` gave it at the start (its id and its bot's name), which `chat.workspaces`
-    /// carries.
+    /// The connected Slack app as `bots.info` gave it (its id and its bot's name), which `chat.workspaces` carries.
     fn app(&self) -> Option<BotApp> {
         None
+    }
+    /// `app`, asked for once more when it is not known (one bounded read under the service's own token), and kept.
+    fn learn_app(&self) -> Pin<Box<dyn Future<Output = Option<BotApp>> + Send + '_>> {
+        Box::pin(async { self.app() })
     }
 }
 
@@ -61,6 +64,9 @@ impl Listener for Service {
     }
     fn app(&self) -> Option<BotApp> {
         Service::app(self)
+    }
+    fn learn_app(&self) -> Pin<Box<dyn Future<Output = Option<BotApp>> + Send + '_>> {
+        Box::pin(Service::learn_app(self))
     }
 }
 
@@ -714,13 +720,19 @@ impl<L: Listener> Chat<L> {
     }
 
     /// What a connect to `workspace` would replace, for a caller holding the setup lock: `None` when no unit of it runs or
-    /// starts (a first connect, a chat that is off or ended on its own), else the Slack app its running chat told at its
-    /// start, itself `None` when that start could not tell it. A unit still starting is waited for first, within
-    /// [`SETUP_WAIT`]; one that outlasts the wait is at stake with its app not told.
+    /// starts (a first connect, a chat that is off or ended on its own), else the Slack app of its running chat. A unit
+    /// still starting is waited for first, within [`SETUP_WAIT`]; one that outlasts the wait is at stake with its app not
+    /// told. A running chat whose start could not tell its app is asked for it once here (`Listener::learn_app`: one read
+    /// under its own token, kept for the service when answered), so a start's one failed call does not leave every later
+    /// connect asked about; only when that ask tells nothing too is its app not told. A chat the ask ended (Slack refused
+    /// its token) is nothing at stake.
     pub(crate) async fn app_at_stake(&self, workspace: &str) -> Option<Option<BotApp>> {
         let unit = self.unit(workspace)?;
         match tokio::time::timeout(SETUP_WAIT, unit.running()).await {
-            Ok(Some(service)) if !service.ended() => Some(service.app()),
+            Ok(Some(service)) if !service.ended() => {
+                let app = service.learn_app().await;
+                (!service.ended()).then_some(app)
+            }
             Ok(_) => None,
             Err(_) => Some(None),
         }

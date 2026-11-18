@@ -159,7 +159,8 @@ pub(crate) async fn connect(req_id: u64, payload: serde_json::Value, chat: &Arc<
         }
     }
     // The app-level token's check, which also tells its Slack app, beside the question of the bot token's app: the two
-    // run at once, each within one read's deadline, on every connect. No bot id, or any failure of the question (its
+    // run at once on every connect, the question within one read's deadline and the check within two (its open, then its
+    // probe socket). No bot id, or any failure of the question (its
     // deadline included), leaves the bot's app untold; a probe socket that tells nothing leaves the app-level token's.
     let asked = async {
         let told = (chat.verify.bot_app)(bot.clone(), bot_id?).await;
@@ -181,9 +182,9 @@ pub(crate) async fn connect(req_id: u64, payload: serde_json::Value, chat: &Arc<
     // The tokens' one app is told only when both sides told it.
     let new_app = of_bot.filter(|_| of_token.is_some());
     let held = chat.setup().await;
-    // Under the lock, against what the workspace runs or starts with now (a start waited for first): unless the window
-    // says to replace it, tokens that are not known to be that app's write nothing and restart nothing, and the refusal
-    // says what the window asks with.
+    // Under the lock, against what the workspace runs or starts with now (a start waited for first, and a running chat
+    // whose app was never told asked for it once): unless the window says to replace it, tokens that are not known to be
+    // that app's write nothing and restart nothing, and the refusal says what the window asks with.
     let at_stake = if replace { None } else { chat.app_at_stake(&workspace).await };
     // A retirement that began while Slack was asked or a start waited for: nothing is written for a daemon that is going away.
     if chat.closed_now() {

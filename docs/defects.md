@@ -1193,8 +1193,10 @@ owned by `docs/CLAUDE.md`.
   whatever its name, and to make a new one only if there is none, since a new app is in none of the private channels. Also
   built, not yet checked in use (the design's second form): a connect that does not say `replace_app` writes only when
   no chat of its workspace runs or starts, or the running app is told and is the tokens' app; any other writes nothing,
-  restarts nothing and is refused `other_app`, decided under the setup lock with a start waited for first
-  (`rust/chat/CLAUDE.md` guarantee 31). The tokens' app is told by two answers on every connect, `bots.info` under the
+  restarts nothing and is refused `other_app`, decided under the setup lock with a start waited for first and a running
+  chat whose start could not tell its app asked for it once there, the answer kept (`rust/chat/CLAUDE.md` guarantee 31;
+  before that ask, such a chat left every connect asked about for its whole life, with a screen that said to ask Slack
+  again: from a review's probe, never seen by a person). The tokens' app is told by two answers on every connect, `bots.info` under the
   bot token and the first frame of one probe socket opened with the App-Level Token, closed again before anything is
   written; told to be two apps, the set is refused `mixed_apps`, with `replace_app` too and on a first connect
   (guarantee 34), so the daemon writes no set that would stop the chat `wrong_app` for every project of the workspace,

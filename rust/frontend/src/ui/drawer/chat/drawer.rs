@@ -205,9 +205,10 @@ pub(super) fn not_replaced_words() -> String {
     format!("Slack not connected: those codes may belong to a different Slack app than the one connected now, and nothing changed. To decide, open the channel list ({p}+Shift+k), choose Connect a Slack workspace and paste the three codes again")
 }
 
-/// The status line's words for a connect refused `mixed_apps` after its step was closed: the wire's.
+/// The status line's words for a connect refused `mixed_apps` after its step was closed: the wire's, then where to paste.
 pub(super) fn mixed_words() -> String {
-    format!("Slack not connected: {}", ChatCode::MixedApps.text())
+    let p = super::connect::PRIMARY;
+    format!("Slack not connected: {}. Open the channel list ({p}+Shift+k), choose Connect a Slack workspace and paste the three codes of one Slack app", ChatCode::MixedApps.text())
 }
 
 /// The status line's words for `chat.post_file` over a picture opened from the chat: what the preview shows, why it is not
