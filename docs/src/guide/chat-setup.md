@@ -25,16 +25,17 @@ screens write `Cmd`. A letter in a key is always lowercase: `Ctrl+k` is Ctrl and
   program apart from the window) runs the sessions there. The chat runs on one of them, which this
   page calls the computer that runs your sessions: with one computer, it is that one; with several, it is the one your
   `hosts.toml` (the file that lists your computers, in `~/.config/sot` on Linux and macOS and `%LOCALAPPDATA%\sot\config`
-  on Windows) names on its `hub =` line, the line naming the computer the others connect through. A project whose
-  session runs on another computer has no chat: its panel says `the chat does not run on <computer>`. The panel's
-  messages name a computer by its name, or `this computer` for the one the window runs on; a few messages say
-  `the computer that runs your agents` for the computer that runs your sessions.
+  on Windows) names in its line `hub = "<computer>"`. A project whose session runs on another computer has no chat: its
+  panel says `the chat does not run on <computer>`. The panel's messages name a computer by its name, or
+  `this computer` for the one the window runs on; where a message says `the computer that runs your agents`, it means
+  the computer that runs your sessions.
 - **Slack.** You need Slack's website open and signed in, in your web browser (the Slack desktop app is not enough),
   and permission to add apps to your workspace, or an administrator who approves them.
 - **Your Slack app.** In each workspace you make a Slack app for yourself. Your Slack app reads the project's channel
-  and posts your agents' messages; what you write in the panel goes out under your own Slack account. Each
-  person makes their own, even when a colleague already has one there: Slack sends each new message to only one of an
-  app's connections, so two people sharing one app each miss messages.
+  and posts your agents' messages; what you write in the panel goes out under your own Slack account. In Slack the app
+  is a member of its own, named like the app, which a channel invites as it would a person. Each person makes their
+  own, even when a colleague already has one there: by Slack's rule each new message goes to only one of an app's
+  connections, so two people sharing one app each miss messages.
 - **Slack codes.** Three Slack codes (Slack calls them tokens) let Ship of Tools use your Slack app and your account:
   the **User OAuth Token**, which starts with `xoxp-` and posts your messages as you; the **Bot User OAuth Token**,
   which starts with `xoxb-` and lets your Slack app read and post; and the **App-Level Token**, which starts with
@@ -44,12 +45,12 @@ screens write `Cmd`. A letter in a key is always lowercase: `Ctrl+k` is Ctrl and
 ## Connect your first Slack workspace
 
 Select a project's session and press `Ctrl+k`. While no Slack workspace is connected, the panel shows the first screen,
-then step 1, step 2 and step 3, which you follow on Slack's website, then the connected screen. Two more screens come
-only when something needs fixing: the first screen with other words when Slack refused the saved codes
-([When Slack stops accepting the codes](#When-Slack-stops-accepting-the-codes)), and the post-as-you screen, shown when a
-post of yours was refused for want of a code that posts as you
-([The post-as-you screen](#The-post-as-you-screen)). Each screen lists its keys at its foot. A screen taller than the panel says `PageDown for more`; PageUp, PageDown and the mouse wheel scroll
-it.
+then step 1, step 2 and step 3, which you follow on Slack's website, then the connected screen. Two other screens come
+only when something needs fixing, each in its own section below: the first screen as it shows after Slack refused the
+saved codes ([When Slack stops accepting the codes](#When-Slack-stops-accepting-the-codes)), and the post-as-you screen,
+which asks for new codes after a post of yours was refused ([The post-as-you screen](#The-post-as-you-screen)). Each
+screen lists its keys at its foot. A screen taller than the panel says `PageDown for more`; PageUp, PageDown and the
+mouse wheel scroll it.
 
 The panel holds the codes you paste until it has all three, then sends them. Closing the panel before that (Escape,
 `Ctrl+k`, or selecting another session) drops every code pasted so far, and you start again at the first screen. Once
@@ -57,14 +58,15 @@ the three are sent, closing the panel does not stop the check.
 
 ### The keys on each screen
 
-Escape closes the panel on every screen. `Ctrl+v` pastes a Slack code on every screen until the codes are sent.
+On each of these screens Escape closes the panel (in the channel list it closes only the list), and `Ctrl+v` pastes a
+Slack code until the codes are sent.
 
 | Screen (its top line) | Enter | Right | Left |
 |---|---|---|---|
 | The first screen (`chat · set up Slack`) | Opens Slack's page that makes your Slack app in your browser, and shows step 1. | Shows step 2, opening nothing: for a Slack app you already made. | Nothing. |
 | The first screen when Slack refused the saved codes (`chat · set up Slack`), and the post-as-you screen (`chat · post as you`) | Opens your Slack app's page, or your list of Slack apps, and shows step 2. | Nothing. | Opens Slack's page that makes a new Slack app, and shows step 1. |
 | Step 1 (`step 1 of 3: make your Slack app`) | Shows step 2. | Shows step 2. | Shows the first screen. |
-| Step 2 (`step 2 of 3: the first two Slack codes`) | Sends the three codes, if all are pasted and the status line asked you to wait for an earlier check. | Shows step 3. | Shows step 1. |
+| Step 2 (`step 2 of 3: the first two Slack codes`) | Nothing, unless the status line said to wait: then it sends the codes (see below). | Shows step 3. | Shows step 1. |
 | Step 3 (`step 3 of 3: the last Slack code`) | The same as on step 2. | Nothing. | Shows step 2. |
 | `connecting…` | Nothing. | Nothing. | Nothing. |
 | The connected screen (`chat · connected`) | Opens the channel list. | Nothing. | Nothing. |
@@ -77,7 +79,8 @@ status line say `Slack is still checking the codes sent before`; then wait, and 
 It says what the panel is for. Nothing opens until you press Enter: then your browser opens Slack's page that makes
 your Slack app, and the panel shows step 1. If the browser cannot be opened, the status line says
 `could not open the browser` and why; go to [api.slack.com/apps](https://api.slack.com/apps) yourself. If you already
-made your Slack app in this workspace, press Right instead.
+made your Slack app in this workspace, press Right instead. (After Slack refused the saved codes, the first screen says
+so and its keys differ: see [When Slack stops accepting the codes](#When-Slack-stops-accepting-the-codes).)
 
 ### Step 1: make your Slack app
 
@@ -189,11 +192,11 @@ rewrites it whole: its comments and the order of its keys are not kept.
 
 ## Connect another Slack workspace
 
-The computer that runs your sessions can connect up to 8 Slack workspaces, a fixed limit of Ship of Tools, each with your own
-Slack app made there, and each project's channel can be in any of them: one workspace per project, if you want.
-Connecting another workspace leaves the ones already connected, and their projects' channels, as they are. A ninth is
-refused, and the first screen says to remove one workspace's file, `chat-secrets-<id>.toml`, from the settings folder to
-make room.
+The computer that runs your sessions can connect up to 8 Slack workspaces, a fixed limit of Ship of Tools, each with
+your own Slack app made there, and each project's channel can be in any of them: one workspace per project, if you
+want. Connecting another workspace leaves the ones already connected, and their projects' channels, as they are. A
+ninth is refused, and the first screen says to remove one workspace's file, `chat-secrets-<id>.toml` (`<id>` is that
+workspace's Slack ID), from the settings folder to make room.
 
 1. In the Chat panel of any project, press `Ctrl+Shift+k`.
 2. With nothing typed, choose `Connect a Slack workspace`, the last entry (marked `add a Slack workspace, or give one
@@ -251,11 +254,11 @@ connected to now, and copy its codes as steps 2 and 3 describe.
 
 Connecting a new app replaces the workspace's old codes without asking first. A new app is in no channel, public or
 private, until it is invited, so each project whose channel it is not in shows nothing. A few seconds after the codes
-are accepted, the connected screen names each such channel and what to type in it. Read it before pressing Enter: Enter
+are accepted, the connected screen names each project's channel the new app is not in, and what to type in it. Read it before pressing Enter: Enter
 opens the channel list, and choosing another channel there gives up the one the project had. To recover:
 
 - In each channel it names, type `/invite @` and the new app's name in Slack's message box, and send it. The panel
-  tries the channel again each minute, so it shows within two minutes.
+  tries the channel again each minute, so it shows within two minutes of the invite.
 - For a public channel, picking the same channel again in the list (`Ctrl+Shift+k`) also works: the app joins it.
 
 Until then, the project's top line says `your Slack app cannot read this channel`, and the panel says what to type.
@@ -265,8 +268,8 @@ Until then, the project's top line says `your Slack app cannot read this channel
 If Slack stops accepting the saved codes (the app was removed from the workspace, say), the first screen shows in place
 of the channel and says so. If the App-Level Token held belongs to another Slack app (a colleague's, or one of your
 older apps), the chat stops rather than take that app's messages, and the first screen says the code belongs to another
-app; Slack's check of the codes cannot tell whose App-Level Token it is, so this shows a moment after
-`chat · connected`. Either way, Enter opens your list of Slack apps and shows step 2: click your Slack app and copy its
+app; the check made when you connect tests only that the App-Level Token works, not which app it belongs to, so this
+shows a moment after `chat · connected`. Either way, Enter opens your list of Slack apps and shows step 2: click your Slack app and copy its
 three codes again. If your Slack app is not in the list, press Left to make it again (step 1), and then invite it to
 your projects' private channels.
 
@@ -274,7 +277,8 @@ The other workspaces go on. A project whose channel is in the stopped workspace 
 screen; there, while another workspace runs, `Ctrl+Shift+k` opens that workspace's channel list, to move the project to
 a channel in it.
 
-An older Ship of Tools connects one workspace only, and its screens say so; whoever runs it can update it.
+An older Ship of Tools connects one workspace only; if yours is older, its channel list says so, and whoever runs it
+can update it.
 
 ## Setting it up by hand
 
@@ -282,7 +286,8 @@ These are the two files that connecting and picking from the panel write. To wri
 
 1. At [api.slack.com/apps](https://api.slack.com/apps), choose **Create New App**, then **From a manifest**, pick your
    workspace, paste this (with your own name in the two names; Slack takes at most 35 characters), then **Create**,
-   **Install to Workspace**, **Allow**. The settings under `settings:` are Slack's own; copy them as they are.
+   **Install to Workspace**, **Allow**. The settings under `settings:` are Slack's own, and the chat needs them as
+   written.
 
    ```yaml
    display_information:
@@ -333,9 +338,9 @@ These are the two files that connecting and picking from the panel write. To wri
    app_token = "xapp-..."
    ```
 
-   and `chat.toml`. Its `workspace` is the one a mapping is in unless the mapping names another; `channels` must list
-   every channel a mapping uses, in any workspace; and each `[[mapping]]` gives one project folder (the folder as its session
-   shows it; on Windows in single quotes, `folder = 'C:\Users\you\projects\my-project'`) its one channel:
+   and `chat.toml`. Each `[[mapping]]` entry pairs one project folder (the folder as its session shows it; on Windows in
+   single quotes, `folder = 'C:\Users\you\projects\my-project'`) with its one channel; `channels` must list every
+   channel a mapping uses, in any workspace; and `workspace` is the workspace a mapping is in unless it names another:
 
    ```toml
    workspace = "T0123ABCD"

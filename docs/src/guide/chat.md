@@ -28,10 +28,9 @@ changed; see [Keybindings](../ref/keybindings.md).
 - **The computer that runs your sessions.** On each computer, Ship of Tools' service (`sotd`, a background program apart
   from the window) runs the sessions there. The chat runs on one computer, which this page calls the computer that runs
   your sessions: with one computer, that one; with several, the one your `hosts.toml` (the file that lists your
-  computers, in `~/.config/sot` on Linux and macOS and `%LOCALAPPDATA%\sot\config` on Windows) names on its `hub =`
-  line, the line naming the computer the others connect through. The panel's messages name a computer by its name, or
-  `this computer` for the one the window runs on; a few messages say `the computer that runs your agents` for the
-  computer that runs your sessions.
+  computers, in `~/.config/sot` on Linux and macOS and `%LOCALAPPDATA%\sot\config` on Windows) names in its line
+  `hub = "<computer>"`. The panel's messages name a computer by its name, or `this computer` for the one the window runs
+  on; where a message says `the computer that runs your agents`, it means the computer that runs your sessions.
 - **Your Slack app, your account and the Slack codes.** What you write goes out under your own Slack account. What your
   sessions' agents write goes out through your Slack app, the app you made in Slack while setting up, which also reads
   the channel. Three Slack codes (Slack calls them tokens), pasted during setup and kept on the computer that runs your
@@ -54,7 +53,7 @@ changed; see [Keybindings](../ref/keybindings.md).
 | `PageUp`, `PageDown` | Scroll a third of the panel. |
 | `Alt+ArrowUp`, `Alt+ArrowDown`, mouse wheel | Scroll one line. |
 | `End` | Go back to the newest message and follow new ones. |
-| `Ctrl+c` | Copy the selected text, or the marked message's text when nothing is selected. |
+| `Ctrl+c`, `Ctrl+Shift+c` | Copy the selected text, or the marked message's text when nothing is selected. |
 | `Ctrl+o` | Open the marked message's first picture in the preview pane. A click on a picture opens that one. |
 | `Ctrl+Shift+k` | Open the channel list: change this project's channel, pick one in another workspace, or connect a workspace. |
 
@@ -70,14 +69,14 @@ shows its channel from the newest message. A scroll glides to its place over `sm
 `[display]` table of the window's settings file, `settings.toml` (in `~/.config/sot` on Linux and macOS and
 `%LOCALAPPDATA%\sot\config` on Windows): 150 ms unless you change it, and 0 moves at once.
 
-Scrolling to the oldest message reads older ones from Slack, up to 256 messages in all, a fixed limit of Ship of Tools; the
-top line says when no more can be read. An empty channel shows `no messages`.
+Scrolling to the oldest message reads older ones from Slack, up to 256 messages in all, a fixed limit of Ship of
+Tools; past it the top line says `older messages beyond the limit are not shown`. An empty channel shows `no messages`.
 
 The mark is a lighter band across the message with a blue bar at its left edge. The view moves to keep the marked
 message in view, and a scroll that leaves it out of view moves the mark to the nearest message still shown.
 
-Edits and deletes made in Slack reach the newest 100 messages, a fixed limit of Ship of Tools; an older message stays
-as it was read. A message deleted while you watch stays in its place as `(message deleted)` until the panel reads the
+Edits and deletes made in Slack reach the newest 100 messages, a fixed limit of Ship of Tools; an older message edited
+in Slack after the panel read it keeps the text it had then. A message deleted while you watch stays in its place as `(message deleted)` until the panel reads the
 channel again, as it does after a lost connection and when you come back to the channel from another session. The panel
 keeps the messages of the last two channels it showed, so switching back draws them as soon as the computer that runs
 your sessions answers, with `reading…` in the top line until the channel is read again.
@@ -100,7 +99,7 @@ A message that has replies ends with a line in Slack's style: `2 replies` (`1 re
 
 ### The foot of the panel
 
-While the message box is empty, the foot of the panel shows one line:
+The foot of the panel is its last lines, under the messages. While the message box there is empty, it shows one line:
 
 `> type a message and press Enter to post it`
 
@@ -110,8 +109,7 @@ follows:
 `What you post appears in the channel as your own message, from your Slack account. Ctrl+Shift+k changes this project's channel.`
 
 After that first post the explanation is gone for good on that computer; the one-line prompt stays whenever the box is
-empty. If the computer that runs your sessions runs an older Ship of Tools, which posts as your Slack app, a warning
-saying so stays there instead. While a thread is open, the foot shows `> ` and `reply in thread of` the message's time
+empty. While a thread is open, the foot shows `> ` and `reply in thread of` the message's time
 (`reply in thread of 2:14 PM`) instead of the prompt.
 
 As you type, the foot shows `> ` and the last three lines of the message, and a line such as `2 lines not shown` when
@@ -120,10 +118,11 @@ open then) through closing the thread, selecting another session and a reconnect
 top line does not. A message holds about 8 KiB, a fixed limit of Ship of Tools; a key or paste past that is refused
 whole, with `draft is full: nothing added` (the draft is your message). It is lost when its session ends or the window closes.
 
-### Your chat name
+### With an older Ship of Tools
 
-If no chat name is set and the computer that runs your sessions runs an older Ship of Tools, which posts as your Slack
-app, the first time you press Enter with a message typed, the foot asks
+An older Ship of Tools on the computer that runs your sessions posts what you write as your Slack app, under a chat
+name, with no badge; the foot shows a warning saying so in place of the explanation. If no chat name is set, the first
+time you press Enter with a message typed, the foot asks
 `Your name for chat posts (saved in settings.toml):`. Type a name and press Enter: it is saved in `[chat] name` of
 `settings.toml` (see [the settings reference](../ref/config.md)), and your message stays. Press Enter again to post it.
 Escape cancels and keeps the message. A name with a quote, a backslash or a control character, or longer than 160
@@ -142,8 +141,9 @@ A post is plain text: what you type, a `<` included, arrives as typed, and `@her
 text that pings no one.
 
 If the computer that runs your sessions holds no Slack code that posts as you (it was connected before Ship of Tools
-posted as you, or Slack stopped accepting the code), nothing is posted, and the panel shows the post-as-you screen, which
-asks for that workspace's Slack codes again, in place of the channel, with your message kept: see
+posted as you, or Slack stopped accepting the code), nothing is posted, and the panel shows the setup page's
+post-as-you screen, which asks for that workspace's three Slack codes again, in place of the channel, with your message
+kept: see
 [Give a connected workspace new Slack codes](chat-setup.md#Give-a-connected-workspace-new-Slack-codes).
 
 ## Posting a file
@@ -153,8 +153,8 @@ preview pane is the window's middle column, which shows the file selected in the
 `f` there). The file goes to the channel or thread your message was begun in, or, with nothing typed, to the channel and
 the thread open then. The status line says `shared <name> to <channel>` when it is posted, and the message is cleared.
 
-The file must be a file of the selected session's folder, at most 16 MiB (a fixed limit of Ship of Tools), and not one
-of the chat's own settings files. A picture opened from the chat is not a file of the project, so with one in the preview
+The file must be a file of the selected session's folder, at most 16 MiB (a fixed limit of Ship of Tools; a larger one
+is refused with `not posted: the file is larger than the chat carries`), and not one of the chat's own settings files. A picture opened from the chat is not a file of the project, so with one in the preview
 nothing is posted and the status line says so for 10 seconds:
 `not posted: the preview shows a picture opened from the chat, which is not a file of this project; show a file in the
 preview, then press Ctrl+u`. Select the file in Files mode, click in the Chat panel and press `Ctrl+u` again. Nothing is
@@ -216,7 +216,8 @@ Ask the session's agent to post a figure, and it runs `sot-fe chat post [--threa
 --stdin]` in the session. The file must be in the session's folder: a relative path is taken from the folder the
 command runs in, and a path outside the folder or with a `..` in it is refused before anything is sent. A link inside
 the folder is followed, so a `data/results` link to another disk can be posted; the chat's own settings files are
-refused. Any regular file of at most 16 MiB (a fixed limit of Ship of Tools) can be posted; Slack shows it under
+refused. Any regular file of at most 16 MiB (a fixed limit of Ship of Tools; a larger one is refused, exit 2) can be
+posted; Slack shows it under
 `<handle> (row via Ship of Tools)`, then the comment. With `--thread` it is posted into that thread; if it shows in the
 channel instead, Slack did not take the thread. The command prints `posted <ts>`, or `posted file <id>` when Slack names
 no message, with the same exit codes as a reply.
@@ -228,11 +229,12 @@ the agent can answer in the channel with no window open.
 
 *The rest of this section is for whoever administers the computer that runs your sessions.*
 
-Mail is off until `mail_after`, the time from which posts count as mail, is set in `chat.toml`, the chat's settings
-file; [the chat configuration](../ref/config.md#chat.toml-and-chat-secrets.toml) says how. Then each new post a
-channel member makes in a mapped channel (one picked for a project), yours from the panel included, reaches that
-project's session as one line of mail. An idle Claude Code session starts on it, a busy one reads it when it finishes
-what it is doing, and a Codex session gets it without being woken. An agent's own reply is not mail and does not come
+Mail is off until `mail_after`, the time from which posts count as mail (a Slack timestamp, `<seconds>.<six digits>`),
+is set in `chat.toml`, the chat's settings file; [the chat configuration](../ref/config.md#chat.toml-and-chat-secrets.toml)
+says how. Then each new post a channel member makes in a mapped channel (one picked for a project), yours from the
+panel included, reaches that project's session as a message to its agent. An idle Claude Code agent starts on it at
+once, a busy one reads it when it finishes what it is doing, and a Codex agent reads it the next time it checks its
+messages. An agent's own reply is not mail and does not come
 back to it. A post missed while the computer was down is filed later, once; the configuration page says how.
 
 ## What the top line says
@@ -250,16 +252,16 @@ computer's name, `this computer`, or `the computer that runs your agents`.
 | `connecting…`, `connected` | The setup's codes are being checked; they were accepted. | |
 | `choose this project's channel` | The channel list is open. | Pick a channel, or press Escape. |
 | `your Slack app cannot read this channel` | Slack says your Slack app is not in the channel: a private channel it was never invited to, or a new app. | In that channel in Slack, type `/invite @` and the app's name; the panel says which name. |
-| `not up to date: <reason>` | The channel could not be read whole (`no messages read yet` when nothing came). | Wait: the panel tries again each minute. |
+| `not up to date: <reason>` | The channel could not be read whole (`no messages read yet` when nothing came). | Wait: the panel tries again each minute. If it stays for several minutes, the log on that computer says why (`sotd log-path`, below). |
 | `no connection to <computer>` | The window is not connected to that computer. The messages held stay on screen. | Wait: the panel reads the channel again when the link comes back, and a message you typed is kept. |
 | `waiting for <computer> to report this project` | The window has not yet listed the selected session. | Wait. |
 | `the chat does not run on <computer>; ...` | The project's session runs on another computer than the one the chat runs on, which `hosts.toml` names on its `hub =` line. | Run the project's session on the computer the chat runs on. |
 | `the chat on <computer> is not set up correctly: ...` | `chat.toml` or a file of Slack codes was refused. | Run `sotd log-path` in a terminal on that computer: it prints where the log of Ship of Tools' service is, and the log names the file and line. |
 | `the chat is not running on <computer>: ...` | The chat stopped there. | The log on that computer says why. |
-| `the chat on <computer> could not answer: <reason>` | It refused for another reason. | Wait: the panel asks again after a minute. |
+| `the chat on <computer> could not answer: <reason>` | It refused for another reason. | Wait: the panel tries again each minute. |
 | `Ship of Tools on <computer> has no chat: update it` | That computer runs an older Ship of Tools. | Update it. |
 | `the row is gone or was replaced` | The session ended or was replaced. | Select the project's session again. |
-| `the row now maps to another channel`, `the row's folder maps to no channel` | The project's channel changed while it was shown. | Select another session, then this one again: the panel asks afresh. |
+| `the row now maps to another channel`, `the row's folder maps to no channel` | The channel picked for the project changed, or was removed, while it was shown. | Select another session, then this one again: the panel asks afresh. |
 | `your Slack plan hides older messages`, `older messages could not be read`, `older messages are not read: <reason>`, `older messages beyond the limit are not shown` | Scrolling to the oldest found no more to read: Slack keeps older history only on some plans, a read was refused, or the panel's 256 are full. | |
 | `the thread is not read: <reason>`, `the rest of this thread is not shown` | In a thread: a read was refused (the panel tries again by itself), or the thread is longer than the panel shows. | |
 
@@ -289,8 +291,6 @@ messages to be missed, the top line says `not up to date`.
 | `opening the picture…`, `picture shown in the preview`, `picture not opened: <reason>` | The picture is on its way, shown, or refused. |
 | `copied chat text`, `nothing to copy: select text or mark a message` | |
 | `not set: <reason>` | The channel was not picked; the list stays open and the reason says what to do. |
-| `that is not a Slack code: ...` | During setup: copy the code named, by how it starts. |
-| `could not open the browser (...): go to api.slack.com/apps` | Open that address yourself. |
 
 ## Moving the chat to another computer
 
@@ -300,4 +300,4 @@ The chat runs on the computer named on the `hub =` line of `hosts.toml`. To move
 Tools' service (`sotd`, the background program that runs the sessions) on the new computer; nothing else. The old
 computer's chat stops within a minute, after filing the one post it is filing, and the new one starts within a minute
 after that. A post made in the minute around the move can reach its session as mail up to 6 hours late: the new
-computer finds it only at its next check for missed posts, which runs at least every 6 hours.
+computer finds it only at its next check for missed posts, and those checks are never more than 6 hours apart.
