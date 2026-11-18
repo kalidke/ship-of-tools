@@ -555,7 +555,10 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   notice, a capture's result, an interrupted upload, the fullscreen pin, the session order) also holds it for `NOTIFY_STICKY`, during
   which `rebuild_connection_status` leaves it; the idle tick expires the hold once and rebuilds the line.
 - `PreviewNotice` privately owns the preview's message box: the text and the instant it was shown. `State::preview_says` is the
-  one call that writes a boxed message, to the status line and to the box together, so neither shows one the other lacks.
+  one call that writes a boxed message, to the status line and to the box together, so neither shows one the other lacks; the
+  one message that goes to the box alone is the refusal of `d` over a picture with no base to draw on (a PDF page, an SVG, a
+  video frame, no picture, the connection notice over the preview: `State::refuse_draw`, through `route_preview_message`'s
+  `box_only`), since it answers a key pressed over the preview and the status line above the nav pane keeps what it held.
   Boxed: the drawing's lines and its share replies, the canvas, `svg not drawn`, a crop's refusal and progress, the scale
   bar's save and refusals, a preview that failed and a failed equation. Left on the status line alone, by choice: a text
   selection's share replies (they follow every release and each reconnect, and the box would cover the text being read), the
@@ -576,9 +579,12 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   a close dialog covers both, and a drawn notice clears the nav spill as the peek does. Tests: `preview::notice::tests` (the alpha
   over time, a newer message restarting the hold, a clear, the box inside the pane, wrapping, the ellipsis, the drawing refusal's
   remedy kept in narrow panes, a pane too small, cell-safe rows), `handler::idle_tests::a_faded_box_is_dropped_and_the_idle_loop_stops_redrawing`,
+  `preview::image::ink_input::tests::the_refusal_is_in_the_preview_box_and_the_status_line_keeps_what_it_held` (each refusal's
+  words in the box, the status line as it was),
   and the native fixtures `a_preview_message_is_on_the_status_line_and_boxed_and_a_row_switch_drops_it` (a real call site reaching
   both, the box in the pane at both text scales, the row switch), `a_notice_stays_with_its_file`,
-  `a_text_selections_reply_stays_off_the_box`, and the SVG refusal's box in `an_svg_preview_is_a_raster_and_a_broken_one_is_its_text`.
+  `a_text_selections_reply_stays_off_the_box`, `a_drawing_refusal_is_boxed_and_leaves_the_status_line` (`State::refuse_draw` with no picture shown;
+  the one place a `State` reaches the box-alone route, so it needs a display and runs only where one is), and the SVG refusal's box in `an_svg_preview_is_a_raster_and_a_broken_one_is_its_text`.
   Limits: the choice of the peek over the notice, the nav spill's clearing, edit mode's guard, the pixel mapping of the box and its
   backing, and each call site's use of `preview_says` rather than `status.set` (all but the ones the fixtures reach) rest on reading and the one
   frame looked at under a display; the `about_to_wait` calls of `floating_idle` rest on reading.

@@ -17,3 +17,22 @@ impl State {
         Ok(())
     }
 }
+
+impl State {
+    /// `d` with no picture shown boxes the refusal over the preview and leaves the status line as it was; any other preview
+    /// message is still on both.
+    #[allow(dead_code, reason = "runs only inside a native State, from the premise overlays; no libtest body can construct one")]
+    pub(in crate::ui) fn a_drawing_refusal_is_boxed_and_leaves_the_status_line(&mut self) -> anyhow::Result<()> {
+        self.raster.hide();
+        self.preview_notice.clear();
+        self.status.set("held before the key");
+        self.refuse_draw();
+        let words = self.preview_notice.text().map(str::to_string);
+        anyhow::ensure!(words.as_deref().is_some_and(|w| w.starts_with("Can't draw")), "the box says {words:?}");
+        anyhow::ensure!(self.status.text() == "held before the key", "the status line says `{}`", self.status.text());
+        self.preview_says("about the file");
+        anyhow::ensure!(self.status.text() == "about the file" && self.preview_notice.text() == Some("about the file"),
+            "another preview message was not on both");
+        Ok(())
+    }
+}

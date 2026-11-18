@@ -2,6 +2,8 @@
 //! only through here, and every question of whether the base is shown goes to `InkLayer::shown_base`.
 
 use crate::ui::input::keypress::KeyPress;
+use crate::ui::preview::notice::PreviewNotice;
+use crate::ui::preview::replies::route_preview_message;
 use crate::ui::*;
 use sot_protocol::ops::InkBase;
 use std::ops::ControlFlow::{self, Break, Continue};
@@ -32,6 +34,15 @@ impl State {
         }
         self.window.request_redraw();
         true
+    }
+
+    /// `d` with no base to draw on: why, in the preview's box alone. The status line above the nav pane is left as it was.
+    pub(in crate::ui) fn refuse_draw(&mut self) {
+        let canvas = self.bindings.first_label(Action::PreviewCanvas);
+        let refused = self.hello_refused.refused(self.selected.host());
+        let (raster_shown, node) = (self.raster.is_shown(), self.raster.node());
+        refusal_into(&mut self.preview_notice, &mut self.status, no_base_line(refused, raster_shown, node, &canvas));
+        self.window.request_redraw();
     }
 
     /// Motion: a live left stroke grows, and a right drag erases.
@@ -86,6 +97,12 @@ fn no_base_line(refused: bool, raster_shown: bool, node: Option<&str>, canvas: &
     }
 }
 
+/// The refusal's words go to the preview's box alone: it answers a key pressed over the preview, and the status line above
+/// the nav pane keeps what it held.
+fn refusal_into(notice: &mut PreviewNotice, status: &mut StatusLine, words: String) {
+    route_preview_message(notice, status, words, std::time::Instant::now(), true);
+}
+
 /// What the person calls the picture a non-image node shows, by its extension.
 fn picture_name(node: &str) -> &'static str {
     let lower = node.to_ascii_lowercase();
@@ -102,11 +119,7 @@ pub(in crate::ui) fn ink_key(state: &mut State, key: KeyPress<'_>, label: String
     state.ink_sync();
     let shown = state.shown_ink_base();
     match key.action {
-        Some(Action::PreviewDraw) if shown.is_none() => {
-            let canvas = state.bindings.first_label(Action::PreviewCanvas);
-            let refused = state.hello_refused.refused(state.selected.host());
-            state.preview_says(no_base_line(refused, state.raster.is_shown(), state.raster.node(), &canvas));
-        }
+        Some(Action::PreviewDraw) if shown.is_none() => state.refuse_draw(),
         Some(Action::PreviewDraw) => {
             let on = !state.ink.is_on();
             state.ink.set_on(on);
@@ -157,6 +170,20 @@ mod tests {
             assert_eq!(no_base_line(false, true, Some(node), "Shift+d"), format!("Can't draw on {name}{TAIL}"), "{node}");
         }
         assert!(no_base_line(false, true, Some("files:a.svg"), "Ctrl+k").ends_with("press Ctrl+k for a blank canvas."));
+    }
+
+    /// `d` over a picture that cannot be drawn on (a PDF page, an SVG, a video frame, no picture at all) and under the
+    /// connection notice: the box over the preview holds the words, and the status line keeps what it held.
+    #[test]
+    fn the_refusal_is_in_the_preview_box_and_the_status_line_keeps_what_it_held() {
+        for (refused, raster, node) in [(false, true, Some("files:doc.pdf")), (false, true, Some("files:a.svg")), (false, true, Some("files:clip.mp4")),
+            (false, false, None), (false, true, None), (true, true, Some("files:a.png"))] {
+            let (mut notice, mut status) = (PreviewNotice::default(), StatusLine::new("held before the key"));
+            let words = no_base_line(refused, raster, node, "Shift+d");
+            refusal_into(&mut notice, &mut status, words.clone());
+            assert_eq!(notice.text(), Some(words.as_str()), "{node:?}: the box holds the words");
+            assert_eq!(status.text(), "held before the key", "{node:?}: the nav pane's status line is as it was");
+        }
     }
 
     #[test]
