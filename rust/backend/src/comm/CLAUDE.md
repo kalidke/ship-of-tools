@@ -249,9 +249,14 @@ The registry:
 - A full session start (`comm-session-start.sh`, a leg's bootstrap) waits for each lock take of its join up to
   `cli::start::START_LOCK_WAIT`, 40 s, or `SOT_LOCK_WAIT_SECS` when that is longer, not a join's 10 s: in a computer's
   boot, holders slowed by every row starting at once kept the lock 18 to 28 s each, and the starts that gave up left
-  their sessions with no handle. Both takes and the rest of the start stay inside the two minutes an agent's shell call
-  gets; a holder that keeps the lock past the bound still fails the start, named. Test: `cli::start::tests::
-  a_session_start_waits_for_a_live_holder_past_a_joins_bound`.
+  their sessions with no handle. For a row's session the waits of the start total 105 s, two takes of 40 s, the status
+  join's 15 s and `agent.join`'s 10 s, inside the two minutes an agent's shell call gets; a holder that keeps the lock
+  past the bound still fails the start, named. Limits: the total is of the waits only, so the joiner's own slow holds
+  of each take add to it; a session outside any row clears its handle with up to three `agent.join` calls of 10 s first
+  (30 s more, 125 s in all), and can exceed the two minutes; a raised `SOT_LOCK_WAIT_SECS` raises it too. Tests:
+  `cli::start::tests::a_session_start_waits_for_a_live_holder_past_a_joins_bound`,
+  `a_session_starts_wait_is_forty_seconds_or_the_variable_when_longer`; the second take's wait (`join::joined`) is not
+  pinned by a test.
 
 The install (0.7.0):
 - The formats do not change: the inbox line, the cursor, the registry and its fields, the registry lock's record, the

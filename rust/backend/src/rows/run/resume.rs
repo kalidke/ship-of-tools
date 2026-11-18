@@ -16,9 +16,8 @@ use std::time::Duration;
 /// lane queries, rather than two independently-invented numbers.
 pub const LANE_CONCURRENCY: usize = 4;
 
-/// The boot resume's pace: a row whose start spawns begins at least this long after the last one that did. A Claude
-/// row's agent and the tool servers it launches connect in 1.5 to 3.2 s on a quiet computer with 32 threads; 29 rows
-/// begun within 5 s held that computer's load near 340 for minutes, and most of their tool servers missed their bound.
+/// The boot resume's pace: a row whose start spawns begins at least this long after the last one that did, so the
+/// heavy part of one agent's start has mostly ended before the next begins (the evidence is in `docs/defects.md`).
 pub const BOOT_START_SPACING: Duration = Duration::from_secs(3);
 
 /// A row the boot resume starts: its id, agent kind, project root, agent name and slug.
@@ -75,6 +74,11 @@ type Candidate = (String, String, PathBuf, String, String);
 /// each lists as `queued` until its turn. A row whose supervisor answers
 /// (a daemon restart's) takes no turn.
 pub async fn resume_all(state_root: PathBuf, workspaces: Workspaces) {
+    resume_paced(state_root, workspaces, BOOT_START_SPACING).await;
+}
+
+/// [`resume_all`] with the pace as a parameter: a test hook, so a test runs the whole resume at a short spacing.
+async fn resume_paced(state_root: PathBuf, workspaces: Workspaces, spacing: Duration) {
     // 2026-09-04 amendment: the inert default anchor is never resumed
     // here either, even on the rare box where a fence file already exists
     // for it (a hand-edited toml that dropped its agent after a prior
@@ -167,7 +171,7 @@ pub async fn resume_all(state_root: PathBuf, workspaces: Workspaces) {
             }
         })
     };
-    for j in pace_starts(candidates, BOOT_START_SPACING, absent, begin).await {
+    for j in pace_starts(candidates, spacing, absent, begin).await {
         let _ = j.await;
     }
 
@@ -202,13 +206,35 @@ where
     joins
 }
 
+/// How long the order's one read of the registry may take before the rows start in the order given: a read that stalls
+/// (the file system under load) must not hold every row back.
+const REGISTRY_READ_BOUND: Duration = Duration::from_secs(3);
+
 /// The candidates in the order a window's strip shows rows by default, from one read of the registry, so the rows a
-/// person looks at first start first; an unreadable registry keeps the order given.
+/// person looks at first start first; an unreadable registry, or one not read within `REGISTRY_READ_BOUND`, keeps the
+/// order given.
 async fn in_strip_order(workspaces: &Workspaces, candidates: Vec<Candidate>) -> Vec<Candidate> {
+    in_strip_order_from(workspaces, candidates, crate::comm::registry::registry::read_comm_agents, REGISTRY_READ_BOUND).await
+}
+
+/// [`in_strip_order`] with the registry's read and its bound as parameters: a test hook, so a test gives a read that
+/// never returns.
+async fn in_strip_order_from(
+    workspaces: &Workspaces,
+    candidates: Vec<Candidate>,
+    read: impl FnOnce() -> Option<serde_json::Value> + Send + 'static,
+    bound: Duration,
+) -> Vec<Candidate> {
     if candidates.len() < 2 {
         return candidates;
     }
-    let agents = tokio::task::spawn_blocking(crate::comm::registry::registry::read_comm_agents).await.ok().flatten();
+    let agents = match tokio::time::timeout(bound, tokio::task::spawn_blocking(read)).await {
+        Ok(read) => read.ok().flatten(),
+        Err(_) => {
+            tracing::warn!("capsule workspace resume-scan: the registry was not read in time; rows start in the order given");
+            None
+        }
+    };
     let rows = workspaces.list();
     let host = crate::rows::store::declared_host();
     strip_order(candidates, |(workspace_id, ..)| {

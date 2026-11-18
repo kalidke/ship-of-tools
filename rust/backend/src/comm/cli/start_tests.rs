@@ -44,6 +44,18 @@ fn a_session_start_waits_for_a_live_holder_past_a_joins_bound() {
     assert!(o.stdout.contains(" identity=ok "), "{}", o.stdout);
 }
 
+/// A full start's wait is 40 s, or the variable's when longer: a value under 40 does not shorten it.
+#[test]
+fn a_session_starts_wait_is_forty_seconds_or_the_variable_when_longer() {
+    let mut t = TestHome::exclusive();
+    let secs = std::time::Duration::from_secs;
+    assert_eq!(start_wait(&t.env), secs(40));
+    t.set("SOT_LOCK_WAIT_SECS", "90");
+    assert_eq!(start_wait(&t.env), secs(90));
+    t.set("SOT_LOCK_WAIT_SECS", "1");
+    assert_eq!(start_wait(&t.env), secs(40));
+}
+
 /// A row's session is told it is in the window, and how its person gets a terminal of their own.
 #[test]
 fn a_rows_session_start_says_it_is_in_the_window_and_how_to_give_its_person_a_terminal() {

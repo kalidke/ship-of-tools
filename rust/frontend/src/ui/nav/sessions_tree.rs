@@ -137,7 +137,7 @@ pub(super) fn resplice_expanded_session_hosts(
 }
 
 /// ADR 0042 slice L1b: the capsule row's supervisor phase (ADR 0041
-/// Lifecycle, snake_case, plus `"unreachable"` and, since ADR 0030 §8
+/// Lifecycle, snake_case, plus `"unreachable"`, `"queued"` and, since ADR 0030 §8
 /// decision 31c, `"foreign"`), folded into the Sessions-row glance line —
 /// nothing renders the tree's `badges` vec today (deletion pressure: a
 /// second, invisible `badges` entry would name no observable invariant).

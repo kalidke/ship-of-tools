@@ -84,7 +84,8 @@ pub struct WorkspaceInfo {
     /// The supervisor-lane phase (ADR 0041 Lifecycle, snake_case),
     /// `"stopped"` (its state directory was never created — no supervisor
     /// has ever run for it), or `"unreachable"` (the lane could not be
-    /// queried at all) — `Some` only for `runtime == "capsule"` rows.
+    /// queried at all), or `"queued"` (the boot resume holds its start until its
+    /// turn) — `Some` only for `runtime == "capsule"` rows.
     /// Folded into the Sessions row's glance line (`capsule_phase_tag`).
     pub phase: Option<String>,
     /// Per-session accounts: the

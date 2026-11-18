@@ -240,7 +240,9 @@ fn joined(env: &Env, mut o: Out, ctx: &Context, ask: Ask, wait: std::time::Durat
         name = d.name.clone();
         stranding_warning(env, &mut o, ctx, d, outside, &cleared);
     }
-    // The self file, under the registry lock (the lock every join's writes take).
+    // The self file, under the registry lock (the lock every join's writes take). This is the join's second take: it
+    // waits `wait` too, never the join's own bound, or a start's longer wait would end after the registry write alone
+    // and leave the session joined with no self file.
     let wrote = crate::comm::registry::lock::acquire_in(env, &ctx.comm_home.join(".registry.lock"), wait).and_then(|_held| {
         if !ask.repin {
             if let Some(why) = self_file::conflict(&ctx.self_file, &ctx.repo, &ctx.project_root) {

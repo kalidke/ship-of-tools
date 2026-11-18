@@ -163,14 +163,17 @@ Supervisor:
 - A computer's boot starts its rows a few seconds apart. The boot resume (`run::resume::resume_all`) begins a row whose
   supervisor does not answer (every row after a boot) at least `BOOT_START_SPACING` (3 s) after the last such row, in
   the order a window's strip shows rows by default (a row waiting on its person, then done, working, waiting and the
-  rest, the newest stamp first; one read of the registry), and still holds at most `LANE_CONCURRENCY` spawns at once; a
-  row whose supervisor answers (a daemon restart's) begins at once and takes no turn (`pace_starts`). Until its turn
-  such a row lists its phase as `queued`, not `unreachable` (`Workspace::shown_phase`). Limits: the pace is a fixed
+  rest, the newest stamp first; one read of the registry, bounded at 3 s, after which the order given stands), and still
+  holds at most `LANE_CONCURRENCY` spawns at once; a row whose supervisor answers (a daemon restart's) takes no turn of
+  its own (`pace_starts`). Until its turn such a row lists its phase as `queued`, not `unreachable`
+  (`Workspace::shown_phase`), and none reads `queued` once the resume has returned. Limits: the pace is a fixed
   time, not a reading of the computer's load, so a slower computer or a heavier agent still overlaps several starts;
+  mail to a queued row is filed and waits for the row's turn (the wake types only into a `ready` row);
   only the boot resume is paced, so an op that resumes an absent row (a person's attach, `lane.connect`, `pty.input`,
   `pty.screen`) starts it at once, outside the pace, and its turn then spawns nothing, and the watchdog's and a reauth's
   restarts are not paced; the order repeats the window's strip rank (`activity_rank`) without its result badge. Tests:
-  `run::resume::pace_tests`, `workspace::tests::a_row_waiting_its_boot_turn_lists_as_queued_until_it_starts`.
+  `run::resume::pace_tests` (the spacing, the order, the whole resume's queue and clear, the bounded read),
+  `workspace::tests::a_row_waiting_its_boot_turn_lists_as_queued_until_it_starts`.
 - A row's phase follows its current supervisor, run by run. The phase cell is written by the observer through
   `Workspace::apply_phase_observation` (and `begin_supervisor_epoch` when a watch names a new supervisor), and by the
   watchdog's terminal marks (`apply_phase_observation` for the supervisor the watch record names, `latch_terminal`

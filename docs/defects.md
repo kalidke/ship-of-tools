@@ -281,7 +281,7 @@ owned by `docs/CLAUDE.md`.
 
 - **BOOT-STARTS-EVERY-ROW-AT-ONCE** [session] After a computer's boot the daemon started all of its 29 rows at once
   (2026-11-17, three boots of one hub, 33 to 37 supervisor launches within 4 to 7 s each time). On a computer with 32
-  threads the load average stood near 340 for about five minutes; `workspace.list` replies took up to 49 s; 85 of the
+  threads the load average was reported near 340 for about five minutes (reported, not measured); `workspace.list` replies took up to 49 s; 85 of the
   96 tool servers the agents launch through npm missed their 30 s connect bound (1.5 to 3.2 s on a quiet start); the
   sessions joined about 4 minutes after their launch (6 to 7 s on a quiet start); and 25 of 29 session starts failed
   on the registry lock (SESSION-START-FAILS-ON-A-HELD-REGISTRY-LOCK, under messaging). Cause: the boot resume
@@ -416,7 +416,7 @@ owned by `docs/CLAUDE.md`.
   before a later try joined (2026-11-17, in the minutes after a boot, while every row started at once:
   BOOT-STARTS-EVERY-ROW-AT-ONCE, under rows). Each holder was one live process that kept the lock 18 to 28 s (the lock
   file's age when a waiter gave up), longer by itself than a join's `SOT_LOCK_WAIT_SECS`, 10 s (`comm/PROTOCOL.md`,
-  Bounds), and holders followed one another (seven between 2 and 4 minutes after the daemon's start; a waiter that
+  Bounds), and holders followed one another (seven between 1 and 3 minutes after the daemon's start; a waiter that
   outlasted one could lose the next take, ages of 0 and 1 s). A session whose start fails has no handle and reads no
   mail until someone runs the start again. Built: a full session start waits up to 40 s for each take (messaging's
   contract). Open until a boot of a hub is seen with every session start joined.
