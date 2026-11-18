@@ -74,7 +74,6 @@ impl State {
         if let Ok(notice) = std::env::var("SOT_LAUNCH_NOTICE") {
             if !notice.is_empty() {
                 state.status.set(notice);
-                state.status.hold();
             }
         }
         apply_harness_flags(&mut state, cli);

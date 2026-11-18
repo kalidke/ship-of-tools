@@ -37,13 +37,12 @@ impl State {
             // Diagnostic surfaced on the status line so a blank pane is
             // debuggable without RUST_LOG: parser size, dead flag, and
             // whether the screen currently holds any non-blank cell.
-            // Only overwrite the status line when the pane actually looks
-            // wrong (dead / no content) — otherwise it fires every frame
-            // the drawer is open and clobbers real status messages
-            // (connection line, pin/unpin, ADR-0019 `notify`).
+            // Only written when the pane actually looks wrong (dead / no
+            // content), and as a state line: it repeats every frame, so it
+            // never replaces words held on the line (pin/unpin, a notify).
             if let Some(PumpReport { processed, dead, has_content, cols: scols, rows: srows }) = self.term_drawer.pump() {
                 if dead || !has_content {
-                    self.status.set(format!(
+                    self.status.show_state(format!(
                         "term: {scols}x{srows} content={has_content} dead={dead} pumped={processed}"
                     ));
                 }

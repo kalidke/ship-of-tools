@@ -294,7 +294,7 @@ impl State {
         let plan = self.agent_pane.begin_switch(key, origin, bound);
         shutdown_detached(plan.retired);
         if let Some(status) = plan.status {
-            self.status.set(status);
+            self.status.show_state(status);
             self.window.request_redraw();
         }
         let Some(open) = plan.open else { return };
@@ -307,7 +307,7 @@ impl State {
             }
         };
         if let Some(status) = self.agent_pane.finish_open(open, sent) {
-            self.status.set(status);
+            self.status.show_state(status);
             self.window.request_redraw();
             self.persist_resume_state();
         }
@@ -332,7 +332,7 @@ impl State {
             AttachTrace::Failed(AttachFailure::Startup(e)) => tracing::warn!(error = %e, "session pane: capsule attach client failed to start"),
             AttachTrace::Failed(_) => {}
         });
-        self.status.set(effect.status);
+        self.status.show_state(effect.status);
     }
 
     pub(in crate::ui) fn pump_pane_attach_term(&mut self) {
@@ -345,7 +345,7 @@ impl State {
                 AttachOutcome::Warning { episode, status } => tracing::warn!(since_request_ms, since_client_ms, episode, %status, "session pane: capsule attach episode failure"),
             }
         }
-        if let Some(status) = effect.status { self.status.set(status); }
+        if let Some(status) = effect.status { self.status.show_state(status); }
         if let Some(b64) = effect.copy { self.copy_to_clipboard(&b64); }
         if self.agent_pane.spend_scroll(Instant::now()) { self.pacer.mark_dirty(); }
     }
@@ -370,7 +370,6 @@ impl State {
             }
         };
         self.status.set(status);
-        self.status.hold();
         self.window.request_redraw();
     }
 

@@ -14,14 +14,15 @@ pub(in crate::ui) fn disconnect_status(reason: &str, held: Option<&str>) -> Stri
 }
 
 /// Show the selected host's disconnect on `status`. The text held on the line is carried as a part of its own, so
-/// any number of disconnect lines (a redial that fails again) keep it until a write that is not a disconnect, or the
-/// end of its hold, replaces it; the earlier disconnect line is not carried, so they do not pile up.
-pub(in crate::ui) fn show_disconnect(status: &mut StatusLine, reason: &str) {
-    let carried = status.carried();
+/// any number of disconnect lines (a redial that fails again) keep it until a newer word, or the end of its hold,
+/// replaces it; the earlier disconnect line is not carried, so they do not pile up. With nothing held, the line is a
+/// state line (`StatusLine::show_state_at`): it holds nothing, so the reconnect's connection line replaces it at once.
+pub(in crate::ui) fn show_disconnect(status: &mut StatusLine, reason: &str, now: std::time::Instant) {
+    let carried = status.carried(now);
     let text = disconnect_status(reason, carried.as_deref());
     match carried {
-        Some(note) => status.set_carrying(text, note),
-        None => status.set(text),
+        Some(note) => status.set_carrying(text, note, now),
+        None => status.show_state_at(text, now),
     }
 }
 
@@ -136,7 +137,6 @@ impl State {
             );
             if self.file_ops.interrupt() {
                 self.status.set(format!("upload interrupted by reconnect — {} to retry", self.bindings.first_label(Action::Upload)));
-                self.status.hold();
             }
             self.rebuild_connection_status();
             // B5 resume: the transport's hello-time TreeRoot always
@@ -261,7 +261,7 @@ impl State {
         }
         if event_host == *self.selected.host() {
             // A text a notify or a reply's outcome is holding, drained in the same frame, is carried, not overwritten.
-            show_disconnect(&mut self.status, &reason);
+            show_disconnect(&mut self.status, &reason, std::time::Instant::now());
         } else {
             // (S9, finding S14): `host_label`,
             // not the bare dial key, so a log line names a

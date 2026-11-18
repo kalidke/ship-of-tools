@@ -104,9 +104,6 @@ impl State {
             FeCommand::Notify { text, level } => {
                 tracing::info!(?level, %text, "fe-command: notify");
                 self.status.set(text);
-                // Pin it briefly so a workspace switch doesn't instantly rebuild
-                // the status line over it (see NOTIFY_STICKY).
-                self.status.hold();
                 self.window.request_redraw();
             }
             FeCommand::OpenUrl { url } => {
@@ -123,7 +120,6 @@ impl State {
                         Err(e) => self.status.set(format!("open_url failed · {e}")),
                     }
                 }
-                self.status.hold();
                 self.window.request_redraw();
             }
             FeCommand::Mode { mode } => {

@@ -239,11 +239,9 @@ impl ApplicationHandler for App {
         if has_passed(state.chat.next_ask(), std::time::Instant::now()) {
             state.window.request_redraw();
         }
-        // Notify toast expiry: once the sticky window elapses, restore the
-        // normal connection status so the toast doesn't linger until the next
-        // event. The idle/flash tick below brings us back here within ~1s.
-        if state.status.expire_hold() {
-            state.rebuild_connection_status();
+        // A held word's end: the connection line comes back without waiting for the next event. The idle tick below
+        // brings us back here within about 1 s.
+        if state.expire_status_hold(std::time::Instant::now()) {
             state.window.request_redraw();
         }
         // The not-ended line's own expiry, same pattern as the toast.

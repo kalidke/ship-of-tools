@@ -343,10 +343,11 @@ pub(in crate::ui) fn version_label(fe: &str, be: Option<&str>) -> (String, bool)
     (format!(" fe {fe} · be {be} "), skew)
 }
 
-/// How long a pushed `notify` toast stays pinned on the status line — long
-/// enough to read across a workspace switch (which rebuilds the status
-/// immediately and would otherwise clobber it). After this window
-/// `about_to_wait` restores the normal connection status on the idle tick.
+/// How long every word written on the status line (`StatusLine::set`) holds
+/// it against a state line (the connection line a re-list or a workspace
+/// switch rebuilds, the agent pane's attach line), unless a newer word
+/// replaces it first. After this window `about_to_wait` restores the
+/// connection line on the idle tick. The not-ended line uses it too.
 // 10s (was 4s): fe-command notifies render only on the one-line status bar
 // today and were reliably missed at 4s (2026-07-10 papers-geometry diagnosis).
 // A real toast surface is queued (ops TODO, rides the R6 redraw decomposition).

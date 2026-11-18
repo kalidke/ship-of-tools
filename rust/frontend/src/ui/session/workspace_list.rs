@@ -49,7 +49,6 @@ impl State {
         self.row_presentation.set_order(order, badged);
         self.persist_resume_state();
         self.status.set(format!("Session order: {}", order.name()));
-        self.status.hold();
     }
 
     /// Apply listing effects in order: badges/presentation, REPL catch-up, default migration, status.
@@ -75,21 +74,25 @@ impl State {
     /// workspace. Format: `connected · <host>:<workspace_label> · rev N`.
     /// Falls back to the slug if presentation labels haven't been populated
     /// yet, and to the daemon's project_root basename for the default
-    /// workspace. No-op until the hello response has landed (no host).
+    /// workspace. No-op until the hello response has landed (no host). A
+    /// state line: it never replaces words still held on the line.
     pub(in crate::ui) fn rebuild_connection_status(&mut self) {
-        // Don't clobber a fresh notify toast: hold it on the status line until
-        // its sticky window elapses (a workspace switch would otherwise rebuild
-        // over it immediately). Once elapsed, clear the flag and rebuild.
-        if self.status.held() {
-            return;
-        }
         let Some(host) = self.active_link.host_label().map(str::to_owned) else {
             return;
         };
         let label = self
             .active_workspace_label()
             .unwrap_or_else(|| "default".to_string());
-        self.status.set(format!("connected · {host}:{label} · rev {}", self.active_link.revision()));
+        self.status.show_state(format!("connected · {host}:{label} · rev {}", self.active_link.revision()));
+    }
+
+    /// The end of a hold: once one has passed at `now`, the connection line is rebuilt, and true says to redraw.
+    pub(in crate::ui) fn expire_status_hold(&mut self, now: std::time::Instant) -> bool {
+        if !self.status.expire_hold(now) {
+            return false;
+        }
+        self.rebuild_connection_status();
+        true
     }
 
     /// Display label for the active workspace: the per-workspace name from

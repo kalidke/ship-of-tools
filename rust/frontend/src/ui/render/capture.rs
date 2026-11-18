@@ -179,14 +179,12 @@ impl State {
                     tracing::info!(path = %path.display(), "capture wrote PNG");
                     if is_selfie {
                         self.status.set(format!("selfie saved: {}", path.display()));
-                        self.status.hold();
                     }
                 }
                 Err(e) => {
                     tracing::error!(error = %e, "capture failed");
                     if is_selfie {
                         self.status.set(format!("selfie failed: {e}"));
-                        self.status.hold();
                     }
                 }
             }

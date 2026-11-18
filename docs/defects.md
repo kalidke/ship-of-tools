@@ -862,6 +862,14 @@ owned by `docs/CLAUDE.md`.
   the pictures owner's review: the drawer holds one set of up hosts and hands it to each owner's asks; each owner keeps
   its own `unsupported` set, which is per op. Left because the change runs through the owner's and the row channel's
   tests, past the 30 lines it was allowed.
+- **CONNECTION-LINE-WHILE-DOWN** [note] `rebuild_connection_status` (`ui/session/workspace_list.rs`) writes
+  `connected · <host>:<row> · rev N` from `ActiveLink`, which no disconnect or refused hello clears, and it runs at any
+  connected computer's re-list, at a row switch and when a hold ends, so with the selected computer's link down the
+  status line can say connected (the strip, the Sessions and Hosts trees and the pane's overlay say otherwise). Since
+  every word is held (STATUS-WORDS-REPLACED-BY-RELIST), a hold's end follows every word: after a word written while the
+  link is down, the line can say connected from the hold's end until the next failed redial's disconnect line (up to
+  about 20 s for a remote computer, whose redial waits up to 30 s; a local daemon's 5 s redial carries the word instead).
+  Found reading code for STATUS-WORDS-REPLACED-BY-RELIST.
 
 ## distribution
 
@@ -1217,6 +1225,8 @@ owned by `docs/CLAUDE.md`.
   probe; installer hooks (superseded, check); stop commands that match only what they stop.
 
 ## Closed
+
+- **STATUS-WORDS-REPLACED-BY-RELIST** (fe-ui) [person] closed by the landing that fixes it, 2026-11-17, seen in use by a person on v0.7.1-rc.13 through its first case: in the Chat drawer, Primary+u over a picture opened from the chat showed nothing, because its refusal was written on the status line unheld and the next re-list put the connection line over it. Only 13 writes held the line (set, then hold); the connection line every workspace list's reply rebuilds replaced the rest within seconds, and the agent pane's pump wrote its client's status over any word, held or not, at every frame its row printed. Every word is now held for NOTIFY_STICKY (10 s) and a newer word replaces it at once; the connection line, a disconnect with nothing to carry, the agent pane's attach lines, the Terminal drawer's diagnostic and a refused hello's mirror are state lines, written only while nothing is held (StatusLine::show_state); a clear ends the hold (chrome::status_line::tests, session::replies::tests::a_disconnect_with_nothing_held_gives_way_to_the_connection_line, native fixture primary_u_over_a_chat_picture_keeps_its_words_through_a_relist_until_the_hold_ends).
 
 - **CHAT-RELOAD-RESTARTS-EVERY-WORKSPACE** (chat) [note] closed by the landing that fixes it, 2026-11-17, from the multi-workspace plan's re-cut, reading code, never seen: a reload (every `chat.connect` and every `chat.pair` that changes the file) stopped and started every workspace's chat, so each watching window of every workspace resynced, each delivering channel owed a pass, the reply waited for every workspace's start, and one workspace's stuck stop made the reload start nothing. A reload now restarts only the workspaces whose plan (credentials and mappings) changed, whose file is gone or whose chat is not running; each stopped workspace is waited for on a task of its own and started when its stop ends, so no workspace's stop holds another's reload, start or reply, and the reply waits only for its own workspace's stop and start (chat guarantee 21).
 

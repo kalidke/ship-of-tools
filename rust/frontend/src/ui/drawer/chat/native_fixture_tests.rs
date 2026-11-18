@@ -256,6 +256,8 @@ impl State {
             self.send_chat_draft();
         } else if action == Some(Action::ChatOpenImage) {
             self.open_chat_image();
+        } else if action == Some(Action::ChatPostFile) {
+            self.send_chat_file();
         } else if action == Some(Action::Paste) {
             let text = read_clipboard_text().ok_or_else(|| anyhow::anyhow!("the clipboard gave nothing back"))?;
             self.edit_chat_draft(Edit::Text(&text));
@@ -508,6 +510,55 @@ impl State {
             anyhow::ensure!(self.preview_source.generation() == shown && self.raster.is_shown(), "{script}: the shown picture changed");
         }
         println!("chat-thumbnails tiles={} textures={made} centers={checked} cut={cut}", before.1);
+        Ok(())
+    }
+
+    /// `Primary+u` in the drawer with a picture opened from the chat in the preview sends nothing, and its words stay on the
+    /// status line through the re-list a row's change of state brings (`workspace.changed`, the window's `workspace.list`,
+    /// its reply) until their hold ends, when the connection line comes back.
+    #[allow(dead_code, reason = "runs only inside a native State, from the window_minimized fixtures child")]
+    pub(in crate::ui) fn primary_u_over_a_chat_picture_keeps_its_words_through_a_relist_until_the_hold_ends(&mut self) -> Result<()> {
+        self.witness_with(Self::post_file_over_a_picture_run)
+    }
+
+    fn post_file_over_a_picture_run(&mut self, host: &HostKey, events: &Sender<(HostKey, IncomingEvt)>, sent: &mut Requests) -> Result<()> {
+        let mut daemon = Daemon { host: host.clone(), top: 6, seen: Seen::default(), unconfigured: false, figures: true };
+        let (mut frames, newest) = (Vec::new(), ts(6));
+        let send = |evt: IncomingEvt| events.send((host.clone(), evt)).map_err(|_| anyhow::anyhow!("the fixture's event channel closed"));
+        self.witness_show(host, events)?;
+        self.witness_pump(events, sent, &mut daemon)?;
+        self.witness_frame(&mut frames, &newest, "first frame")?;
+        // The newest message's picture, opened from the drawer: the preview shows it, with no file under it.
+        self.witness_key(Key::Named(NamedKey::ArrowUp), (false, false), Some(Action::ChatMarkOlder))?;
+        self.witness_frame(&mut frames, &newest, "marked")?;
+        self.witness_key(Key::Character("o".into()), (true, false), Some(Action::ChatOpenImage))?;
+        self.witness_pump(events, sent, &mut daemon)?;
+        self.witness_settle(&mut frames, &newest, "the picture")?;
+        anyhow::ensure!(self.preview_source.node_id().is_none() && self.raster.is_shown(), "no chat picture is shown: {:?}", self.status.text());
+        while sent.try_recv().is_ok() {}
+        // Any hold already on the line (the picture's own words, an earlier fixture's) ends, so only the key's words hold it.
+        let _ = self.expire_status_hold(Instant::now() + crate::ui::chrome::NOTIFY_STICKY);
+        // Primary+u with the drawer focused and an empty draft, as the person pressed it.
+        self.witness_key(Key::Character("u".into()), (true, false), Some(Action::ChatPostFile))?;
+        let said = self.status.text().to_string();
+        let posts = std::iter::from_fn(|| sent.try_recv().ok()).filter(|r| matches!(r, OutgoingReq::ChatPostFile { .. })).count();
+        // A row on the computer changes state: its `workspace.changed`, the window's re-list, and the list's reply.
+        let changed = serde_json::json!({ "action": "agent_state", "slug": "", "workspace_id": "" });
+        send(IncomingEvt::Event { op: sot_protocol::op::WORKSPACE_CHANGED.into(), payload: changed })?;
+        self.drain_events();
+        let relists = std::iter::from_fn(|| sent.try_recv().ok()).filter(|r| matches!(r, OutgoingReq::WorkspaceList)).count();
+        let mut row = crate::ui::nav::ws_info("chat", "chat-session");
+        row.workspace_id = "ROW1".into();
+        send(IncomingEvt::Workspaces { workspaces: vec![row] })?;
+        self.drain_events();
+        let after = self.status.text().to_string();
+        println!("chat-post-file-over-picture posts={posts} relists={relists} said={said:?} after_relist={after:?}");
+        anyhow::ensure!(posts == 0, "{posts} file posts went with no file in the preview");
+        anyhow::ensure!(!said.is_empty() && !said.starts_with("connected"), "the key said nothing: the status line says {said:?}");
+        anyhow::ensure!(relists == 1 && after == said, "after {relists} re-list the status line says {after:?}, not {said:?}");
+        // The hold's end brings the connection line back.
+        anyhow::ensure!(self.expire_status_hold(Instant::now() + crate::ui::chrome::NOTIFY_STICKY), "the key's words held nothing");
+        anyhow::ensure!(self.status.text().starts_with("connected · "), "after the hold the status line says {:?}", self.status.text());
         Ok(())
     }
 

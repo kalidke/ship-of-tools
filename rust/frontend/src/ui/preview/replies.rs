@@ -53,7 +53,7 @@ impl State {
         // (rebuild_fatal_overlay/show_fatal).
         self.hello_refused.refuse(event_host.clone(), message);
         self.shaped.clear_fatal();
-        self.status.set("the backend refused this window (see preview)".to_string());
+        self.status.show_state("the backend refused this window (see preview)".to_string());
     }
 
     pub(crate) fn on_concept_read(

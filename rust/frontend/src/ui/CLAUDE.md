@@ -54,7 +54,7 @@ last `fe-state.json` signature; `control::ReplyBar` owns the one reply a page of
 it is in view and its wait before Enter; `drawer::terminal::drawer::TerminalDrawer` owns the Terminal drawer's shell, its last
 pty size and its starting folder; `drawer::monitor::MonitorPane` owns the Monitor drawer; `chrome::StripMotion` owns the session strip's eased scroll and the brand wheels'
 spin; `chrome::NavSpill` owns the nav spill's deadline, collected segments and trigger cursor; `chrome::StatusLine`
-owns the status text and the hold a pushed notify keeps on it; `preview::notice::PreviewNotice` owns the preview's boxed message, its text and the instant it was shown (no `impl State`); `chrome::BatteryGauge` owns the cached battery label;
+owns the status text, the hold every word keeps on it and the note a disconnect line carries; `preview::notice::PreviewNotice` owns the preview's boxed message, its text and the instant it was shown (no `impl State`); `chrome::BatteryGauge` owns the cached battery label;
 `input::pointer::Pointer` owns the pointer's last position and the wheel's sub-row residue; `proxy_arms::ProxyArms`
 owns the page proxy's proxied hosts, listener manager and armed listeners; `host_view::ActiveLink` owns the active
 connection's hello facts and `host_view::HelloRefusals` each host's refused hello; `render::gpu::Gpu` owns the
@@ -493,7 +493,7 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   unable to draw every row of the target and the line whole can drop the bar but not send it. The panel is the close dialog's renderer (`CloseDialogText::Reply`), titled "Reply from a page", under the
   close dialog; the target (handle, listed name, host) and the line go through `cell_lines` and `wrap_status`, so a
   hostile name stays on rows of its own with no control character in a cell. The mouse takes no part. The answer comes
-  back as `IncomingEvt::PageReplied` and `page_reply_status` puts it on the status line, held like a pushed notify;
+  back as `IncomingEvt::PageReplied` and `page_reply_status` puts it on the status line, held as every word is;
   the selected host's `Disconnected` lines that follow before a paint (a redial failing again) carry the held text,
   kept as a part of its own, instead of overwriting it (`session::replies::show_disconnect`, tests
   `the_disconnect_line_carries_the_text_held_on_it` and `a_reply_outcome_survives_any_number_of_disconnect_lines`): only `sent` says the line
@@ -551,9 +551,28 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   `the_spill_names_the_tree_rows_drawn_where_they_are_drawn`, `a_short_tree_sits_under_the_status_as_before`). No
   pointer event maps to a nav row: a press selects text only in the agent pane, the preview and the Chat, and a wheel
   over the focused nav does nothing (`route_wheel_rows`).
-- `StatusLine` privately owns the status line: every write replaces the text; a pushed notify (and the launch
-  notice, a capture's result, an interrupted upload, the fullscreen pin, the session order) also holds it for `NOTIFY_STICKY`, during
-  which `rebuild_connection_status` leaves it; the idle tick expires the hold once and rebuilds the line.
+- `StatusLine` privately owns the status line. Words (`set`: every action's and reply's line, a pushed notify, a
+  progress line) replace the text at once and hold it for `NOTIFY_STICKY` (10 s) from their own write, so a newer word
+  replaces an older one at once and its hold runs from its own write. A state line (`show_state`: the connection line
+  `rebuild_connection_status` writes, a disconnect with nothing to carry, the agent pane's attach lines and its pump, the
+  Terminal drawer's diagnostic, the refused hello's mirror) is written only while no hold is live and holds nothing. A
+  line re-said by a timer, a frame, a redial or a re-list is a state line: written as a word it would renew the hold as
+  long as it repeats. `clear` empties the line and ends the hold. A disconnect while words are held carries them
+  (`disconnected · <reason> · <words>`, `session::replies::show_disconnect`, held again at each disconnect line). The idle
+  tick runs `State::expire_status_hold`, which ends an elapsed hold once and rebuilds the connection line, at most about
+  1 s late; a row switch does not end a hold. The clock is an argument wherever the owner reads it (`set_at`,
+  `show_state_at`, `carried`, `set_carrying`, `expire_hold`); `set` and `show_state` read it for their callers. Tests:
+  `chrome::status_line::tests::{words_hold_the_line_against_a_state_line_until_their_hold_ends,
+  newer_words_replace_held_words_at_once_and_hold_from_their_own_time, a_hold_ends_once_at_its_time,
+  a_clear_empties_the_line_and_ends_its_hold}`, `session::replies::tests::a_disconnect_with_nothing_held_gives_way_to_the_connection_line`
+  and the native State fixture `primary_u_over_a_chat_picture_keeps_its_words_through_a_relist_until_the_hold_ends` (the
+  key's words through a re-list, then the connection line at the hold's end); the attach, pump, Terminal and hello sites
+  rest on reading. Limits: a held word keeps the connection line, the pane's attach status and an input outcome notice
+  off the line up to 10 s (the notice is said again at the pane's next change; the pane's overlay shows its attach
+  reason); a capture harness never runs the idle tick, so its line keeps a word past its hold until the next state line;
+  the destroy's press-again line stays up to 10 s after another key dropped its arm; the connection line is built from
+  `ActiveLink`, which no disconnect clears, so at a hold's end it can say connected while the selected computer's link is
+  down (CONNECTION-LINE-WHILE-DOWN).
 - `PreviewNotice` privately owns the preview's message box: the text and the instant it was shown. `State::preview_says` is the
   one call that writes a boxed message, to the status line and to the box together, so neither shows one the other lacks; the
   one message that goes to the box alone is the refusal of `d` over a picture with no base to draw on (a PDF page, an SVG, a

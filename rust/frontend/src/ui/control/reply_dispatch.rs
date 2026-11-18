@@ -36,7 +36,6 @@ impl State {
             _ => {
                 tracing::warn!(%handle, "page reply dropped: the row is not listed");
                 self.status.set(format!("reply from a page dropped \u{b7} {handle} is not a row this window lists"));
-                self.status.hold();
                 self.window.request_redraw();
                 return;
             }
@@ -56,7 +55,6 @@ impl State {
                 };
                 tracing::warn!(%handle, %why, "page reply dropped");
                 self.status.set(format!("reply from a page dropped \u{b7} {why}"));
-                self.status.hold();
             }
         }
         self.window.request_redraw();
@@ -114,7 +112,6 @@ impl State {
         };
         if let Some(text) = said {
             self.status.set(text);
-            self.status.hold();
         }
         self.window.request_redraw();
         true
