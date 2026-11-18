@@ -529,7 +529,7 @@ fn a_hub_that_holds_no_user_token_shows_post_as_you_and_enter_opens_the_apps() {
 #[test]
 fn a_post_refused_for_no_user_token_brings_the_post_as_you_screen_and_keeps_the_draft() {
     let (mut d, at) = after_a_refused_post();
-    assert_eq!(d.take_notice().as_deref(), Some("not posted: no Slack code that posts as you is saved; open the channel list (Ctrl+Shift+K, or Cmd+Shift+K on a Mac) and choose Connect Slack again"));
+    assert_eq!(d.take_notice().as_deref(), Some("not posted: no Slack code that posts as you is saved; open the channel list (Ctrl+Shift+k, or Cmd+Shift+k on a Mac) and choose Connect Slack again"));
     assert!(d.in_setup());
     assert_eq!(d.title(), " chat · post as you ");
     assert_eq!(d.draft(), Some(("hello", "CH1")), "the draft is kept");
@@ -824,7 +824,7 @@ fn no_project_word_reaches_a_screen() {
             .into_iter()
             .chain([Stand::Unconfigured(ChatUnconfigured::NotConnected), Stand::Failed(ChatCode::Busy)]);
         said.extend(stands.map(|s| s.words(host)));
-        said.push(super::compose::compose_rows(&ComposeText::of(None, None, false, Some(false), host), 200, 10).join(" "));
+        said.push(super::compose::compose_rows(&ComposeText::of(None, None, false, Some(false), host, true), 200, 10).join(" "));
         said.push(post_words(&PostShown::Outdated, true, host).unwrap_or_default());
     }
     said.extend([wait_words(5, false), wait_words(5, true)]);
@@ -834,7 +834,7 @@ fn no_project_word_reaches_a_screen() {
     for code in codes {
         said.extend(post_words(&PostShown::Refused(code), code == ChatCode::BadRequest, "a"));
     }
-    said.push(compose_rows(&ComposeText::of(None, None, true, Some(true), "a"), 200, 10).join(" "));
+    said.push(compose_rows(&ComposeText::of(None, None, true, Some(true), "a", true), 200, 10).join(" "));
     // The Connect step: each first screen, the steps, a refused code of each kind, connecting and connected, and a post's.
     let mut screens = Vec::new();
     for reason in [ChatUnconfigured::NotConnected, ChatUnconfigured::TokensRefused, ChatUnconfigured::StartFailed, ChatUnconfigured::WrongApp, ChatUnconfigured::Other] {
@@ -968,6 +968,39 @@ fn no_project_word_reaches_a_screen() {
     }
     hits.dedup();
     assert!(hits.is_empty(), "{} project words on screens:\n{}", hits.len(), hits.join("\n"));
+    assert_eq!(key_name_capitals(&said), Vec::<String>::new(), "a modifier followed by a capital letter key on a screen");
+}
+
+/// The texts of `said` that write a letter key in capitals after a modifier (`Ctrl+Shift+K`, `Cmd+C`): a capital reads as
+/// Shift, so a key letter is written lowercase and a named key (`Enter`, `Esc`) keeps its form.
+fn key_name_capitals(said: &[String]) -> Vec<String> {
+    let mut found: Vec<String> = said
+        .iter()
+        .filter(|text| {
+            text.match_indices('+').any(|(at, _)| {
+                let (head, rest) = (&text[..at], &text[at + 1..]);
+                let mut next = rest.chars();
+                let letter = next.next().is_some_and(|c| c.is_ascii_uppercase()) && !next.next().is_some_and(char::is_alphanumeric);
+                letter && ["Ctrl", "Cmd", "Alt", "Shift", "Primary"].iter().any(|m| head.ends_with(m))
+            })
+        })
+        .cloned()
+        .collect();
+    found.dedup();
+    found
+}
+
+/// The rule itself: a capital letter key after a modifier is found, in any form it is written; the lowercase and the named keys
+/// are not.
+#[test]
+fn the_capital_key_rule_finds_a_planted_capital() {
+    let texts = |t: &[&str]| t.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    for planted in ["press Ctrl+Shift+K to move", "Cmd+C", "open it (Ctrl+Shift+K, or Cmd+Shift+K on a Mac)", "Ctrl+V  paste", "{x} Alt+K."] {
+        assert_eq!(key_name_capitals(&texts(&[planted])).len(), 1, "{planted}");
+    }
+    for fine in ["press Ctrl+Shift+k to move", "Cmd+c", "Shift+Enter  Esc", "Ctrl+Shift+k, or Cmd+Shift+k", "Ctrl+K2", "Cmd+Kx"] {
+        assert!(key_name_capitals(&texts(&[fine])).is_empty(), "{fine}");
+    }
 }
 
 const SETUP: Option<Action> = Some(Action::ChatSetup);
@@ -996,19 +1029,19 @@ fn running(others: bool) -> ChatEvt {
 }
 
 /// A row whose channel is in a workspace whose connection failed: the step names that workspace and why, and while another
-/// runs, Ctrl+Shift+K (delta 7: inside the step's own keys) opens that one's channel list to move the project there; the
+/// runs, Ctrl+Shift+k (delta 7: inside the step's own keys) opens that one's channel list to move the project there; the
 /// list stays over the row's `unconfigured`, and Escape gives the step back.
 #[test]
 fn a_failed_workspaces_step_names_it_and_its_chord_opens_another_workspaces_list() {
     let (mut d, at, outs) = in_failed("tokens_refused");
     assert_eq!(outs.iter().filter(|(_, r)| matches!(r, OutgoingReq::ChatWorkspaces)).count(), 1, "the step asks which workspaces run");
     assert!(drawn(&d).starts_with(" chat · set up Slack \nThis project's channel is in the Slack workspace with ID TBBBB2, whose connection failed."), "{}", drawn(&d));
-    assert!(!drawn(&d).contains("Shift+K"), "no chord before another workspace is known to run");
+    assert!(!drawn(&d).contains("Shift+k"), "no chord before another workspace is known to run");
     assert!(key(&mut d, SETUP).0.is_empty() && d.in_setup());
     d.on_evt(&host(), running(true), at);
     let shown_now = drawn(&d);
     assert!(shown_now.contains("This project's channel is in the Slack workspace Beta Lab, whose connection failed.\n\nSlack no longer accepts the Slack codes"), "{shown_now}");
-    assert!(shown_now.contains(&format!("Enter  open your Slack apps    Left  make your Slack app again    {P}+Shift+K  open the channel list of another workspace    Esc  close")), "{shown_now}");
+    assert!(shown_now.contains(&format!("Enter  open your Slack apps    Left  make your Slack app again    {P}+Shift+k  open the channel list of another workspace    Esc  close")), "{shown_now}");
     // The chord: the picker in the step's place, asking which workspaces run; the row's stand leaves it there.
     let (outs, _) = key(&mut d, SETUP);
     assert_eq!(lists(&outs), 1);
@@ -1044,7 +1077,7 @@ fn a_failed_workspaces_lead_says_why_and_the_chord_needs_another_running() {
         d.on_evt(&host(), running(false), at);
         let shown_now = drawn_at(&d, 2000, 60);
         assert!(shown_now.contains(lead), "{reason}: {shown_now}");
-        assert!(!shown_now.contains("Shift+K"), "{reason}: no other workspace runs");
+        assert!(!shown_now.contains("Shift+k"), "{reason}: no other workspace runs");
         assert!(key(&mut d, SETUP).0.is_empty() && d.in_setup(), "{reason}");
     }
     let (mut d, _) = in_step("tokens_refused");

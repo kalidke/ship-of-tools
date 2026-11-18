@@ -66,7 +66,7 @@ pub(in crate::ui) struct Asks {
     pub close: bool,
     /// Enter on the connected screen: the step is done, and the project's channel is chosen next.
     pub done: bool,
-    /// Ctrl+Shift+K on the first screen of a row whose workspace failed: the channel list of another workspace.
+    /// Ctrl+Shift+k on the first screen of a row whose workspace failed: the channel list of another workspace.
     pub away: bool,
     pub notice: Option<String>,
 }
@@ -145,7 +145,7 @@ impl Connect {
         }
     }
 
-    /// Whether Ctrl+Shift+K moves the project to another workspace's channel: on the first screen, for a row whose
+    /// Whether Ctrl+Shift+k moves the project to another workspace's channel: on the first screen, for a row whose
     /// workspace failed, while another runs.
     fn can_move(&self) -> bool {
         self.screen == Screen::First && self.failed_in.is_some() && self.elsewhere
@@ -339,8 +339,8 @@ impl Connect {
                 ChatUnconfigured::Other => format!("This project's channel is in {w}, whose connection failed on {c}: {}.", log_words(&c)),
             });
         }
-        // Ctrl+Shift+K: the other workspaces' channels, for a project to move to.
-        let away = if self.can_move() { format!("    {p}+Shift+K  open the channel list of another workspace") } else { String::new() };
+        // Ctrl+Shift+k: the other workspaces' channels, for a project to move to.
+        let away = if self.can_move() { format!("    {p}+Shift+k  open the channel list of another workspace") } else { String::new() };
         let keys = match &self.screen {
             Screen::First if refused => {
                 out.push(if self.reason == ChatUnconfigured::WrongApp {
@@ -365,29 +365,29 @@ impl Connect {
                 };
                 out.push(format!("Slack's website now shows a page that makes {APP}, already named {named}; Slack shows that name on the messages your Slack app posts. If Slack asks which workspace the app is for, pick the one you are connecting. Your Slack app is how Ship of Tools reaches your channels. It can list your workspace's channels, read and post in the ones it is in, and, with your own Slack code, post your messages as you; it cannot read direct messages or channels it is not in. Click Next, then Create. Then click Install to Workspace, then Allow. When Slack shows the app's page after Allow, press Enter here: this panel then shows step 2, where you copy the first two Slack codes."));
                 out.push("If Slack says the app needs an administrator's approval, send the request Slack offers and wait for Slack's message that it is approved. Then, on the app's page in Slack, click Install to Workspace and Allow, and come back here. (If you closed this panel meanwhile, open it, and press Right on the first screen to come straight to step 2.)".into());
-                out.push(format!("The page was empty? Copy your Slack app's description (Slack calls it a manifest) with {p}+C in this panel, then go to api.slack.com/apps, click Create New App, then From a manifest, choose the workspace you are connecting, paste it with {p}+V, Next, Create."));
+                out.push(format!("The page was empty? Copy your Slack app's description (Slack calls it a manifest) with {p}+c in this panel, then go to api.slack.com/apps, click Create New App, then From a manifest, choose the workspace you are connecting, paste it with {p}+v, Next, Create."));
                 format!("Enter  next step    {steps}")
             }
             Screen::Tokens => {
                 out.push(match self.refused {
-                    Some(Refused::User) => format!("Slack did not accept the code you pasted. Make sure you copied the \"User OAuth Token\" (it starts with xoxp-); then copy it again, click in this panel and press {p}+V."),
-                    Some(Refused::Bot) => format!("Slack did not accept the code you pasted. Make sure you copied the \"Bot User OAuth Token\" (it starts with xoxb-); then copy it again, click in this panel and press {p}+V."),
-                    _ => format!("Slack now shows two long codes like passwords: the \"User OAuth Token\", which starts with xoxp- and lets Ship of Tools post your messages as you, and the \"Bot User OAuth Token\", which starts with xoxb- and lets {APP} read your channels and post in them. (Not on screen? At api.slack.com/apps, click {name}, then OAuth & Permissions in the menu on the left.) Click Copy beside one, then click in this panel and press {p}+V. Then do the same with the other, in either order."),
+                    Some(Refused::User) => format!("Slack did not accept the code you pasted. Make sure you copied the \"User OAuth Token\" (it starts with xoxp-); then copy it again, click in this panel and press {p}+v."),
+                    Some(Refused::Bot) => format!("Slack did not accept the code you pasted. Make sure you copied the \"Bot User OAuth Token\" (it starts with xoxb-); then copy it again, click in this panel and press {p}+v."),
+                    _ => format!("Slack now shows two long codes like passwords: the \"User OAuth Token\", which starts with xoxp- and lets Ship of Tools post your messages as you, and the \"Bot User OAuth Token\", which starts with xoxb- and lets {APP} read your channels and post in them. (Not on screen? At api.slack.com/apps, click {name}, then OAuth & Permissions in the menu on the left.) Click Copy beside one, then click in this panel and press {p}+v. Then do the same with the other, in either order."),
                 });
                 out.push(format!("User OAuth Token       {}\nBot User OAuth Token   {}", shown(self.user.as_ref()), shown(self.bot.as_ref())));
-                out.push(format!("No \"User OAuth Token\" on the page? Your Slack app was made before Ship of Tools posted as you. On that page, under User Token Scopes, click Add an OAuth Scope and choose chat:write (post as you), then again for files:write (post a file as you). Then click Reinstall to Workspace and Allow; the \"User OAuth Token\" shows at the top. Copy it, click in this panel and press {p}+V as above."));
-                format!("{p}+V  paste    {steps}")
+                out.push(format!("No \"User OAuth Token\" on the page? Your Slack app was made before Ship of Tools posted as you. On that page, under User Token Scopes, click Add an OAuth Scope and choose chat:write (post as you), then again for files:write (post a file as you). Then click Reinstall to Workspace and Allow; the \"User OAuth Token\" shows at the top. Copy it, click in this panel and press {p}+v as above."));
+                format!("{p}+v  paste    {steps}")
             }
             Screen::App => {
                 if self.refused == Some(Refused::App) {
-                    out.push(format!("Slack did not accept the code you pasted. Make sure you copied the \"App-Level Token\" (it starts with xapp-) and that you chose connections:write (receive new messages as they arrive); then copy it again, click in this panel and press {p}+V. Copy it from the same Slack app as the two codes of step 2."));
+                    out.push(format!("Slack did not accept the code you pasted. Make sure you copied the \"App-Level Token\" (it starts with xapp-) and that you chose connections:write (receive new messages as they arrive); then copy it again, click in this panel and press {p}+v. Copy it from the same Slack app as the two codes of step 2."));
                 } else {
                     out.push("One more code, the \"App-Level Token\": it lets Ship of Tools see new messages as they arrive. Copy it from the same Slack app as the two codes of step 2. On Slack's page:".into());
                     out.push("  1. In the menu on the left, click Basic Information.\n  2. Scroll down to App-Level Tokens and click Generate Token and Scopes.\n  3. In the name box, type: messages\n  4. Click Add Scope and choose connections:write (receive new messages as they arrive) from the list.\n  5. Click Generate, then Copy.".into());
-                    out.push(format!("Then click in this panel and press {p}+V."));
+                    out.push(format!("Then click in this panel and press {p}+v."));
                 }
                 out.push(format!("App-Level Token   {}", shown(self.app.as_ref())));
-                format!("{p}+V  paste    {steps}")
+                format!("{p}+v  paste    {steps}")
             }
             Screen::Connecting => {
                 out.push("Slack is checking the three codes.".into());

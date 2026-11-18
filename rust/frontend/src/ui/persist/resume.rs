@@ -81,6 +81,10 @@ pub struct GlobalState {
     /// Nav tree scroll offset (rows) at last save, paired with
     /// `nav_selected_id`.
     pub nav_scroll: Option<u16>,
+    /// Whether a post from the Chat drawer has been proved made on this computer, in any project or workspace: after the
+    /// first, the drawer's foot stops explaining how a post appears. Written as `chat_posted = true`; `None` and a value
+    /// that is not `true` mean no post yet.
+    pub chat_posted: Option<bool>,
 }
 
 pub fn state_path() -> PathBuf {
@@ -120,8 +124,12 @@ fn config_dir() -> PathBuf {
 /// — a corrupted file is treated as "no prior state" and overwritten on
 /// the next save.
 pub fn load() -> GlobalState {
-    let path = state_path();
-    let text = match std::fs::read_to_string(&path) {
+    load_from(&state_path())
+}
+
+/// `load` for the file at `path`.
+pub(in crate::ui) fn load_from(path: &std::path::Path) -> GlobalState {
+    let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
         Err(_) => return GlobalState::default(),
     };
@@ -150,21 +158,36 @@ pub fn load() -> GlobalState {
             "strip_order" => g.strip_order = Some(value.to_string()),
             "nav_selected_id" => g.nav_selected_id = Some(value.to_string()),
             "nav_scroll" => g.nav_scroll = value.parse().ok(),
+            "chat_posted" => g.chat_posted = value.parse().ok(),
             _ => {}
         }
     }
     g
 }
 
-/// Write the global state atomically (temp + rename). Failures are
-/// logged warns; resume just won't work next launch.
+/// Write the global state whole and durably (platform's `write_durable`).
+/// Failures are logged warns; resume just won't work next launch.
 pub fn save(state: &GlobalState) {
-    let path = state_path();
+    if let Err(e) = save_to(&state_path(), state) {
+        tracing::warn!(error = %e, "state write failed");
+    }
+}
+
+/// The first post from the Chat drawer was proved made: `chat_posted = true` goes into the file with every other key as
+/// it is. The words for a failure; the file is then as it was, and the foot explains again at the next start.
+pub(in crate::ui) fn record_chat_posted() -> Result<(), String> {
+    record_chat_posted_at(&state_path())
+}
+
+pub(in crate::ui) fn record_chat_posted_at(path: &std::path::Path) -> Result<(), String> {
+    let state = GlobalState { chat_posted: Some(true), ..load_from(path) };
+    save_to(path, &state).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// `save` to `path`, whole and durably (platform's `write_durable`): the failure, with the file as it was.
+pub(in crate::ui) fn save_to(path: &std::path::Path, state: &GlobalState) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
-        if let Err(e) = std::fs::create_dir_all(parent) {
-            tracing::warn!(error = %e, dir = ?parent, "could not create state dir");
-            return;
-        }
+        std::fs::create_dir_all(parent)?;
     }
     let mut body = String::new();
     body.push_str("# sot frontend resume state (B5)\n");
@@ -207,14 +230,10 @@ pub fn save(state: &GlobalState) {
     if let Some(v) = state.nav_scroll {
         body.push_str(&format!("nav_scroll = {v}\n"));
     }
-    let tmp = path.with_extension("toml.tmp");
-    if let Err(e) = std::fs::write(&tmp, body.as_bytes()) {
-        tracing::warn!(error = %e, path = ?tmp, "state write failed");
-        return;
+    if let Some(v) = state.chat_posted {
+        body.push_str(&format!("chat_posted = {v}\n"));
     }
-    if let Err(e) = std::fs::rename(&tmp, &path) {
-        tracing::warn!(error = %e, from = ?tmp, to = ?path, "state rename failed");
-    }
+    sot_platform::host::write_durable(path, body.as_bytes())
 }
 
 fn strip_quotes(s: &str) -> &str {

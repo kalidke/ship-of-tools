@@ -5,11 +5,11 @@ To connect Ship of Tools to Slack the first time, or to give another project a c
 
 A project with no channel shows a list of your Slack channels to pick from when you open the Chat drawer on it: type to narrow
 it, `Up` and `Down` to choose, `Enter` to pick, `Esc` to close. After `Esc` the title reads `no channel`, and `Enter` opens the
-list again. `Ctrl+Shift+K` (`chat.setup`) opens it for any project on the computer the chat runs on, beginning with `No channel
-for this project` for one that has a channel. With nothing typed, the foot says `type a message and press Enter to post it` and
-names this chord. How the list and its marks work is in [Setting up Slack](chat-setup.md).
+list again. `Ctrl+Shift+k` (`chat.setup`) opens it for any project on the computer the chat runs on, beginning with `No channel
+for this project` for one that has a channel. With nothing typed, the foot says `type a message and press Enter to post it`; until the first
+post from this computer it also says how a post appears and names this chord. How the list and its marks work is in [Setting up Slack](chat-setup.md).
 
-The Chat drawer (`Ctrl+K`) shows the messages of one Slack channel: the channel the selected row's folder maps to.
+The Chat drawer (`Ctrl+k`) shows the messages of one Slack channel: the channel the selected row's folder maps to.
 The records the window holds are listed oldest first, and the newest sits at the bottom. The view follows the newest, so
 a message that arrives takes the bottom line and lifts the rest. An empty channel shows `no messages`.
 
@@ -147,8 +147,8 @@ closes.
 
 ## Posting
 
-`Enter` (`chat.send`) posts the draft once, to the channel or thread its compose line names. On a hub that holds your Slack user token the post appears in the channel as your own message, from your Slack account, with no mark of the app, so people and bots in the channel treat it as yours; you must be in the channel (otherwise the post is refused `you are not in that channel in Slack; join it there first`), and a hub that holds no such token, or whose token Slack refused, posts nothing for you, refuses the post and shows the `post as you` screen to connect again ([Setting up Slack](chat-setup.md)). The line under an empty draft says which a post will be: as your own message on a hub that can post as you, and as a message from your Slack app on an older hub, which posts it as the app, under the name in
-`[chat] name` of `settings.toml` (see [the settings reference](../ref/config.md)), with no badge; with no name set, nothing is sent: the foot of the drawer becomes the prompt `Your name for chat posts (saved in settings.toml):` and the keys type the name
+`Enter` (`chat.send`) posts the draft once, to the channel or thread its compose line names. On a hub that holds your Slack user token the post appears in the channel as your own message, from your Slack account, with no mark of the app, so people and bots in the channel treat it as yours; you must be in the channel (otherwise the post is refused `you are not in that channel in Slack; join it there first`), and a hub that holds no such token, or whose token Slack refused, posts nothing for you, refuses the post and shows the `post as you` screen to connect again ([Setting up Slack](chat-setup.md)). Until the first post from this computer, the line under an empty draft says which a post will be: as your own message on a hub that can post as you, and as a message from your Slack app on an older hub, which posts it as the app, under the name in
+`[chat] name` of `settings.toml` (see [the settings reference](../ref/config.md)), with no badge (the older hub's line is a warning, so it stays after a post; the first post from this computer, in any project, ends the other line, and the window keeps that in its per-computer state file, not in `settings.toml`); with no name set, nothing is sent: the foot of the drawer becomes the prompt `Your name for chat posts (saved in settings.toml):` and the keys type the name
 instead of the draft. `Enter` saves it to `settings.toml` (the file the window loaded, or the per-user one, made if missing) and uses it at
 once, for every row and project in the window, and the draft stays: the next `Enter` posts it. `Escape` cancels and keeps the draft. A name
 is refused, with the reason on the status line and the prompt open, when it is empty, holds a quote or a backslash, or is longer than
@@ -181,17 +181,17 @@ selection is never shared with the agent; only the preview's text and your drawi
 
 ## Copying
 
-`Ctrl+C` or `Ctrl+Shift+C` (`Cmd+C` on macOS; `chat.copy_selection`) with the Chat drawer focused copies the selected text
+`Ctrl+c` or `Ctrl+Shift+c` (`Cmd+c` on macOS; `chat.copy_selection`) with the Chat drawer focused copies the selected text
 exactly as shown: a link's label, a mention's name and a style's text without its marks, a code block's lines without its fences and a quote's without its `>` (an empty line in either copies as an empty line, with no added space), markup the drawer does not read as the markup text, `&lt;` and `&gt;` as `<` and `>`, and a deleted message as
 `(message deleted)`, with the message's own line breaks and none from the wrap. With no selection it copies the marked
-message's text, not its name and time line (a message without a header copies its whole text). `(edited)` is Slack's mark and not the message's text, so no copy holds it. With neither, the status line says there is nothing to copy. Ctrl+C in the
+message's text, not its name and time line (a message without a header copies its whole text). `(edited)` is Slack's mark and not the message's text, so no copy holds it. With neither, the status line says there is nothing to copy. Ctrl+c in the
 agent pane, the Terminal and the Julia REPL is unchanged.
 
 ## Pictures
 
 A message's PNG, JPEG, GIF and WebP files show below its text as square tiles, each with its thumbnail fitted in it once
 Slack's thumbnail has arrived; any other file stays a file line. A click on a tile (pressed and released in place: a drag
-that starts on a tile opens nothing) opens that picture in the preview pane, and `Ctrl+O` (`Cmd+O` on macOS;
+that starts on a tile opens nothing) opens that picture in the preview pane, and `Ctrl+o` (`Cmd+o` on macOS;
 `chat.open_image`) opens the marked message's first picture. The window reads the whole picture from Slack (at most 16 MiB)
 each time it opens one; the status line says `opening the picture…` while it comes and `picture shown in the preview` when
 it is shown. It refuses, with the reason on the status line, a picture that does not decode, an open while the link to the

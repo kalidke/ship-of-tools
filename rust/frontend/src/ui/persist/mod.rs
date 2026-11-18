@@ -8,6 +8,17 @@ pub(crate) mod resume;
 pub(crate) mod settings;
 
 impl State {
+    /// The first post from the Chat drawer was proved made: keep it in the per-host state file, so no later window on this
+    /// computer explains again. A file that cannot be written only leaves the explanation to show at the next start.
+    pub(super) fn keep_chat_posted(&self) {
+        if self.ephemeral {
+            return;
+        }
+        if let Err(e) = crate::ui::persist::resume::record_chat_posted() {
+            tracing::warn!(error = %e, "chat post not recorded");
+        }
+    }
+
     /// B5: persist (last_mode, last_bl_target) so a fresh launch resumes
     /// where the user left off. Called from each Mode-switch and each
     /// attach_session_to_bl; not from every cursor move (those don't
@@ -74,6 +85,7 @@ impl State {
                 .get(self.nav.tree().selected())
                 .map(|r| r.node.id.clone()),
             nav_scroll: Some(self.nav.scroll()),
+            chat_posted: self.chat.posted_before().then_some(true),
         };
         crate::ui::persist::resume::save(&s);
     }

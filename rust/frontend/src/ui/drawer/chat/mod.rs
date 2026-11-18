@@ -71,6 +71,9 @@ impl State {
         if let Some(words) = self.chat.take_notice() {
             self.status.set(words);
         }
+        if self.chat.take_first_post() {
+            self.keep_chat_posted();
+        }
         // An opened picture goes to the bounded child only while its row is still the one the chat shows.
         if let Some((number, row, bytes)) = self.chat.take_opened() {
             if wanted_row(self.layout_help.chat_shown(), || self.active_result_workspace()).as_ref() == Some(&row) {

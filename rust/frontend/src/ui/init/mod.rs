@@ -80,6 +80,7 @@ impl State {
         apply_harness_flags(&mut state, cli);
         apply_startup_font_scale(&mut state, cli);
         apply_startup_strip_order(&mut state);
+        apply_startup_chat_posted(&mut state);
         Ok(state)
     }
 }
@@ -402,6 +403,14 @@ fn apply_startup_strip_order(state: &mut State) {
     if let Some(name) = crate::ui::persist::resume::load().strip_order {
         let order = crate::ui::session::StripOrder::parse(&name);
         state.row_presentation.set_order(order, std::collections::HashSet::new());
+    }
+}
+
+/// Whether a post from the Chat drawer was proved made on this computer, which ends the foot's explanation. Harness runs
+/// skip it, as they skip the other saved state.
+fn apply_startup_chat_posted(state: &mut State) {
+    if !state.ephemeral {
+        state.chat.set_posted_before(crate::ui::persist::resume::load().chat_posted == Some(true));
     }
 }
 

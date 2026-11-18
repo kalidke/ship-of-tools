@@ -114,6 +114,10 @@ pub(in crate::ui) struct ChatDrawer {
     /// What each connected host's hello said of whether its daemon posts a person's chat post under their own Slack token; a host
     /// is here only while its link is up and its hello was read, so the hint says nothing of a daemon it has not heard from.
     posts_as_person: std::collections::HashMap<HostKey, bool>,
+    /// A post from this drawer has been proved made, here or in an earlier window on this computer (`set_posted_before`): the
+    /// foot's explanation is shown only while none has. `first_post` holds the proof from this run until State has kept it.
+    posted_before: bool,
+    first_post: bool,
 }
 
 /// What holds the drawer's body in place of the records, one at a time. Whatever it is, the drawer parks the channel's view
@@ -313,7 +317,7 @@ impl ChatDrawer {
         let mut outs: Vec<Out> = out.into_iter().collect();
         let connected = self.connect().and_then(Connect::connected).map(str::to_string);
         if asks.away {
-            // Ctrl+Shift+K over a workspace whose connection failed: the channels of the others, the step behind.
+            // Ctrl+Shift+k over a workspace whose connection failed: the channels of the others, the step behind.
             self.close_modal();
             let row = self.rows.row().cloned();
             outs.extend(self.open_picker_at(row.as_ref(), None, true).unwrap_or_default());
@@ -589,6 +593,8 @@ impl ChatDrawer {
             Vec::new()
         });
         if let Some(row) = made {
+            self.first_post |= !self.posted_before;
+            self.posted_before = true;
             self.compose.clear(&ResultRowIdentity { host: host.clone(), workspace_id: row });
             if thread.is_some_and(|p| self.thread.as_ref().is_some_and(|t| t.is(host, target, p))) {
                 outs.extend(self.restart_thread());
@@ -778,6 +784,21 @@ impl ChatDrawer {
     /// The foot stops asking (Escape, or the row, the link or the view it asked in is gone); the draft was never touched.
     pub(in crate::ui) fn cancel_name(&mut self) {
         self.asking = None;
+    }
+
+    /// The window's start: whether an earlier window on this computer had a post proved made.
+    pub(in crate::ui) fn set_posted_before(&mut self, posted: bool) {
+        self.posted_before = posted;
+    }
+
+    /// Whether a post from this drawer has been proved made on this computer.
+    pub(in crate::ui) fn posted_before(&self) -> bool {
+        self.posted_before
+    }
+
+    /// Whether the first post on this computer was proved since the last call, for State to keep it.
+    pub(in crate::ui) fn take_first_post(&mut self) -> bool {
+        std::mem::take(&mut self.first_post)
     }
 
     /// The words of the post outcome that has not yet been said.
@@ -1090,7 +1111,7 @@ impl ChatDrawer {
             None => Some(format!("to {}", self.rows.label(dest.channel.as_str()))),
         };
         let as_person = self.rows.row().and_then(|r| self.posts_as_person.get(&r.host).copied());
-        Some(ComposeText::of(draft.map(|d| d.text.as_str()), to, focused, as_person, self.rows.host()))
+        Some(ComposeText::of(draft.map(|d| d.text.as_str()), to, focused, as_person, self.rows.host(), !self.posted_before))
     }
 
     pub(in crate::ui) fn set_foot(&mut self, rows: u16) {

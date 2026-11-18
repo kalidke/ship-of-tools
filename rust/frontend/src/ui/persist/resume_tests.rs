@@ -75,6 +75,7 @@ fn save_then_load_round_trips() {
         strip_order: Some("recent".to_string()),
         nav_selected_id: Some("files:src/foo.jl".to_string()),
         nav_scroll: Some(7),
+        chat_posted: Some(true),
     };
     save(&original);
     let loaded = load();
@@ -86,6 +87,7 @@ fn save_then_load_round_trips() {
     assert_eq!(loaded.strip_order.as_deref(), Some("recent"));
     assert_eq!(loaded.nav_selected_id.as_deref(), Some("files:src/foo.jl"));
     assert_eq!(loaded.nav_scroll, Some(7));
+    assert_eq!(loaded.chat_posted, Some(true));
 }
 
 #[test]

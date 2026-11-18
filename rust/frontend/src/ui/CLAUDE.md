@@ -75,7 +75,7 @@ The remaining concepts below still reach shared fields through `impl State` bloc
 - The navigation trees: `nav/`. The session view and its switch: `session/`. The agent pane: `agent_pane/`.
 - The REPL, Terminal and Monitor drawers: `drawer/`. The project chat's owner: `drawer/chat/`, with its pictures (`drawer/chat/pictures.rs`). The preview pane, images, markdown and the editor: `preview/`.
 - The agent control surface (`fe.command`, the command directory, `fe-state.json`, the `sot_ui` envelope): `control/`.
-- UI persistence (settings.toml, keybindings.toml discovery, the per-host resume file): `persist/`. Downloads to disk:
+- UI persistence (settings.toml, keybindings.toml discovery, the per-host resume file, which also holds whether a chat post was ever proved made on this computer): `persist/`. Downloads to disk:
   `nav/files/`.
 - Building the state at launch: `init/`.
 
@@ -1321,7 +1321,7 @@ methods are `pub(super)`, so no other ui code can drop the requests they return.
   Slack's OAuth page that step 2 and its hint name (a User OAuth Token beside the Bot User OAuth Token, User Token Scopes,
   Add an OAuth Scope, Reinstall to Workspace) are from Slack's documentation and unseen: check them at the first real connect. The app is named `slack_app_name(login)`, the login read once per process by exact name (`USER`, or
   `USERNAME` on Windows; `connect::login`, which `tick_chat` hands the drawer), and the picker's invite line names the same
-  app. Enter on the start opens `slack_app_url` of that name through `browser_open::open_page`, and Primary+C on step 1
+  app. Enter on the start opens `slack_app_url` of that name through `browser_open::open_page`, and Primary+c on step 1
   copies its manifest; on the refused tokens' screen, the wrong app's screen and the post-as-you screen Enter opens Slack's list of apps (and goes to step 2) and Left the manifest page (step 1). While
   the step shows, `connect_key` (through `connect_action`, which the native witness runs) takes every key in the drawer
   before the picker and the name prompt: PageUp and PageDown scroll, Left, Right and the copy chord are the step's, and
@@ -1344,7 +1344,7 @@ methods are `pub(super)`, so no other ui code can drop the requests they return.
   `RowChannel::workspace`): the step leads its first screen with which workspace and why (`This project's channel is in the
   Slack workspace <name>, whose connection failed.`, or `which Ship of Tools on <c> is not connected to`, or with the
   log pointer for a start that failed), asks `chat.workspaces` once to learn that workspace's name and whether another
-  runs, and while another does, `chat.setup` (`Primary+Shift+K`, taken inside `connect_action` with the step's other keys,
+  runs, and while another does, `chat.setup` (`Primary+Shift+k`, taken inside `connect_action` with the step's other keys,
   not held) opens the channel list of the running workspaces in the step's place (`Asks::away`); that picker stays over the
   row's `unconfigured` stand, a pick there pairs the project in the shown workspace, and Escape gives the step back
   (`a_failed_workspaces_step_names_it_and_its_chord_opens_another_workspaces_list`,
@@ -1367,14 +1367,14 @@ methods are `pub(super)`, so no other ui code can drop the requests they return.
   the draft is kept), `the_hint_says_whether_the_post_goes_out_as_the_person_or_as_the_app_by_the_hello` (`compose_tests.rs`: the hello's word comes in
   with the link, `ChatDrawer::on_connection(host, up, posts_as_person)`, and goes with it; the hint says the person's on a hub whose
   hello says `posts_as_person`, the app's on one whose hello does not, and nothing of the daemon with no hello read; the native
-  fixture reads it back through the window's own event route),
+  fixture reads it back through the window's own event route), `the_foot_explains_until_the_first_proved_post` (the foot of an empty draft with no destination is always the one-row prompt; the explanation under it, how a post appears and the chord that changes the channel, shows only while `ChatDrawer::posted_before` is false, which `settle` sets with the proof that clears the draft, a file's share included, and a refusal or an unknown outcome leaves false), `the_too_old_warning_still_shows_after_a_post` (an older daemon's warning is not an explanation and shows always), `the_first_post_is_kept_and_a_new_window_reads_it` (the fact is the computer's, never a project's or a workspace's: `State::keep_chat_posted` writes `chat_posted = true` into the per-host state file `persist::resume` owns, beside the keys it holds, through platform's `write_durable`, and `apply_startup_chat_posted` reads it at the next start; a file that cannot be read or written is logged, never stops a post or loses a draft, and at worst the explanation shows again at the next start; harness runs neither read nor write it; limits: two windows on one computer keep their own copy, so a later full save by a window that began before the other's first post drops the key and the explanation shows again, and `keep_chat_posted` and the start's read are State glue no test drives), and the key names on every Chat screen write a letter key lowercase after its modifier (`Ctrl+Shift+k`, `Cmd+c`; named keys keep their form), which `no_project_word_reaches_a_screen` holds with `the_capital_key_rule_finds_a_planted_capital`,
   `a_late_refusal_never_opens_over_another_row_or_replaces_a_step_holding_a_token`,
   `every_end_of_a_connect_frees_the_slot_and_a_refusal_keeps_the_other_token_through_the_next_frames` (a reply of each
   kind, `ConnectUnknown`, `never_written` and a link drop, each then ticked, and a fresh step's two pastes sent),
   `a_clipped_screen_says_there_is_more_and_every_scroll_moves_it`, `a_paste_that_is_no_slack_token_is_dropped_unshown`,
   `enter_opens_the_page_until_both_tokens_are_held_then_connects_once`, `a_refused_token_goes_back_to_its_step_and_the_other_is_kept`,
   `an_older_connects_reply_never_acts_on_a_newer_step`, `a_connect_reply_resolves_the_row_again_and_enter_then_opens_the_picker`,
-  and the native fixture `a_paste_in_the_connect_step_is_a_token_and_never_the_draft` (Ctrl+V through the window's
+  and the native fixture `a_paste_in_the_connect_step_is_a_token_and_never_the_draft` (Ctrl+v through the window's
   clipboard and the real bindings, a draft kept, one connect). Limits: `drawer_pane_key`'s own first line is read, not run
   (a winit `KeyEvent` cannot be built outside the event loop; the witness routes as it does); an older daemon's connect
   reply has no name, and its connected screen names the workspace by its ID; a held token is not zeroed when dropped, and stays on the

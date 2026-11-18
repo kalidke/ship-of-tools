@@ -535,9 +535,9 @@ impl State {
         self.redraw()?;
         anyhow::ensure!(self.chat.in_setup(), "unconfigured began no Connect step");
         // B1 delta 7: the row's channel is in a workspace whose connection failed while another runs, so the step offers
-        // Ctrl+Shift+K, taken by the step's own keys: the other workspace's channel list opens in its place; Escape gives
+        // Ctrl+Shift+k, taken by the step's own keys: the other workspace's channel list opens in its place; Escape gives
         // the step back.
-        let chord = if cfg!(target_os = "macos") { "Cmd+Shift+K" } else { "Ctrl+Shift+K" };
+        let chord = if cfg!(target_os = "macos") { "Cmd+Shift+k" } else { "Ctrl+Shift+k" };
         let pin = self.chat.body().map(|b| b.pin).unwrap_or_default();
         anyhow::ensure!(pin.contains(&format!("{chord}  open the channel list of another workspace")), "the step's keys say {pin:?}");
         let shift_k = Modifiers { ctrl: !cfg!(target_os = "macos"), alt: false, shift: true, super_: cfg!(target_os = "macos") };

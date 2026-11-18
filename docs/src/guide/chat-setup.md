@@ -1,6 +1,6 @@
 # Setting up Slack for Ship of Tools
 
-Ship of Tools can show a Slack channel next to each project, in the Chat drawer (`Ctrl+K`, `Cmd+K` on a Mac), and post
+Ship of Tools can show a Slack channel next to each project, in the Chat drawer (`Ctrl+k`, `Cmd+k` on a Mac), and post
 to it. You connect each Slack workspace you use once, from the drawer, then pick each project's channel there; no file is edited and nothing is
 restarted. You need to be allowed to add apps to your Slack workspace, or an administrator who approves them.
 
@@ -9,12 +9,12 @@ is the one, with no `hosts.toml` needed. If you have several, it is the one your
 window shows the chat of that computer, and a project's chat is that of a session row on it.
 
 **Several Slack workspaces.** The chat can connect up to 8 Slack workspaces, with your own Slack app in each, and each
-project's channel is in one of them. To add a workspace, press `Ctrl+Shift+K` (`Cmd+Shift+K` on a Mac) in the Chat drawer, choose **Connect a
+project's channel is in one of them. To add a workspace, press `Ctrl+Shift+k` (`Cmd+Shift+k` on a Mac) in the Chat drawer, choose **Connect a
 Slack workspace** at the end of the channel list, and go through the steps below with an app made in that workspace (all
 three Slack codes come from that one app). Connecting another workspace adds it and leaves the others and their projects'
 channels as they are. The channel list then shows one workspace at a time, named in its title; Left and Right move
 between them. If one workspace's Slack codes stop working, the other workspaces' projects go on, and a project whose
-channel is in the stopped workspace says which one; there, `Ctrl+Shift+K` (`Cmd+Shift+K` on a Mac) opens the channel list of the others, to move
+channel is in the stopped workspace says which one; there, `Ctrl+Shift+k` (`Cmd+Shift+k` on a Mac) opens the channel list of the others, to move
 the project to a channel in another workspace. An older window lists and picks channels of the first workspace only; an older
 Ship of Tools on the computer that runs your agents connects one workspace, and whoever runs it there can update it.
 
@@ -36,13 +36,13 @@ is not enough).
    **Install to Workspace**, then **Allow**, and press Enter in the drawer. If Slack says the app needs an
    administrator's approval, send the request and wait for Slack's message that it is approved; then, on the app's page
    in Slack, click **Install to Workspace** and **Allow**. (If you closed the drawer meanwhile, open it and press Right
-   on the first screen to go straight to step 2.) If Slack's page was empty, press `Ctrl+C` (`Cmd+C` on a Mac) on this
+   on the first screen to go straight to step 2.) If Slack's page was empty, press `Ctrl+c` (`Cmd+c` on a Mac) on this
    step to copy the app's description, then at [api.slack.com/apps](https://api.slack.com/apps) click
    **Create New App**, **From a manifest**, choose the workspace you are connecting, paste it, **Next**, **Create**.
 2. **The first two Slack codes.** Slack shows the app's **User OAuth Token**, which starts with `xoxp-` and lets Ship of
    Tools post your messages as you, and its **Bot User OAuth Token**, which starts with `xoxb-` (if not, at
    api.slack.com/apps click your app, then **OAuth & Permissions**). Click **Copy** beside one, click in the drawer and
-   press `Ctrl+V` (`Cmd+V` on a Mac); then do the same with the other, in either order. If the page shows no User
+   press `Ctrl+v` (`Cmd+v` on a Mac); then do the same with the other, in either order. If the page shows no User
    OAuth Token, your app was made before Ship of Tools posted as you: on that page, under **User Token Scopes**, click
    **Add an OAuth Scope** and choose `chat:write` (post as you), then again for `files:write` (post a file as you); then click **Reinstall to Workspace**
    and **Allow**, and the **User OAuth Token** shows at the top. (These names are Slack's own as its documentation gives them; if
@@ -50,7 +50,7 @@ is not enough).
 3. **The last Slack code.** Copy it from the same app as the two codes of step 2: all three codes come from one app. In
    Slack's menu on the left, click **Basic Information**; under **App-Level Tokens** click
    **Generate Token and Scopes**, type a name (`messages`), click **Add Scope**, choose `connections:write` (receive new messages as they arrive), click
-   **Generate**, then **Copy**. Click in the drawer and press `Ctrl+V`.
+   **Generate**, then **Copy**. Click in the drawer and press `Ctrl+v`.
 
 A Slack code is a long string of letters and digits, like a password, that lets Ship of Tools act as your app: paste it only in the drawer. The
 drawer shows a pasted code as its first five characters and its length, and a paste that is not a Slack code is
@@ -70,11 +70,11 @@ press Enter to open your list of Slack apps: if your app is in it, click it and 
 posted your messages as you, or whose User OAuth Token Slack stopped accepting, refuses your post with that reason and shows the
 same screen, titled `post as you`, in place of the channel: your draft is kept, and the codes are copied again as above.
 Paste your own User OAuth Token only: the hub cannot tell whose it is, and would post as that person. To give a workspace new Slack codes at any
-time, or to add one, choose **Connect a Slack workspace** (marked `add a Slack workspace, or give one new Slack codes`), last in the channel list (`Ctrl+Shift+K`).
+time, or to add one, choose **Connect a Slack workspace** (marked `add a Slack workspace, or give one new Slack codes`), last in the channel list (`Ctrl+Shift+k`).
 
 ## Per project: choose its channel
 
-Select the project's row on the computer the chat runs on and open the Chat drawer (`Ctrl+K`). A project with no channel
+Select the project's row on the computer the chat runs on and open the Chat drawer (`Ctrl+k`). A project with no channel
 yet shows the list once the drawer has the keys; press Escape to close it, and Enter later to open it again.
 
 - Type to narrow the list (case does not matter, and a `#` is ignored), `Up` and `Down` to choose, `Enter` to pick, `Esc` to close.
@@ -86,7 +86,7 @@ yet shows the list once the drawer has the keys; press Escape to close it, and E
   `/invite @Ship of Tools (lab-user)`).
 - A private channel is in the list only once you have invited your app to it, and is marked `private; your Slack app is in it`.
 - If your workspace has more channels than the list holds (1,000), the list says so: paste a channel's link or ID
-  (`Ctrl+V`) to pick it. A channel's link is in its details in Slack; its last part is the ID, which begins with `C` or
+  (`Ctrl+v`) to pick it. A channel's link is in its details in Slack; its last part is the ID, which begins with `C` or
   `G` and is made of capital letters and digits. The address in your browser's Slack tab
   (`https://app.slack.com/client/T.../C...`) also names the workspace, and is picked there, or refused when that workspace
   is not running here; the link Slack's Copy link gives (`https://<your workspace>.slack.com/archives/C...`) names it by its
@@ -94,7 +94,7 @@ yet shows the list once the drawer has the keys; press Escape to close it, and E
 - After you pick, the drawer shows the channel at once. Another project's channel cannot be picked again: it says that
   another project already uses it.
 
-To change a project's channel, or to give it none, press `Ctrl+Shift+K` (`Cmd+Shift+K` on a Mac; `chat.setup`) in the Chat
+To change a project's channel, or to give it none, press `Ctrl+Shift+k` (`Cmd+Shift+k` on a Mac; `chat.setup`) in the Chat
 drawer: the list then begins with `No channel for this project`, and ends with `Connect a Slack workspace`. The window writes
 the choice into `chat.toml` for you, whole: comments and the order of its keys are not kept. One channel per project.
 

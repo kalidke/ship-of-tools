@@ -612,7 +612,7 @@ fn the_foot_is_silent_only_when_the_title_shows_the_drafts_destination() {
             let rows = foot(&d);
             // Nothing typed and nothing to say of the destination: the foot says what to type and names the chord instead.
             if matches!((draft, view), (Draft::None, View::Channel)) {
-                assert!(rows[0].starts_with("> ") && rows[0].contains("type a message") && rows.join(" ").contains("Shift+K changes this project's channel"), "{rows:?}");
+                assert!(rows[0].starts_with("> ") && rows[0].contains("type a message") && rows.join(" ").contains("Shift+k changes this project's channel"), "{rows:?}");
                 continue;
             }
             let text = if matches!(draft, Draft::None) { "> " } else { "> hi" };

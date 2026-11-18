@@ -455,7 +455,7 @@ fn the_hint_says_whether_the_post_goes_out_as_the_person_or_as_the_app_by_the_he
     let (mut d, at) = watching();
     let host = "a".to_string();
     let said = |d: &ChatDrawer| compose_rows(&d.compose_text(false).expect("the foot's text"), 160, 10).join(" ");
-    let chord = if cfg!(target_os = "macos") { "Cmd+Shift+K" } else { "Ctrl+Shift+K" };
+    let chord = if cfg!(target_os = "macos") { "Cmd+Shift+k" } else { "Ctrl+Shift+k" };
     // `watching` brought the link up with the word false: an older daemon.
     assert!(said(&d).contains("is too old to post as you, so what you post appears in the channel as a message from your Slack app, with your chat name. Update it to post as yourself."), "{}", said(&d));
     // A hello that says true.
@@ -475,19 +475,129 @@ fn the_hint_says_whether_the_post_goes_out_as_the_person_or_as_the_app_by_the_he
 #[test]
 fn an_empty_draft_shows_what_to_type_and_the_chord_that_changes_the_channel() {
     use super::compose::ComposeText;
-    let chord = if cfg!(target_os = "macos") { "Cmd+Shift+K" } else { "Ctrl+Shift+K" };
-    let hint = |focused| compose_rows(&ComposeText::of(None, None, focused, Some(true), "a"), 80, 10);
+    let chord = if cfg!(target_os = "macos") { "Cmd+Shift+k" } else { "Ctrl+Shift+k" };
+    let hint = |focused| compose_rows(&ComposeText::of(None, None, focused, Some(true), "a", true), 80, 10);
     assert_eq!(hint(false)[0], "> type a message and press Enter to post it");
     assert_eq!(hint(true)[0], "> █type a message and press Enter to post it");
     let said = hint(false)[1..].join(" ");
     assert_eq!(said, format!("What you post appears in the channel as your own message, from your Slack account. {chord} changes this project's channel."));
     // The prompt row comes first at any height, and a narrow drawer wraps it.
-    assert_eq!(compose_rows(&ComposeText::of(None, None, false, Some(true), "a"), 80, 1), ["> type a message and press Enter to post it"]);
-    assert!(compose_rows(&ComposeText::of(None, None, false, Some(true), "a"), 80, 0).is_empty());
-    assert!(compose_rows(&ComposeText::of(None, None, false, Some(true), "a"), 20, 10).iter().all(|r| r.chars().count() <= 20));
+    assert_eq!(compose_rows(&ComposeText::of(None, None, false, Some(true), "a", true), 80, 1), ["> type a message and press Enter to post it"]);
+    assert!(compose_rows(&ComposeText::of(None, None, false, Some(true), "a", true), 80, 0).is_empty());
+    assert!(compose_rows(&ComposeText::of(None, None, false, Some(true), "a", true), 20, 10).iter().all(|r| r.chars().count() <= 20));
     // Anything typed, or a destination to name, is the draft's own foot.
-    assert_eq!(compose_rows(&ComposeText::of(Some("hi"), None, false, Some(true), "a"), 80, 10), ["> hi"]);
-    assert_eq!(compose_rows(&ComposeText::of(None, Some("to C1".into()), false, Some(true), "a"), 80, 10), ["> ", "to C1"]);
+    assert_eq!(compose_rows(&ComposeText::of(Some("hi"), None, false, Some(true), "a", true), 80, 10), ["> hi"]);
+    assert_eq!(compose_rows(&ComposeText::of(None, Some("to C1".into()), false, Some(true), "a", true), 80, 10), ["> ", "to C1"]);
+    // After this computer's first post the prompt stays alone; an older daemon's warning is not an explanation and stays.
+    assert_eq!(compose_rows(&ComposeText::of(None, None, false, Some(true), "a", false), 80, 10), ["> type a message and press Enter to post it"]);
+    assert_eq!(compose_rows(&ComposeText::of(None, None, false, None, "a", false), 80, 10), ["> type a message and press Enter to post it"]);
+    assert!(compose_rows(&ComposeText::of(None, None, false, Some(false), "a", false), 80, 10)[1..].join(" ").contains("is too old to post as you"));
+}
+
+/// A post proved made from `d`'s row `R`: a draft, its post and the reply that proves it.
+fn post_proved(d: &mut ChatDrawer, at: Instant) {
+    let r = row("R");
+    d.edit(Some(&r), Edit::Text("hi")).unwrap();
+    let req = posted(d.send(Some(&r), Some("Ada"), at).unwrap());
+    reply(d, &req, ChatReply::Done(ChatPostRes::Posted { ts: serde_json::from_value(serde_json::json!("1700000000.000100")).unwrap() }), at);
+    assert_eq!(d.draft(), None, "the proof clears the draft");
+}
+
+/// The foot's explanation shows until a post is proved made, by the proof that clears the draft; a refusal or an unknown
+/// outcome leaves it. The prompt is always there, and the foot has no draft or destination to name.
+#[test]
+fn the_foot_explains_until_the_first_proved_post() {
+    let (mut d, at) = watching_as_person();
+    let r = row("R");
+    let said = |d: &ChatDrawer| shown(d, false, 160, 10);
+    let prompt = "> type a message and press Enter to post it";
+    let chord = if cfg!(target_os = "macos") { "Cmd+Shift+k" } else { "Ctrl+Shift+k" };
+    assert_eq!(said(&d), [prompt.to_string(), format!("What you post appears in the channel as your own message, from your Slack account. {chord} changes this project's channel.")]);
+    // A refusal and an unknown outcome prove nothing.
+    d.edit(Some(&r), Edit::Text("hi")).unwrap();
+    let req = posted(d.send(Some(&r), Some("Ada"), at).unwrap());
+    reply(&mut d, &req, ChatReply::Done(ChatPostRes::Refused { code: ChatCode::Busy }), at);
+    let req = posted(d.send(Some(&r), Some("Ada"), at).unwrap());
+    reply(&mut d, &req, ChatReply::Done(ChatPostRes::Unknown), at);
+    d.edit(Some(&r), Edit::Backspace).unwrap();
+    d.edit(Some(&r), Edit::Backspace).unwrap();
+    assert!(!d.posted_before() && !d.take_first_post());
+    assert_eq!(said(&d).len(), 2, "{:?}", said(&d));
+    // A proved post: the prompt alone, from then on, and State is told once.
+    post_proved(&mut d, at);
+    assert_eq!(said(&d), [prompt]);
+    assert!(d.posted_before() && d.take_first_post() && !d.take_first_post());
+    post_proved(&mut d, at);
+    assert!(!d.take_first_post(), "only the first is told");
+    // A file's share is a post too, in a window that has had none.
+    let (mut d, at) = watching_as_person();
+    d.edit(Some(&r), Edit::Text("the fit")).unwrap();
+    let req = file_posted(d.send_file(Some(&r), Some("files:figs/fit.png"), at).unwrap());
+    d.on_evt(&"a".to_string(), ChatEvt::FilePosted { req, reply: ChatReply::Done(ChatPostFileRes::Posted { file: "F0FILE".into(), ts: None }) }, at);
+    assert_eq!(said(&d), [prompt]);
+    assert!(d.take_first_post());
+    // Another project's foot is the same: the fact is the computer's.
+    show(&mut d, "S", at);
+    assert_eq!(shown(&d, false, 160, 10), [prompt]);
+}
+
+/// An older daemon's warning is not an explanation: it shows after a post, as before.
+#[test]
+fn the_too_old_warning_still_shows_after_a_post() {
+    let (mut d, at) = watching();
+    post_proved(&mut d, at);
+    assert!(d.posted_before());
+    let said = shown(&d, false, 160, 10);
+    assert!(said[0].starts_with("> type a message"), "{said:?}");
+    assert!(said[1..].join(" ").starts_with("Ship of Tools on a is too old to post as you,"), "{said:?}");
+}
+
+/// The first post is kept in the per-host state file, with its other keys as they were, and a window that starts later reads
+/// it: its foot has the prompt alone. A file nothing can be read from or written to changes neither the post nor the draft:
+/// the window then explains again at its next start.
+#[test]
+fn the_first_post_is_kept_and_a_new_window_reads_it() {
+    use crate::ui::persist::resume::{load_from, record_chat_posted_at, save_to, GlobalState};
+    let dir = Folder::new("sot-chat-posted");
+    let file = dir.0.join("sot").join("state-test.toml");
+    let fresh = |file: &std::path::Path| {
+        let (mut d, _) = watching_as_person();
+        d.set_posted_before(load_from(file).chat_posted == Some(true));
+        d
+    };
+    let explains = |d: &ChatDrawer| shown(d, false, 160, 10).len() == 2;
+    assert!(explains(&fresh(&file)), "no file: the explanation shows");
+
+    let (mut d, at) = watching_as_person();
+    save_to(&file, &GlobalState { last_mode: Some("sessions".into()), nav_scroll: Some(7), ..Default::default() }).unwrap();
+    post_proved(&mut d, at);
+    assert!(d.take_first_post());
+    record_chat_posted_at(&file).unwrap();
+    let kept = load_from(&file);
+    assert_eq!((kept.chat_posted, kept.last_mode.as_deref(), kept.nav_scroll), (Some(true), Some("sessions"), Some(7)));
+    assert!(!explains(&fresh(&file)), "a new window reads the fact");
+
+    // A file that is not a file to read, or a folder that is not one to write in: the post and the draft are as ever.
+    let unreadable = dir.0.join("a-folder");
+    std::fs::create_dir_all(&unreadable).unwrap();
+    let not_a_folder = dir.0.join("a-file");
+    std::fs::write(&not_a_folder, "x").unwrap();
+    for bad in [unreadable, not_a_folder.join("state.toml")] {
+        let (mut d, at) = watching_as_person();
+        let r = row("R");
+        d.edit(Some(&r), Edit::Text("keep")).unwrap();
+        let req = posted(d.send(Some(&r), Some("Ada"), at).unwrap());
+        assert_eq!(load_from(&bad).chat_posted, None);
+        reply(&mut d, &req, ChatReply::Done(ChatPostRes::Posted { ts: serde_json::from_value(serde_json::json!("1700000000.000100")).unwrap() }), at);
+        assert_eq!(d.draft(), None);
+        assert!(d.take_first_post());
+        assert!(record_chat_posted_at(&bad).is_err(), "{bad:?}");
+        assert!(explains(&fresh(&bad)), "{bad:?}: the next start explains again");
+        // The session itself does not explain again, and the next post still posts.
+        assert!(!explains(&d));
+        d.edit(Some(&r), Edit::Text("more")).unwrap();
+        posted(d.send(Some(&r), Some("Ada"), at).unwrap());
+    }
 }
 
 #[test]
