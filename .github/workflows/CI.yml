@@ -1,14 +1,16 @@
 name: CI
 on:
-  # Pushes to main and to pass/** and fix/** branches (and runs by hand) -- not tags, not pull
+  # Pushes to main, to stable and to pass/** and fix/** branches (and runs by hand) -- not tags, not pull
   # requests (decided 2026-09-08: not the per-PR workflow; see rust.yml). A Julia change meets its
-  # Julia jobs on its branch, never first on main.
+  # Julia jobs on its branch, never first on main. A push to stable, the branch that holds the published
+  # release's manual, runs only the docs job, which deploys the stable manual.
   # Path-filtered to the Julia packages, the docs and comm/ (the
   # installer reads every comm folder it installs), so a Rust-only change never
   # spends five Julia jobs.
   push:
     branches:
       - main
+      - stable
       - "pass/**"
       - "fix/**"
     paths:
@@ -33,6 +35,8 @@ concurrency:
 jobs:
   test:
     name: Julia ${{ matrix.version }} - ${{ matrix.os }} - ${{ matrix.arch }}
+    # stable holds the released manual: its pushes run the docs job alone.
+    if: ${{ github.ref != 'refs/heads/stable' }}
     runs-on: ${{ matrix.os }}
     # A pre-release Julia warns and never gates a cut: no lab box runs one, and an alpha can break what a release passes.
     continue-on-error: ${{ matrix.version == 'pre' }}
@@ -87,6 +91,8 @@ jobs:
   # spawning), so it runs on all three.
   pluto-workers:
     name: Pluto workers - ${{ matrix.os }}
+    # stable holds the released manual: its pushes run the docs job alone.
+    if: ${{ github.ref != 'refs/heads/stable' }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 12
     permissions:
@@ -115,6 +121,8 @@ jobs:
   # secret, and serving it opens one listener. It needs Bonito, so it has an environment of its own.
   wglshow-pages:
     name: wglshow pages - ${{ matrix.os }}
+    # stable holds the released manual: its pushes run the docs job alone.
+    if: ${{ github.ref != 'refs/heads/stable' }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 12
     permissions:
@@ -146,6 +154,8 @@ jobs:
   # two tool-backed preview plugins.
   julia-packages:
     name: Julia packages ${{ matrix.version }}
+    # stable holds the released manual: its pushes run the docs job alone.
+    if: ${{ github.ref != 'refs/heads/stable' }}
     runs-on: ubuntu-24.04
     # As in `test`: the pre-release leg warns and never gates a cut.
     continue-on-error: ${{ matrix.version == 'pre' }}
@@ -201,6 +211,8 @@ jobs:
   # system it downloads nothing and the job takes a few minutes.
   preview-tools:
     name: Preview tools fetch - ${{ matrix.os }}
+    # stable holds the released manual: its pushes run the docs job alone.
+    if: ${{ github.ref != 'refs/heads/stable' }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
     permissions:
@@ -237,12 +249,13 @@ jobs:
     # Usually 2 to 10 minutes; makedocs runs the doctests.
     timeout-minutes: 12
     concurrency:
-      # Serialize only the DEPLOYING build (main -> gh-pages). A PR/branch
+      # Serialize only the DEPLOYING builds (main -> /dev/, stable -> /stable/,
+      # both pushes to gh-pages). A PR/branch
       # docs build deploys nothing, and one repo-wide group made GitHub
       # cancel the older PENDING job whenever any other branch pushed (one
       # running + one pending per group), so PR docs checks came back
       # "cancelled" under fleet load (2026-09-08, #223 twice).
-      group: docs-${{ github.repository }}-${{ github.ref == 'refs/heads/main' && 'deploy' || github.ref }}
+      group: docs-${{ github.repository }}-${{ (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/stable') && 'deploy' || github.ref }}
       cancel-in-progress: false
     permissions:
       actions: write # needed to allow julia-actions/cache to proactively delete old caches that it has created

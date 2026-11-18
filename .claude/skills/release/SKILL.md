@@ -131,8 +131,17 @@ re-run with `git push --atomic origin main vX.Y.Z` once main is synced.
    The publish report names the boxes that moved by archive run and the word
    that published it. A draft left unpublished is reported, as an unclosed
    loop is.
-5. Announce: a sot-comm broadcast so fleet sessions know a release landed.
-6. **Close the loop on the named consumer**: the report says **who installed
+5. **Move the stable manual** (a final release only, never a candidate). The site's root and the README lead to
+   `/stable/`, which the `stable` branch deploys. Land any manual pages that describe the release on main first, then
+   push the commit whose manual describes it, in its own command:
+   ```bash
+   git push origin <full sha>:refs/heads/stable
+   ```
+   The push runs the docs job alone (CI.yml). Watch it, then read `https://kalidke.github.io/ship-of-tools/stable/`
+   and check its version and one page new in the release. A push that changes no path the workflow watches starts no
+   run: `gh workflow run CI.yml --ref stable` then.
+6. Announce: a sot-comm broadcast so fleet sessions know a release landed.
+7. **Close the loop on the named consumer**: the report says **who installed
    the tag and what the test showed**. A candidate that was cut and never
    installed is reported as exactly that, on the same day.
 

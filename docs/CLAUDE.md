@@ -20,6 +20,10 @@ the commit that changes the code it describes, and a design that is not built is
 - `make.jl` stages four single-source pages into `src/` at build time (`requirements.md`, `plan.md`, `comm/PROTOCOL.md`
   and `ENROLLING-A-HOST.md`); the staged copies are gitignored. Its built-site checks fail the build on a literal
   `<kbd>` and on a link to a missing section id, and doctests run inside it with both documented modules loaded.
+- `make.jl` deploys the manual from two branches: `main` to `/dev/` on the site, and `stable` to `/stable/`, where the
+  site's root and the README's links lead. `stable` holds the manual of the published release: it moves only when a
+  release is published, to the commit whose manual describes that release (the release skill's step after the
+  publish), and a push to it runs the docs job alone. No test proves a deploy; it is read on the site after the run.
 - Published text names no private hostname, username or LAN detail, and the screenshots are generated from
   `fixtures/DemoProject`, never from a private workspace.
 - `defects.md` is the one list of known defects and open items, grouped by the subsystems `package.md` names; each item

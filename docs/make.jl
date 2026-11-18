@@ -31,14 +31,20 @@ stage(joinpath(@__DIR__, "ENROLLING-A-HOST.md"),  joinpath(SRC, "guide", "enroll
 DocMeta.setdocmeta!(ShipTools, :DocTestSetup, :(using ShipTools); recursive = true)
 DocMeta.setdocmeta!(ConceptExplorerCore, :DocTestSetup, :(using ConceptExplorerCore); recursive = true)
 
+# Two branches deploy the manual. `main` deploys to /dev/. `stable` holds the manual of the published release and
+# deploys to /stable/, where the site's root and the README's links lead; it moves only when a release is published
+# (the release skill's step after the publish), to the commit whose manual describes that release.
+const STABLE = get(ENV, "GITHUB_REF_NAME", "") == "stable"
+const DEPLOY_BRANCH = STABLE ? "stable" : "main"
+
 makedocs(;
     modules = [ShipTools, ConceptExplorerCore],
     authors = "kalidke",
     sitename = "Ship of Tools",
     format = DocumenterVitepress.MarkdownVitepress(;
         repo = "github.com/kalidke/ship-of-tools",
-        devbranch = "main",
-        devurl = "dev",
+        devbranch = DEPLOY_BRANCH,
+        devurl = STABLE ? "stable" : "dev",
         deploy_url = "https://kalidke.github.io/ship-of-tools",
         description = "An agentic development environment for Julia: drive many Claude Code and Codex sessions from the keyboard, with a live Julia REPL and rich previews, local or on your GPU server.",
     ),
@@ -138,9 +144,12 @@ let build = joinpath(@__DIR__, "build"), site = isdir(joinpath(build, "1")) ? jo
 end
 
 # DocumenterVitepress decides for itself whether this run may deploy (a CI
-# push to main); a local build never deploys.
+# push to main or to stable); a local build never deploys. The folder is the
+# one MarkdownVitepress built for above; devurl here only names main's folder
+# in the site's version list, beside stable.
 DocumenterVitepress.deploydocs(;
     repo = "github.com/kalidke/ship-of-tools",
-    devbranch = "main",
+    devbranch = DEPLOY_BRANCH,
+    devurl = "dev",
     push_preview = false,
 )

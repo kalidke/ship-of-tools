@@ -52,7 +52,7 @@ Compared with Claude Code next to a REPL in tmux, or with VS Code, its Julia ext
 - Modules mode lists a package's modules and their definitions: types, functions, macros and submodules.
 
 **Slack** (0.7.1)
-- A project's [Slack channel](https://kalidke.github.io/ship-of-tools/dev/guide/chat) in a Chat drawer (`Ctrl+k`): messages, threads, posts.
+- A project's [Slack channel](https://kalidke.github.io/ship-of-tools/stable/guide/chat) in a Chat drawer (`Ctrl+k`): messages, threads, posts.
 - The chat is set up from the window (`Ctrl+Shift+k`); each project can use a channel of a different workspace.
 - A post from the drawer appears in the channel as the person's own message, from their Slack account.
 - Pictures in the channel show in the drawer; a click on one, or `Ctrl+o` in the drawer, opens it in the preview.
@@ -60,7 +60,7 @@ Compared with Claude Code next to a REPL in tmux, or with VS Code, its Julia ext
 - A session's agent, when asked, can post text and files to its project's channel.
 
 **Drawing** (0.7.1)
-- An image in the preview can be [drawn on](https://kalidke.github.io/ship-of-tools/dev/guide/drawing) (`d`); a Claude Code session's agent is given the image with the drawing on it at the next prompt.
+- An image in the preview can be [drawn on](https://kalidke.github.io/ship-of-tools/stable/guide/drawing) (`d`); a Claude Code session's agent is given the image with the drawing on it at the next prompt.
 - A blank canvas to draw on (`Shift+d`), given to the agent the same way.
 
 **Session ordering**
@@ -80,7 +80,7 @@ Compared with Claude Code next to a REPL in tmux, or with VS Code, its Julia ext
 **Extend**
 - Add a preview for a new file type in Julia, with no Rust changes. The built-in text, source, PDF and video previews use the same interface.
 
-See the [feature gallery](https://kalidke.github.io/ship-of-tools/stable/features) for a short recording of each one. Lists marked 0.7.1 are new in that release; see [What's new in 0.7.1](https://kalidke.github.io/ship-of-tools/dev/whats-new).
+See the [feature gallery](https://kalidke.github.io/ship-of-tools/stable/features) for a short recording of each one. Lists marked 0.7.1 are new in that release; see [What's new in 0.7.1](https://kalidke.github.io/ship-of-tools/stable/whats-new).
 
 <p align="center"><img src="docs/src/assets/readme/sessions-crop.png" alt="Session rows in Sessions mode, coloured by work state" width="70%"></p>
 <p align="center"><sub>Demo session rows tinted by work state: green working, red waiting for your answer, purple waiting on a job, blue done, gray idle.</sub></p>
