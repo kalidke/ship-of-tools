@@ -294,7 +294,7 @@ pub(in crate::ui) fn clock_label(now: chrono::NaiveDateTime, available_width: u1
     }
 }
 
-/// Overlay a pane title onto a border row, clamped to `max_w` cells so
+/// Overlay a pane title onto a border row, clamped to `max_w` cells (by width, not characters) so
 /// it can't overrun the pane's width and clobber the inner-cross
 /// junction or the neighbouring pane's title. The wireframe was
 /// painted first with `─` everywhere on the edge; this writes the
@@ -313,8 +313,17 @@ pub(in crate::ui) fn write_title(
     if y >= buf.area.height {
         return;
     }
+    use unicode_width::UnicodeWidthChar;
     let cap = (max_w as usize).min(buf.area.width.saturating_sub(x) as usize);
-    let s: String = cell_row(title).chars().take(cap).collect();
+    // Cells, not characters: a wide glyph takes two, so a clamp by characters overruns the pane.
+    let mut used = 0;
+    let s: String = cell_row(title)
+        .chars()
+        .take_while(|c| {
+            used += c.width().unwrap_or(0);
+            used <= cap
+        })
+        .collect();
     buf.set_string(x, y, &s, style);
 }
 

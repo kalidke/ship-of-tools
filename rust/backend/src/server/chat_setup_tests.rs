@@ -944,7 +944,12 @@ const A: &str = "T0AAAA";
 const B: &str = "T0BBBB";
 
 async fn two() -> Two {
-    let teams = sot_chat::fake_slack::Teams::start(&[(A, "Alpha Lab"), (B, "Beta Lab")]).await;
+    two_named("Alpha Lab", "Beta Lab").await
+}
+
+/// `two` with the names Slack gives the workspaces; an empty one is a workspace Slack gave no usable name.
+async fn two_named(a_name: &'static str, b_name: &'static str) -> Two {
+    let teams = sot_chat::fake_slack::Teams::start(&[(A, a_name), (B, b_name)]).await;
     teams.channels(A, &[("C0AAAA01", "alpha-one", false, true), ("C0AAAA02", "alpha-two", false, true)]);
     teams.channels(B, &[("C0BBBB01", "beta-one", false, false)]);
     let home = Home::new(Some(SELF));
@@ -1239,7 +1244,8 @@ fn a_channel_of_another_workspace_is_no_such_channel() {
 }
 
 /// C12, L11 rule 3: a mapped answer names its workspace only while more than one is admitted, so a hub with one keeps
-/// the title as it was; the name is the last one Slack gave.
+/// the title as it was; the name is the last one Slack gave, each row's its own workspace's, and a workspace admitted
+/// with no name leaves the named one named and carries none itself.
 #[test]
 fn a_resolve_names_its_workspace_only_while_the_hub_serves_two() {
     logged(|| async {
@@ -1252,6 +1258,25 @@ fn a_resolve_names_its_workspace_only_while_the_hub_serves_two() {
         conn.ask(5, op::CHAT_CONNECT, w.connect_req(B)).await;
         let two = conn.ask(6, op::CHAT_RESOLVE, json!({"row": w.ids[0]})).await;
         assert_eq!((two["state"].as_str(), two["workspace_name"].as_str()), (Some("mapped"), Some("Alpha Lab")), "{two}");
+        // A row of the second workspace gets that workspace's name, and one that is not admitted has none to give.
+        assert_eq!(conn.ask(7, op::CHAT_PAIR, w.target(1, B, "C0BBBB01")).await, json!({}));
+        let beta = conn.ask(8, op::CHAT_RESOLVE, json!({"row": w.ids[1]})).await;
+        assert_eq!(beta["workspace_name"].as_str(), Some("Beta Lab"), "{beta}");
+        assert_eq!(w.services.chat.name_to_show("T0ZZZZ"), None);
+    });
+
+    // A second workspace admitted with no name is counted, so the first is named, and it carries no name.
+    logged(|| async {
+        let w = two_named("Alpha Lab", "").await;
+        let mut conn = connect_window(w.services.clone()).await;
+        conn.ask(2, op::CHAT_CONNECT, w.connect_req(A)).await;
+        conn.ask(3, op::CHAT_CONNECT, w.connect_req(B)).await;
+        assert_eq!(conn.ask(4, op::CHAT_PAIR, w.target(0, A, "C0AAAA01")).await, json!({}));
+        assert_eq!(conn.ask(5, op::CHAT_PAIR, w.target(1, B, "C0BBBB01")).await, json!({}));
+        let alpha = conn.ask(6, op::CHAT_RESOLVE, json!({"row": w.ids[0]})).await;
+        let beta = conn.ask(7, op::CHAT_RESOLVE, json!({"row": w.ids[1]})).await;
+        assert_eq!(alpha["workspace_name"].as_str(), Some("Alpha Lab"), "{alpha}");
+        assert_eq!((beta["state"].as_str(), beta.get("workspace_name")), (Some("mapped"), None), "{beta}");
     });
 }
 

@@ -467,6 +467,46 @@ fn the_title_names_the_workspace_when_the_hub_does() {
     assert_eq!(d.title(), " chat · #general reading… ");
 }
 
+/// A workspace's name is free text up to the wire's 160 bytes and stands ahead of the channel: a long one is cut to a
+/// cell budget with a final `…`, and the title drawn at a narrow interior keeps the channel and writes nothing past the
+/// interior, whether the name is long, wide or made of characters that take no cell.
+#[test]
+fn a_long_workspace_name_never_costs_the_channel_or_overruns_the_interior() {
+    use ratatui::{buffer::Buffer, layout::Rect, style::Style};
+    use unicode_width::UnicodeWidthStr;
+    const INTERIOR: u16 = 60;
+    let t0 = Instant::now();
+    let long_ascii = "W".repeat(160);
+    let wide = "\u{4e16}".repeat(50);
+    let invisible = "\u{200b}".repeat(53);
+    for (name, cut) in [(long_ascii.as_str(), true), (wide.as_str(), true), (invisible.as_str(), false), ("Lab", false)] {
+        let mut d = ChatDrawer::default();
+        d.on_connection(&host(), true, false, t0);
+        d.tick(wanted("R"), t0);
+        d.tick(wanted("R"), t0 + Duration::from_millis(150));
+        let json = serde_json::json!({ "state": "mapped", "workspace": "T1", "channel": "C1", "delivers": false, "name": "general", "workspace_name": name });
+        d.on_evt(&host(), answer("R", json), t0 + Duration::from_millis(160));
+        let title = d.title();
+        let label = title.split(" · ").nth(1).unwrap();
+        assert!(label.width() <= 24, "{name:?}: the workspace takes {} cells: {title:?}", label.width());
+        assert_eq!(label.ends_with('…'), cut, "{name:?}: {title:?}");
+
+        // A buffer wider than the interior, a marker in the cell past it: nothing may be written there.
+        let mut buf = Buffer::filled(Rect::new(0, 0, 100, 1), ratatui::buffer::Cell::new("░"));
+        crate::ui::chrome::write_title(&mut buf, 1, 0, &title, INTERIOR, Style::default());
+        let row: String = (1..100).map(|x| buf[(x, 0)].symbol().to_string()).collect();
+        assert!(row.contains("#general"), "{name:?}: the channel is gone: {row:?}");
+        let past: String = (1 + INTERIOR..100).map(|x| buf[(x, 0)].symbol().to_string()).collect();
+        assert_eq!(past, "░".repeat(100 - 1 - INTERIOR as usize), "{name:?}: the title wrote past the interior: {row:?}");
+
+        // Whatever the title's text, the clamp is by cells: an uncut name overruns nothing either.
+        let mut buf = Buffer::filled(Rect::new(0, 0, 100, 1), ratatui::buffer::Cell::new("░"));
+        crate::ui::chrome::write_title(&mut buf, 1, 0, &format!(" chat · {name} · #general "), INTERIOR, Style::default());
+        let past: String = (1 + INTERIOR..100).map(|x| buf[(x, 0)].symbol().to_string()).collect();
+        assert_eq!(past, "░".repeat(100 - 1 - INTERIOR as usize), "{name:?}: an uncut title wrote past the interior");
+    }
+}
+
 /// A name belongs to the id its answer named: no other id is drawn with it.
 #[test]
 fn a_name_is_drawn_only_for_the_id_its_answer_named() {

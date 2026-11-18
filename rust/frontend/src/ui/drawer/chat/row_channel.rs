@@ -19,6 +19,10 @@ use super::owner::{Out, GAP_PACE};
 /// the last the title keeps the id until the row or a link changes.
 const NAME_RETRIES: [Duration; 4] = [Duration::from_secs(1), Duration::from_secs(3), Duration::from_secs(10), Duration::from_secs(30)];
 
+/// The cells the title gives a workspace's name, its `…` included: with the title's ` chat · ` and ` · ` that is 35, so
+/// in a drawer 60 cells wide the channel and the words of the outcome keep the other 25.
+const WORKSPACE_CELLS: usize = 24;
+
 struct Wanted {
     id: ResultRowIdentity,
     since: Instant,
@@ -211,9 +215,20 @@ impl RowChannel {
     }
 
     /// The workspace's name for the title, when the last answer carried one: the daemon's text, so it reaches the cells
-    /// through `cell_row`.
+    /// through `cell_row`, and at most `WORKSPACE_CELLS` of them, a cut one ending in `…`, so the channel behind it keeps
+    /// its room.
     pub(super) fn workspace_label(&self) -> Option<String> {
-        self.wanted.as_ref().and_then(|w| w.workspace_name.as_deref()).map(|n| cell_row(n).into_owned())
+        use unicode_width::UnicodeWidthChar;
+        let name = self.wanted.as_ref().and_then(|w| w.workspace_name.as_deref())?;
+        let name = cell_row(name);
+        let cells = |c: char| c.width().unwrap_or(0);
+        if name.chars().map(cells).sum::<usize>() <= WORKSPACE_CELLS {
+            return Some(name.into_owned());
+        }
+        let mut kept = 0;
+        let mut out: String = name.chars().take_while(|&c| { kept += cells(c); kept < WORKSPACE_CELLS }).collect();
+        out.push('…');
+        Some(out)
     }
 
     /// The Slack workspace the wanted row's last answer named (a mapped row's, or the failed one of an `unconfigured`).

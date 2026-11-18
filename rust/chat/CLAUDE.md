@@ -443,7 +443,7 @@ bot identity, workspace name, read-pacing instant, name cache, closed flag and t
    listener runs (C4, so one workspace whose tokens failed never keeps a person from pairing in another;
    `chat_setup_tests::resolve_judges_a_row_by_its_own_workspace_and_an_unmapped_row_by_whether_any_runs`); a mapped
    row's `unconfigured` names its workspace, the one whose connection failed, so the window says which and offers the
-   others (`two_workspaces_from_nothing_each_project_reads_and_posts_in_its_own`)
+   others (`two_workspaces_from_nothing_each_project_reads_and_posts_in_its_own`); a mapped answer carries `workspace_name`, its own workspace's last name from the cache `Chat::names`, only while more than one workspace is admitted, and none for a workspace admitted without a name (`chat_setup_tests::a_resolve_names_its_workspace_only_while_the_hub_serves_two`)
    (`setup::unconfigured` of the status: no `chat.toml` or no
    secrets `not_connected`, secrets the load refused `tokens_refused`, a failed start `start_failed`, a service that ended on its own `wrong_app` for an app token of another app and `tokens_refused` for a token Slack refused, `app_token_refused` or `bot_token_refused`); a refused
    `chat.toml` stays `invalid`, since a connect never rewrites it
