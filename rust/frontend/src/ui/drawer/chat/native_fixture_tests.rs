@@ -73,7 +73,7 @@ impl Daemon {
             }
             OutgoingReq::ChatConnect { .. } => {
                 (self.seen.connects, self.unconfigured) = (self.seen.connects + 1, false);
-                Some(ChatEvt::Connect { reply: ChatReply::Done(sot_protocol::ops::ChatConnectRes { workspace: "WS2".into(), name: Some("Beta Lab".into()) }) })
+                Some(ChatEvt::Connect { reply: ChatReply::Done(sot_protocol::ops::ChatConnectRes { workspace: "WS2".into(), name: Some("Beta Lab".into()), unread: Vec::new() }) })
             }
             OutgoingReq::ChatWorkspaces => {
                 let all = serde_json::json!({ "default": "WS1", "workspaces": [

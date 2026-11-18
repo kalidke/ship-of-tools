@@ -64,6 +64,16 @@ pub(crate) fn code_of(e: &ApiError) -> ChatCode {
     }
 }
 
+/// The code of a read of a mapped channel (a snapshot, a page, a thread): Slack's `not_in_channel`, and its
+/// `channel_not_found`, which is also its answer for a private channel the app is not in, are `not_in_channel`, the one
+/// refusal a person can clear (by inviting the app); any other is [`code_of`]'s.
+pub(crate) fn read_code(e: &ApiError) -> ChatCode {
+    match e {
+        ApiError::Slack(code) if code == "not_in_channel" || code == "channel_not_found" => ChatCode::NotInChannel,
+        _ => code_of(e),
+    }
+}
+
 /// The code of a post Slack or the client refused before it was sent or definitely not posted. By the post's kind,
 /// because Slack's words mean two things: `not_in_channel` is the app's on a row's post and the person's on theirs, and
 /// a code that names the token on a person's post is their user token (the API has already forgotten it).
@@ -156,7 +166,7 @@ pub(crate) async fn history(req_id: u64, payload: serde_json::Value, chat: &Arc<
     };
     let mut page = match api.history(&query, cont.as_ref()).await {
         Ok(p) => p,
-        Err(e) => return Ok(refuse(req_id, NAME, code_of(&e))),
+        Err(e) => return Ok(refuse(req_id, NAME, read_code(&e))),
     };
     api.fill_names(&mut page.records).await;
     reply(req_id, NAME, &ChatHistoryRes { records: page.records, next: page.next.map(|c| c.as_str().to_string()), limited: page.limited })

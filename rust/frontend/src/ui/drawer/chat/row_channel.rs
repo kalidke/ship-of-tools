@@ -186,6 +186,9 @@ impl RowChannel {
         };
         let name = match reply {
             ChatReply::Done(ChatResolveRes::Mapped { channel, name: Some(name), .. }) => Some((channel.as_str().to_string(), name.clone())),
+            // A name the row's channel had stays when an answer has none: a Slack app outside a private channel cannot read
+            // its name, and the person must still find it.
+            ChatReply::Done(ChatResolveRes::Mapped { channel, name: None, .. }) => self.wanted.as_ref().and_then(|w| w.name.clone()).filter(|(id, _)| id == channel.as_str()),
             _ => None,
         };
         let workspace = match reply {

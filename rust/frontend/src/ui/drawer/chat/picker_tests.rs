@@ -103,9 +103,11 @@ fn the_picker_lists_channels_by_name_with_their_marks_and_says_how_a_private_one
     assert!(lines[3].starts_with("  #random") && lines[3].trim_end() == "  #random", "a public channel the app is in has no mark: {lines:?}");
     assert!(lines[4].starts_with("  Connect Slack again") && lines[4].ends_with("connect again with new Slack codes (same workspace)"), "{lines:?}");
     let guide = lines[5..].join(" ");
-    assert!(guide.contains("Esc to close") && guide.contains("/invite @") && !guide.contains("paste a channel's link"), "{guide}");
-    // An older computer's head names the one connected workspace and says who can update it, and what the Slack app is.
+    assert!(guide.contains("Esc to close") && guide.contains("Picking a public channel your Slack app is not in makes it join") && !guide.contains("paste a channel's link"), "{guide}");
+    // An older computer's head names the one connected workspace and says who can update it, what the Slack app is, and
+    // why a private channel may be missing, with what to type in Slack.
     let head = shown_lines(&d).join(" ");
+    assert!(head.contains("A private channel is listed only once someone in it invites your Slack app: in that channel in Slack, type /invite @Ship of Tools, then open this list again."), "{head}");
     assert!(head.contains("channels of your connected Slack workspace") && head.contains("Ship of Tools on a is too old to connect more than one Slack workspace"), "{head}");
     assert!(head.contains("Your Slack app (the bot that reads the channel and posts for your agents)"), "{head}");
     assert!(guide.contains("To move the chat to another workspace, see the manual page \"Setting up Slack\": press F1, select \"Choose channel\" in the list, and press Enter"), "{guide}");
@@ -513,8 +515,8 @@ fn the_picker_shows_one_workspace_at_a_time_and_left_and_right_move_between_them
     assert_eq!(shown_lines(&d), ["reading the channels of the Slack workspace Alpha Lab…"]);
     d.on_evt(&host(), listed_in("TAAAA1111", false), at);
     let said = d.body().unwrap().lines(2000, 60).join(" ");
-    assert!(said.contains("These are the channels of the Slack workspace Alpha Lab that you can see, one of the 2 Slack workspaces the chat on a is connected to. The list shows one workspace at a time: Left and Right move between them, and Connect a Slack workspace is at the end of each."), "{said}");
-    assert!(said.contains("picking a channel adds it there") && said.contains("Left and Right for another Slack workspace"), "{said}");
+    assert!(said.contains("These are the channels of the Slack workspace Alpha Lab that your Slack app (the bot you make for yourself in each Slack workspace, which reads the channel and posts for your agents) can see, one of the 2 Slack workspaces the chat on a is connected to. The list shows one workspace at a time: Left and Right move between them, and Connect a Slack workspace is at the end of each."), "{said}");
+    assert!(said.contains("picking a public channel adds it there") && said.contains("Left and Right for another Slack workspace"), "{said}");
     assert!(!said.contains("To move the chat to another workspace"), "{said}");
     let lines = listed(&d);
     assert!(lines[4].starts_with("  Connect a Slack workspace") && lines[4].ends_with("add a Slack workspace, or give one new Slack codes"), "{lines:?}");
@@ -529,7 +531,7 @@ fn the_picker_shows_one_workspace_at_a_time_and_left_and_right_move_between_them
     assert!(matches!(sent.as_slice(), [(_, OutgoingReq::ChatPair { workspace: Some(w), channel: Some(c), .. })] if w == "TBBBB2222" && c.as_str() == "C1"), "{sent:?}");
     // A channel that is not in it says which workspace and that the others are a key away.
     d.on_evt(&host(), paired("ROW1", Some("C1"), ChatReply::Refused(ChatCode::NoSuchChannel)), at);
-    assert_eq!(d.take_notice().as_deref(), Some("not set: that channel is not in the Slack workspace Beta Lab; Left and Right show the channels of the other Slack workspaces"));
+    assert_eq!(d.take_notice().as_deref(), Some("not set: that channel is not in the Slack workspace Beta Lab; Left and Right show the channels of the other Slack workspaces; if it is a private channel, your Slack app is not in it: in that channel in Slack, type /invite @Ship of Tools, then pick it again"));
     assert!(d.picking());
     // A pasted link pairs in the workspace it names when that one runs; one the computer is not connected to is refused.
     let sent = d.picker_paste("https://app.slack.com/client/TAAAA1111/C0456EFGH").unwrap();
@@ -565,7 +567,9 @@ fn the_picker_opens_on_the_rows_workspace_and_says_each_place() {
     assert_eq!(d.title(), " chat · choose this project's channel · Alpha Lab ");
     d.on_evt(&host(), listed_in("WS1", false), at);
     let said = d.body().unwrap().lines(2000, 60).join(" ");
-    assert!(said.contains("These are the channels of the Slack workspace Alpha Lab that you can see. Your Slack app (the bot you make for yourself in each Slack workspace, which reads the channel and posts for your agents) reads only the channels it is in; picking a channel adds it there. To add another Slack workspace, choose Connect a Slack workspace at the end of this list."), "{said}");
+    // The row's channel is not in the list, so its words lead, and they say what your Slack app is.
+    assert!(said.starts_with("This project's channel, CH1, is not in this list: your Slack app (the bot that reads the channel and posts for your agents) is not in it"), "{said}");
+    assert!(said.contains("These are the channels of the Slack workspace Alpha Lab that your Slack app can see. Your Slack app reads only the channels it is in; picking a public channel adds it there. A private channel is listed only once someone in it invites your Slack app: in that channel in Slack, type /invite @Ship of Tools, then open this list again. To add another Slack workspace, choose Connect a Slack workspace at the end of this list."), "{said}");
     assert!(said.contains("Type to narrow the list, Up and Down to choose, Enter to pick"), "one workspace's guide has no Left and Right: {said}");
     assert!(d.picker_move(true).unwrap().is_empty());
 
@@ -640,7 +644,7 @@ fn left_and_right_wait_for_a_pair_in_flight() {
     assert_eq!(d.picker_move(true).unwrap_err(), "setting this project's channel…");
     assert_eq!(d.title(), " chat · choose this project's channel · Alpha Lab (1 of 2) ");
     d.on_evt(&host(), paired("ROW1", Some("C1"), ChatReply::Refused(ChatCode::NoSuchChannel)), at);
-    assert_eq!(d.take_notice().as_deref(), Some("not set: that channel is not in the Slack workspace Alpha Lab; Left and Right show the channels of the other Slack workspaces"));
+    assert_eq!(d.take_notice().as_deref(), Some("not set: that channel is not in the Slack workspace Alpha Lab; Left and Right show the channels of the other Slack workspaces; if it is a private channel, your Slack app is not in it: in that channel in Slack, type /invite @Ship of Tools, then pick it again"));
     assert!(d.picker_move(true).is_ok(), "the answer frees the keys");
 }
 

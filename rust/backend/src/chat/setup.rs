@@ -22,7 +22,7 @@ use sot_platform::host::env::Env;
 use sot_protocol::chat::Ts;
 use sot_protocol::ops::{
     op, ChatChannel, ChatChannelInfo, ChatChannelsReq, ChatChannelsRes, ChatCode, ChatConnectReq, ChatConnectRes, ChatPairReq,
-    ChatPairRes, ChatUnconfigured, ChatWorkspaceInfo, ChatWorkspacesReq, ChatWorkspacesRes, MAX_WORKSPACES,
+    ChatPairRes, ChatUnconfigured, ChatUnread, ChatWorkspaceInfo, ChatWorkspacesReq, ChatWorkspacesRes, MAX_WATCHED, MAX_WORKSPACES,
 };
 use sot_protocol::reply::HandlerOutput;
 
@@ -158,11 +158,59 @@ pub(crate) async fn connect(req_id: u64, payload: serde_json::Value, chat: &Arc<
         }
         return Ok(refuse(req_id, NAME, code));
     }
+    // Before the reload: the workspace's mapped channels and the names its running app has for them, which a new app
+    // outside a private channel cannot read.
+    let mapped = mapped_channels(chat, &workspace);
     chat.reload_for(&held, rows, &workspace).await;
+    drop(held);
     chat.remember_name(&workspace, name.clone());
     let status = chat.status_of(&workspace);
     tracing::info!(workspace, %status, "project chat: a window's connect saved the tokens and reloaded");
-    reply(req_id, NAME, &ChatConnectRes { workspace, name })
+    let unread = unread(chat, &workspace, mapped).await;
+    reply(req_id, NAME, &ChatConnectRes { workspace, name, unread })
+}
+
+/// How long a connect's reply waits, after the reload, for the reads that find the mapped channels its app cannot read.
+const UNREAD_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// The channels `workspace`'s mappings name, once each, with the name its running app's cache holds for each.
+fn mapped_channels(chat: &Arc<Chat>, workspace: &str) -> Vec<(String, Option<String>)> {
+    let api = chat.service_of(workspace).and_then(|s| s.api().ok());
+    let config = chat.config();
+    let Some(Ok(config)) = config.as_ref() else { return Vec::new() };
+    let mut out: Vec<(String, Option<String>)> = Vec::new();
+    for (_, w, channel) in config.mappings() {
+        if w == workspace && !out.iter().any(|(c, _)| c == channel) {
+            out.push((channel.to_string(), api.as_ref().and_then(|a| a.cached_name(channel))));
+        }
+    }
+    out
+}
+
+/// Of `channels`, those the app `workspace` runs now cannot read, at most `MAX_WATCHED`: one `Api::channel` each, all within
+/// `UNREAD_WAIT`. A channel Slack says the app is not in, or does not show it (`channel_not_found`, its answer for a
+/// private channel the app is not in), is one, named as the app before had it, else as Slack names it; any other answer,
+/// and a read the wait cut off, names none.
+async fn unread(chat: &Arc<Chat>, workspace: &str, channels: Vec<(String, Option<String>)>) -> Vec<ChatUnread> {
+    let Some(api) = chat.service_of(workspace).and_then(|s| s.api().ok()) else { return Vec::new() };
+    let found = std::sync::Mutex::new(Vec::new());
+    let reads = async {
+        for (id, name) in channels {
+            let name = match api.channel(&id).await {
+                Ok(c) if c.member => continue,
+                Ok(c) => name.or(Some(c.name)),
+                Err(ApiError::Slack(code)) if code == "channel_not_found" => name,
+                Err(_) => continue,
+            };
+            if let Ok(id) = ChatChannel::try_from(id) {
+                found.lock().unwrap_or_else(|e| e.into_inner()).push(ChatUnread { id, name });
+            }
+        }
+    };
+    let _ = tokio::time::timeout(UNREAD_WAIT, reads).await;
+    let mut found = found.into_inner().unwrap_or_else(|e| e.into_inner());
+    found.truncate(MAX_WATCHED);
+    found
 }
 
 /// Why the connect's writes did not happen: the reply's code and, for the caller to log, a fixed reason with the load's

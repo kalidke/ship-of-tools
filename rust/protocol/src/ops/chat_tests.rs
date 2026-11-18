@@ -130,8 +130,17 @@ fn every_request_reply_and_event_keeps_its_shape() {
         ChatConnectReq { bot_token: token("xoxb-", 2), user_token: Some(token("xoxp-", 2)), app_token: token("xapp-", 2) },
         json!({"bot_token": "xoxb-a1a1", "user_token": "xoxp-a1a1", "app_token": "xapp-a1a1"}),
     );
-    pinned(ChatConnectRes { workspace: "T1".into(), name: None }, json!({"workspace": "T1"}));
-    pinned(ChatConnectRes { workspace: "T1".into(), name: Some("Alpha Lab".into()) }, json!({"workspace": "T1", "name": "Alpha Lab"}));
+    pinned(ChatConnectRes { workspace: "T1".into(), name: None, unread: Vec::new() }, json!({"workspace": "T1"}));
+    pinned(ChatConnectRes { workspace: "T1".into(), name: Some("Alpha Lab".into()), unread: Vec::new() }, json!({"workspace": "T1", "name": "Alpha Lab"}));
+    let unread = |id: &str, name: Option<&str>| ChatUnread { id: ChatChannel::try_from(id.to_string()).unwrap(), name: name.map(str::to_string) };
+    pinned(
+        ChatConnectRes { workspace: "T1".into(), name: None, unread: vec![unread("G0PRIVATE1", Some("lab-private")), unread("C0PUBLIC1", None)] },
+        json!({"workspace": "T1", "unread": [{"id": "G0PRIVATE1", "name": "lab-private"}, {"id": "C0PUBLIC1"}]}),
+    );
+    // A reader keeps the entries it can read, the first `MAX_WATCHED`, and never refuses the reply for the rest.
+    let many: Vec<Value> = std::iter::once(json!({"id": "not a channel"})).chain((0..40).map(|n| json!({"id": format!("C{n:08}")}))).collect();
+    let res: ChatConnectRes = serde_json::from_value(json!({"workspace": "T1", "unread": many})).unwrap();
+    assert_eq!((res.unread.len(), res.unread[0].id.as_str()), (MAX_WATCHED, "C00000000"));
     pinned(ChatChannelsReq { workspace: None }, json!({}));
     pinned(ChatChannelsReq { workspace: Some("T1".into()) }, json!({"workspace": "T1"}));
     pinned(ChatWorkspacesReq {}, json!({}));
@@ -531,7 +540,7 @@ fn every_code_has_its_one_text() {
         (ChatCode::NotAMember, "you are not in that channel in Slack; join it there first"),
         (ChatCode::OtherWorkspace, "these Slack codes are for another Slack workspace, and Ship of Tools on the computer that runs your agents is too old to connect more than one: whoever runs Ship of Tools there can update it"),
         (ChatCode::TooManyWorkspaces, "the computer that runs your agents already holds 8 Slack workspaces, the most it can: to add another, remove one workspace's file chat-secrets-<id>.toml (<id> is that workspace's ID) from Ship of Tools' settings folder there, ~/.config/sot on Linux and macOS or %LOCALAPPDATA%\\sot\\config on Windows"),
-        (ChatCode::NoSuchChannel, "that channel is not in this Slack workspace"),
+        (ChatCode::NoSuchChannel, "that channel is not in this Slack workspace, or it is a private channel your Slack app is not in"),
         (ChatCode::NotInChannel, "your Slack app is not in that channel"),
         (ChatCode::ChannelTaken, "another project already uses that channel"),
         (ChatCode::NotSaved, "the chat settings could not be saved"),

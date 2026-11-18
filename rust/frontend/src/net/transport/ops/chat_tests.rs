@@ -240,7 +240,7 @@ fn the_setup_replies_carry_their_request_and_refusal() {
         ],
     );
     assert!(pending.is_empty(), "every reply consumed its entry");
-    assert!(shown[0].starts_with("Chat(Connect { reply: Done(ChatConnectRes { workspace: \"T1\", name: None }) })"), "{}", shown[0]);
+    assert!(shown[0].starts_with("Chat(Connect { reply: Done(ChatConnectRes { workspace: \"T1\", name: None, unread: [] }) })"), "{}", shown[0]);
     assert!(shown[1].starts_with("Chat(Channels { workspace: None, reply: Done(") && shown[1].contains("more: true"), "{}", shown[1]);
     assert!(shown[2].contains("Paired { row: \"r\", channel: Some(ChatChannel(\"C9\")), reply:") && shown[2].contains("Refused(ChannelTaken)"), "{}", shown[2]);
     assert!(shown[3].contains("Paired { row: \"r\", channel: None, reply: Done("), "{}", shown[3]);
@@ -251,7 +251,7 @@ fn the_setup_replies_carry_their_request_and_refusal() {
     assert!(shown[8].starts_with("Chat(Workspaces { reply: Done(") && shown[8].contains("\"Alpha Lab\""), "{}", shown[8]);
     assert_eq!(shown[9], "Chat(Channels { workspace: Some(\"T2\"), reply: Refused(NoSuchChannel) })", "a refused list still names its workspace");
     assert_eq!(shown[10], "Chat(Workspaces { reply: Unsupported })", "an older daemon serves one workspace");
-    assert!(shown[11].contains("ChatConnectRes { workspace: \"T2\", name: Some(\"Beta Lab\") }"), "{}", shown[11]);
+    assert!(shown[11].contains("ChatConnectRes { workspace: \"T2\", name: Some(\"Beta Lab\"), unread: [] }"), "{}", shown[11]);
 }
 
 fn file_req(variant: &str) -> ChatFileReq {

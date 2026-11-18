@@ -20,6 +20,7 @@ use sot_platform::host::env::Env;
 
 use super::owner::Out;
 use super::picker::{workspace_label, workspace_words, Body};
+use crate::ui::chrome::cell_row;
 use super::row_channel::{computer, log_words};
 use super::{prompt_step, PromptStep};
 
@@ -43,8 +44,9 @@ pub(super) enum Screen {
     /// Step 3: the app-level token.
     App,
     Connecting,
-    /// The workspace the hub's reply named, and its name when the reply gave one.
-    Connected(String, Option<String>),
+    /// The workspace the hub's reply named, its name when the reply gave one, and the mapped channels its Slack app cannot
+    /// read, as the title names a channel (`#name`, else the id).
+    Connected(String, Option<String>, Vec<String>),
 }
 
 /// Which token Slack refused, for its step's words until a new one is pasted.
@@ -140,7 +142,7 @@ impl Connect {
     /// The workspace a connect made, once the hub answered it.
     pub(super) fn connected(&self) -> Option<&str> {
         match &self.screen {
-            Screen::Connected(w, _) => Some(w),
+            Screen::Connected(w, ..) => Some(w),
             _ => None,
         }
     }
@@ -285,7 +287,8 @@ impl Connect {
         let words = match reply {
             ChatReply::Done(res) => {
                 (self.bot, self.user, self.app) = (None, None, None);
-                self.screen = Screen::Connected(res.workspace, res.name);
+                let unread = res.unread.iter().map(|u| u.name.as_deref().map_or_else(|| u.id.as_str().to_string(), |n| format!("#{}", cell_row(n)))).collect();
+                self.screen = Screen::Connected(res.workspace, res.name, unread);
                 return;
             }
             ChatReply::Refused(ChatCode::BotTokenRefused) => {
@@ -393,14 +396,29 @@ impl Connect {
                 out.push("Slack is checking the three codes.".into());
                 "Esc  close; the check goes on".to_string()
             }
-            Screen::Connected(id, wname) => {
+            Screen::Connected(id, wname, unread) => {
                 let (w, label) = (workspace_words(id, wname.as_deref()), workspace_label(id, wname.as_deref()));
                 out.push(format!("Ship of Tools is connected to {w}. It keeps that workspace's three Slack codes on {c}, readable only by your login there. Other projects keep the channels they have. Next, press Enter to choose this project's channel in {label}; each project picks its own."));
+                if let Some(words) = unread_words(unread, &name, &c) {
+                    out.push(words);
+                }
                 format!("Enter  choose this project's channel in {label}    Esc  close")
             }
         };
         Body { head: out.join("\n\n"), pin: keys, ..Body::default() }
     }
+}
+
+/// What the connected screen says of the mapped channels the connected Slack app cannot read (`app`, its name; `c`, the
+/// computer): which, why, and what to type in Slack to keep them. None when it can read them all.
+fn unread_words(unread: &[String], app: &str, c: &str) -> Option<String> {
+    let (last, rest) = unread.split_last()?;
+    let (list, what) = match rest {
+        [] => (last.clone(), format!("the channel of a project on {c}, so that project shows nothing until it is")),
+        _ => (format!("{} and {last}", rest.join(", ")), format!("channels of projects on {c}, so those projects show nothing until it is")),
+    };
+    let (keep, place) = if rest.is_empty() { ("it", "that channel") } else { ("them", "each of those channels") };
+    Some(format!("Your Slack app (the bot that reads the channel and posts for your agents) is not in {list}, {what}: a private channel lets in only the Slack apps its members invite, and a new Slack app is in no channel until it is invited. To keep {keep}, in {place} in Slack, type /invite @{app}, instead of choosing another channel here."))
 }
 
 /// The name the person signs in to this computer with, which their app is named for: read once, by exact name. A missing

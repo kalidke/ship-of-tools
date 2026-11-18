@@ -1173,6 +1173,17 @@ owned by `docs/CLAUDE.md`.
   guarantee 2; every test reads the post back in the shape that premise assumes). Check at a person's first post on a release
   candidate, with a control (a message typed in Slack's own app is answered); close this item then, and if the responder
   still does not answer, keep it open with that evidence.
+- **CHAT-CONNECT-MAKES-A-NEW-APP** [person] For a workspace already connected whose secrets hold no user token, the Connect
+  step's post-as-you screen (`connect.rs`) says to click `Ship of Tools (<login>)` in the person's list of Slack apps and,
+  if it is not there, to make the app again; it never names the app connected now, so a person whose connected app has
+  another name makes a new one, and a new app is in no private channel, though adding the user scopes to the connected app
+  and installing it again in Slack keeps every channel it is in (seen in use by the maintainer on v0.7.1-rc.13, 2026-11-17:
+  the project's private channel went unread and he chose another). The daemon knows the connected app (`bots.info`'s
+  `app_id`; Slack's answer also carries its `name`, which `Api::bot_app` does not read) and can tell another app at the
+  connect (the new bot token's `auth.test` `bot_id` against the running service's). The connected screen now names the
+  channels a new app cannot read (CHAT-UNREAD-CHANNEL-SAID-NOTHING). Open, a design question with three forms: the
+  post-as-you screen names the connected app (its `bots.info` name, carried to the window); a connect of another app than
+  the running one asks before it replaces it; or both.
 - **CHAT-DRAWER-ORIGIN-LEGACY** [note] Nothing makes a `Drawer` post since a person's post went out with their own
   token. `normalize`'s reading of an own post's `person` metadata, username suffix and file-share label, `mail`'s `the
   chat drawer` role and the window's `DRAWER` badge serve only posts made before. Deleting them changes the wire
@@ -1229,6 +1240,8 @@ owned by `docs/CLAUDE.md`.
 - **CHAT-ONE-WORKSPACE** (chat, fe-ui) [person] closed by the landing that fixes it, 2026-11-17, seen in use by a person on 2026-11-17 (the maintainer, with five Slack workspaces, one per group of repositories): the chat connected one Slack workspace, refused a second's tokens (`other_workspace`) and gave no way to map projects to channels in more than one. One hub now serves up to 8 workspaces, each with its own secrets file, listener, owner and mail, a failure in one stopping no other (chat guarantees 21, 30 and 31); from the Chat drawer a person connects another workspace (`Connect a Slack workspace`), the channel list shows one workspace at a time with Left and Right between them and pairs a project in the one shown, a row whose workspace failed is told which and can move to another's channel (`Ctrl+Shift+K` in the Connect step), the connected screen names the workspace, and the Chat drawer's title names it while the hub serves more than one (fe-ui, the picker, the Connect step and the title). No person has used it yet.
 
 An item closes by moving here as one line: id, subsystem, the fixing commit or landing.
+
+- **CHAT-UNREAD-CHANNEL-SAID-NOTHING** (chat, fe-ui) [person] closed by the landing that fixes it, 2026-11-17, seen in use by the maintainer on v0.7.1-rc.13: after Slack was connected again with a new Slack app, which was not in the project's private channel, the drawer said `not up to date: no messages read yet` over the old messages, gave the channel's ID for its name, and its picker lacked the channel and said nothing of it (a pasted link of it said it was not in the workspace), so he chose another channel; the hub's snapshot and reads called Slack's refusal `failed`. Now a read Slack refuses because the app is not in the channel is `not_in_channel`, a watch of it says so, the drawer says to type `/invite @` and the app's name in that channel, the picker says the project's channel is missing and why, and the connected screen names the channels the new app cannot read.
 
 - **PDF-ZOOM-PAGE-PAST-TEXT-CAP** (files) [person] closed by the landing that fixes it, 2026-11-17, seen in use by a person on v0.7.1-rc.12 (a window on Windows, the daemon on Linux; the maintainer: "zoom in on pdf on complex figure causes pdf viewer crash in preview pane"): zooming into a PDF page of complex figures replaced the page with `binary file — N bytes / Not previewed as text (mime: text/plain; charset=utf-8)` and retired its page keys, with nothing in the window's log (the daemon's WARN named the cause; the window's process did not crash); the page rasterized for the zoomed pane was a PNG past 2 MiB, and `try_plugin_preview` held every non-text plugin output to `PREVIEW_BYTE_CAP`, a cap for output that grows with its input, and sent it to the bytes-level reader, which served the PDF's own bytes as `text/plain`. A bounded-output plugin's picture (a PDF page, a video's poster) now ships whole up to 64 MiB, and past it is refused as `preview_too_large` and shown on the status line (`fit_plugin_output`, `preview_gate_tests::a_bounded_plugins_picture_past_the_text_cap_ships_whole`).
 

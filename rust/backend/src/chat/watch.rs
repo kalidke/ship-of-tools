@@ -26,7 +26,7 @@ use sot_protocol::ops::{
 use tokio::sync::{broadcast, mpsc, oneshot, Notify};
 use tokio::task::JoinHandle;
 
-use super::ops::{admitted, code_of};
+use super::ops::{admitted, code_of, read_code};
 use super::{mail, Chat};
 use crate::comm::registry::registry::unix_now_secs;
 use crate::rows::Workspaces;
@@ -62,6 +62,9 @@ struct Table {
     slots: Vec<(u64, ChatTarget)>,
     /// What each workspace's owner last said of each of its watched channels, by (workspace, channel).
     states: BTreeMap<(String, String), ChatWatchState>,
+    /// The watched channels whose last snapshot Slack refused because the app is not in them (`not_in_channel`), kept
+    /// until a snapshot succeeds or the channel is no longer watched: a watch of one is answered with that refusal.
+    refused: BTreeMap<(String, String), ChatCode>,
 }
 
 impl Table {
@@ -99,6 +102,7 @@ impl Table {
         let status = self.status(workspace, phase, false, &all);
         self.slots.retain(|(_, t)| t.workspace != workspace);
         self.states.retain(|(w, _), _| w != workspace);
+        self.refused.retain(|(w, _), _| w != workspace);
         status
     }
 }
@@ -336,7 +340,9 @@ impl Conn {
         }
     }
 
-    /// Register the watch, start its workspace's owner if it is not running and have it begin the snapshot.
+    /// Register the watch, start its workspace's owner if it is not running and have it begin the snapshot. A channel whose
+    /// last snapshot Slack refused because the app is not in it is refused `not_in_channel`, its slot kept, so the window
+    /// says what to do; the snapshot this watch began tries again, and the first one that succeeds ends the refusal.
     pub(crate) async fn watch(&self, target: ChatTarget, service: &Arc<Service>, chat: &Arc<Chat>, rows: &Workspaces) -> Result<ChatWatchState, ChatCode> {
         let (workspace, channel) = (target.workspace.clone(), target.channel.as_str().to_string());
         self.claim(target)?;
@@ -348,6 +354,9 @@ impl Conn {
         // A test's hold point, keyed by the hub's address, between the registration and the reply. The owner is kicked
         // above, so its snapshot runs while this is held; `chat.watch.snapshot` holds that.
         sot_platform::hold_point_async!("chat.watch.between", Arc::as_ptr(&self.hub) as usize);
+        if let Some(code) = lock(&self.hub.table).refused.get(&(workspace.clone(), channel.clone())).copied() {
+            return Err(code);
+        }
         Ok(self.state(&workspace, &channel))
     }
 }
@@ -563,7 +572,7 @@ pub(crate) async fn snapshot(chat: &Arc<Chat>, rows: &Workspaces, targets: &[(u6
     }
     let api = found?.api().map_err(|_| ChatCode::Unavailable)?;
     let query = Bounds::new(None, None, None).and_then(|b| HistoryQuery::new(channel, None, b, MAX_PAGE)).map_err(|e| code_of(&e))?;
-    api.history(&query, None).await.map(|p| p.records).map_err(|e| code_of(&e))
+    api.history(&query, None).await.map(|p| p.records).map_err(|e| read_code(&e))
 }
 
 impl Own {
@@ -770,6 +779,7 @@ impl Own {
         let want = lock(&self.hub.table).channels_of(&self.workspace);
         for gone in self.known.difference(&want).cloned().collect::<Vec<_>>() {
             watches.unwatch(&gone);
+            lock(&self.hub.table).refused.remove(&(self.workspace.clone(), gone.clone()));
             self.known.remove(&gone);
         }
         for channel in want {
@@ -806,6 +816,17 @@ impl Own {
         let released = f.stale.iter().map(|c| (*c, ChatStatusEvt { service: ChatService::Running, gap, resync: ChatChannel::try_from(f.channel.clone()).into_iter().collect() })).collect();
         if !f.stale.is_empty() {
             self.hub.send(Evt::Status(Arc::new(released)));
+        }
+        // A refusal a person clears stands for the channel's next watch until a snapshot succeeds.
+        let key = (self.workspace.clone(), f.channel.clone());
+        match &f.result {
+            Ok(_) => {
+                lock(&self.hub.table).refused.remove(&key);
+            }
+            Err(ChatCode::NotInChannel) => {
+                lock(&self.hub.table).refused.insert(key, ChatCode::NotInChannel);
+            }
+            Err(_) => {}
         }
         match f.result {
             Ok(records) => {

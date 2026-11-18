@@ -94,9 +94,11 @@ pub enum ChatCode {
     OtherWorkspace,
     /// A `chat.connect` of a new workspace when the hub already holds `MAX_WORKSPACES`' secrets files.
     TooManyWorkspaces,
-    /// The channel a `chat.pair` named is not one of its workspace's (Slack's `channel_not_found` to that workspace's app).
+    /// The channel a `chat.pair` named is not one of its workspace's (Slack's `channel_not_found` to that workspace's app,
+    /// which is also Slack's answer for a private channel the app is not in, so the text says both).
     NoSuchChannel,
-    /// The app is not in the channel a `chat.pair` named, and could not join it.
+    /// The app is not in the channel a `chat.pair` named, and could not join it; or Slack refused a read of a mapped channel
+    /// (a watch's snapshot, a page, a thread) because the app is not in it (`not_in_channel`, or `channel_not_found`).
     NotInChannel,
     /// Another project's folder already maps the channel a `chat.pair` named.
     ChannelTaken,
@@ -132,7 +134,7 @@ impl ChatCode {
             ChatCode::NotAMember => "you are not in that channel in Slack; join it there first",
             ChatCode::OtherWorkspace => "these Slack codes are for another Slack workspace, and Ship of Tools on the computer that runs your agents is too old to connect more than one: whoever runs Ship of Tools there can update it",
             ChatCode::TooManyWorkspaces => "the computer that runs your agents already holds 8 Slack workspaces, the most it can: to add another, remove one workspace's file chat-secrets-<id>.toml (<id> is that workspace's ID) from Ship of Tools' settings folder there, ~/.config/sot on Linux and macOS or %LOCALAPPDATA%\\sot\\config on Windows",
-            ChatCode::NoSuchChannel => "that channel is not in this Slack workspace",
+            ChatCode::NoSuchChannel => "that channel is not in this Slack workspace, or it is a private channel your Slack app is not in",
             ChatCode::NotInChannel => "your Slack app is not in that channel",
             ChatCode::ChannelTaken => "another project already uses that channel",
             ChatCode::NotSaved => "the chat settings could not be saved",
@@ -250,13 +252,32 @@ pub struct ChatConnectReq {
 }
 
 /// Reply to `chat.connect`: the Slack workspace the bot token belongs to, and its name as Slack gave it (absent from an
-/// older daemon and when Slack gave none; read as a resolve's channel `name` is, so a bad one is no name).
+/// older daemon and when Slack gave none; read as a resolve's channel `name` is, so a bad one is no name). `unread`: the
+/// workspace's mapped channels its app cannot read after this connect (a new Slack app is in none yet), at most
+/// `MAX_WATCHED`; absent from an older daemon and when there is none, and a reader keeps the entries it can read.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChatConnectRes {
     #[serde(deserialize_with = "within::<_, MAX_ID>")]
     pub workspace: String,
     #[serde(default, deserialize_with = "channel_name", skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    #[serde(default, deserialize_with = "unread_list", skip_serializing_if = "Vec::is_empty")]
+    pub unread: Vec<ChatUnread>,
+}
+
+/// A mapped channel the connected app cannot read: its id, and its name as the app connected before had it (absent when
+/// none was known; read as a resolve's `name` is).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChatUnread {
+    pub id: ChatChannel,
+    #[serde(default, deserialize_with = "channel_name", skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+/// The readable entries of a connect's `unread`, the first `MAX_WATCHED` of them.
+fn unread_list<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<ChatUnread>, D::Error> {
+    let all = Vec::<serde_json::Value>::deserialize(d)?;
+    Ok(all.into_iter().filter_map(|v| serde_json::from_value(v).ok()).take(MAX_WATCHED).collect())
 }
 
 /// `chat.channels`: the channels the picker offers, of `workspace` (absent: `chat.toml`'s own, as an older window asks).

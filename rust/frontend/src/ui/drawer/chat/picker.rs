@@ -13,25 +13,33 @@ use crate::ui::chrome::{cell_row, wrap_status};
 use crate::ui::ResultRowIdentity;
 
 /// How a person invites their Slack app (`name`, `slack_app_name`) to a channel.
-fn invite(name: &str) -> String {
+pub(super) fn invite(name: &str) -> String {
     format!("in that channel in Slack, type /invite @{name}")
+}
+/// Why a private channel is missing from a list and what to type in Slack (`name`, the person's app): Slack lists a private
+/// channel only to an app that is in it.
+fn private_words(name: &str) -> String {
+    format!("A private channel is listed only once someone in it invites your Slack app: {}, then open this list again.", invite(name))
 }
 /// The guide, its keys naming Left and Right when the list can move between workspaces (`several`).
 fn guide(several: bool) -> String {
     let moving = if several { " Left and Right for another Slack workspace," } else { "" };
-    format!("Type to narrow the list, Up and Down to choose,{moving} Enter to pick, Esc to close. Picking a channel your Slack app is not in makes it join, \
-and Slack then shows that it joined. A private channel appears in this list once you invite your Slack app: ")
+    format!("Type to narrow the list, Up and Down to choose,{moving} Enter to pick, Esc to close. Picking a public channel your Slack app is not in makes it join, \
+and Slack then shows that it joined.")
 }
 /// What an older computer's picker says: whose channels these are, that its Ship of Tools connects one workspace and who can
-/// change that, and what "your Slack app" is.
-fn head_one(c: &str) -> String {
+/// change that, and what "your Slack app" reads, with what it is unless the head's first words said so (`glossed`).
+fn head_one(c: &str, glossed: bool) -> String {
+    let app = if glossed { "Your Slack app (the bot that reads the channel and posts for your agents)" } else { "Your Slack app" };
     format!("These are the channels of your connected Slack workspace. Ship of Tools on {c} is too old to connect more than one Slack workspace: whoever runs Ship of Tools there can update it. \
-Your Slack app (the bot that reads the channel and posts for your agents) reads only the channels it is in.")
+{app} reads only the channels it is in.")
 }
 /// Where an older computer's guide says to read how to move the chat to another workspace.
 const MOVE: &str = " To move the chat to another workspace, see the manual page \"Setting up Slack\": press F1, select \"Choose channel\" in the list, and press Enter; the page opens in your browser.";
-/// What your Slack app is, on a list of one connected workspace's channels.
-const APP_IN: &str = "Your Slack app (the bot you make for yourself in each Slack workspace, which reads the channel and posts for your agents) reads only the channels it is in; picking a channel adds it there.";
+/// What your Slack app is, at its first use in the head of a list of the connected workspaces' channels.
+const APP_IS: &str = "your Slack app (the bot you make for yourself in each Slack workspace, which reads the channel and posts for your agents)";
+/// What your Slack app reads, on such a list.
+const APP_IN: &str = "Your Slack app reads only the channels it is in; picking a public channel adds it there.";
 
 /// A Slack workspace as a title names it: its name, or `workspace <ID>` when none is known.
 pub(super) fn workspace_label(id: &str, name: Option<&str>) -> String {
@@ -94,6 +102,8 @@ pub(super) struct Picker {
     pairing: bool,
     /// The person's app, as the invite names it.
     app: String,
+    /// The row's channel now, for a mapped row: its workspace, its id and its label (`#name`, else the id).
+    current: Option<(String, ChatChannel, String)>,
 }
 
 /// The team and the channel a pasted link names: the channel is its last path segment, when it has Slack's id shape (`C` or
@@ -112,7 +122,23 @@ pub(super) fn link_target(text: &str) -> Option<(Option<String>, ChatChannel)> {
 
 impl Picker {
     pub(super) fn new(row: ResultRowIdentity, mapped: bool, app: String) -> Self {
-        Picker { row, mapped, filter: String::new(), choice: 0, list: List::Reading, places: Places::Asking, start: None, away: false, pairing: false, app }
+        Picker { row, mapped, filter: String::new(), choice: 0, list: List::Reading, places: Places::Asking, start: None, away: false, pairing: false, app, current: None }
+    }
+
+    /// The row's channel now (its workspace, id and label), which the head names when the list shown lacks it.
+    pub(super) fn current(self, current: Option<(String, ChatChannel, String)>) -> Self {
+        Picker { current, ..self }
+    }
+
+    /// The words for a row's channel the whole list of its workspace lacks: Slack lists a private channel only to an app in
+    /// it, so the connected app is not in it (none when the list was cut, or is another workspace's).
+    fn missing_words(&self) -> Option<String> {
+        let (workspace, id, label) = self.current.as_ref()?;
+        let List::Listed { channels, more: false } = &self.list else { return None };
+        let here = self.asked().is_none_or(|w| &w == workspace);
+        (here && !channels.iter().any(|c| &c.id == id)).then(|| {
+            format!("This project's channel, {label}, is not in this list: your Slack app (the bot that reads the channel and posts for your agents) is not in it, so this panel cannot show it. To keep it, {}, then press Esc. To change it, pick another channel below.\n\n", invite(&self.app))
+        })
     }
 
     /// The picker opening on `start` when that workspace runs.
@@ -319,11 +345,12 @@ impl Picker {
         matches!(&self.list, List::Listed { channels, .. } if channels.iter().any(|c| &c.id == id && c.private))
     }
 
-    /// The words of a pair refused `no_such_channel`: the channel is not in the workspace shown.
+    /// The words of a pair refused `no_such_channel`: the channel is not in the workspace shown, or (Slack answers both
+    /// alike) it is a private channel the app is not in.
     pub(super) fn no_such_channel(&self) -> String {
         let name = if self.shown().is_some() { self.shown_words() } else { "this Slack workspace".into() };
         let others = if self.several() { "; Left and Right show the channels of the other Slack workspaces" } else { "" };
-        format!("not set: that channel is not in {name}{others}")
+        format!("not set: that channel is not in {name}{others}; if it is a private channel, your Slack app is not in it: {}, then pick it again", invite(&self.app))
     }
 
     pub(super) fn title(&self) -> String {
@@ -339,21 +366,27 @@ impl Picker {
         format!(" chat · choose this project's channel{place}{filter} ")
     }
 
-    /// The listed head: whose channels these are, how to reach the others, and what your Slack app is.
+    /// The listed head: the row's channel when the list lacks it, whose channels these are, how to reach the others, what
+    /// your Slack app is, and why a private channel may be missing.
     fn listed_head(&self) -> String {
-        match &self.places {
+        let private = private_words(&self.app);
+        // `your Slack app` is said what it is at its first use: in the missing channel's words when they lead.
+        let missing = self.missing_words();
+        let app = if missing.is_some() { "your Slack app" } else { APP_IS };
+        let head = match &self.places {
             Places::Known { running, .. } if running.len() > 1 => format!(
-                "These are the channels of {} that you can see, one of the {} Slack workspaces the chat on {} is connected to. The list shows one workspace at a time: Left and Right move between them, and Connect a Slack workspace is at the end of each. {APP_IN}",
+                "These are the channels of {} that {app} can see, one of the {} Slack workspaces the chat on {} is connected to. The list shows one workspace at a time: Left and Right move between them, and Connect a Slack workspace is at the end of each. {APP_IN} {private}",
                 self.shown_words(),
                 running.len(),
                 self.c()
             ),
             Places::Known { .. } => format!(
-                "These are the channels of {} that you can see. {APP_IN} To add another Slack workspace, choose Connect a Slack workspace at the end of this list.",
+                "These are the channels of {} that {app} can see. {APP_IN} {private} To add another Slack workspace, choose Connect a Slack workspace at the end of this list.",
                 self.shown_words()
             ),
-            _ => head_one(&self.c()),
-        }
+            _ => format!("{} {private}", head_one(&self.c(), missing.is_none())),
+        };
+        format!("{}{head}", missing.unwrap_or_default())
     }
 
     pub(super) fn body(&self) -> Body {
@@ -372,7 +405,7 @@ impl Picker {
                     Places::Older => (guide(false), MOVE),
                     _ => (guide(self.several()), ""),
                 };
-                (head, format!("{lead}{}.{more}{moving}", invite(&self.app)))
+                (head, format!("{lead}{more}{moving}"))
             }
         };
         Body { head, entries: entries.into_iter().map(|(_, label, mark)| (label, mark)).collect(), chosen: self.choice, guide, ..Body::default() }

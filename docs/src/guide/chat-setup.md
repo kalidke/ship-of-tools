@@ -69,7 +69,9 @@ press Enter to open your list of Slack apps: if your app is in it, click it and 
 3 follow in the drawer); if it is not, press Left to make the app again (step 1). A hub connected before Ship of Tools
 posted your messages as you, or whose User OAuth Token Slack stopped accepting, refuses your post with that reason and shows the
 same screen, titled `post as you`, in place of the channel: your draft is kept, and the codes are copied again as above.
-Paste your own User OAuth Token only: the hub cannot tell whose it is, and would post as that person. To give a workspace new Slack codes at any
+Copy them from the app the hub is connected to now: adding the two user permissions to it (step 2) and installing it
+again keeps it in every channel it is in, while a new app is in none of your private channels until you invite it to
+each (see the list below). Paste your own User OAuth Token only: the hub cannot tell whose it is, and would post as that person. To give a workspace new Slack codes at any
 time, or to add one, choose **Connect a Slack workspace** (marked `add a Slack workspace, or give one new Slack codes`), last in the channel list (`Ctrl+Shift+k`).
 
 ## Per project: choose its channel
@@ -85,6 +87,13 @@ yet shows the list once the drawer has the keys; press Escape to close it, and E
   and picking such a channel says so: invite the app to the channel (in it, type `/invite @` and your app's name, such as
   `/invite @Ship of Tools (lab-user)`).
 - A private channel is in the list only once you have invited your app to it, and is marked `private; your Slack app is in it`.
+  The list says so above its entries, and when the project's own channel is missing from it, it says that first: invite
+  your app there (in that channel in Slack, type `/invite @` and your app's name) to keep it, rather than picking another.
+  A pasted link to a private channel your app is not in is refused with the same words, since Slack answers it as a channel
+  it does not have.
+- Connecting a workspace again with a new Slack app (one you made in the Connect step, rather than the app connected
+  before) leaves the new app in no channel. The connected screen names the projects' channels it cannot read; a project
+  whose channel it is not in says `your Slack app cannot read this channel` and what to type, until you invite the app.
 - If your workspace has more channels than the list holds (1,000), the list says so: paste a channel's link or ID
   (`Ctrl+v`) to pick it. A channel's link is in its details in Slack; its last part is the ID, which begins with `C` or
   `G` and is made of capital letters and digits. The address in your browser's Slack tab

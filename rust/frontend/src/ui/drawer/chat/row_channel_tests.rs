@@ -420,8 +420,9 @@ fn named_to(row: &str, channel: &str, name: &str) -> ChatEvt {
     answer(row, serde_json::json!({ "state": "mapped", "workspace": "T1", "channel": channel, "delivers": false, "name": name }))
 }
 
-/// The title says `#name` when the last answer named the watched channel, and the id when it did not: an older daemon's
-/// answer, a name for another channel, or a later answer without one.
+/// The title says `#name` when an answer for the wanted row named the watched channel, and the id when none did: an older
+/// daemon's answer, or a name for another channel. A later answer without a name for the same channel keeps it (a new Slack
+/// app outside a private channel cannot read its name).
 #[test]
 fn the_title_names_the_channel_when_the_answer_did_and_says_the_id_otherwise() {
     let t0 = Instant::now();
@@ -437,9 +438,11 @@ fn the_title_names_the_channel_when_the_answer_did_and_says_the_id_otherwise() {
     d.on_evt(&host(), named_to("R", "C1", "ge\u{7}ne\nral\u{2028}x"), t0 + Duration::from_millis(210));
     assert_eq!(d.title(), " chat · #ge ne ⏎ ral ⏎ x reading… ", "the daemon's text reaches the cells through `cell_row`");
 
-    // A later answer with no name is what the daemon knows now: the id.
+    // A later answer with no name for the same channel keeps the name; one for another channel says its id.
     d.on_evt(&host(), mapped("R"), t0 + Duration::from_millis(220));
-    assert_eq!(d.title(), " chat · C1 reading… ");
+    assert_eq!(d.title(), " chat · #ge ne ⏎ ral ⏎ x reading… ");
+    d.on_evt(&host(), mapped_to("R", "C2"), t0 + Duration::from_millis(230));
+    assert_eq!(d.title(), " chat · C2 reading… ");
 }
 
 /// A hub serving several workspaces names the row's in the title, ahead of the channel; an answer with no workspace name

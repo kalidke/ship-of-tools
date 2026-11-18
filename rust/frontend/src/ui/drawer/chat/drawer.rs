@@ -15,7 +15,7 @@ use crate::ui::render::quad::ScreenRect;
 use super::compose::{Compose, ComposeText, Edit};
 use super::connect::{Asks, Connect};
 use super::owner::{dead, ChatOwner, Fill, Out, PostReply, PostShown, Posting};
-use super::picker::{pair_words, Body, Pick, Picker};
+use super::picker::{invite, pair_words, Body, Pick, Picker};
 use super::pictures::ChatPictures;
 use super::row_channel::{computer, RowChannel, Stand};
 use super::thread::Thread;
@@ -653,7 +653,8 @@ impl ChatDrawer {
         if self.picker().is_some() {
             return Ok(Vec::new());
         }
-        let picker = Picker::new(row.clone(), mapped, slack_app_name(self.login)).starting(start);
+        let current = self.watch_for(row).map(|t| (t.workspace.clone(), t.channel.clone(), self.rows.label(t.channel.as_str())));
+        let picker = Picker::new(row.clone(), mapped, slack_app_name(self.login)).starting(start).current(current);
         self.open_modal(Kind::Picker(if away { picker.away_from_failed() } else { picker }));
         Ok(vec![(row.host.clone(), OutgoingReq::ChatWorkspaces)])
     }
@@ -766,6 +767,7 @@ impl ChatDrawer {
             (Some(Modal { kind: Kind::Connect(c), scroll, .. }), _) => return Some(Body { scroll: *scroll, ..c.body() }),
             (Some(Modal { kind: Kind::Picker(p), scroll, .. }), _) => Body { scroll: *scroll, ..p.body() },
             (None, Stand::Unmapped) => Body::words("this project has no channel: press Enter to pick one"),
+            (None, Stand::Mapped) if self.unreadable() => return Some(Body::words(&self.unreadable_words())),
             (None, _) if self.thread.is_none() && self.owner.no_messages() => return Some(Body::words("no messages")),
             _ => return None,
         };
@@ -773,6 +775,28 @@ impl ChatDrawer {
             body.head = "setting this project's channel…".into();
         }
         Some(body)
+    }
+
+    /// The channel's view shows no record: the hub refused its watch `not_in_channel`, and the body says why instead.
+    fn unreadable(&self) -> bool {
+        self.thread.is_none() && self.rows.stand() == Stand::Mapped && self.owner.fill() == Some(Fill::Gap(Some(ChatCode::NotInChannel)))
+    }
+
+    /// Why the watched channel shows nothing and what to type in Slack: the hub refused its read `not_in_channel` (Slack's
+    /// answer to an app that is not in the channel, and to one outside a private channel), so the connected Slack app was
+    /// never invited there, or is a new app. A channel known only by its ID gets the address that opens it in a browser.
+    fn unreadable_words(&self) -> String {
+        let Some(t) = self.owner.target() else { return String::new() };
+        let label = self.rows.label(t.channel.as_str());
+        let channel = if label == t.channel.as_str() {
+            format!("the channel with ID {label} (to find it, open app.slack.com/client/{}/{label} in your web browser)", t.workspace)
+        } else {
+            label
+        };
+        format!(
+            "Your Slack app (the bot that reads the channel and posts for your agents) cannot read {channel}: Slack says it is not in that channel, or that the channel no longer exists. A private channel lets in only the Slack apps its members invite, and a new Slack app is in no channel until it is invited. To fix it, {}; this panel then shows the channel within two minutes.",
+            invite(&slack_app_name(self.login))
+        )
     }
 
     /// The foot asks for the posting name; a name half typed stays.
@@ -847,6 +871,8 @@ impl ChatDrawer {
             (Stand::Mapped, Some(Fill::Gap(Some(ChatCode::Unavailable)))) => Stand::stopped_words(host),
             // A target refused for good is asked again only at a row or link change.
             (Stand::Mapped, Some(Fill::Gap(Some(code)))) if dead(code) => code.text().into(),
+            // The body says what to type in Slack.
+            (Stand::Mapped, Some(Fill::Gap(Some(ChatCode::NotInChannel)))) => "your Slack app cannot read this channel".into(),
             (Stand::Mapped, Some(Fill::Gap(code))) => format!("not up to date: {}", code.map_or("no messages read yet", ChatCode::text)),
             (stand, _) => stand.words(host),
         };
@@ -869,7 +895,7 @@ impl ChatDrawer {
             let rows = m.motion.spend_rows(std::time::Instant::now(), f32::from(self.body_end.1.max(1)));
             m.scroll = m.scroll.saturating_add_signed(rows as i16).min(self.body_end.0);
         }
-        let records = if self.modal.is_some() { Vec::new() } else { self.thread.as_ref().map_or_else(|| self.owner.records(), Thread::records) };
+        let records = if self.modal.is_some() || self.unreadable() { Vec::new() } else { self.thread.as_ref().map_or_else(|| self.owner.records(), Thread::records) };
         self.view.layout(fonts, &records, body, scale, now.timestamp(), *now.offset());
         // The placed records' files are the pictures wanted, under the watch of the row the frame follows.
         let at = self.rows.row().and_then(|r| Some((r.host.clone(), self.watch_for(r)?.clone())));
