@@ -2810,3 +2810,21 @@ the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the sa
     reference said mail was not built. Landed 03:03 and, the last round of the pages, 09b0e5615.
   - Disk: the night's review builds took the hub's disk to 88%; four week-old build folders of finished lanes were
     deleted, 98 GB.
+  - A connect asks before it replaces the connected Slack app (the open part of CHAT-CONNECT-MAKES-A-NEW-APP), and the
+    chat's words (`row`, the computer that runs your agents), 03:30 to 07:16 on 2026-11-18: the maintaining session had
+    first listed both as questions for the maintainer, then built them, since the first is a defect a person had hit
+    and blind readers of the manual had stopped at the second three times. Builder 54 minutes, two commits. First
+    review, 24 minutes, two blockers: the path that kept the connected app could still send its two codes with the new
+    app's third, which the daemon saved, ending the workspace's chat as `wrong_app`; and the invite line could name the
+    connected app. A second builder, 43 minutes, had the window remember the refused codes. Second review, 31 minutes:
+    the same blocker by another path (the memory was lost at Escape, a row change or a lost link). The third builder, 43
+    minutes at a stronger model, closed the class where it did its damage and deleted the window's patch: the daemon
+    learns the App-Level Token's app from one socket opened at the connect and writes no set of two apps' codes; a
+    starting chat is waited for; a running app never told is asked about. Third review, 25 minutes by the stronger
+    reviewer: every earlier finding closed, sixteen mixed sets refused with nothing written, the running listener
+    undisturbed, and one new blocker (a running chat whose own app its start could not tell was refused forever); the
+    same builder, 15 minutes, has the daemon ask for that app once under the lock. Four scoped gates, all passed;
+    landed 07:16 as 9f96a14c8. No fourth review: the last commit did what the third specified.
+  - The hosted runs on cba577b2b: red twice in the Linux job's setup step (the runner's download of one graphics
+    package outran the step's 120 s), green on the third attempt with no change. The step is in the test workflow
+    alone.

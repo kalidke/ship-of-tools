@@ -232,9 +232,14 @@ preview's box (the limit that remains, another program whose words change at eac
 project's private channel that a newly connected Slack app cannot read says so, with the line to type in Slack, in the
 drawer, the channel list and the connected screen, whose list of such channels the daemon reads after the connect and
 carries on `chat.workspaces`, and the post-as-you screen names the connected Slack app as the one to keep
-(CHAT-CONNECT-MAKES-A-NEW-APP stays open: a connect of another app is not asked about first); the drawer asks for a chat
-name only when the post goes out under one; and the manual's two Chat pages are rewritten for a first-time reader. No
-person has used any of it. rc.11 carries what the
+and a connect whose codes are not known to be the connected Slack app's writes nothing and asks first, on one screen
+where Enter keeps the connected app (CHAT-CONNECT-MAKES-A-NEW-APP: built, its premises about Slack unmeasured, and a
+window older than this cannot show the question); the daemon writes no set of codes told to be of two Slack apps, which
+it learns by opening the App-Level Token's socket once at the connect (a mixed set had ended a workspace's chat as
+`wrong_app`, found in review, never seen by a person); the chat's messages say session and the computer that runs your
+sessions, where some said row and the computer that runs your agents; the drawer asks for a chat name only when the post
+goes out under one; and the manual's two Chat pages are rewritten for a first-time reader. No person has used any of
+it. rc.11 carries what the
 maintainer asked of the Chat drawer on rc.10 (2026-11-15): Up and Down ease the view to a marked message out of view,
 and Left over an empty draft leaves an open thread, as the nav pane's Left does. The `release/0.6.6` branch is closed to
 all but fixes found in use. A
