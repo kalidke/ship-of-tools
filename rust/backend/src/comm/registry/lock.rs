@@ -164,7 +164,7 @@ fn host_field(env: &crate::comm::Env) -> String {
 }
 
 /// The record for `pid` on this machine, as its own take writes it.
-fn record_for(env: &crate::comm::Env, pid: u32) -> String {
+pub(crate) fn record_for(env: &crate::comm::Env, pid: u32) -> String {
     let [machine, boot, pidns, start] = proof_fields(pid);
     format!("{}:{machine}:{boot}:{pidns}:{pid}:{start}", host_field(env))
 }

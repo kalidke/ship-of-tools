@@ -9,6 +9,24 @@ fn workspace_from_label_uses_slug_and_tmux_convention() {
     assert_eq!(ws.project_root, PathBuf::from("/home/u/MyPkg.jl"));
 }
 
+/// A row the boot resume holds for its turn lists as `queued` while nothing answers for it, and as its own phase once a
+/// supervisor answers or its turn comes (BOOT-STARTS-EVERY-ROW-AT-ONCE).
+#[test]
+fn a_row_waiting_its_boot_turn_lists_as_queued_until_it_starts() {
+    let ws = Workspace::from_label("queued", PathBuf::from("/project"), false, "none".into(), String::new(), String::new());
+    assert_eq!(ws.shown_phase(), "stopped");
+    ws.set_start_queued(true);
+    assert_eq!(ws.shown_phase(), "queued");
+    assert!(ws.apply_phase_observation(Observation::Gone));
+    assert_eq!(ws.shown_phase(), "queued", "a dead supervisor's row still waits its turn");
+    let started = Observation::Phase { phase: Phase::Starting, supervisor: SupervisorIdentity { pid: 7, created: 7 }, run: None };
+    assert!(ws.apply_phase_observation(started));
+    assert_eq!(ws.shown_phase(), "starting", "a row a person started while it waited shows its own phase");
+    assert!(ws.apply_phase_observation(Observation::Gone));
+    ws.set_start_queued(false);
+    assert_eq!(ws.shown_phase(), "unreachable");
+}
+
 #[test]
 fn repeated_and_concurrent_mints_of_one_slug_have_distinct_ids() {
     let ids = std::thread::scope(|scope| {

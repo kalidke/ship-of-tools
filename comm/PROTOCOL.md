@@ -93,8 +93,9 @@ tmpfs, or NFS without `nocto`; on macOS anything but the Mac's own disk) the fou
   `.registry.lock.reclaim.<D>` the same way, settles 1 s, reads the lock again fresh, and removes it only if it still
   names D. Only the marker's creator acts; if it died too, the next waiter proves that and takes its marker. A marker
   naming a record the walk already passed ends the walk, and the lock is removed by hand.
-- **Bounds**: `SOT_LOCK_WAIT_SECS`, 10 s, for a join, a leave, a spawn and a work-state declaration; 1 s for the
-  best-effort `last_seen` touch of a send or a poll and for the Stop hook's mark; 0 for the heartbeat's one try.
+- **Bounds**: `SOT_LOCK_WAIT_SECS`, 10 s, for a join, a leave, a spawn and a work-state declaration; 40 s, or that
+  variable when longer, for each take of a session start's join; 1 s for the best-effort `last_seen` touch of a send or
+  a poll and for the Stop hook's mark; 0 for the heartbeat's one try.
 - **FAILED** names the holder and the recovery: `registry lock <path> is held by <host> pid <pid> start <tick> (<age>
   old): <why>. If it is dead, run any comm command on <host>.`, with the by-hand clause where no box can prove it dead.
 

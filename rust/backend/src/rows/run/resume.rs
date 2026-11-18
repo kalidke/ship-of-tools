@@ -1,16 +1,28 @@
 //! Boot resume: after a daemon restart, resume every registered capsule row whose fence file exists, and log stray state directories.
 
 use super::activation::resume_locked;
+use super::probe::phase_of;
+use super::UNREACHABLE_PHASE;
 use crate::rows::Workspaces;
+use std::future::Future;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 /// ADR 0042 L1a (Codex review findings 10/11): "a small semaphore over
 /// spawns" — the SAME fixed-width bound reused for both the startup
 /// resume-scan's concurrent spawns and `workspace.list`'s concurrent
 /// lane queries, rather than two independently-invented numbers.
 pub const LANE_CONCURRENCY: usize = 4;
+
+/// The boot resume's pace: a row whose start spawns begins at least this long after the last one that did. A Claude
+/// row's agent and the tool servers it launches connect in 1.5 to 3.2 s on a quiet computer with 32 threads; 29 rows
+/// begun within 5 s held that computer's load near 340 for minutes, and most of their tool servers missed their bound.
+pub const BOOT_START_SPACING: Duration = Duration::from_secs(3);
+
+/// A row the boot resume starts: its id, agent kind, project root, agent name and slug.
+type Candidate = (String, String, PathBuf, String, String);
 
 /// On daemon startup: resume every REGISTERED capsule workspace's
 /// supervisor whose fence file EXISTS (rule B, shrink round): a
@@ -54,6 +66,14 @@ pub const LANE_CONCURRENCY: usize = 4;
 /// inside it is bounded to `LANE_CONCURRENCY` concurrent attempts via
 /// a semaphore — thousands of preserved workspaces cannot turn this
 /// into an unbounded synchronous fan-out before the listener binds.
+///
+/// A computer's boot leaves every supervisor dead, and a spawn's permit
+/// ends at the supervisor's first answer, long before its agent has
+/// started; so the rows are begun in the order a window's strip shows them
+/// ([`in_strip_order`]), a row whose supervisor does not answer at least
+/// `BOOT_START_SPACING` after the last such row ([`pace_starts`]), and
+/// each lists as `queued` until its turn. A row whose supervisor answers
+/// (a daemon restart's) takes no turn.
 pub async fn resume_all(state_root: PathBuf, workspaces: Workspaces) {
     // 2026-09-04 amendment: the inert default anchor is never resumed
     // here either, even on the rare box where a fence file already exists
@@ -79,7 +99,7 @@ pub async fn resume_all(state_root: PathBuf, workspaces: Workspaces) {
         super::observer::ensure_running(&workspaces, ws);
     }
 
-    let candidates: Vec<(String, String, PathBuf, String, String)> = capsule_rows
+    let candidates: Vec<Candidate> = capsule_rows
         .into_iter()
         .filter(|ws| {
             let state_dir = super::state_dir_for(&state_root, &ws.workspace_id);
@@ -98,14 +118,26 @@ pub async fn resume_all(state_root: PathBuf, workspaces: Workspaces) {
 
     retire_old_rows_together(&state_root, &workspaces, &candidates).await;
 
+    let candidates = in_strip_order(&workspaces, candidates).await;
+    for (workspace_id, ..) in &candidates {
+        if let Some(ws) = workspaces.resolve(Some(workspace_id)) {
+            ws.set_start_queued(true);
+        }
+    }
     let semaphore = Arc::new(tokio::sync::Semaphore::new(LANE_CONCURRENCY));
-    let mut joins = Vec::with_capacity(candidates.len());
-    for (workspace_id, agent_kind, project_root, agent_name, slug) in candidates {
+    let absent = |(workspace_id, ..): &Candidate| {
+        let state_dir = super::state_dir_for(&state_root, workspace_id);
+        async move { tokio::task::spawn_blocking(move || phase_of(&state_dir) == UNREACHABLE_PHASE).await.unwrap_or(true) }
+    };
+    let begin = |(workspace_id, agent_kind, project_root, agent_name, slug): Candidate| {
         let permit = semaphore.clone();
         let state_root = state_root.clone();
         let workspaces = workspaces.clone();
-        joins.push(tokio::spawn(async move {
+        tokio::spawn(async move {
             let _permit = permit.acquire_owned().await;
+            if let Some(ws) = workspaces.resolve(Some(&workspace_id)) {
+                ws.set_start_queued(false);
+            }
             let Some(guard) = workspaces.capsule_guard(&workspace_id) else {
                 return;
             };
@@ -133,15 +165,76 @@ pub async fn resume_all(state_root: PathBuf, workspaces: Workspaces) {
                     tracing::debug!(workspace_id = %workspace_id, "capsule workspace resume-scan: row's guard busy; skipping");
                 }
             }
-        }));
-    }
-    for j in joins {
+        })
+    };
+    for j in pace_starts(candidates, BOOT_START_SPACING, absent, begin).await {
         let _ = j.await;
     }
 
     let (sweep_root, sweep_workspaces) = (state_root.clone(), workspaces.clone());
     let _ = tokio::task::spawn_blocking(move || crate::rows::state_folder::sweep_state_folders(&sweep_root, &sweep_workspaces)).await;
     log_orphaned_state_dirs(&state_root, &workspaces);
+}
+
+/// Begins each of `rows` in the order given: a row `absent` answers true for (nothing answers on its row socket, so its
+/// turn spawns a supervisor) begins at least `spacing` after the last such row began, and a row whose supervisor
+/// answers begins at once and takes no turn. `begin` starts a row and hands back its task.
+async fn pace_starts<R, F>(
+    rows: Vec<R>,
+    spacing: Duration,
+    mut absent: impl FnMut(&R) -> F,
+    mut begin: impl FnMut(R) -> tokio::task::JoinHandle<()>,
+) -> Vec<tokio::task::JoinHandle<()>>
+where
+    F: Future<Output = bool>,
+{
+    let mut joins = Vec::with_capacity(rows.len());
+    let mut last: Option<tokio::time::Instant> = None;
+    for row in rows {
+        if absent(&row).await {
+            if let Some(at) = last {
+                tokio::time::sleep_until(at + spacing).await;
+            }
+            last = Some(tokio::time::Instant::now());
+        }
+        joins.push(begin(row));
+    }
+    joins
+}
+
+/// The candidates in the order a window's strip shows rows by default, from one read of the registry, so the rows a
+/// person looks at first start first; an unreadable registry keeps the order given.
+async fn in_strip_order(workspaces: &Workspaces, candidates: Vec<Candidate>) -> Vec<Candidate> {
+    if candidates.len() < 2 {
+        return candidates;
+    }
+    let agents = tokio::task::spawn_blocking(crate::comm::registry::registry::read_comm_agents).await.ok().flatten();
+    let rows = workspaces.list();
+    let host = crate::rows::store::declared_host();
+    strip_order(candidates, |(workspace_id, ..)| {
+        rows.iter()
+            .find(|ws| ws.workspace_id == *workspace_id)
+            .map(|ws| crate::rows::work_state::shown_of(ws, &rows, agents.as_ref(), &host))
+            .unwrap_or_default()
+    })
+}
+
+/// `rows` sorted, stably, by what each shows (`shown`) as the window's strip ranks it (`activity_rank`, without its
+/// result badge): a row waiting on its person, then done, working, waiting and the rest; the newest stamp first within
+/// each.
+fn strip_order<R>(mut rows: Vec<R>, shown: impl Fn(&R) -> crate::rows::work_state::Shown) -> Vec<R> {
+    let rank = |state: &str| match state {
+        "blocked" => 0u8,
+        "done" => 1,
+        "working" => 2,
+        "waiting" => 3,
+        _ => 4,
+    };
+    rows.sort_by_cached_key(|row| {
+        let shown = shown(row);
+        (rank(&shown.state), std::cmp::Reverse(shown.status_at))
+    });
+    rows
 }
 
 /// Every candidate whose folder holds the 0.6 layout is retired at once, each in its own task: the semaphore below bounds
@@ -152,7 +245,7 @@ pub async fn resume_all(state_root: PathBuf, workspaces: Workspaces) {
 async fn retire_old_rows_together(
     state_root: &Path,
     workspaces: &Workspaces,
-    candidates: &[(String, String, PathBuf, String, String)],
+    candidates: &[Candidate],
 ) {
     let mut joins = Vec::new();
     for (workspace_id, ..) in candidates {
@@ -237,3 +330,7 @@ fn log_orphaned_state_dirs(state_root: &Path, workspaces: &Workspaces) {
 #[cfg(test)]
 #[path = "resume_selection_tests.rs"]
 mod selection_tests;
+
+#[cfg(test)]
+#[path = "resume_pace_tests.rs"]
+mod pace_tests;

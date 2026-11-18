@@ -16,6 +16,34 @@ fn a_session_start_joins_and_prints_one_bootstrap_line_and_the_rules() {
     assert_eq!(session_start(&t.env, &["x".into()]).code, 2);
 }
 
+/// A full start waits for a live holder of the registry lock past a join's own bound: in a computer's boot holders kept
+/// it 18 to 28 s, and a start that gave up at 10 s left its session with no handle
+/// (SESSION-START-FAILS-ON-A-HELD-REGISTRY-LOCK).
+#[cfg(unix)]
+#[test]
+fn a_session_start_waits_for_a_live_holder_past_a_joins_bound() {
+    struct Holder(std::process::Child);
+    impl Drop for Holder {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let mut t = TestHome::exclusive();
+    t.set("SOT_LOCK_WAIT_SECS", "1");
+    let lock = t.home.join(".registry.lock");
+    let holder = Holder(std::process::Command::new("sleep").arg("30").spawn().expect("a holder process"));
+    std::fs::write(&lock, format!("{}\n", crate::comm::registry::lock::record_for(&t.env, holder.0.id()))).unwrap();
+    let release = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        std::fs::remove_file(&lock).unwrap();
+    });
+    let o = session_start(&t.env, &[]);
+    release.join().unwrap();
+    drop(holder);
+    assert!(o.stdout.contains(" identity=ok "), "{}", o.stdout);
+}
+
 /// A row's session is told it is in the window, and how its person gets a terminal of their own.
 #[test]
 fn a_rows_session_start_says_it_is_in_the_window_and_how_to_give_its_person_a_terminal() {

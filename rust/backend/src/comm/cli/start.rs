@@ -5,7 +5,14 @@
 //! rewrites the registry entry, never wipes the row's work-state.
 
 use crate::comm::Env;
+use crate::comm::registry::registry::command_lock_wait;
 use super::{context_with, gate, join, unroutable, Out, Unroutable};
+
+/// A full start's wait for each registry lock take of its join, or `SOT_LOCK_WAIT_SECS` when that is longer: in a
+/// computer's boot, holders slowed by every row starting at once kept the lock 18 to 28 s, past a join's own 10 s, and
+/// the starts that gave up left their sessions with no handle. Both takes and the rest of the start stay inside the two
+/// minutes an agent's shell call is given.
+pub(crate) const START_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(40);
 
 /// The work-state rule, printed on every start: the row's color is read from it.
 const WORKSTATE_RULE: &str = "Work-state (nav row colour) \u{2014} stamp it yourself with comm-status.sh <working|waiting|blocked|done|idle> \"why\":
@@ -77,7 +84,7 @@ pub(crate) fn session_start(env: &Env, args: &[String]) -> Out {
     if again {
         return start_again(env, o, &ctx);
     }
-    let joined = join::join(env, &[]);
+    let joined = join::join_within(env, &[], command_lock_wait(env).max(START_LOCK_WAIT));
     let mut text = joined.stderr.clone();
     text.push_str(&joined.stdout);
     o.stdout.push_str(&text);

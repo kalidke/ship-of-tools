@@ -179,6 +179,7 @@ impl Workspace {
             watched: Mutex::new(WatchState::default()),
             watchdog_owner: Mutex::new(None),
             activation_error: Mutex::new(None),
+            start_queued: std::sync::atomic::AtomicBool::new(false),
             files_mode: OnceLock::new(),
             concept: OnceLock::new(),
             kernel: OnceLock::new(),
@@ -449,6 +450,19 @@ impl Workspace {
     /// Never touches `phase`.
     pub fn set_activation_error(&self, detail: Option<String>) {
         *self.activation_error.lock().unwrap_or_else(|e| e.into_inner()) = detail;
+    }
+
+    /// The boot resume's mark: set for every row it will start, cleared at the row's turn.
+    pub fn set_start_queued(&self, queued: bool) {
+        self.start_queued.store(queued, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The phase word the list shows: `queued` while the boot resume holds the start of a row nothing answers for, so a
+    /// row waiting its turn does not read as broken; else the cell's own word.
+    pub fn shown_phase(&self) -> &'static str {
+        let phase = self.phase();
+        let queued = self.start_queued.load(std::sync::atomic::Ordering::Relaxed);
+        if queued && matches!(phase, Phase::Stopped | Phase::Unreachable) { "queued" } else { phase.as_wire_str() }
     }
 
 

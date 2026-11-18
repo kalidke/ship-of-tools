@@ -134,8 +134,10 @@ modes. Details of each built-in mode are on the [Modes](modes.md) page.
   binding does not do what you expect.
 - In Sessions mode, a tag in brackets after a session's name is the state of
   its supervised process: `[starting]`, `[ready]`, `[ending]`, `[stopped]` (no
-  process has run for it yet), `[terminal]` (it ended and will not restart), or
-  `[unreachable]` (the backend could not query it). The row is coloured by the
+  process has run for it yet), `[terminal]` (it ended and will not restart),
+  `[unreachable]` (the backend could not query it), or `[queued]` (the computer
+  has just started and the row waits its turn: the backend starts its sessions
+  a few seconds apart). The row is colored by the
   agent's [work state](../concepts/work-state.md) and ends with the reason the
   agent last reported.
 - The bottom border of the window shows the frontend (`fe`) and backend (`be`)

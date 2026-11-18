@@ -218,8 +218,11 @@ pub struct WorkspaceListEntry {
     /// and answered — but with a row number this daemon does not speak
     /// (`sot_capsule::row::ROW_PROTOCOL` mismatch in the hello): a row this daemon can never attach, adopt, end, or
     /// destroy. Distinct from `"unreachable"` (no answer at all) even
-    /// though both start from the same failed query — present only for
-    /// `runtime == "capsule"` rows, same reasoning as `state_dir`.
+    /// though both start from the same failed query — or `"queued"` while
+    /// the daemon's boot resume holds the start of a row nothing answers
+    /// for, until its turn (a boot's rows start a few seconds apart) —
+    /// present only for `runtime == "capsule"` rows, same reasoning as
+    /// `state_dir`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phase: Option<String>,
     /// Detail of the most recent FAILED start-on-attach activation, kept

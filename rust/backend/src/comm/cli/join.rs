@@ -130,6 +130,11 @@ fn carried(old: Option<&Value>, mut new: Value) -> Value {
 }
 
 pub(crate) fn join(env: &Env, args: &[String]) -> Out {
+    join_within(env, args, command_lock_wait(env))
+}
+
+/// [`join`] with each registry lock take waiting up to `wait`: the session start's longer wait (`start::START_LOCK_WAIT`).
+pub(crate) fn join_within(env: &Env, args: &[String], wait: std::time::Duration) -> Out {
     let mut o = Out::default();
     let ask = match parse(args) {
         Ok(a) => a,
@@ -157,11 +162,11 @@ pub(crate) fn join(env: &Env, args: &[String]) -> Out {
     };
     o.errs(&notes);
     o.errs(&crate::comm::home::ensure(&ctx.comm_home, env));
-    joined(env, o, &ctx, ask)
+    joined(env, o, &ctx, ask, wait)
 }
 
 /// The join once the identity is known: the name, the registry write, the self file, the inbox, the declaration.
-fn joined(env: &Env, mut o: Out, ctx: &Context, ask: Ask) -> Out {
+fn joined(env: &Env, mut o: Out, ctx: &Context, ask: Ask, wait: std::time::Duration) -> Out {
     let mut name = ctx.name.clone();
     let expertise = if ask.expertise.is_empty() { env.text("SOT_COMM_EXPERTISE") } else { ask.expertise.clone() };
     if !ask.repin {
@@ -205,7 +210,7 @@ fn joined(env: &Env, mut o: Out, ctx: &Context, ask: Ask) -> Out {
     }
     let obj = entry_for(ctx, &expertise);
     let derived = name.is_empty();
-    let claim = update(env, &ctx.registry(), command_lock_wait(env), |agents| {
+    let claim = update(env, &ctx.registry(), wait, |agents| {
         if derived {
             let mut lines = Vec::new();
             let d = derive(Mode::Reclaim, &ctx.project_root, &ctx.handle_host, ctx.kind, agents, outside.then_some(&cleared[..]), &mut lines)?;
@@ -236,7 +241,7 @@ fn joined(env: &Env, mut o: Out, ctx: &Context, ask: Ask) -> Out {
         stranding_warning(env, &mut o, ctx, d, outside, &cleared);
     }
     // The self file, under the registry lock (the lock every join's writes take).
-    let wrote = crate::comm::registry::lock::acquire_in(env, &ctx.comm_home.join(".registry.lock"), command_lock_wait(env)).and_then(|_held| {
+    let wrote = crate::comm::registry::lock::acquire_in(env, &ctx.comm_home.join(".registry.lock"), wait).and_then(|_held| {
         if !ask.repin {
             if let Some(why) = self_file::conflict(&ctx.self_file, &ctx.repo, &ctx.project_root) {
                 return Err(format!("conflict:{why}"));

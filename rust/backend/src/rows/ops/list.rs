@@ -61,7 +61,7 @@ pub async fn handle_workspace_list(
                     .to_string_lossy()
                     .into_owned()
             });
-            let phase = Some(ws.phase().as_wire_str().to_string());
+            let phase = Some(ws.shown_phase().to_string());
             WorkspaceListEntry {
                 workspace_id: ws.workspace_id.clone(),
                 slug: ws.slug.clone(),

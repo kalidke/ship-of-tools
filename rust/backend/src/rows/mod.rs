@@ -156,6 +156,9 @@ pub struct Workspace {
     /// The most recent FAILED start-on-attach activation's detail, kept
     /// until the next attempt — never implies `phase == Terminal`.
     activation_error: Mutex<Option<String>>,
+    /// Set while the boot resume holds this row's start for its turn (`run::resume`), so the list says `queued`, not
+    /// `unreachable`; cleared at the turn. Never persisted.
+    start_queued: std::sync::atomic::AtomicBool,
     files_mode: OnceLock<Arc<FilesMode>>,
     concept: OnceLock<Arc<ConceptStore>>,
     kernel: OnceLock<Kernel>,

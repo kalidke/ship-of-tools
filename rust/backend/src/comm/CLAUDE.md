@@ -83,7 +83,7 @@ Sending:
   inside it (a read of an empty registry retries over 200 ms). The writers it can delay are every registry writer of the
   folder, for that hold: the daemon's heartbeat stamp and the shell heartbeat (`--lock-wait 0`, which loses to any hold, as to
   any writer), `touch`, the Stop hook's mark (1 s), the activation read-clear (1 s), and the join, leave, spawn,
-  work-state and destroy writes (10 s). Tests: `filer_comm_file_tests.rs`.
+  work-state and destroy writes (10 s; a session start's join 40 s). Tests: `filer_comm_file_tests.rs`.
 - Silence is failure: a send waits 5 s for an answer (`cli::wire::FILE_WINDOW`), and a daemon gives a forward or an
   offer the inbox lock's wait plus 1 s (3 s at the default 2 s), inside the sender's 5 s. A daemon too old for the op answers `unknown op: comm.file`,
   a false failure, never a false success.
@@ -246,6 +246,12 @@ The registry:
   open question, read as rows' reduction reads a question alone (`state` blocked, `summary` the text, `status_at` as it
   was); nothing else of the old entry is kept (`join::tests::
   a_join_of_the_same_row_keeps_its_open_question_and_nothing_else`).
+- A full session start (`comm-session-start.sh`, a leg's bootstrap) waits for each lock take of its join up to
+  `cli::start::START_LOCK_WAIT`, 40 s, or `SOT_LOCK_WAIT_SECS` when that is longer, not a join's 10 s: in a computer's
+  boot, holders slowed by every row starting at once kept the lock 18 to 28 s each, and the starts that gave up left
+  their sessions with no handle. Both takes and the rest of the start stay inside the two minutes an agent's shell call
+  gets; a holder that keeps the lock past the bound still fails the start, named. Test: `cli::start::tests::
+  a_session_start_waits_for_a_live_holder_past_a_joins_bound`.
 
 The install (0.7.0):
 - The formats do not change: the inbox line, the cursor, the registry and its fields, the registry lock's record, the
