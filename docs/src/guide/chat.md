@@ -250,7 +250,7 @@ computer's name, `this computer`, or `the computer that runs your sessions`.
 | `set up Slack`, then a step's name | Slack is not connected, its saved codes are refused, or its chat did not start. | Follow the screens ([Setting up Slack](chat-setup.md)). |
 | `post as you` | Your post was refused: no Slack code that posts as you is saved. | Give the workspace new codes, keeping its Slack app ([Setting up Slack](chat-setup.md#Give-a-connected-workspace-new-Slack-codes)). |
 | `connecting…`, `connected` | The setup's codes are being checked; they were accepted. | |
-| `a different Slack app` | The codes pasted belong to another Slack app than the one the workspace is connected to now; nothing was changed. | Press Enter to keep the app connected now, or Right to connect the new one ([Setting up Slack](chat-setup.md#If-you-paste-the-codes-of-a-new-app)). |
+| `a different Slack app` | The codes pasted belong to another Slack app than the one the workspace is connected to now, or Slack did not say whose they are; nothing was changed. | Press Enter to keep the app connected now, or Right to connect the codes anyway ([Setting up Slack](chat-setup.md#If-you-paste-the-codes-of-a-new-app)). |
 | `choose this project's channel` | The channel list is open. | Pick a channel, or press Escape. |
 | `your Slack app cannot read this channel` | Slack says your Slack app is not in the channel: a private channel it was never invited to, or a new app. | In that channel in Slack, type `/invite @` and the app's name; the panel says which name. |
 | `not up to date: <reason>` | The channel could not be read whole (`no messages read yet` when nothing came). | Wait: the panel tries again each minute. If it stays for several minutes, the log on that computer says why (`sotd log-path`, below). |
@@ -262,7 +262,7 @@ computer's name, `this computer`, or `the computer that runs your sessions`.
 | `the chat on <computer> could not answer: <reason>` | It refused for another reason. | Wait: the panel tries again each minute. |
 | `Ship of Tools on <computer> has no chat: update it` | That computer runs an older Ship of Tools. | Update it. |
 | `the session is gone or was replaced` | The session ended or was replaced. | Select the project's session again. |
-| `the session's project now has another channel, or none`, `the session's project has no channel` | The channel picked for the project changed, or was removed, while it was shown. | Select another session, then this one again: the panel asks afresh. |
+| `the session's project now has another channel`, `the session's project has no channel` | The channel picked for the project changed, or was removed, while it was shown. | Select another session, then this one again: the panel asks afresh. |
 | `your Slack plan hides older messages`, `older messages could not be read`, `older messages are not read: <reason>`, `older messages beyond the limit are not shown` | Scrolling to the oldest found no more to read: Slack keeps older history only on some plans, a read was refused, or the panel's 256 are full. | |
 | `the thread is not read: <reason>`, `the rest of this thread is not shown` | In a thread: a read was refused (the panel tries again by itself), or the thread is longer than the panel shows. | |
 
@@ -292,7 +292,7 @@ messages to be missed, the top line says `not up to date`.
 | `opening the picture…`, `picture shown in the preview`, `picture not opened: <reason>` | The picture is on its way, shown, or refused. |
 | `copied chat text`, `nothing to copy: select text or mark a message` | |
 | `not set: <reason>` | The channel was not picked; the list stays open and the reason says what to do. |
-| `Slack not connected: those Slack codes belong to a different Slack app than the one connected now, ...` | The panel was closed while the codes were checked. Choose `Connect a Slack workspace` in the channel list, paste them again, and choose on the screen that asks. |
+| `Slack not connected: those codes may be another Slack app's than the one connected now, and nothing changed. ...` | The panel was closed while the codes were checked. Open the channel list (`Ctrl+Shift+k`), choose `Connect a Slack workspace`, paste them again, and choose on the screen that asks. |
 
 ## Moving the chat to another computer
 

@@ -130,15 +130,18 @@ name is in this crate's one op table.
     **The setup family** (so a person sets the chat up from the window): `chat.connect {bot_token, user_token?, app_token, replace_app?}` (the user token `xoxp-` is what a person's post goes out under; it is defaulted and left out when `None`, so an older window's two-token connect decodes, and the daemon refuses it `bad_request`; `replace_app` is the person's word to replace the Slack app the tokens' workspace runs with now, defaulted and left out when false, so an older window's connect is asked about and an older daemon, which ignores the field, replaces as it always did) answers
     `{workspace, name?}` (`name`: the workspace's as Slack gave it, read as the resolve's `name` is, so a bad one is none and
     an older daemon's reply has none; an unknown field is ignored), or is refused `other_app` (CHAT-CONNECT-MAKES-A-NEW-APP:
-    the tokens are another Slack app's than the one their workspace runs with now, and nothing was saved; chat guarantee
-    31), a refusal whose body beside `error` and `code` is `ChatOtherApp {workspace?, name?, app_id?, app_name?,
-    new_app_name?, channels?}`: the workspace and its name, the app connected now (its id and the name Slack gives its bot),
-    the name Slack gives the new app's bot, and how many channels the workspace's projects use, each read as
-    `chat.workspaces`' fields are (a count as a whole number within `u32`), a bad one none and an older daemon's bare
-    refusal all none. Limit: an older window reads the code as `other`, which its connect takes for the unknown outcome (it
-    closes the step, says Slack may be connected and resolves the row again, which still finds the app connected now), so it
-    never shows the code's text and cannot replace the app: its person keeps the app connected now by pasting that app's
-    tokens, which are never asked about, and needs a newer window to replace it (tests
+    the tokens are another Slack app's than the one their workspace runs with now, or Slack did not tell whose they are,
+    and nothing was saved; chat guarantee 31), a refusal whose body beside `error` and `code` is `ChatOtherApp {workspace?,
+    name?, app_id?, app_name?, new_app_known?, new_app_name?}`: the workspace and its name, the app connected now (its id
+    and the name Slack gives its bot), whether the daemon told the tokens' app to be another (`new_app_known`, left out
+    when false), and the name Slack gives that app's bot, each read as `chat.workspaces`' fields are (the flag true only
+    for `true`), a bad one none and a bare refusal the weaker claim, nothing told. The code's text is the plain fact; no
+    window shows it. Limit: an older window reads the code as `other`, which its connect takes for the unknown outcome: it
+    closes the step and shows its own words, that Slack may be connected because the computer did not answer before the
+    connection ended, which are not true here (the computer answered, and nothing was connected); it then resolves the row
+    again, which still finds the app connected now. It cannot replace the app, nor connect that app's own new tokens while
+    Slack does not tell their app; its person keeps the app connected now by pasting that app's tokens, which are asked
+    about only then, and needs a newer window to replace it (tests
     `a_connect_that_would_replace_the_connected_app_asks_first_and_older_shapes_still_decode`,
     `every_request_reply_and_event_keeps_its_shape`, `every_code_has_its_one_text`). `chat.channels {workspace?}` answers `{channels: [{id, name, private, member}], more}`, `chat.pair {row,
     workspace?, channel?}` answers `{}` (an absent or null `channel` unpairs the row's folder), and `chat.workspaces {}` (a

@@ -67,7 +67,7 @@ Slack code until the codes are sent.
 | Step 2 (`step 2 of 3: the first two Slack codes`) | Nothing, unless the status line said to wait: then it sends the codes (see below). | Shows step 3. | Shows step 1. |
 | Step 3 (`step 3 of 3: the last Slack code`) | The same as on step 2. | Nothing. | Shows step 2. |
 | `connecting…` | Nothing. | Nothing. | Nothing. |
-| The different Slack app's screen (`chat · a different Slack app`) | Keeps the Slack app the workspace is connected to now: opens that app's page in your browser and shows step 2, holding the codes you pasted until you paste that app's three in their place. | Connects the new Slack app anyway, in place of the one connected now (the screen names this key `→`). | Nothing. |
+| The different Slack app's screen (`chat · a different Slack app`) | Keeps the Slack app the workspace is connected to now: opens that app's page in your browser and shows step 2, with the codes you pasted dropped. | Connects the codes you pasted anyway, in place of the Slack app connected now (the screen names this key `→ (Right)`). | Nothing. |
 | The connected screen (`chat · connected`) | Opens the channel list. | Nothing. | Nothing. |
 
 The three codes are sent by themselves when the last one is pasted. Only if an earlier check is still running does the
@@ -251,24 +251,27 @@ connected to now, and copy its codes as steps 2 and 3 describe.
 
 ### If you paste the codes of a new app
 
-When the codes you paste belong to a different Slack app than the one the workspace is connected to now, nothing is
-changed yet: the panel asks first. Its top line reads `chat · a different Slack app`, and it names the app connected
-now as Slack calls it, says that the new app is in none of the private channels, so each project whose channel is
-private would show nothing until someone types `/invite @` and the new app's name in that channel in Slack, and says how
-many projects have their channels in that workspace.
+When the codes you paste belong to a different Slack app than the one the workspace is connected to now, or Slack does
+not say which app they belong to, nothing is changed yet: the panel asks first. Its top line reads
+`chat · a different Slack app`. It names the app connected now as Slack calls it, and says either that the codes
+belong to a different app or that Ship of Tools could not tell whether they belong to the app connected now. It says
+that a new app is in no channel, public or private, so each project's channel would show nothing until the channel is
+picked again in the channel list (a public one) or someone invites the new app in it in Slack (a private one); it names
+the new app in that invite only when Slack gave its name.
 
-- **Enter keeps everything as it is.** Your browser opens the page of the app connected now, and the panel shows step 2.
-  The codes you pasted are kept, each marked as the new app's, and nothing is sent until you paste all three codes of
-  the app connected now in their place (steps 2 and 3); then they are sent by themselves.
-- **Right (`→`) connects the new app anyway**, in place of the one connected now. The connected screen follows (below).
+- **Enter keeps everything as it is.** Your browser opens the page of the app connected now, the panel shows step 2,
+  and the codes you pasted are dropped: paste that app's three codes (steps 2 and 3). Until you close the panel, a paste
+  of one of the codes it asked about is refused, and the status line says whose code to paste instead.
+- **Right (`→`) connects the codes you pasted anyway**, in place of the app connected now. The connected screen follows
+  (below).
 
 The panel asks only when the computer that runs your sessions knows which app the workspace is connected to now. It
-does not ask, and connecting a new app replaces the old one at once, when the workspace's chat is not running (for
-example because Slack stopped accepting its codes, when a new app is the right repair), when Slack does not tell which
-app the new codes belong to, or when Ship of Tools on that computer is older than this question. New codes of the app
-connected now are never asked about. A Ship of Tools window older than this question cannot connect a new app while the
-old one runs: it says `Slack may be connected`, and the workspace keeps its app; paste the old app's codes, or update
-the window.
+does not ask, and new codes replace the old ones at once, when the workspace's chat is not running (for example after
+Slack stopped accepting its codes), or when Ship of Tools on that computer is older than this question. New codes of
+the app connected now are not asked about when Slack says which app they belong to. A Ship of Tools window older than
+this question cannot answer it: it says `Slack may be connected` because the computer did not answer, which is not so
+(the computer answered, and nothing was connected), and the workspace keeps its app; paste the old app's codes, or
+update the window.
 
 ### If you connected a new app
 

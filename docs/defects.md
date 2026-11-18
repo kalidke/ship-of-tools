@@ -1189,14 +1189,17 @@ owned by `docs/CLAUDE.md`.
   Enter opens its own page (`https://api.slack.com/apps/<app_id>/oauth`); before the hub's answer, and from a hub that
   gives none, Enter opens the list of apps and the screen says to look there for the Slack app connected before,
   whatever its name, and to make a new one only if there is none, since a new app is in none of the private channels. Also
-  built, not yet checked in use (the design's second form): a connect whose bot token is another Slack app's than the one
-  its workspace runs with now (each told by `bots.info`, the new one by one call at the connect) writes nothing and
-  restarts nothing, and is refused `other_app` with the app connected now and the workspace's channel count
-  (`rust/chat/CLAUDE.md` guarantee 31); the window's Connect step then asks on one screen, `a different Slack app`, whose
-  Enter keeps the app connected now (its page opens, and step 2 holds the pasted codes until that app's three replace
-  them) and whose Right connects the new one anyway (`replace_app`). It fails open: an app not known (no running chat, its
-  start's `bots.info` failed, or the connect's `bots.info` failed) is replaced with no question, and an older window
-  cannot replace a running app at all (it reads the refusal as an unknown outcome). Open: three premises are unmeasured:
+  built, not yet checked in use (the design's second form): while its workspace runs with a known Slack app (told by the
+  start's `bots.info`), a connect whose bot token is another app's, or whose app Slack does not tell (the connect's one
+  `bots.info` failed, stalled to its deadline or named no app), writes nothing and restarts nothing, and is refused
+  `other_app` with the app connected now, decided under the setup lock (`rust/chat/CLAUDE.md` guarantee 31); the window's
+  Connect step then asks on one screen, `a different Slack app`, whose Enter keeps the app connected now (its page opens,
+  the pasted codes are dropped, and a later paste of one of them is refused with words that say whose to paste, so no
+  connect carries the new app's App-Level Token beside the connected app's two codes, which would stop the chat
+  `wrong_app` for every project of the workspace) and whose Right connects the pasted codes anyway (`replace_app`). Not
+  asked about: a chat that is not running, one whose start's `bots.info` failed, and an App-Level Token of the new app
+  other than the one asked about (the app is told by the bot token alone). An older window cannot replace a running app
+  at all (it reads the refusal as an unknown outcome and says Slack may be connected, which is not so). Open: three premises are unmeasured:
   that `bots.info`'s `bot.name` is the name Slack calls the app, that the `/oauth` address opens the app's page, and that
   `bots.info` under a new app's bot token names that app. Check them at a person's first use of either screen; close this
   item when a person keeps the connected app through one.

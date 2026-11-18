@@ -35,16 +35,20 @@ struct Slack {
     /// The app `bots.info` names as the bot's (`None`: the call is unknown) and the app the socket's hello names (`None`:
     /// none).
     bot_app: Mutex<Option<&'static str>>,
+    /// How `bots.info` answers a bot token whose body is `other` while it is known (a check's word, [`answer`]).
+    other_bots: Mutex<&'static str>,
     hello_app: Mutex<Option<&'static str>>,
     feed: tokio::sync::mpsc::UnboundedSender<Value>,
 }
 
-/// A check's answer: `ok` is `good`, `drop` closes the connection unanswered, a number is that HTTP status, and any other
-/// word is Slack's `ok: false` with it as the error code.
+/// A check's answer: `ok` is `good`, `drop` closes the connection unanswered, `hang` never answers, `noapp` is an `ok`
+/// that names no app, a number is that HTTP status, and any other word is Slack's `ok: false` with it as the error code.
 fn answer(how: &str, good: Reply) -> Reply {
     match how {
         "ok" => good,
         "drop" => Reply::Drop,
+        "hang" => Reply::Hang,
+        "noapp" => Reply::json(&json!({"ok": true, "bot": {"id": "B0BOT"}})),
         status if status.parse::<u16>().is_ok() => Reply::Status { code: status.parse().unwrap(), headers: Vec::new(), body: Vec::new() },
         error => Reply::json(&json!({"ok": false, "error": error})),
     }
@@ -58,7 +62,7 @@ fn channel_json((id, name, private, member): Fact) -> Value {
 /// says hello and then sends what `feed` is given.
 async fn slack() -> (FakeSlack, Arc<Slack>) {
     let (feed, rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
-    let state = Arc::new(Slack { channels: Mutex::new(Vec::new()), join: Mutex::new("ok"), auth: Mutex::new("ok"), user: Mutex::new("ok"), user_team: Mutex::new("T0AAAA"), open: Mutex::new("ok"), list: Mutex::new("ok"), bot_app: Mutex::new(None), hello_app: Mutex::new(None), feed });
+    let state = Arc::new(Slack { channels: Mutex::new(Vec::new()), join: Mutex::new("ok"), auth: Mutex::new("ok"), user: Mutex::new("ok"), user_team: Mutex::new("T0AAAA"), open: Mutex::new("ok"), list: Mutex::new("ok"), bot_app: Mutex::new(None), other_bots: Mutex::new("ok"), hello_app: Mutex::new(None), feed });
     let (held, rx) = (state.clone(), Arc::new(tokio::sync::Mutex::new(rx)));
     let fake = FakeSlack::start(Identity::Trusted, move |seen, port| {
         let path = seen.path();
@@ -80,7 +84,8 @@ async fn slack() -> (FakeSlack, Arc<Slack>) {
             // A bot token whose body is `other` is another Slack app's.
             let other = seen.authorization.as_deref().is_some_and(|a| a.contains("-other-"));
             let app = if other { "A0OTHER" } else { held.bot_app.lock().unwrap().unwrap_or_default() };
-            Reply::json(&json!({"ok": true, "bot": {"id": "B0BOT", "app_id": app}}))
+            let good = Reply::json(&json!({"ok": true, "bot": {"id": "B0BOT", "app_id": app}}));
+            if other { answer(*held.other_bots.lock().unwrap(), good) } else { good }
         } else if path.ends_with("/conversations.list") {
             let listed: Vec<Value> = held.channels.lock().unwrap().iter().filter(|c| !c.2 || c.3).copied().map(channel_json).collect();
             answer(*held.list.lock().unwrap(), Reply::json(&json!({"ok": true, "channels": listed, "response_metadata": {"next_cursor": ""}})))
@@ -1474,8 +1479,8 @@ fn asked_by(fake: &FakeSlack, method: &str, word: &str) -> usize {
 /// CHAT-CONNECT-MAKES-A-NEW-APP: a connect of another Slack app's tokens than the one the workspace runs with now (both
 /// known by `bots.info`) is refused `other_app` with nothing written (every file of the config folder byte for byte) and
 /// nothing restarted (no start under either app's tokens), its body naming the workspace, the app connected now by its id
-/// and the name Slack gives its bot, and the workspace's two mapped channels; the question is one `bots.info` under the new
-/// bot token. The same request with `replace_app` replaces the app, as every connect did before.
+/// and the name Slack gives its bot, and that the new app was told; the question is one `bots.info` under the new bot
+/// token. The same request with `replace_app` replaces the app, as every connect did before.
 #[tokio::test(flavor = "multi_thread")]
 async fn another_apps_tokens_change_nothing_until_the_window_says_to_replace_the_connected_app() {
     let (fake, ..) = two_apps().await;
@@ -1490,7 +1495,7 @@ async fn another_apps_tokens_change_nothing_until_the_window_says_to_replace_the
     assert_eq!(body.as_object_mut().and_then(|b| b.remove("error")), Some(json!(ChatCode::OtherApp.text())), "{asked}");
     assert_eq!(
         body,
-        json!({"code": "other_app", "workspace": "T0AAAA", "name": "Alpha Lab", "app_id": "A0OLD", "app_name": "Ship of Tools (lab-user)", "channels": 2}),
+        json!({"code": "other_app", "workspace": "T0AAAA", "name": "Alpha Lab", "app_id": "A0OLD", "app_name": "Ship of Tools (lab-user)", "new_app_known": true}),
         "the new app's bot has no name here, so the refusal names none"
     );
     assert_eq!(files(&on._home), before, "a connect asked about wrote a file");
@@ -1521,20 +1526,20 @@ async fn the_connected_apps_new_tokens_are_never_asked_about() {
     assert_eq!((&listed["workspaces"][0]["running"], &listed["workspaces"][0]["app_id"]), (&json!(true), &json!("A0OLD")), "{listed}");
 }
 
-/// No connect is asked about while the workspace's Slack app is not known: its start's `bots.info` failed (the connect
-/// then asks Slack nothing more), or its chat ended because Slack refused its tokens, which is when another app is the
-/// repair; asked about while it ran with a known app (the control), the same tokens go through once it has ended, also in
-/// the moment before its owner turned the unit off (held at `chat.owner.end`, the unit still `Running` the ended service).
+/// No connect is asked about while the workspace's Slack app is not known: its start's `bots.info` failed, or its chat
+/// ended because Slack refused its tokens; asked about while it ran with a known app (the control), the same tokens go
+/// through once it has ended, also in the moment before its owner turned the unit off (held at `chat.owner.end`, the unit
+/// still `Running` the ended service).
 #[tokio::test(flavor = "multi_thread")]
 async fn a_connect_is_never_asked_about_while_the_connected_app_is_not_known() {
     let home = Home::new(Some(SELF));
     home.configured();
     let w = world_on(home, &[public("C0PUB", true)], None, None).await;
     let mut conn = connect_window(w.services.clone()).await;
-    // The start's bots.info failed: nothing to tell the tokens from, so no question and no bots.info at the connect.
+    // The start's bots.info failed: nothing to tell the tokens from, so no question, though the connect asks bots.info.
     assert_eq!(w.calls("/bots.info"), 1, "the start asked bots.info once");
     assert_eq!(conn.ask(2, op::CHAT_CONNECT, connect_req(&bot("third"), &app("third"))).await, json!({"workspace": "T0AAAA"}));
-    assert_eq!(asked_by(&w.fake, "/bots.info", "third"), 1, "beside the restarted service's own start, the connect asked bots.info");
+    assert_eq!(asked_by(&w.fake, "/bots.info", "third"), 2, "the connect's question and the restarted service's own start");
     // Known, another app's tokens are asked about.
     let other = connect_req(&bot("other"), &app("other"));
     *w.slack.bot_app.lock().unwrap() = Some("A0OWN");
@@ -1570,7 +1575,127 @@ async fn a_workspaces_first_connect_is_never_asked_about() {
     let mut conn = connect_window(w.services.clone()).await;
     assert_eq!(conn.ask(2, op::CHAT_CONNECT, connect_req(&bot("other"), &app("other"))).await, json!({"workspace": "T0AAAA"}));
     assert_eq!(w.services.chat.status(), Status::Running);
-    assert_eq!(asked_by(&w.fake, "/bots.info", "other"), 1, "beside the new service's own start, the connect asked bots.info");
+    assert_eq!(asked_by(&w.fake, "/bots.info", "other"), 2, "the connect's question and the new service's own start");
+}
+
+/// A hub whose workspace `T0AAAA` runs with the known Slack app `A0OWN` (its start's `bots.info` answered), on `checks`
+/// (the fake's own when `None`).
+async fn known_app(checks: Option<Verifier>) -> World {
+    let home = Home::new(Some(SELF));
+    home.configured();
+    let w = world_on(home, &[public("C0PUB", true)], None, checks).await;
+    *w.slack.bot_app.lock().unwrap() = Some("A0OWN");
+    let chat = w.services.chat.clone();
+    w.home.rekey(SECRETS_FILE, "cccc");
+    chat.reload_for(&chat.setup().await, &w.rows, "T0AAAA").await;
+    assert_eq!(chat.connected_app("T0AAAA").map(|a| a.id).as_deref(), Some("A0OWN"));
+    w
+}
+
+/// CHAT-CONNECT-MAKES-A-NEW-APP: while the workspace runs with a known Slack app, a connect whose tokens' app Slack does
+/// not tell (the connect's `bots.info` rate-limited, refused, a 500, a dropped connection, an answer naming no app) is
+/// asked about all the same, never replacing the app unasked: refused `other_app`, nothing written and nothing restarted,
+/// the body saying the new app was not told and naming none, and the log only the fixed code. With `replace_app` the same
+/// tokens go through.
+#[test]
+fn a_connect_whose_tokens_app_slack_does_not_tell_is_asked_about_and_writes_nothing() {
+    let mut replies = Vec::new();
+    let text = logged(|| async {
+        let w = known_app(None).await;
+        // The chat's starts: `auth.test` under a bot token, but for the connect's own check of the new one.
+        let starts = || w.starts() - asked_by(&w.fake, "/auth.test", "other");
+        let (before, started) = (files(&w.home), starts());
+        let mut conn = connect_window(w.services.clone()).await;
+        let other = connect_req(&bot("other"), &app("other"));
+        for how in ["ratelimited", "invalid_auth", "500", "drop", "noapp"] {
+            *w.slack.other_bots.lock().unwrap() = how;
+            let reply = conn.ask(3, op::CHAT_CONNECT, other.clone()).await;
+            let mut body = reply.clone();
+            body.as_object_mut().and_then(|b| b.remove("error"));
+            assert_eq!(body, json!({"code": "other_app", "workspace": "T0AAAA", "app_id": "A0OWN"}), "bots.info answered {how}");
+            assert_eq!(files(&w.home), before, "bots.info answered {how}: a connect asked about wrote a file");
+            assert_eq!(starts(), started, "bots.info answered {how}: a connect asked about restarted the chat");
+            replies.push(reply.to_string());
+        }
+        let mut anyway = other;
+        anyway["replace_app"] = json!(true);
+        assert_eq!(conn.ask(4, op::CHAT_CONNECT, anyway).await, json!({"workspace": "T0AAAA"}), "told to replace, the tokens go through");
+        assert_ne!(files(&w.home), before);
+    });
+    assert!(text.contains("could not tell its tokens' Slack app"), "the capture saw no question");
+    let bodies = ["444444444444", "555555555555", "666666666666"];
+    holds_no_token("the daemon's log", &text, &bodies);
+    for (n, reply) in replies.iter().enumerate() {
+        holds_no_token(&format!("reply {n}"), reply, &bodies);
+    }
+}
+
+/// Whether to ask is decided under the setup lock, from what is known there: a connect of another Slack app's tokens whose
+/// checks ran while the workspace's app was not known (its start's `bots.info` failed), and whose lock a reload that
+/// learned the app held meanwhile, is asked about, nothing written, and the app stays.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_app_known_only_once_the_lock_is_taken_is_asked_about() {
+    let home = Home::new(Some(SELF));
+    home.configured();
+    let w = world_on(home, &[public("C0PUB", true)], None, None).await;
+    let chat = w.services.chat.clone();
+    assert_eq!(chat.connected_app("T0AAAA"), None, "the start's bots.info failed");
+    let mut conn = connect_window(w.services.clone()).await;
+    let held = chat.setup().await;
+    conn.send(2, op::CHAT_CONNECT, connect_req(&bot("other"), &app("other"))).await;
+    // The App-Level Token's check is the connect's last before its question and the lock.
+    until("the connect's checks", || asked_by(&w.fake, "/apps.connections.open", "other") == 1).await;
+    *w.slack.bot_app.lock().unwrap() = Some("A0OWN");
+    w.home.rekey(SECRETS_FILE, "cccc");
+    chat.reload_for(&held, &w.rows, "T0AAAA").await;
+    assert_eq!(chat.connected_app("T0AAAA").map(|a| a.id).as_deref(), Some("A0OWN"), "the reload learned the app");
+    let before = files(&w.home);
+    drop(held);
+    let reply = conn.reply(2).await;
+    assert_eq!(code(&reply), "other_app", "{reply}");
+    assert_eq!(files(&w.home), before, "a connect asked about wrote a file");
+    assert_eq!(chat.connected_app("T0AAAA").map(|a| a.id).as_deref(), Some("A0OWN"));
+}
+
+/// The reply's worst case with a stalled question: a `bots.info` Slack never answers holds the connect one read's deadline
+/// (`READ_DEADLINE`, 15 s) past its three checks and no longer, and then the person is asked, the app not told and nothing
+/// written. On a paused clock, which moves only to the next timer while nothing is ready, the three checks answered at once.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stalled_question_holds_the_reply_one_reads_deadline_and_then_asks() {
+    let (stalling, levers) = slack().await;
+    *levers.bot_app.lock().unwrap() = Some("A0OWN");
+    *levers.other_bots.lock().unwrap() = "hang";
+    let (http, base) = (stalling.http(), stalling.url("slack.com", "/api/"));
+    let at_once = || sot_chat::api::Identified {
+        workspace: "T0AAAA".into(),
+        own: sot_chat::api::Identity { user_id: "U0BOT".into(), bot_id: Some("B0BOT".into()), app_id: None },
+        name: None,
+    };
+    let checks = Verifier {
+        identify: Box::new(move |_| Box::pin(async move { Ok(at_once()) })),
+        app: Box::new(|_| Box::pin(async { Ok(()) })),
+        bot_app: Box::new(move |token, bot| {
+            let (http, base) = (http.clone(), base.clone());
+            Box::pin(async move { sot_chat::api::bot_app_of_for_test(&http, token, &bot, base).await })
+        }),
+    };
+    let w = known_app(Some(checks)).await;
+    let before = files(&w.home);
+    let (chat, rows, req) = (w.services.chat.clone(), w.rows.clone(), connect_req(&bot("other"), &app("other")));
+    let paused = std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().start_paused(true).build().unwrap();
+        runtime.block_on(async move {
+            let t0 = tokio::time::Instant::now();
+            let out = crate::chat::setup::connect(2, req, &chat, &rows, true).await.unwrap();
+            (t0.elapsed(), out[0].0.payload.clone())
+        })
+    });
+    let (took, reply) = tokio::task::spawn_blocking(move || paused.join().unwrap()).await.unwrap();
+    assert_eq!(code(&reply), "other_app", "{reply}");
+    assert_eq!((reply.get("new_app_known"), reply.get("new_app_name")), (None, None), "a stalled question tells no app: {reply}");
+    let deadline = sot_chat::api::READ_DEADLINE;
+    assert!(took >= deadline && took < deadline + std::time::Duration::from_secs(1), "the reply took {took:?} on the paused clock");
+    assert_eq!(files(&w.home), before, "a connect asked about wrote a file");
 }
 
 /// CHAT-CONNECT-MAKES-A-NEW-APP: `chat.workspaces` gives the Slack app a running workspace is connected to by the name

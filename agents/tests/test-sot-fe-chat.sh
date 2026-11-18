@@ -243,7 +243,7 @@ case_each_outcome_has_its_words_and_exit_code() {
 {"outcome":"unknown"}|3|unknown: the post may exist; do not send it again; read the thread first
 {"outcome":"somethingelse"}|3|unknown: the post may exist; do not send it again; read the thread first
 {"error":"the chat request failed","code":"handler_error"}|3|unknown: the post may exist; do not send it again; read the thread first
-{"error":"the session's project now has another channel, or none","code":"stale_mapping"}|2|refused stale_mapping the session's project now has another channel, or none
+{"error":"the session's project now has another channel","code":"stale_mapping"}|2|refused stale_mapping the session's project now has another channel
 EOF
     [ -z "$bad" ] || { echo "$bad"; return 1; }
 }

@@ -200,7 +200,10 @@ pub(in crate::ui) enum Previewed<'a> {
 pub(super) const NO_FILE_WORDS: &str = "not posted: the preview shows no file";
 
 /// The status line's words for a connect refused `other_app` after its step was closed.
-pub(super) const NOT_REPLACED_WORDS: &str = "Slack not connected: those Slack codes belong to a different Slack app than the one connected now, and nothing was changed; to choose between them, choose Connect a Slack workspace in the channel list and paste them again";
+pub(super) fn not_replaced_words() -> String {
+    let p = super::connect::PRIMARY;
+    format!("Slack not connected: those codes may be another Slack app's than the one connected now, and nothing changed. To decide, open the channel list ({p}+Shift+k), choose Connect a Slack workspace and paste them again")
+}
 
 /// The status line's words for `chat.post_file` over a picture opened from the chat: what the preview shows, why it is not
 /// posted, and what to do.
@@ -518,7 +521,7 @@ impl ChatDrawer {
                 self.connect_sent = self.connect_sent.take().filter(|h| h != host);
                 match self.modal.as_mut().map(|m| &mut m.kind) {
                     Some(Kind::Connect(c)) if c.host() == host && c.connecting() => c.asked(other),
-                    _ => self.notice = Some(NOT_REPLACED_WORDS.into()),
+                    _ => self.notice = Some(not_replaced_words()),
                 }
                 Vec::new()
             }

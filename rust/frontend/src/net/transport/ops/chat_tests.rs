@@ -160,7 +160,7 @@ async fn a_connect_formats_and_logs_no_token_byte() {
         serde_json::json!({ "error": "x", "code": "user_token_refused" }),
         serde_json::json!({ "error": "handler failed", "code": "handler_error" }),
         serde_json::json!({ "error": "unknown op: chat.connect" }),
-        serde_json::json!({ "error": "x", "code": "other_app", "workspace": "T1", "app_name": "Ship of Tools (lab-user)", "channels": 2 }),
+        serde_json::json!({ "error": "x", "code": "other_app", "workspace": "T1", "app_name": "Ship of Tools (lab-user)", "new_app_known": true }),
     ];
     for (n, reply) in replies.into_iter().enumerate() {
         let mut pending = HashMap::from([(1, PendingKind::ChatConnect)]);
@@ -260,11 +260,11 @@ fn the_setup_replies_carry_their_request_and_refusal() {
 #[test]
 fn a_connect_refused_for_another_slack_app_carries_what_to_ask_with() {
     let mut pending = HashMap::from([(1, PendingKind::ChatConnect), (2, PendingKind::ChatConnect)]);
-    let asked = serde_json::json!({ "error": "x", "code": "other_app", "workspace": "T1", "name": "Alpha Lab", "app_id": "A0OLD", "app_name": "Ship of Tools (lab-user)", "channels": 2 });
+    let asked = serde_json::json!({ "error": "x", "code": "other_app", "workspace": "T1", "name": "Alpha Lab", "app_id": "A0OLD", "app_name": "Ship of Tools (lab-user)", "new_app_known": true });
     let shown = events(&mut pending, vec![Frame::res(1, op::CHAT_CONNECT, asked), Frame::res(2, op::CHAT_CONNECT, serde_json::json!({ "error": "x", "code": "other_app" }))]);
-    let body = "ChatOtherApp { workspace: Some(\"T1\"), name: Some(\"Alpha Lab\"), app_id: Some(\"A0OLD\"), app_name: Some(\"Ship of Tools (lab-user)\"), new_app_name: None, channels: Some(2) }";
+    let body = "ChatOtherApp { workspace: Some(\"T1\"), name: Some(\"Alpha Lab\"), app_id: Some(\"A0OLD\"), app_name: Some(\"Ship of Tools (lab-user)\"), new_app_known: true, new_app_name: None }";
     assert_eq!(shown[0], format!("Chat(OtherApp({body}))"));
-    assert_eq!(shown[1], "Chat(OtherApp(ChatOtherApp { workspace: None, name: None, app_id: None, app_name: None, new_app_name: None, channels: None }))", "a bare refusal asks with nothing known");
+    assert_eq!(shown[1], "Chat(OtherApp(ChatOtherApp { workspace: None, name: None, app_id: None, app_name: None, new_app_known: false, new_app_name: None }))", "a bare refusal asks with nothing known");
 }
 
 fn file_req(variant: &str) -> ChatFileReq {

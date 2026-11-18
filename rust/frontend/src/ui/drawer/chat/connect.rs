@@ -2,10 +2,11 @@
 //! Slack again` in the picker, or a person's post the hub refused for want of their token, one screen at a time (the start,
 //! the refused tokens' screen, the wrong app's screen, or the post-as-you screen; then
 //! steps 1 to 3, with Left and Right between them; then connecting, the other Slack app's screen when the hub asks before
-//! a new Slack app replaces the one connected, and connected). A pasted token is held here as a
+//! tokens it does not know to be the connected Slack app's replace it, and connected). A pasted token is held here as a
 //! `ChatToken`, whose `Debug` prints no byte of it, and is drawn as its five-character prefix and its length alone; the
 //! three tokens leave in one `chat.connect`. A refused token sends the person back to its step and the others are kept; the
-//! hub's question keeps all three; any other reply drops all three. The drawer ends the
+//! hub's question keeps all three until the person chooses, and remembers them so no later connect that does not replace
+//! the app carries one; any other reply drops all three. The drawer ends the
 //! step as it ends any modal screen, dropping whatever it holds.
 
 use std::sync::OnceLock;
@@ -36,7 +37,7 @@ const BOT_PREFIX: &str = "xoxb-";
 const USER_PREFIX: &str = "xoxp-";
 const APP_PREFIX: &str = "xapp-";
 /// The copy and paste chords as this computer's keyboard names them.
-const PRIMARY: &str = if cfg!(target_os = "macos") { "Cmd" } else { "Ctrl" };
+pub(super) const PRIMARY: &str = if cfg!(target_os = "macos") { "Cmd" } else { "Ctrl" };
 /// What the person makes in step 1, as a screen names it at its first use there; later it is `your Slack app`.
 const APP: &str = "your Slack app (the bot that reads the channel and posts for your agents)";
 
@@ -57,13 +58,7 @@ pub(super) enum Screen {
     Connected(String, Option<String>),
 }
 
-/// The bits of `Connect::again`, one per token.
-const BOT: u8 = 1;
-const USER: u8 = 2;
-const APP_LEVEL: u8 = 4;
-const ALL: u8 = BOT | USER | APP_LEVEL;
-
-/// Which token Slack refused, for its step's words until a new one is pasted.
+/// A token's kind: the one Slack refused, for its step's words until a new one is pasted, or the one a paste is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Refused {
     Bot,
@@ -117,23 +112,20 @@ pub(super) struct Connect {
     failed_in: Option<(String, Option<String>)>,
     /// Another workspace runs on the hub, so the project's channel can be moved there (`on_workspaces`).
     elsewhere: bool,
-    /// What the hub said when it refused the step's connect `other_app`, kept for the screens that name the Slack app
-    /// connected now.
+    /// What the hub said when it last refused the step's connect `other_app`, for the screens that name the Slack app
+    /// connected now, until the person chooses to connect the codes anyway or a connect is made.
     asked: Option<ChatOtherApp>,
-    /// The tokens still held from the Slack app the hub asked about, by bit, once the person chose to keep the one connected
-    /// now: no connect goes out until each is pasted again, so none mixes that app's tokens with another's.
-    again: u8,
+    /// The tokens of every connect the hub refused `other_app`, held in memory for the step alone (never written, logged or
+    /// drawn), until the person chooses to connect them anyway or a connect is made: a paste of one is refused, and no
+    /// connect that does not say `replace_app` carries one, so none mixes them with the connected app's.
+    asked_codes: Vec<ChatToken>,
 }
 
-/// How a pasted token is shown: its prefix and its length, never a byte after the prefix; `stale`: it is still the new
-/// Slack app's, which the person chose not to connect.
-fn shown(token: Option<&ChatToken>, stale: bool) -> String {
+/// How a pasted token is shown: its prefix and its length, never a byte after the prefix.
+fn shown(token: Option<&ChatToken>) -> String {
     match token {
         None => "not pasted yet".into(),
-        Some(t) => {
-            let whose = if stale { ", the new Slack app's" } else { "" };
-            format!("pasted: {}…, {} characters{whose}", &t.expose()[..BOT_PREFIX.len()], t.expose().chars().count())
-        }
+        Some(t) => format!("pasted: {}…, {} characters", &t.expose()[..BOT_PREFIX.len()], t.expose().chars().count()),
     }
 }
 
@@ -175,7 +167,7 @@ impl Connect {
             failed_in: None,
             elsewhere: false,
             asked: None,
-            again: 0,
+            asked_codes: Vec::new(),
         }
     }
 
@@ -260,25 +252,28 @@ impl Connect {
     }
 
     /// The hub's refusal of the step's connect `other_app`: the screen that asks whether to replace the Slack app connected
-    /// now, the three tokens kept for the connect that would. A step that is not connecting sent no connect, so it is left
-    /// as it is.
+    /// now, the three tokens kept for the connect that would and remembered (`asked_codes`). A step that is not connecting
+    /// sent no connect, so it is left as it is.
     pub(super) fn asked(&mut self, other: ChatOtherApp) {
-        if self.screen == Screen::Connecting {
-            (self.asked, self.screen) = (Some(other), Screen::OtherApp);
+        if self.screen != Screen::Connecting {
+            return;
+        }
+        self.asked_codes.extend([&self.bot, &self.user, &self.app].into_iter().flatten().cloned());
+        (self.asked, self.screen) = (Some(other), Screen::OtherApp);
+    }
+
+    /// The Slack app connected now, as a sentence names it: `<name>, the Slack app connected now` when the hub named it.
+    fn connected_now(&self) -> String {
+        match self.asked.as_ref().and_then(|a| a.app_name.as_deref()).map(cell_row) {
+            Some(n) => format!("{n}, the Slack app connected now"),
+            None => "the Slack app connected now".into(),
         }
     }
 
-    /// While tokens of the Slack app the hub asked about are held (`again`): whose tokens to paste in their place.
-    fn keep_words(&self) -> Option<String> {
-        if self.again == 0 {
-            return None;
-        }
-        let a = self.asked.clone().unwrap_or_default();
-        let w = asked_place(&a);
-        Some(match a.app_name.as_deref().map(cell_row) {
-            Some(n) => format!("Paste here the three Slack codes of {n}, the Slack app connected to {w} now, in place of the new Slack app's. Nothing is sent until all three are pasted."),
-            None => format!("Paste here the three Slack codes of the Slack app connected to {w} now, in place of the new Slack app's. Nothing is sent until all three are pasted."),
-        })
+    /// The status line's words for a paste of a token the hub asked about: whose it is, and whose to paste instead.
+    fn asked_code_words(&self, kind: &str) -> String {
+        let whose = if self.asked.as_ref().is_some_and(|a| a.new_app_known) { "a code of the new Slack app" } else { "one of the Slack codes Ship of Tools asked about" };
+        format!("that is {whose}; paste the \"{kind}\" of {}", self.connected_now())
     }
 
     /// Whether any token is pasted: a late reply to an older post leaves such a step alone.
@@ -356,19 +351,26 @@ impl Connect {
             // All three tokens held while an earlier connect was unanswered: Enter sends them once it is.
             (Some(Action::ChatSend), Screen::Tokens | Screen::App) => return (self.send(busy, &mut asks, false), asks),
             // The other Slack app's screen: Enter, the key a hurried person presses, keeps the Slack app connected now (its
-            // page opens, and step 2 takes its tokens in place of the held ones); `chat.thread_open` connects the new one
-            // anyway, with the three tokens held, once.
+            // page opens, the held tokens are dropped, and step 2 takes that app's); `chat.thread_open` connects the held
+            // tokens anyway, once, and the step then remembers none.
             (Some(Action::ChatSend), Screen::OtherApp) => {
                 let page = page_of(self.asked.as_ref().and_then(|a| a.app_id.as_deref()));
-                (asks.open, self.screen, self.again) = (Some(page), Screen::Tokens, ALL);
+                (asks.open, self.screen, self.bot, self.user, self.app) = (Some(page), Screen::Tokens, None, None, None);
             }
-            (Some(Action::ChatThreadOpen), Screen::OtherApp) => return (self.send(busy, &mut asks, true), asks),
+            (Some(Action::ChatThreadOpen), Screen::OtherApp) => {
+                let out = self.send(busy, &mut asks, true);
+                if out.is_some() {
+                    (self.asked, self.asked_codes) = (None, Vec::new());
+                }
+                return (out, asks);
+            }
             _ => {}
         }
         (None, asks)
     }
 
-    /// A paste is a token, sorted by its prefix; anything else is dropped unshown. With all three held, they go in one request.
+    /// A paste is a token, sorted by its prefix; anything else is dropped unshown, and so is a token the hub asked about
+    /// (`asked_codes`), with words that say whose to paste instead. With all three held, they go in one request.
     fn paste(&mut self, text: &str, busy: bool) -> (Option<Out>, Asks) {
         let text = text.trim();
         let token = |prefix: &str| {
@@ -376,27 +378,32 @@ impl Connect {
                 .then(|| ChatToken::try_from(text.to_string()).ok())
                 .flatten()
         };
-        let kind = if let Some(t) = token(BOT_PREFIX) {
-            self.bot = Some(t);
-            self.refused = self.refused.filter(|r| *r != Refused::Bot);
-            BOT
-        } else if let Some(t) = token(USER_PREFIX) {
-            self.user = Some(t);
-            self.refused = self.refused.filter(|r| *r != Refused::User);
-            USER
-        } else if let Some(t) = token(APP_PREFIX) {
-            self.app = Some(t);
-            self.refused = self.refused.filter(|r| *r != Refused::App);
-            APP_LEVEL
-        } else {
+        let Some((kind, t)) = [(Refused::Bot, BOT_PREFIX), (Refused::User, USER_PREFIX), (Refused::App, APP_PREFIX)]
+            .into_iter()
+            .find_map(|(kind, prefix)| token(prefix).map(|t| (kind, t)))
+        else {
             let words = "that is not a Slack code: the \"Bot User OAuth Token\" starts xoxb-, the \"User OAuth Token\" xoxp-, the \"App-Level Token\" xapp-";
             return (None, Asks { notice: Some(words.into()), ..Asks::default() });
         };
-        // A token pasted over the other Slack app's screen keeps the app connected now, as Enter does.
-        if self.screen == Screen::OtherApp {
-            self.again = ALL;
+        if self.asked_codes.iter().any(|a| a.expose() == t.expose()) {
+            let field = match kind {
+                Refused::Bot => "Bot User OAuth Token",
+                Refused::User => "User OAuth Token",
+                Refused::App => "App-Level Token",
+            };
+            return (None, Asks { notice: Some(self.asked_code_words(field)), ..Asks::default() });
         }
-        self.again &= !kind;
+        // Another token pasted over the other Slack app's screen keeps the app connected now, as Enter does.
+        if self.screen == Screen::OtherApp {
+            (self.bot, self.user, self.app) = (None, None, None);
+        }
+        let slot = match kind {
+            Refused::Bot => &mut self.bot,
+            Refused::User => &mut self.user,
+            Refused::App => &mut self.app,
+        };
+        *slot = Some(t);
+        self.refused = self.refused.filter(|r| *r != kind);
         self.failed = None;
         // Step 2 until its two tokens are held, whichever came first; then the last token's step.
         self.screen = if self.bot.is_none() || self.user.is_none() { Screen::Tokens } else { Screen::App };
@@ -404,11 +411,11 @@ impl Connect {
         (self.send(busy, &mut asks, false), asks)
     }
 
-    /// One `chat.connect` with the three tokens, unless one is missing, one is still the Slack app's the hub asked about
-    /// (`again`), or an earlier connect is unanswered; `replace`: the person's word to replace the Slack app connected now.
+    /// One `chat.connect` with the three tokens, unless one is missing, one the hub asked about goes without `replace`, or an
+    /// earlier connect is unanswered; `replace`: the person's word to replace the Slack app connected now.
     fn send(&mut self, busy: bool, asks: &mut Asks, replace: bool) -> Option<Out> {
         let (Some(bot), Some(user), Some(app)) = (&self.bot, &self.user, &self.app) else { return None };
-        if self.again != 0 {
+        if !replace && [bot, user, app].iter().any(|t| self.asked_codes.iter().any(|a| a.expose() == t.expose())) {
             return None;
         }
         if busy {
@@ -420,8 +427,8 @@ impl Connect {
         Some(out)
     }
 
-    /// The hub's reply to the step's connect: connected drops the tokens; a refused token goes back to its step, the others
-    /// kept; anything else drops all three and returns to the first screen with its words. A step that is not connecting sent no
+    /// The hub's reply to the step's connect: connected drops the tokens, those asked about too; a refused token goes back to
+    /// its step, the others kept; anything else drops all three and returns to the first screen with its words. A step that is not connecting sent no
     /// connect, so a reply changes nothing in it.
     pub(super) fn answered(&mut self, reply: ChatReply<ChatConnectRes>) {
         if self.screen != Screen::Connecting {
@@ -429,7 +436,7 @@ impl Connect {
         }
         let words = match reply {
             ChatReply::Done(res) => {
-                (self.bot, self.user, self.app, self.asked) = (None, None, None, None);
+                (self.bot, self.user, self.app, self.asked, self.asked_codes) = (None, None, None, None, Vec::new());
                 // Nothing is known yet of the Slack app the hub now runs: the screen asks.
                 (self.screen, self.about, self.asking) = (Screen::Connected(res.workspace, res.name), None, Some((None, UNREAD_ASKS)));
                 return;
@@ -449,7 +456,7 @@ impl Connect {
             ChatReply::Unsupported => format!("Ship of Tools on {} is too old to connect Slack: update it", computer(&self.host)),
             ChatReply::Refused(code) => code.text().to_string(),
         };
-        (self.bot, self.user, self.app, self.refused, self.asked) = (None, None, None, None, None);
+        (self.bot, self.user, self.app, self.refused) = (None, None, None, None);
         (self.failed, self.screen) = (Some(format!("Not connected: {words}.")), Screen::First);
     }
 
@@ -532,19 +539,18 @@ impl Connect {
                 format!("Enter  next step    {steps}")
             }
             Screen::Tokens => {
-                out.extend(self.keep_words());
+                // After the other Slack app's screen, the app whose codes these are is the one connected now.
+                let click = if self.asked.is_some() { self.connected_now() } else { name.clone() };
                 out.push(match self.refused {
                     Some(Refused::User) => format!("Slack did not accept the code you pasted. Make sure you copied the \"User OAuth Token\" (it starts with xoxp-); then copy it again, click in this panel and press {p}+v."),
                     Some(Refused::Bot) => format!("Slack did not accept the code you pasted. Make sure you copied the \"Bot User OAuth Token\" (it starts with xoxb-); then copy it again, click in this panel and press {p}+v."),
-                    _ => format!("Slack now shows two long codes like passwords: the \"User OAuth Token\", which starts with xoxp- and lets Ship of Tools post your messages as you, and the \"Bot User OAuth Token\", which starts with xoxb- and lets {APP} read your channels and post in them. (Not on screen? At api.slack.com/apps, click {name}, then OAuth & Permissions in the menu on the left.) Click Copy beside one, then click in this panel and press {p}+v. Then do the same with the other, in either order."),
+                    _ => format!("Slack now shows two long codes like passwords: the \"User OAuth Token\", which starts with xoxp- and lets Ship of Tools post your messages as you, and the \"Bot User OAuth Token\", which starts with xoxb- and lets {APP} read your channels and post in them. (Not on screen? At api.slack.com/apps, click {click}, then OAuth & Permissions in the menu on the left.) Click Copy beside one, then click in this panel and press {p}+v. Then do the same with the other, in either order."),
                 });
-                let (user, bot) = (shown(self.user.as_ref(), self.again & USER != 0), shown(self.bot.as_ref(), self.again & BOT != 0));
-                out.push(format!("User OAuth Token       {user}\nBot User OAuth Token   {bot}"));
+                out.push(format!("User OAuth Token       {}\nBot User OAuth Token   {}", shown(self.user.as_ref()), shown(self.bot.as_ref())));
                 out.push(format!("No \"User OAuth Token\" on the page? Your Slack app was made before Ship of Tools posted as you. On that page, under User Token Scopes, click Add an OAuth Scope and choose chat:write (post as you), then again for files:write (post a file as you). Then click Reinstall to Workspace and Allow; the \"User OAuth Token\" shows at the top. Copy it, click in this panel and press {p}+v as above."));
                 format!("{p}+v  paste    {steps}")
             }
             Screen::App => {
-                out.extend(self.keep_words());
                 if self.refused == Some(Refused::App) {
                     out.push(format!("Slack did not accept the code you pasted. Make sure you copied the \"App-Level Token\" (it starts with xapp-) and that you chose connections:write (receive new messages as they arrive); then copy it again, click in this panel and press {p}+v. Copy it from the same Slack app as the two codes of step 2."));
                 } else {
@@ -552,38 +558,49 @@ impl Connect {
                     out.push("  1. In the menu on the left, click Basic Information.\n  2. Scroll down to App-Level Tokens and click Generate Token and Scopes.\n  3. In the name box, type: messages\n  4. Click Add Scope and choose connections:write (receive new messages as they arrive) from the list.\n  5. Click Generate, then Copy.".into());
                     out.push(format!("Then click in this panel and press {p}+v."));
                 }
-                out.push(format!("App-Level Token   {}", shown(self.app.as_ref(), self.again & APP_LEVEL != 0)));
+                out.push(format!("App-Level Token   {}", shown(self.app.as_ref())));
                 format!("{p}+v  paste    {steps}")
             }
             Screen::Connecting => {
                 out.push("Slack is checking the three codes.".into());
                 "Esc  close; the check goes on".to_string()
             }
-            // What to do leads, at once: whose codes these are, what connecting them costs, and how to keep everything.
+            // What to do leads, at once: whose codes these are (or that Slack did not say), how to keep everything, and what
+            // connecting a new Slack app costs, since it is in no channel.
             Screen::OtherApp => {
                 let a = self.asked.clone().unwrap_or_default();
                 let w = asked_place(&a);
                 let now = a.app_name.as_deref().map(cell_row);
-                let new = a.new_app_name.as_deref().map_or(name, |n| cell_row(n).into_owned());
-                let (named, keep) = match &now {
-                    Some(n) => (format!(", which Slack calls {n}"), format!("paste the codes of {n} instead")),
-                    None => (String::new(), "paste the codes of the Slack app connected now instead".to_string()),
+                let named = now.as_ref().map(|n| format!(", which Slack calls {n}")).unwrap_or_default();
+                let keep = now.map_or_else(|| "the Slack app connected now".to_string(), |n| n.into_owned());
+                // The invite names the new Slack app only by the name the hub gave it: any other name could be another app's.
+                let invite = match a.new_app_name.as_deref().filter(|_| a.new_app_known).map(cell_row) {
+                    Some(n) => format!("types /invite @{n} in it in Slack"),
+                    None => "invites the new Slack app in it in Slack".to_string(),
                 };
-                out.push(format!("These Slack codes belong to a different Slack app than the one connected to {w} now{named}. The new Slack app is in none of the private channels: if you connect it, each project whose channel is private shows nothing until someone types /invite @{new} in that channel in Slack. To keep everything as it is, press Enter and {keep}."));
-                let projects = match a.channels {
-                    Some(0) => format!("No project has its channel in {w} yet. "),
-                    Some(1) => format!("One project has its channel in {w}. "),
-                    Some(n) => format!("{n} projects have their channels in {w}. "),
-                    None => String::new(),
+                let cost = format!("each project's channel shows nothing until that channel is picked again in the channel list (a public one) or someone {invite} (a private one)");
+                let right = key_label(Action::ChatThreadOpen);
+                let (lead, anyway, pinned) = if a.new_app_known {
+                    (
+                        format!("These Slack codes belong to a different Slack app than the one connected to {w} now{named}. To keep everything as it is, press Enter and paste the codes of {keep} instead. The new Slack app is in no channel yet, so if you connect it, {cost}."),
+                        format!("To connect the new Slack app anyway, press {right} (the Right arrow key); the next screen names each channel it is not in."),
+                        "connect the new Slack app anyway",
+                    )
+                } else {
+                    (
+                        format!("Ship of Tools could not tell whether these Slack codes belong to the Slack app connected to {w} now{named}: Slack did not say. To keep everything as it is, press Enter and paste the codes of {keep} instead. If they belong to a new Slack app, it is in no channel yet, so if you connect them, {cost}."),
+                        format!("To connect these codes anyway, press {right} (the Right arrow key); if they are a new Slack app's, the next screen names each channel it is not in."),
+                        "connect these codes anyway",
+                    )
                 };
                 let page = if page_of(a.app_id.as_deref()) == SLACK_APPS {
                     "Enter opens your list of Slack apps in your browser: click the one connected now there, and copy its codes as steps 2 and 3 show (they follow here)."
                 } else {
                     "Enter opens that Slack app's page in your browser, where its codes are; steps 2 and 3 show which (they follow here)."
                 };
-                let right = key_label(Action::ChatThreadOpen);
-                out.push(format!("{projects}{page} To connect the new Slack app anyway, press {right}; then invite it in each private channel."));
-                format!("Enter  keep the Slack app connected now    {right}  connect the new Slack app anyway    Esc  close")
+                out.extend([lead, format!("{page} {anyway}")]);
+                // One key a row, so at 60 cells no key is parted from its words.
+                format!("Enter  keep the Slack app connected now\n{right} (Right)  {pinned}    Esc  close")
             }
             Screen::Connected(id, wname) => {
                 let (w, label) = (workspace_words(id, wname.as_deref()), workspace_label(id, wname.as_deref()));

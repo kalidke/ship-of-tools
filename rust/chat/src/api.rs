@@ -601,7 +601,7 @@ pub(crate) async fn identify_at(http: &Http, bot: Secret, base: String) -> Resul
 
 /// The Slack app of a bot token no workspace is configured with yet: one `bots.info` for `bot` (the bot's id as `identify`
 /// gave it) under the token, by the read rules, answered as [`Api::bot_app`] answers (`BadRequest`, unsent, for a `bot`
-/// that is no id). The setup asks it when a connect's tokens may be another app's than the one connected.
+/// that is no id). The setup asks it on every connect that does not say to replace the app connected.
 pub async fn bot_app_of(http: &Http, token: Secret, bot: &str) -> Result<BotApp, ApiError> {
     bot_app_at(http, token, bot, BASE.into()).await
 }

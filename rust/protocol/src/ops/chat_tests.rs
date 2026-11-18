@@ -141,10 +141,10 @@ fn every_request_reply_and_event_keeps_its_shape() {
             name: Some("Alpha Lab".into()),
             app_id: Some("A0OLD".into()),
             app_name: Some("Ship of Tools (lab-user)".into()),
+            new_app_known: true,
             new_app_name: Some("Ship of Tools (lab-user) 2".into()),
-            channels: Some(3),
         },
-        json!({"workspace": "T1", "name": "Alpha Lab", "app_id": "A0OLD", "app_name": "Ship of Tools (lab-user)", "new_app_name": "Ship of Tools (lab-user) 2", "channels": 3}),
+        json!({"workspace": "T1", "name": "Alpha Lab", "app_id": "A0OLD", "app_name": "Ship of Tools (lab-user)", "new_app_known": true, "new_app_name": "Ship of Tools (lab-user) 2"}),
     );
     pinned(ChatConnectRes { workspace: "T1".into(), name: None }, json!({"workspace": "T1"}));
     pinned(ChatConnectRes { workspace: "T1".into(), name: Some("Alpha Lab".into()) }, json!({"workspace": "T1", "name": "Alpha Lab"}));
@@ -379,7 +379,7 @@ fn a_connect_that_would_replace_the_connected_app_asks_first_and_older_shapes_st
     }
     let newer = ChatConnectReq { replace_app: true, ..old };
     assert!(serde_json::from_value::<Before>(serde_json::to_value(&newer).unwrap()).is_ok(), "an older daemon reads a newer window's connect");
-    let refusal = json!({"error": ChatCode::OtherApp.text(), "code": "other_app", "workspace": "T1", "app_name": "Ship of Tools (lab-user)", "channels": 2});
+    let refusal = json!({"error": ChatCode::OtherApp.text(), "code": "other_app", "workspace": "T1", "app_name": "Ship of Tools (lab-user)", "new_app_known": true});
     assert_eq!(serde_json::from_value::<ChatRefusal>(refusal.clone()).unwrap().code, Some(ChatCode::OtherApp));
     #[derive(Debug, PartialEq, Deserialize)]
     #[serde(rename_all = "snake_case")]
@@ -394,12 +394,12 @@ fn a_connect_that_would_replace_the_connected_app_asks_first_and_older_shapes_st
     }
     assert_eq!(serde_json::from_value::<OlderRefusal>(refusal.clone()).unwrap().code, Some(Code::Other), "an older window's reading");
     let body: ChatOtherApp = serde_json::from_value(refusal).unwrap();
-    assert_eq!(body, ChatOtherApp { workspace: Some("T1".into()), app_name: Some("Ship of Tools (lab-user)".into()), channels: Some(2), ..ChatOtherApp::default() });
-    let bad = json!({"error": "e", "code": "other_app", "workspace": "T 1", "app_id": 7, "app_name": "", "new_app_name": "n".repeat(MAX_NAME + 1), "channels": "two"});
+    assert_eq!(body, ChatOtherApp { workspace: Some("T1".into()), app_name: Some("Ship of Tools (lab-user)".into()), new_app_known: true, ..ChatOtherApp::default() });
+    let bad = json!({"error": "e", "code": "other_app", "workspace": "T 1", "app_id": 7, "app_name": "", "new_app_known": "yes", "new_app_name": "n".repeat(MAX_NAME + 1)});
     assert_eq!(serde_json::from_value::<ChatOtherApp>(bad).unwrap(), ChatOtherApp::default(), "a bad field is none");
-    assert_eq!(serde_json::from_value::<ChatOtherApp>(json!({"error": "unknown op: chat.connect"})).unwrap(), ChatOtherApp::default());
-    for (n, want) in [(json!(0), Some(0)), (json!(u64::from(u32::MAX) + 1), None), (json!(-1), None), (json!(1.5), None)] {
-        assert_eq!(serde_json::from_value::<ChatOtherApp>(json!({"channels": n})).unwrap().channels, want, "{n}");
+    assert_eq!(serde_json::from_value::<ChatOtherApp>(json!({"error": "unknown op: chat.connect"})).unwrap(), ChatOtherApp::default(), "a bare refusal: an app not told");
+    for (v, want) in [(json!(true), true), (json!(false), false), (json!(1), false), (json!(null), false)] {
+        assert_eq!(serde_json::from_value::<ChatOtherApp>(json!({"new_app_known": v})).unwrap().new_app_known, want, "{v}");
     }
 }
 
@@ -613,7 +613,7 @@ fn every_code_has_its_one_text() {
         (ChatCode::Unavailable, "the chat is not available here"),
         (ChatCode::Unmapped, "the session's project has no channel"),
         (ChatCode::StaleRow, "the session is gone or was replaced"),
-        (ChatCode::StaleMapping, "the session's project now has another channel, or none"),
+        (ChatCode::StaleMapping, "the session's project now has another channel"),
         (ChatCode::BadRequest, "the request is not valid"),
         (ChatCode::TooManyWatches, "too many channels are being followed at once"),
         (ChatCode::Limited, "Slack asked for a pause; try again in a moment"),
@@ -632,7 +632,7 @@ fn every_code_has_its_one_text() {
         (ChatCode::NotAFile, "the file is not a readable file in the project's folder"),
         (ChatCode::TooLarge, "the file is larger than the chat carries"),
         (ChatCode::NotAnImage, "that file is not a picture the chat can show"),
-        (ChatCode::OtherApp, "these Slack codes belong to a different Slack app than the one this Slack workspace is connected with now, so nothing was changed: to keep every channel as it is, paste the codes of the Slack app connected now instead; to connect the new Slack app in its place, update Ship of Tools on this computer first"),
+        (ChatCode::OtherApp, "these Slack codes may belong to a different Slack app than the one this Slack workspace is connected with now; nothing was changed"),
         (ChatCode::Failed, "the chat request failed"),
         (ChatCode::Other, "the chat request failed"),
     ];

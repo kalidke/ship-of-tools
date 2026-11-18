@@ -213,17 +213,40 @@ fn the_post_as_you_screen_names_the_connected_slack_app_to_keep() {
     }
 }
 
-/// The hub's `other_app` refusal: the tokens are for another Slack app than the one `Alpha Lab` is connected to now,
-/// `Alpha Lab chat`, and three projects have their channels there.
+/// The hub's `other_app` refusal: the tokens are for another Slack app, which Slack calls `Ship of Tools (lab-user)`, than
+/// the one `Alpha Lab` is connected to now, `Alpha Lab chat`.
 fn other_app() -> ChatOtherApp {
     ChatOtherApp {
         workspace: Some("TAAAA1".into()),
         name: Some("Alpha Lab".into()),
         app_id: Some("A0OLD".into()),
         app_name: Some("Alpha Lab chat".into()),
+        new_app_known: true,
         new_app_name: Some(NAME.into()),
-        channels: Some(3),
     }
+}
+
+/// The hub's `other_app` refusal when Slack did not say which Slack app the tokens are for.
+fn untold() -> ChatOtherApp {
+    ChatOtherApp { new_app_known: false, new_app_name: None, ..other_app() }
+}
+
+/// The new Slack app's tokens, as `asked_with` pastes them, and the connected app's, which differ in their tails.
+fn connected_bot() -> String {
+    bot().replace("QJX", "QJQ")
+}
+
+fn connected_user() -> String {
+    user().replace("HNZ", "HNH")
+}
+
+fn connected_app_token() -> String {
+    app().replace("VKW", "VKV")
+}
+
+/// Whether a connect among `outs` that does not say `replace_app` carries any of the new Slack app's three tokens.
+fn mixes(outs: &[Out]) -> bool {
+    connects(outs).iter().any(|(b, u, a)| *b == bot() || *u == user() || *a == app())
 }
 
 /// A step whose three tokens the hub refused `other_app` with `asked`.
@@ -242,48 +265,94 @@ fn right_label() -> String {
     crate::ui::input::keybindings::KeyBindings::defaults().first_label(Action::ChatThreadOpen)
 }
 
+/// The rows of `c`'s screen above its pinned keys, at a panel 60 cells by 12, joined; the keys must be in view.
+fn above_the_keys(c: &Connect) -> String {
+    let rows = c.body().lines(60, 12);
+    let pin_at = rows.iter().position(|r| r.starts_with("Enter  keep")).unwrap_or_else(|| panic!("the keys are not pinned in view: {rows:#?}"));
+    rows[..pin_at].join(" ")
+}
+
 /// CHAT-CONNECT-MAKES-A-NEW-APP: tokens of another Slack app than the one the workspace is connected to now bring one
-/// screen, whose first rows, in a panel 60 cells by 12, say whose tokens these are (the app connected now named), that the
-/// new app is in none of the private channels and what to type in Slack for each, and how to keep everything; the keys
-/// say Enter keeps the app connected now and `chat.thread_open`'s key connects the new one anyway. A name the hub gave
-/// none of is left out, and the invite names the new app as the manifest does.
+/// screen, whose first rows, in a panel 60 cells by 12, say whose tokens these are (the app connected now named), how to
+/// keep everything, and that the new app is in no channel, public ones included, with what brings it into each (a pick in
+/// the channel list, or the invite); the keys say Enter keeps the app connected now and `chat.thread_open`'s key, by its
+/// binding's label glossed as the flow names it, connects the new one anyway. A name the hub gave none of is left out.
 #[test]
 fn the_other_slack_apps_screen_says_whose_codes_these_are_and_how_to_keep_everything() {
     let c = asked_with(other_app());
     assert_eq!(c.title(), " chat · a different Slack app ");
     let b = c.body();
-    let first = "These Slack codes belong to a different Slack app than the one connected to Alpha Lab now, which Slack calls Alpha Lab chat. The new Slack app is in none of the private channels: if you connect it, each project whose channel is private shows nothing until someone types /invite @Ship of Tools (lab-user) in that channel in Slack. To keep everything as it is, press Enter and paste the codes of Alpha Lab chat instead.";
+    let first = "These Slack codes belong to a different Slack app than the one connected to Alpha Lab now, which Slack calls Alpha Lab chat. To keep everything as it is, press Enter and paste the codes of Alpha Lab chat instead. The new Slack app is in no channel yet, so if you connect it, each project's channel shows nothing until that channel is picked again in the channel list (a public one) or someone types /invite @Ship of Tools (lab-user) in it in Slack (a private one).";
     let right = right_label();
-    let then = format!("3 projects have their channels in Alpha Lab. Enter opens that Slack app's page in your browser, where its codes are; steps 2 and 3 show which (they follow here). To connect the new Slack app anyway, press {right}; then invite it in each private channel.");
+    let then = format!("Enter opens that Slack app's page in your browser, where its codes are; steps 2 and 3 show which (they follow here). To connect the new Slack app anyway, press {right} (the Right arrow key); the next screen names each channel it is not in.");
     assert_eq!(b.head, format!("{first}\n\n{then}"));
-    assert_eq!(b.pin, format!("Enter  keep the Slack app connected now    {right}  connect the new Slack app anyway    Esc  close"));
+    assert_eq!(b.pin, format!("Enter  keep the Slack app connected now\n{right} (Right)  connect the new Slack app anyway    Esc  close"));
     let rows = b.lines(60, 12);
-    let pin_at = rows.iter().position(|r| r.starts_with("Enter  keep")).expect("the keys are pinned in view");
-    let above = rows[..pin_at].join(" ");
-    for said in ["a different Slack app than the one connected to Alpha Lab now, which Slack calls Alpha Lab chat", "in none of the private channels", "/invite @Ship of Tools (lab-user) in that channel in Slack", "To keep everything as it is, press Enter and paste the codes of Alpha Lab chat instead."] {
-        assert!(above.contains(said), "{said:?} is not in the first rows at 60 by 12: {rows:#?}");
+    assert_eq!(rows[10..], [String::from("Enter  keep the Slack app connected now"), format!("{right} (Right)  connect the new Slack app anyway    Esc  close")], "each key whole on its row");
+    let above = above_the_keys(&c);
+    for said in ["These Slack codes belong to a different Slack app than the one connected to Alpha Lab now, which Slack calls Alpha Lab chat.", "To keep everything as it is, press Enter and paste the codes of Alpha Lab chat instead.", "The new Slack app is in no channel yet", "picked again in the channel list (a public one)", "/invite @Ship of Tools (lab-user) in it in Slack (a private one)."] {
+        assert!(above.contains(said), "{said:?} is not in the first rows at 60 by 12: {above}");
     }
-    assert!(rows[0].starts_with("These Slack codes belong to a different Slack app"), "{rows:#?}");
-    // Nothing named but the workspace: the words leave the names out, the invite names the manifest's app.
-    let c = asked_with(ChatOtherApp { workspace: Some("TAAAA1".into()), ..ChatOtherApp::default() });
+    // Nothing named but the workspace: the words leave the names out.
+    let c = asked_with(ChatOtherApp { workspace: Some("TAAAA1".into()), new_app_known: true, ..ChatOtherApp::default() });
     let head = c.body().head;
-    assert!(head.starts_with("These Slack codes belong to a different Slack app than the one connected to workspace TAAAA1 now. The new Slack app"), "{head}");
-    assert!(head.contains(&format!("/invite @{NAME} in that channel")) && head.contains("press Enter and paste the codes of the Slack app connected now instead."), "{head}");
-    assert!(head.contains("\n\nEnter opens your list of Slack apps in your browser: click the one connected now there"), "no id, no count: {head}");
-    for (n, said) in [(0, "No project has its channel in Alpha Lab yet. "), (1, "One project has its channel in Alpha Lab. ")] {
-        let c = asked_with(ChatOtherApp { channels: Some(n), ..other_app() });
-        assert!(c.body().head.contains(&format!("\n\n{said}Enter opens")), "{n}: {}", c.body().head);
-    }
-    let c = asked_with(ChatOtherApp::default());
+    assert!(head.starts_with("These Slack codes belong to a different Slack app than the one connected to workspace TAAAA1 now. To keep"), "{head}");
+    assert!(head.contains("press Enter and paste the codes of the Slack app connected now instead."), "{head}");
+    assert!(head.contains("\n\nEnter opens your list of Slack apps in your browser: click the one connected now there"), "no id: {head}");
+    let c = asked_with(ChatOtherApp { new_app_known: true, ..ChatOtherApp::default() });
     assert!(c.body().head.starts_with("These Slack codes belong to a different Slack app than the one connected to this Slack workspace now."), "{}", c.body().head);
 }
 
+/// The invite names the new Slack app only by the name the hub gave it: with none, no `/invite @` line, which could name
+/// the app connected now (this flow names every app it makes alike), only the words `invites the new Slack app`.
+#[test]
+fn the_invite_names_the_new_slack_app_only_by_the_name_the_hub_gave_it() {
+    let invite = "someone types /invite @Lab bot in it in Slack (a private one).";
+    assert!(asked_with(ChatOtherApp { new_app_name: Some("Lab bot".into()), ..other_app() }).body().head.contains(invite));
+    // The new app's name unknown, the connected app's and the login's alike or not: no app is named in the invite.
+    for app_name in [Some(NAME), Some("Alpha Lab chat"), None] {
+        let c = asked_with(ChatOtherApp { app_name: app_name.map(Into::into), new_app_name: None, ..other_app() });
+        let head = c.body().head;
+        assert!(!head.contains("/invite @"), "{app_name:?}: an invite names an app the hub did not name as the new one: {head}");
+        assert!(head.contains("or someone invites the new Slack app in it in Slack (a private one)."), "{app_name:?}: {head}");
+        assert!(above_the_keys(&c).contains("invites the new Slack app in it in Slack"), "{app_name:?}");
+    }
+}
+
+/// When Slack did not say which Slack app the tokens are for, the screen says so truly, names the app connected now, and
+/// asks the same: Enter keeps it, `chat.thread_open`'s key connects these codes anyway; no app is named in the invite.
+#[test]
+fn the_screen_says_when_ship_of_tools_could_not_tell_whose_codes_these_are() {
+    let c = asked_with(untold());
+    assert_eq!(c.title(), " chat · a different Slack app ");
+    let b = c.body();
+    let right = right_label();
+    let first = "Ship of Tools could not tell whether these Slack codes belong to the Slack app connected to Alpha Lab now, which Slack calls Alpha Lab chat: Slack did not say. To keep everything as it is, press Enter and paste the codes of Alpha Lab chat instead. If they belong to a new Slack app, it is in no channel yet, so if you connect them, each project's channel shows nothing until that channel is picked again in the channel list (a public one) or someone invites the new Slack app in it in Slack (a private one).";
+    let then = format!("Enter opens that Slack app's page in your browser, where its codes are; steps 2 and 3 show which (they follow here). To connect these codes anyway, press {right} (the Right arrow key); if they are a new Slack app's, the next screen names each channel it is not in.");
+    assert_eq!(b.head, format!("{first}\n\n{then}"));
+    assert_eq!(b.pin, format!("Enter  keep the Slack app connected now\n{right} (Right)  connect these codes anyway    Esc  close"));
+    let above = above_the_keys(&c);
+    for said in ["Ship of Tools could not tell whether these Slack codes belong to the Slack app connected to Alpha Lab now", "To keep everything as it is, press Enter and paste the codes of Alpha Lab chat instead."] {
+        assert!(above.contains(said), "{said:?} is not in the first rows at 60 by 12: {above}");
+    }
+    // A bare refusal is the weaker claim: an app not told, nothing named.
+    assert!(asked_with(ChatOtherApp::default()).body().head.starts_with("Ship of Tools could not tell whether these Slack codes belong to the Slack app connected to this Slack workspace now: Slack did not say."));
+    // Its keys are the screen's: Enter keeps, the other connects the held three, saying to replace.
+    let mut c = asked_with(untold());
+    assert!(replacing(&c.key(RIGHT, None, false).0.into_iter().collect::<Vec<_>>()) == [(bot(), user(), app())], "the other key sent no replacing connect of the three held");
+    let mut c2 = asked_with(untold());
+    assert!(c2.key(ENTER, None, false).0.is_none());
+    assert_eq!(c2.screen(), &Screen::Tokens);
+    assert!(c2.held() == (None, None, None), "Enter dropped no code");
+    assert_eq!(c2.key(PASTE, Some(&app()), false).1.notice.as_deref(), Some("that is one of the Slack codes Ship of Tools asked about; paste the \"App-Level Token\" of Alpha Lab chat, the Slack app connected now"));
+}
+
 /// The other Slack app's screen's keys. Enter, the key a hurried person presses, replaces nothing: it opens the page of
-/// the app connected now and goes to step 2 with the three tokens kept, shown as the new app's, and no connect goes out
-/// until each is pasted again (so none mixes the two apps' tokens); then one connect, which does not say to replace.
-/// `chat.thread_open`'s key sends one connect of the three held, saying to replace, and nothing more; a paste over the
-/// screen keeps the app connected now as Enter does; Escape closes; the hub's word for a step that sent nothing changes
-/// nothing.
+/// the app connected now and goes to step 2 with the three held tokens dropped (`not pasted yet`, which is true), and
+/// step 2 names the app connected now as the one to click; the connected app's three then go in one connect, which does
+/// not say to replace. `chat.thread_open`'s key sends one connect of the three held, saying to replace, and nothing more;
+/// a token of the app connected now pasted over the screen keeps that app as Enter does; Escape closes; the hub's word for
+/// a step that sent nothing changes nothing.
 #[test]
 fn the_other_slack_apps_keys_keep_the_codes_or_connect_anyway_once() {
     let mut c = asked_with(other_app());
@@ -291,20 +360,21 @@ fn the_other_slack_apps_keys_keep_the_codes_or_connect_anyway_once() {
     assert!(out.is_none(), "Enter sent a connect");
     assert_eq!(asks.open.as_deref(), Some("https://api.slack.com/apps/A0OLD/oauth"), "Enter opens the connected app's page");
     assert_eq!(c.screen(), &Screen::Tokens);
-    assert_eq!(c.held(), (Some(bot().as_str()), Some(user().as_str()), Some(app().as_str())), "the codes are kept");
+    assert!(c.held() == (None, None, None), "the new app's codes are not dropped");
     let head = c.body().head;
-    assert!(head.starts_with("Paste here the three Slack codes of Alpha Lab chat, the Slack app connected to Alpha Lab now, in place of the new Slack app's. Nothing is sent until all three are pasted."), "{head}");
-    assert!(head.contains("User OAuth Token       pasted: xoxp-…, 53 characters, the new Slack app's\nBot User OAuth Token   pasted: xoxb-…, 53 characters, the new Slack app's"), "{head}");
-    assert!(!leaks(&head), "a kept token is drawn");
-    let (bot2, user2, app2) = (bot().replace("QJX", "QJQ"), user().replace("HNZ", "HNH"), app().replace("VKW", "VKV"));
-    assert!(c.key(PASTE, Some(&user2), false).0.is_none(), "one token of the app connected now sent a connect");
-    assert!(c.key(PASTE, Some(&bot2), false).0.is_none(), "two tokens of the app connected now sent a connect");
+    assert!(head.contains("(Not on screen? At api.slack.com/apps, click Alpha Lab chat, the Slack app connected now, then OAuth & Permissions in the menu on the left.)"), "{head}");
+    assert!(!head.contains(&format!("click {NAME}")), "step 2 names the login's app, which is the new one's name here: {head}");
+    assert!(head.contains("User OAuth Token       not pasted yet\nBot User OAuth Token   not pasted yet"), "{head}");
+    assert!(c.key(PASTE, Some(&connected_user()), false).0.is_none(), "one token of the app connected now sent a connect");
+    assert!(c.key(PASTE, Some(&connected_bot()), false).0.is_none(), "two tokens of the app connected now sent a connect");
     assert_eq!(c.screen(), &Screen::App);
-    assert!(c.body().head.contains("App-Level Token   pasted: xapp-…, 53 characters, the new Slack app's"), "{}", c.body().head);
-    assert!(c.key(ENTER, None, false).0.is_none(), "Enter sent the new app's App-Level Token with the others");
-    let (out, _) = c.key(PASTE, Some(&app2), false);
-    assert_eq!(connects(&out.into_iter().collect::<Vec<_>>()), [(bot2, user2, app2)], "the third sends one connect of the app connected now");
-    assert!(!c.body().head.contains("Paste here the three"), "{}", c.body().head);
+    assert!(c.body().head.contains("App-Level Token   not pasted yet"), "{}", c.body().head);
+    let (out, _) = c.key(PASTE, Some(&connected_app_token()), false);
+    assert!(connects(&out.into_iter().collect::<Vec<_>>()) == [(connected_bot(), connected_user(), connected_app_token())], "the third did not send one connect of the app connected now");
+    // With no name from the hub, step 2 says to click the Slack app connected now.
+    let mut c = asked_with(ChatOtherApp { app_name: None, ..other_app() });
+    c.key(ENTER, None, false);
+    assert!(c.body().head.contains("(Not on screen? At api.slack.com/apps, click the Slack app connected now, then OAuth & Permissions"), "{}", c.body().head);
 
     // Connect anyway: one connect of the three held, saying to replace; then nothing, whatever is pressed.
     let mut c = asked_with(other_app());
@@ -314,6 +384,10 @@ fn the_other_slack_apps_keys_keep_the_codes_or_connect_anyway_once() {
     for k in [RIGHT, ENTER, RIGHT] {
         assert!(c.key(k, None, false).0.is_none(), "{k:?} sent a second connect");
     }
+    // A token Slack then refuses goes back to its step, which names the login's app again and takes the new app's codes.
+    c.answered(ChatReply::Refused(ChatCode::AppTokenRefused));
+    assert_eq!(c.screen(), &Screen::App);
+    assert!(connects(&c.key(PASTE, Some(&app()), false).0.into_iter().collect::<Vec<_>>()) == [(bot(), user(), app())], "once chosen, the new app's codes are not sent as its own");
     // Then today's flow: the hub's reply is the connected screen.
     c.answered(ChatReply::Done(ChatConnectRes { workspace: "TAAAA1".into(), name: Some("Alpha Lab".into()) }));
     assert!(matches!(c.screen(), Screen::Connected(..)), "{:?}", c.screen());
@@ -323,11 +397,11 @@ fn the_other_slack_apps_keys_keep_the_codes_or_connect_anyway_once() {
     assert!(out.is_none() && asks.notice.is_some_and(|n| n.starts_with("Slack is still checking")));
     assert_eq!(c.screen(), &Screen::OtherApp);
 
-    // A paste over the screen keeps the app connected now: nothing is sent until all three are pasted.
+    // A token of the app connected now pasted over the screen keeps that app: the held ones go, the paste is held.
     let mut c = asked_with(other_app());
-    assert!(c.key(PASTE, Some(&bot()), false).0.is_none());
-    assert_eq!(c.screen(), &Screen::App, "the step of the next code");
-    assert!(c.body().head.starts_with("Paste here the three Slack codes of Alpha Lab chat"), "{}", c.body().head);
+    assert!(c.key(PASTE, Some(&connected_bot()), false).0.is_none());
+    assert!(c.held() == (Some(connected_bot().as_str()), None, None), "the held codes are not the paste alone");
+    assert_eq!(c.screen(), &Screen::Tokens, "the step of the next code");
     // Left does nothing there, Escape closes.
     let mut c = asked_with(other_app());
     let (out, asks) = c.key(LEFT, None, false);
@@ -339,6 +413,75 @@ fn the_other_slack_apps_keys_keep_the_codes_or_connect_anyway_once() {
     c.key(PASTE, Some(&bot()), false);
     c.asked(other_app());
     assert_eq!(c.screen(), &Screen::Tokens);
+}
+
+/// A paste of a token the hub asked about is refused, nothing held or sent, with words that say whose it is and whose to
+/// paste: the reflex paste of the new Slack app's App-Level Token, still on the clipboard after step 3, over the question
+/// screen and then the connected app's two codes; and the same after Enter. No connect goes out carrying it.
+#[test]
+fn a_token_the_hub_asked_about_is_refused_at_its_paste_and_never_sent_beside_the_connected_apps() {
+    let words = "that is a code of the new Slack app; paste the \"App-Level Token\" of Alpha Lab chat, the Slack app connected now";
+    // Over the question screen.
+    let mut c = asked_with(other_app());
+    let (out, asks) = c.key(PASTE, Some(&app()), false);
+    assert_eq!((out.is_none(), asks.notice.as_deref()), (true, Some(words)));
+    assert_eq!(c.screen(), &Screen::OtherApp, "a refused paste chooses nothing");
+    let mut sent: Vec<Out> = Vec::new();
+    for t in [connected_user(), connected_bot()] {
+        sent.extend(c.key(PASTE, Some(&t), false).0);
+    }
+    sent.extend(c.key(ENTER, None, false).0);
+    assert!(sent.is_empty(), "a connect went out with an App-Level Token missing");
+    assert!(c.held() == (Some(connected_bot().as_str()), Some(connected_user().as_str()), None), "the refused paste is held, or the connected app's are not");
+    // After Enter.
+    let mut c = asked_with(other_app());
+    c.key(ENTER, None, false);
+    let (out, asks) = c.key(PASTE, Some(&app()), false);
+    assert_eq!((out.is_none(), asks.notice.as_deref()), (true, Some(words)));
+    let mut sent: Vec<Out> = Vec::new();
+    for t in [connected_user(), connected_bot()] {
+        sent.extend(c.key(PASTE, Some(&t), false).0);
+    }
+    sent.extend(c.key(ENTER, None, false).0);
+    assert!(sent.is_empty(), "a connect went out with an App-Level Token missing");
+    assert!(c.held() == (Some(connected_bot().as_str()), Some(connected_user().as_str()), None), "the refused paste is held, or the connected app's are not");
+    // Each kind is refused by its own name, and the hub's unnamed app as the Slack app connected now.
+    let mut c = asked_with(ChatOtherApp { app_name: None, ..other_app() });
+    c.key(ENTER, None, false);
+    for (t, field) in [(bot(), "Bot User OAuth Token"), (user(), "User OAuth Token")] {
+        assert_eq!(c.key(PASTE, Some(&t), false).1.notice, Some(format!("that is a code of the new Slack app; paste the \"{field}\" of the Slack app connected now")));
+    }
+    assert!(c.held() == (None, None, None), "a refused paste is held");
+}
+
+/// No sequence of keys and pastes from the question screen, of either kind (another app, or one Slack did not tell), sends
+/// a connect that carries one of the tokens the hub asked about unless it says `replace_app`: every sequence of five over
+/// Enter, the other key, Left, Escape, a paste of each of the six tokens and one that is no token.
+#[test]
+fn no_keys_from_the_question_send_a_token_it_asked_about_unless_they_replace() {
+    let pastes = [bot(), user(), app(), connected_bot(), connected_user(), connected_app_token(), "no code".to_string()];
+    let mut alphabet: Vec<(Option<Action>, Option<&str>)> = vec![(ENTER, None), (RIGHT, None), (LEFT, None), (ESC, None)];
+    alphabet.extend(pastes.iter().map(|t| (PASTE, Some(t.as_str()))));
+    let n = alphabet.len();
+    let (mut sequences, mut replaced) = (0, 0);
+    for asked in [other_app(), untold()] {
+        for len in 1..=5u32 {
+            for code in 0..n.pow(len) {
+                let mut c = asked_with(asked.clone());
+                let mut outs: Vec<Out> = Vec::new();
+                let mut rest = code;
+                for _ in 0..len {
+                    let (action, paste) = alphabet[rest % n];
+                    rest /= n;
+                    outs.extend(c.key(action, paste, false).0);
+                }
+                assert!(!mixes(&outs), "{asked:?}: sequence {code} of {len} sent a token asked about without replace_app");
+                replaced += replacing(&outs).len();
+                sequences += 1;
+            }
+        }
+    }
+    assert!(sequences > 200_000 && replaced > 0, "{sequences} sequences, {replaced} replaced");
 }
 
 /// The drawer hands the hub's `other_app` to the step that is connecting, and the step's next key sends again; with the
@@ -360,7 +503,8 @@ fn the_drawer_gives_the_other_slack_app_to_its_connecting_step() {
     assert!(asks.close);
     d.hide();
     d.on_evt(&host(), ChatEvt::OtherApp(other_app()), t);
-    assert_eq!(d.take_notice().as_deref(), Some(super::drawer::NOT_REPLACED_WORDS));
+    assert_eq!(d.take_notice(), Some(super::drawer::not_replaced_words()));
+    assert_eq!(super::drawer::not_replaced_words(), format!("Slack not connected: those codes may be another Slack app's than the one connected now, and nothing changed. To decide, open the channel list ({P}+Shift+k), choose Connect a Slack workspace and paste them again"));
 }
 
 #[test]
@@ -1097,20 +1241,23 @@ fn no_project_word_reaches_a_screen() {
     // The same screen once the hub names the Slack app the workspace is connected to.
     c.on_workspaces(&connected_app("Ship of Tools (lab-user)"));
     screens.extend([c.title(), c.body().head, c.body().pin]);
-    // The other Slack app's screen, named and not, of each count, and the steps it keeps the codes for, by Enter and by a
-    // paste; the status line's words when its step was closed.
-    for asked in [other_app(), ChatOtherApp { channels: Some(1), ..other_app() }, ChatOtherApp { channels: Some(0), app_id: None, ..other_app() }, ChatOtherApp { workspace: Some("TAAAA1".into()), ..ChatOtherApp::default() }, ChatOtherApp::default()] {
+    // The other Slack app's screen, named and not, told and not, and the steps after Enter and after a paste of the
+    // connected app's code, with a refused paste's words; the status line's words when its step was closed.
+    let named = ChatOtherApp { workspace: Some("TAAAA1".into()), new_app_known: true, ..ChatOtherApp::default() };
+    for asked in [other_app(), untold(), ChatOtherApp { app_id: None, new_app_name: None, ..other_app() }, named, ChatOtherApp { workspace: Some("TAAAA1".into()), ..ChatOtherApp::default() }, ChatOtherApp::default()] {
         let mut c = asked_with(asked.clone());
         screens.extend([c.title(), c.body().head, c.body().pin]);
+        screens.push(c.key(PASTE, Some(&bot()), false).1.notice.unwrap_or_default());
         c.key(ENTER, None, false);
         screens.extend([c.title(), c.body().head, c.body().pin]);
+        screens.push(c.key(PASTE, Some(&app()), false).1.notice.unwrap_or_default());
         c.key(RIGHT, None, false);
         screens.extend([c.title(), c.body().head, c.body().pin]);
         let mut c = asked_with(asked);
-        c.key(PASTE, Some(&bot()), false);
+        c.key(PASTE, Some(&connected_bot()), false);
         screens.extend([c.title(), c.body().head, c.body().pin]);
     }
-    screens.push(super::drawer::NOT_REPLACED_WORDS.to_string());
+    screens.push(super::drawer::not_replaced_words());
     said.extend(screens);
     // The picker: a list, a narrowed list with no match, each failure, and a refused pair.
     let list: ChatChannelsRes = serde_json::from_value(serde_json::json!({ "channels": [

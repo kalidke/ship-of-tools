@@ -33,8 +33,8 @@ use crate::rows::Workspaces;
 type Checked<T, E> = Pin<Box<dyn Future<Output = Result<T, E>> + Send>>;
 
 /// The connect's Slack checks: the bot token's identity with no workspace expected (and the user token's, by the same
-/// `identify`), then the app token's one `apps.connections.open`, and, only when the workspace runs with a known Slack app
-/// and the request does not say to replace it, the bot's app (`bots.info` under the bot token, for the bot's id). The
+/// `identify`), then the app token's one `apps.connections.open`, and, when the request does not say to replace the Slack
+/// app connected, the bot's app (`bots.info` under the bot token, for the bot's id). The
 /// product's reach Slack ([`Verifier::product`]); a test's reach the fake.
 pub(crate) struct Verifier {
     pub(crate) identify: Box<dyn Fn(Secret) -> Checked<Identified, ApiError> + Send + Sync>,
@@ -112,9 +112,9 @@ pub(crate) fn unconfigured(status: Status) -> Option<ChatUnconfigured> {
     }
 }
 
-/// `chat.connect`: three tokens checked with Slack, saved, and the chat reloaded from its files; tokens of another Slack
-/// app than the one their workspace runs with now are refused `other_app`, nothing written, unless the request says
-/// `replace_app`. The order and its codes are `rust/chat/CLAUDE.md` guarantee 31's. Nothing here logs on the blocking
+/// `chat.connect`: three tokens checked with Slack, saved, and the chat reloaded from its files; tokens not known to be
+/// the Slack app their workspace runs with now (another app's, or an app Slack did not tell) are refused `other_app`,
+/// nothing written, unless the request says `replace_app`. The order and its codes are `rust/chat/CLAUDE.md` guarantee 31's. Nothing here logs on the blocking
 /// pool: the writes answer their reason as a value, and this task logs it.
 pub(crate) async fn connect(req_id: u64, payload: serde_json::Value, chat: &Arc<Chat>, rows: &Workspaces, window: bool) -> Result<HandlerOutput> {
     const NAME: &str = op::CHAT_CONNECT;
@@ -163,13 +163,14 @@ pub(crate) async fn connect(req_id: u64, payload: serde_json::Value, chat: &Arc<
             return Ok(refuse(req_id, NAME, ChatCode::Failed));
         }
     }
-    // The Slack app the tokens are for, asked only when the workspace runs with a known one they could replace unasked.
-    // Not known (no bot id, any failure of the call), nothing is asked: the connect fails open, as the listener's check does.
-    let new_app = match (replace, chat.connected_app(&workspace), bot_id) {
-        (false, Some(_), Some(bot_id)) => match (chat.verify.bot_app)(bot.clone(), bot_id).await {
+    // The Slack app the tokens are for, asked on every connect that does not say to replace the one connected: whether to
+    // ask the person is decided under the lock, from what is known there. No bot id, or any failure of the call (its
+    // deadline, `READ_DEADLINE`, included), leaves it untold.
+    let new_app = match (replace, bot_id) {
+        (false, Some(bot_id)) => match (chat.verify.bot_app)(bot.clone(), bot_id).await {
             Ok(a) => Some(a),
             Err(e) => {
-                tracing::warn!(code = e.code(), "project chat: a connect could not tell its tokens' Slack app, so it asks nothing");
+                tracing::warn!(code = e.code(), "project chat: a connect could not tell its tokens' Slack app");
                 None
             }
         },
@@ -180,13 +181,13 @@ pub(crate) async fn connect(req_id: u64, payload: serde_json::Value, chat: &Arc<
     if chat.closed_now() {
         return Ok(refuse(req_id, NAME, ChatCode::Unavailable));
     }
-    // Under the lock, against the app the workspace runs with now: another app's tokens write nothing and restart nothing,
-    // and the refusal says what a window asks with.
-    if let (Some(now), Some(new)) = (chat.connected_app(&workspace), new_app) {
-        if now.id != new.id {
-            let channels = Some(u32::try_from(mapped_channels(chat, &workspace).len()).unwrap_or(u32::MAX));
-            let body = ChatOtherApp { workspace: Some(workspace.clone()), name, app_id: Some(now.id), app_name: now.name, new_app_name: new.name, channels };
-            tracing::info!(workspace, "project chat: a connect's tokens are another Slack app's than the connected one; nothing was saved");
+    // Under the lock, against the app the workspace runs with now: tokens of another app, or of an app Slack did not tell,
+    // write nothing and restart nothing unless the window says to replace it, and the refusal says what it asks with.
+    if let (false, Some(now)) = (replace, chat.connected_app(&workspace)) {
+        if new_app.as_ref().is_none_or(|new| new.id != now.id) {
+            let known = new_app.is_some();
+            let body = ChatOtherApp { workspace: Some(workspace.clone()), name, app_id: Some(now.id), app_name: now.name, new_app_known: known, new_app_name: new_app.and_then(|n| n.name) };
+            tracing::info!(workspace, known, "project chat: a connect's tokens are not known to be the connected Slack app's; nothing was saved");
             return refuse_with(req_id, NAME, ChatCode::OtherApp, &body);
         }
     }
