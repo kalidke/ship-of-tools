@@ -202,76 +202,15 @@ framing.
 <DemoLoop name="zoom" caption="With the preview focused, = zooms an image and the arrow keys pan; the next same-size image opens at the same zoom and pan." />
 ```
 
-## Drawing on a preview
+## Drawing and selecting for the agent
 
-With the preview focused, `d` turns drawing on over a raster image. Only image files can be drawn on: over a PDF page, an SVG, a video frame or any other picture `d` says what it marks up and that this picture is not one (the message names it), and the two ways to draw anyway: open a PNG of it, or use the canvas. Holding the left button draws and holding the
-right button erases the strokes the pointer crosses; `u` (or `Ctrl+z`, `Cmd+z` on macOS) undoes the last step, and `Delete` clears all the
-ink (`u` brings it back). The ink stays where you drew it as you zoom and pan. `Shift+d` shows a blank canvas to draw
-on, and shows the preview again; the canvas is always in drawing mode. Each session keeps one drawing, and a stroke on
-another image or the canvas replaces it, with a note on the status line, and a closed window loses its drawings. What the agent is told is under "Sharing with
-the agent".
+With the preview focused, `d` draws over an image and `Shift+d` shows a blank canvas to sketch on. The session's agent
+is given the drawing, or text selected in a preview, at its next prompt. See
+[Drawing and selecting for the agent](drawing.md).
 
 ## Messages about the preview
 
-What the preview says about something you just did in it, such as drawing turned on, a drawing shared or not, an SVG it could not draw or a crop it refused, shows on the status line and also in a box at the foot of the preview pane, in the look of the help peek. The box stays for 5 seconds and fades; a newer message replaces it, a switch to another row or another file drops it, it does not show while you edit, and a help peek (`Ctrl+?`) shown at that moment takes its place. The status line keeps the message after the box is gone. Some messages are in the box alone, and the status line stays as it was: the refusal of `d` over a picture that cannot be drawn on, an equation that could not be drawn, and a file that could not be previewed or drawn again after another program changed it or the window reconnected, unless you had asked for the preview meanwhile (selecting the file, turning a page, zooming), when the status line says it too. When a file you are looking at cannot be previewed again, the pane keeps the older content, and its title ends `REFUSED, view not updated` until a preview of it succeeds or another file is shown, long after the box has faded. Some messages are on the status line only: a text selection shared with the agent, a page or video opened in the browser (and its failures), saving in the editor.
-
-## Sharing with the agent
-
-The session's agent can be shown one thing at a time: text you selected or a drawing. The newest replaces the other, and
-a selection or drawing set from two windows is the newest one; clearing it in either window removes it for both. Claude
-Code sessions take either; a Codex session takes neither yet (its status line says `not shared: this row's agent takes none` for both).
-
-**Text.** Select text in a preview of a project file with the mouse and release the button: the window tells the daemon,
-which reads the file itself and keeps the text you selected. At the agent's next prompt Claude Code shows a one-line
-label, `UserPromptSubmit says: Selection: <file> lines a-b`, and the agent is given that text from the file, labeled
-with the file and its line numbers as your selection. A longer selection is cut after 2000 characters and the agent is
-told how long it was. Nothing is sent while you drag, and every later prompt carries the selection until it is
-withdrawn. A change to the file refreshes its preview, which withdraws the selection; select again to share the new
-text.
-
-Only the preview's text of a file in the project is shared. The agent pane, an image, the concept pane and a rendered
-table are not. A selection is refused if the preview does not show the file's own text: a preview older than the file,
-and files with unusual line breaks.
-
-In a rendered markdown preview the agent is given the file's own lines that your selected text was rendered from, whole:
-each paragraph (in a list item, the item's paragraph) or heading you touch and each code line, with any table, equation or figure between them. A
-table, equation, figure or rule alone is not shared. A paragraph that follows link reference definitions shares their
-lines too, and a paragraph written on one long line is cut at 2000 characters, which may fall before the words you
-selected. It is refused when the file no longer holds what the preview showed, or when a lone carriage return, U+0085,
-U+2028 or U+2029 comes before the end of the selection.
-
-**Drawing.** When you release a stroke, the window tells the daemon, which writes one picture of the image with the ink
-on it to `.sot/captures/ink-<row id>.png` in the project and names it to the agent at its next prompt. An image over 40
-megapixels is refused.
-
-**Withdrawing.** A selection is withdrawn when you click or press `Esc` in the preview; a drawing when you erase all its
-ink (turning drawing off with `d` does not). A selection is also withdrawn when the file changes or the text size
-changes (a drawing stays on its figure); in a markdown preview the arrival of an equation, a figure or a code block's
-colors lays the document out again and withdraws it too. Either is withdrawn when you show another file or the canvas, open the editor,
-switch to another session (the session you left is cleared), or close the window. Showing the image or the canvas again shares the drawing again, and hiding the canvas shares the selection
-again. A connection that ends (a lost link, a closed window) withdraws its share in the daemon, and a window that
-reconnects shares its current one again. A selection or drawing that the row's agent side refuses also withdraws the one before it; a refusal before the row is
-found (`unknown_workspace`, no state folder) withdraws nothing. What
-the agent was already given stays in that conversation's history: if you ask the agent later, it can still say what it
-was given. A new conversation forgets it.
-
-**Status line.** It says what happened, `selection` or `drawing` first:
-
-- `selection shared: the agent sees it at its next prompt`
-- `selection held: this row's agent started before it could take one; restart the row to share`: the agent started
-  without the hook. Causes: the session started before this release was installed (end it, start a new one and select
-  again; a new session has a new id, so nothing is shared until you select), the Claude Code integration under
-  `~/.sot-comm/claude-layer` is not installed (install it first), or you pass your own `--settings` that the launch
-  cannot merge.
-- `selection not shared: this view is not the file's text`
-- `selection not shared: this row's agent takes none`
-- `selection not shared: this host's daemon does not take selections`
-- `selection not shared: <reason>` for any other refusal, such as `unknown_workspace` (the daemon no longer knows this session), `bad_node_id` (the preview is not a
-  project file) or `publish_failed` (select again).
-- `drawing shared`, `drawing held` and `drawing not shared` say the same for a drawing; its reasons include `the image
-  is over 40 megapixels` and `the daemon cannot read this image`.
-
-Withdrawing is not announced.
+What the preview says about something you just did in it, such as an SVG it could not draw or a crop it refused, shows on the status line and also in a box at the foot of the preview pane, in the look of the help peek. The box stays for 5 seconds and fades; a newer message replaces it, a switch to another row or another file drops it, it does not show while you edit, and a help peek (`Ctrl+?`) shown at that moment takes its place. The status line keeps the message after the box is gone. Some messages are in the box alone, and the status line stays as it was: an equation that could not be drawn, and a file that could not be previewed or drawn again after another program changed it or the window reconnected, unless you had asked for the preview meanwhile (selecting the file, turning a page, zooming), when the status line says it too. When a file you are looking at cannot be previewed again, the pane keeps the older content, and its title ends `REFUSED, view not updated` until a preview of it succeeds or another file is shown, long after the box has faded. Some messages are on the status line only: a page or video opened in the browser (and its failures), saving in the editor. The messages about a drawing or a selection are listed in [Drawing and selecting for the agent](drawing.md#What-the-window-says).
 
 ## Capturing a preview region for the LLM
 

@@ -177,7 +177,8 @@ Press the left mouse button on a message's text and drag to select within that m
 selected. `Ctrl+c` (or `Ctrl+Shift+c`) copies the selection as shown: a link's label, a mention's name, a style's text
 without its marks. With nothing selected it copies the marked message's text. `(edited)` is never copied. The status
 line says `copied chat text`, or `nothing to copy: select text or mark a message`. The session's agent never sees what
-you select in the chat; it sees only text you select in the preview pane and what you draw there.
+you select in the chat; it sees only text you select in the preview pane and what you draw there
+([Drawing and selecting for the agent](drawing.md)).
 
 ## How messages look
 

@@ -46,6 +46,7 @@ makedocs(;
         "Home" => "index.md",
         "Get started" => [
             "What it does" => "features.md",
+            "What's new in 0.7.1" => "whats-new.md",
             "Quickstart" => "start/quickstart.md",
             "Your first session" => "start/tour.md",
             "What keeps running" => "start/running.md",
@@ -59,6 +60,7 @@ makedocs(;
             "Setting up Slack" => "guide/chat-setup.md",
             "The project chat" => "guide/chat.md",
             "Figures" => "guide/figures.md",
+            "Drawing and selecting for the agent" => "guide/drawing.md",
             "The REPL" => "guide/repl.md",
             "Previews" => "guide/previews.md",
             "A second frontend" => "guide/second-frontend.md",

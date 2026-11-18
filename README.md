@@ -40,6 +40,8 @@ Compared with Claude Code next to a REPL in tmux, or with VS Code, its Julia ext
 - Claude Code sessions run Julia in the session's persistent REPL, and each run appears in your REPL drawer.
 - Sessions message each other over a built-in relay and can start sessions for worktrees and other repos.
 - An agent can open a file or figure in your preview pane to show you what it produced, and you can hand it a file path or a cropped region of an image.
+- An image in the preview can be [drawn on](https://kalidke.github.io/ship-of-tools/dev/guide/drawing) (`d`), or a blank canvas sketched on (`Shift+d`), and a Claude Code session's agent sees the drawing at its next prompt (0.7.1).
+- Text selected in the preview is given to a Claude Code session's agent at its next prompt (0.7.1).
 - There is no diff view of its own: you review the agent's edits in the preview pane, which follows a file as it changes on disk, in the REPL drawer, which shows every run the agent made, and with `git` in a shell session. To change a file yourself, focus the preview and press `e` for the built-in editor; `Ctrl+s` saves.
 
 **Julia live loop**
@@ -49,7 +51,15 @@ Compared with Claude Code next to a REPL in tmux, or with VS Code, its Julia ext
 **Previews**
 - The preview pane renders the file under the cursor: markdown with typeset math, paged PDF, images, HDF5 structure, syntax-highlighted Julia, a video poster frame.
 - Same-size images in a directory share pan and zoom, so stepping through a run's plots keeps the framing.
+- SVG files preview as their picture, with zoom and pan (0.7.1).
 - Modules mode lists a package's modules and their definitions: types, functions, macros and submodules.
+
+**Project chat**
+- A session shows its project's [Slack channel](https://kalidke.github.io/ship-of-tools/dev/guide/chat) in the Chat drawer (`Ctrl+k`); a message typed there is posted under the person's own Slack account (0.7.1).
+- The file the preview shows can be posted to the channel (`Ctrl+u`), and a session's agent can post text and figures to it (0.7.1).
+
+**Window**
+- Scrolling eases in the preview, the agent pane and the Chat, Terminal and REPL drawers (0.7.1).
 
 **Machines**
 - The backend runs where the data and GPUs are; the window runs on your laptop and attaches over SSH.
@@ -59,7 +69,7 @@ Compared with Claude Code next to a REPL in tmux, or with VS Code, its Julia ext
 **Extend**
 - Add a preview for a new file type in Julia, with no Rust changes. The built-in text, source, PDF and video previews use the same interface.
 
-See the [feature gallery](https://kalidke.github.io/ship-of-tools/stable/features) for a short recording of each one.
+See the [feature gallery](https://kalidke.github.io/ship-of-tools/stable/features) for a short recording of each one. Items marked 0.7.1 are in the release candidate, not in 0.7.0; [What's new in 0.7.1](https://kalidke.github.io/ship-of-tools/dev/whats-new) lists what it adds.
 
 <p align="center"><img src="docs/src/assets/readme/sessions-crop.png" alt="Session rows in Sessions mode, coloured by work state" width="70%"></p>
 <p align="center"><sub>Demo session rows tinted by work state: green working, red waiting for your answer, purple waiting on a job, blue done, gray idle.</sub></p>

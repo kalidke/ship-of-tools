@@ -35,7 +35,9 @@ through a run's plots keeps your framing instead of resetting it each time.
 
 To point the agent at what you are looking at, zoom in and press **`c`**: the
 visible region is cropped from the source image and handed to the agent in
-your session.
+your session. To mark the figure itself, press `d` and draw on it: the agent
+is given the figure with your marks at its next prompt. See
+[Drawing and selecting for the agent](drawing.md).
 
 To share a saved figure in the project's Slack channel, press `Ctrl+u` in the
 Chat panel while the preview shows it, or ask the session's agent, which posts

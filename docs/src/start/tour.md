@@ -22,7 +22,8 @@ you switch with one key. The middle column is the **preview** of whatever you
 have selected. The right column is the **agent pane**; its title bar reads
 `llm`. The focused pane's title bar instead shows the pane's name and its main
 keys, so with focus the agent pane's title reads `Agent` followed by its keys.
-The drawer shows the Julia REPL, a terminal, the host monitor or Help.
+The drawer shows the Julia REPL, a terminal, the host monitor, the project
+chat or Help.
 Below the drawer, the row of names along the bottom edge is the session
 strip, one entry per session; the window's own bottom border reads
 `fe <version> · be <version>`, highlighted when they differ. See
@@ -78,6 +79,10 @@ entry has a concept annotation, `e` edits the annotation instead.
 <DemoShot name="nav-files" caption="Files mode with src/DemoProject.jl selected; its source in the preview." />
 ```
 
+With the preview focused, `d` draws on an image and `Shift+d` shows a blank
+canvas; the session's agent is given the drawing at its next prompt. See
+[Drawing and selecting for the agent](../guide/drawing.md).
+
 For what each file type renders and how, see [Previews](../guide/previews.md).
 
 ## Modules mode — `m`
@@ -124,6 +129,16 @@ your Linux hosts, read from `/proc` and `nvidia-smi` with no extra privileges
 (the sampler is a Linux script; a macOS host has no `/proc` to read). Which
 hosts it shows is configured in `hosts.toml`; see
 [The Monitor drawer](../guide/interface.md#The-Monitor-Drawer).
+
+## The Chat drawer — `Ctrl+k`
+
+Press `Ctrl+k` for the **Chat** drawer: the Slack channel of the selected
+session's project, newest message at the bottom. Type a message and press
+Enter to post it under your own Slack account. Until Slack is connected the
+drawer shows the steps to connect it, and a project with no channel gets a
+list to pick one from. The drawer's own guides, which call it the Chat panel,
+are [Setting up Slack](../guide/chat-setup.md) and
+[The project chat](../guide/chat.md).
 
 ## Navigation modes: Sessions — `s` — and Hosts — `h`
 
