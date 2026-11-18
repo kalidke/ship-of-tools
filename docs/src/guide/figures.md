@@ -37,6 +37,12 @@ To point the agent at what you are looking at, zoom in and press **`c`**: the
 visible region is cropped from the source image and handed to the agent in
 your session.
 
+To share a saved figure in the project's Slack channel, press `Ctrl+u` in the
+Chat panel while the preview shows it, or ask the session's agent, which posts
+it with `sot-fe chat post --file <path>`. See
+[Posting a file](chat.md#Posting-a-file) and
+[A figure from the agent](chat.md#A-figure-from-the-agent).
+
 ```@raw html
 <DemoShot name="repl-figure" caption="A CairoMakie figure rendered in the window, not in a terminal." />
 ```

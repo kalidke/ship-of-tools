@@ -1,267 +1,278 @@
 # The project chat
 
-To connect Ship of Tools to Slack the first time, or to give another project a channel, see
-[Setting up Slack](chat-setup.md).
+The Chat panel shows the Slack channel of the selected project's session and posts to it. To connect Slack or to give a
+project its channel, see [Setting up Slack](chat-setup.md).
 
-A project with no channel shows a list of your Slack channels to pick from when you open the Chat drawer on it: type to narrow
-it, `Up` and `Down` to choose, `Enter` to pick, `Esc` to close. After `Esc` the title reads `no channel`, and `Enter` opens the
-list again. `Ctrl+Shift+k` (`chat.setup`) opens it for any project on the computer the chat runs on, beginning with `No channel
-for this project` for one that has a channel. With nothing typed, the foot says `type a message and press Enter to post it`; on a hub that posts as you,
-until the first post from this computer it also says how a post appears and names this chord. How the list and its marks work is in [Setting up Slack](chat-setup.md).
+Keys are written as on Linux and Windows; on a Mac, press Cmd where this page says Ctrl. A letter in a key is always
+lowercase: `Ctrl+k` is Ctrl and k, and `Ctrl+Shift+k` adds Shift. Keys can be changed; see
+[Keybindings](../ref/keybindings.md).
 
-The Chat drawer (`Ctrl+k`) shows the messages of one Slack channel: the channel the selected row's folder maps to.
-The records the window holds are listed oldest first, and the newest sits at the bottom. The view follows the newest, so
-a message that arrives takes the bottom line and lifts the rest. An empty channel shows `no messages`.
+## Opening the panel
 
-ArrowUp and ArrowDown (`chat.mark_older`, `chat.mark_newer`) mark one message, starting at the newest, and the view glides to show it when it is out of view. The mark is a lighter band across the message with a blue bar at its left edge; it changes nothing else about the message. A scroll that leaves the mark out of the drawer moves it to the nearest message still in view.
+`Ctrl+k` opens the Chat panel in the bottom drawer and gives it the keys; `Ctrl+k` again hides it. The panel follows the
+selected session: select another session and it shows that project's channel, starting at its newest message. A click
+in the messages gives the panel the keys; Escape gives them back to the navigation tree (after closing an open thread
+first).
 
-ArrowRight (`chat.thread_open`) opens the marked message's thread, a message with no replies included: the thread shows the message and its replies, oldest first, and Escape closes it, with the mark back on the message; so does ArrowLeft (`chat.thread_close`) while the draft is empty (with anything in the draft it does nothing). Changing the row or hiding the drawer closes it too. A thread is read when it is opened, not watched: a reply made on the phone shows when the thread is opened again, and `N replies` on a message is not live either. Each open takes about 8 Slack reads for a long thread, more when Slack sends short pages, plus the lookups of the authors' names. A thread shows up to 156 messages, the parent included: past that the newest replies are not shown, and the title says so. While a thread is open the channel's older messages give way to it, never its newest 100. A refused read is asked again after a few seconds (thirty when Slack rate limits), and the title says why. A message begun while a thread is open is a reply in that thread (the line under the draft reads `reply in thread of` the message's time), and one begun in the channel stays the channel's when a thread opens; a draft keeps where it was begun through closing the thread, changing the row and a reconnect. After your own reply is posted and the thread is open, it is read again, which costs about what opening it did (about 8 reads for a long thread), so it shows the parent alone for a moment.
+The panel's top line reads `chat ·` and the channel (`chat · #lab-general`). When more than one Slack workspace is
+connected it names the workspace first (`chat · Alpha Lab · #lab-general`). After the channel it says what the panel is
+waiting for or why it shows nothing; [What the top line says](#What-the-top-line-says) lists every case. Messages about
+what a key did appear on the status line above the navigation tree and stay there 10 seconds, unless a newer one
+replaces them; [What the status line says](#What-the-status-line-says) lists them.
 
-To read older messages, scroll up: PageUp and PageDown move a third of the drawer, Alt+Up, Alt+Down and the mouse wheel one
-line. The view glides to its new place over `smooth_scroll_ms` (`[display]`, 150 ms unless you change it; 0 moves at once);
-an arrow key that marks a message out of view glides there too, and a run of arrow presses carries on from where the view is.
-`End`, opening and closing a thread move it at once, and so does a message
-that arrives while you follow the newest. A reader scrolled up stays where they are: a message that arrives, is edited or is deleted does not move the view,
-and a message deleted at the reader's place stays there as `(message deleted)`; the next one takes the place only when a new snapshot or the trim drops it. `End` (`chat.latest`) returns to the newest and
-follows it again, and scrolling down to the newest does the same. One case moves the view: deleting or shortening the newest message can bring the newest wholly into view,
-which returns the reader to following. Scrolling to the oldest message reads older pages from Slack, up to the 256 messages the drawer keeps; the title says when a
-refused or empty read stops it, when Slack's plan hides older messages and when the full drawer leaves older ones unshown. Messages
-older than the newest 100 are as read: an edit or delete of one does not reach the drawer. The drawer drops the oldest past 256, never the message
-the reader is on or a newer one, so a reader on the oldest message stays there while the drawer holds up to 276; past 276 the
-oldest go anyway and the view moves to the next message that is kept. Switching to another row's channel starts at its newest.
-Switching back to one of the last two channels shown draws the messages the drawer held for it as soon as the hub answers
-for the row, with `reading…` in the title until it is read again. The read returns the channel's newest messages, which
-replace the newest held; the older ones kept stay as read, so an edit or delete of one, or a change to a thread's reply count, made while the channel was away does
-not reach the drawer for as long as the channel is one of the last two. The drawer keeps those messages in memory when the
-Chat drawer is hidden.
+## Keys in the Chat panel
 
-The drawer is dark, as Slack's desktop app is in dark mode: light gray text on a near-black ground. Each group of messages starts
-with a header line: the author's name in bold, a small gray badge for a post that came from a Slack app (`APP`) or from an agent in one of your rows (`AGENT`), and the time in small gray text, on a 12-hour clock (`2:14 PM`, whatever the day). A post you make carries no badge, and neither does one an older hub made as the app before posts went out as you. The badge comes from where Slack says the post came from, never from the
-text, so a name or message that reads `[drawer]` or `AGENT` shows no badge. The text follows as typed. A thin gray line runs across the drawer between each two messages, as in Slack, one under the
-other in a group too (a day divider takes its place); it is not text, and a press, a drag or a copy never takes it.
+| Key | What it does |
+|-----|--------------|
+| `Ctrl+k` | Show or hide the Chat panel. |
+| typing, `Ctrl+v` | Write the message at the panel's foot; a paste is added whole. |
+| `Shift+Enter` | Start a new line in the message. |
+| `Enter` | Post the message. With nothing typed in a project that has no channel, open the channel list. |
+| `Ctrl+u` | Post the file the preview pane shows, with the message as its comment. |
+| `ArrowUp`, `ArrowDown` | Mark a message: the first `ArrowUp` marks the newest, then each press marks the next older or newer one. |
+| `ArrowRight` | Open the marked message's thread. |
+| `ArrowLeft` | Close the open thread, while nothing is typed. |
+| `Escape` | Close the open thread; with none open, give the keys back to the navigation tree. |
+| `PageUp`, `PageDown` | Scroll a third of the panel. |
+| `Alt+ArrowUp`, `Alt+ArrowDown`, mouse wheel | Scroll one line. |
+| `End` | Go back to the newest message and follow new ones. |
+| `Ctrl+c` | Copy the selected text, or the marked message's text when nothing is selected. |
+| `Ctrl+o` | Open the marked message's first picture in the preview pane. A click on a picture opens that one. |
+| `Ctrl+Shift+k` | Open the channel list: change this project's channel, pick one in another workspace, or connect a workspace. |
 
-The first message of each local day, and the oldest message held, has a day divider above its header: the day's name
-(`Today`, `Yesterday`, or `Monday, November 9th`, with the year after it for another year) centered in a small outlined box with a
-thin line running out to each side. The divider is not text: a press or a drag never selects it, and a copy never includes it.
-The day is your local day, found with one fixed offset from UTC for every message, so near a daylight saving change `Today` or
-`Yesterday` can begin an hour from where your clock puts it.
+While the channel list is open, Up and Down choose, Left and Right show another workspace's channels, typing narrows
+the list, Enter picks and Escape closes it.
 
-A message that has replies has a line in Slack's style: `2 replies` (`1 reply`) in blue and, when the daemon knows it, the
-last reply in gray (`Last reply today at 2:44 PM`, `yesterday at …`, `Nov 9 at …`, with the year for another year).
+## Reading
 
-A message that Slack marks as edited ends with `(edited)` in small gray type, after its last word (on its own line after a code
-block or a quote). A deleted message shows none.
+The newest message is at the bottom, and the panel follows it: a message that arrives takes the bottom line and lifts
+the rest. Scroll up to read older messages; while you are scrolled up, the view stays where it is when messages arrive,
+are edited or are deleted. `End`, or scrolling down to the newest, follows new messages again. A scroll glides to its
+place over `smooth_scroll_ms` in the `[display]` table of `settings.toml` (150 ms unless you change it; 0 moves at once).
 
-Messages from one author in a row share one header, as in Slack: a message with the same author and origin as the one before
-it, on the same local day and less than five minutes after it, has no header of its own and its text follows the last one's. The
-first message of each group has a small colored square in the margin at the left, a color chosen from eight by the author (so two authors can
-share one); the text of every message starts right of that margin. Mark a message that has no header and its time (`2:01`, without AM or PM) shows in the margin beside it.
-The five minutes are Slack's rule as remembered, and have not been checked against the desktop app. A page of older messages
-that arrives above the top message can take that message's header and day divider off, which moves that message and every message
-below it up by their height. The reverse also happens: the oldest message held always shows a header and a divider, so when the
-oldest messages go (past 276), the one that becomes the oldest gains both, and the messages below it move down.
+Scrolling to the oldest message reads older ones from Slack, up to 256 messages in all; the top line says when no more
+can be read. An empty channel shows `no messages`.
 
-## Which channel
+The mark is a lighter band across the message with a blue bar at its left edge. The view moves to keep the marked
+message in view, and a scroll that leaves it out of view moves the mark to the nearest message still shown.
 
-The hub's `chat.toml` maps a folder to a channel; a row whose folder is mapped shows that channel. How the mapping is
-written is in [the chat configuration](../ref/config.md#chat.toml-and-chat-secrets.toml). The drawer follows the selected
-row. Its title is `chat · #<channel name>`; when more than one Slack workspace is connected on the hub it is `chat · <workspace name> · #<channel name>`, so you can tell which workspace the channel is in. The workspace name is the one Slack gave when the workspace was connected or the hub's daemon last started it, cut to 24 cells with `…` when it is longer; a window that has not been updated shows no workspace name. The channel name is (the mapped channel's name as Slack spells it, public or private, looked up once when the hub's daemon starts and not refreshed until it starts again, so a rename shows after that; the channel's id when the name is not known, as for an older daemon, a lookup that failed (the daemon's log gives the kind of failure and the channel, not Slack's reason) or the first moments after a daemon start (the window asks again at 1, 3, 10 and 30 s, so the name appears within a minute of the start's lookup finding it). Both show only while a channel is watched, followed by what the drawer is waiting for or why it shows nothing:
+Only the newest 100 messages follow edits and deletes made in Slack; an older one stays as it was read. A message
+deleted while you watch stays in its place as `(message deleted)`; a later read of the channel usually removes it. The
+panel keeps the messages of the last two channels it showed, so switching back draws them as soon as the computer that
+runs your sessions answers, with `reading…` in the top line until the channel is read again.
 
-| the title says | meaning | asked again |
-|---|---|---|
-| `waiting for <computer> to report this project` | the window has not listed the selected row yet | every frame |
-| `no connection to <computer>` | the row's computer is not connected | when it connects |
-| `reading…` | the hub is being asked, or the channel is being read | |
-| (nothing after the channel) | the channel was read whole | |
-| `the row's folder maps to no channel` | the folder is not in `chat.toml` | at a link change or another row |
-| `set up Slack`, then each step's name; or `post as you` | Slack is not connected on the hub, its saved tokens are refused, its chat could not start (`set up Slack`), or a post of yours was refused because the hub holds no token that posts as you (`post as you`): the drawer leads you through connecting ([Setting up Slack](chat-setup.md)), then says `connecting…` and `connected` | at a link change, and after each connect |
-| `the chat on <computer> is not set up correctly` | `chat.toml` is invalid; the log of Ship of Tools' service on that computer says why, starting with the file's name (the title says to run `sotd log-path` in a terminal there, which prints the log's place) | at a link change |
-| `the chat does not run on <computer>` | the row's computer is not the one named on the `hub =` line of `hosts.toml` | at a link change |
-| `the row is gone or was replaced` | the row's id changed | when the listing gives the row a new id, or at a link change |
-| `the chat on <computer> could not answer: <reason>` | the hub refused for another reason | after a minute |
-| `Ship of Tools on <computer> has no chat: update it` | the row's daemon is too old | at a link change |
-| `the chat is not running on <computer>` | the log on that computer says why | each minute |
-| `not up to date: <reason>` | the channel could not be read whole (`no messages read yet` when the hub never answered) | each minute |
-| `your Slack app cannot read this channel` | Slack says the connected Slack app is not in the channel: a private channel it was never invited to, or a new app (connecting Slack with a new app leaves it in no channel). The panel says what to type in the channel in Slack, `/invite @` and the name Slack gives that app's bot (as the hub knows it, else your app's name from the setup), and shows the channel within two minutes after | each minute |
-| `the row is gone or was replaced`, `the row now maps to another channel` or `the row's folder maps to no channel`, after the channel | the hub refused the watch for good | at a row or link change |
+## Threads
 
-## Slack's markup
+Mark a message with `ArrowUp` and press `ArrowRight`: the panel shows the message and its replies, oldest first, and
+the top line adds `· thread`. Any message opens this way, with replies or without. While a thread is open, what you
+write is a reply in it. `Escape` closes the thread, and so does `ArrowLeft` while nothing is typed; the mark is back on
+the message. Selecting another session or hiding the panel closes the thread too.
 
-Slack's inline styles show as styles. `*bold*`, `_italic_` and `~strike~` are drawn bold, slanted and struck through, and
-`` `code` `` is drawn in a monospace face, in orange, on a bordered box; the marks themselves are not shown, and a
-selection or a copy of the message gives the text as shown. The rules for where a style starts and stops are the
-drawer's reading of Slack's and have not yet been compared with the desktop app side by side: a style opens at the start
-of the text or after a space or punctuation mark and before something that is not a space, and closes at the next
-matching mark on the same line before a space, punctuation or the end. A mark in the middle of a word (`2*3*4`,
-`snake_case_name`), an unclosed one, and one closed on a later line stay as typed, and so does a run of backticks where
-no code span is open (two that end one span and begin the next disappear: `` `a``b` `` shows `ab` in one box). A mark
-followed by the same mark does not start a style, so `**x**` shows `x` in bold between two asterisks. Code shows no other style inside it, and a
-style around code is dropped.
+A thread is read when it is opened, and again after your own reply in it: a reply someone makes elsewhere while it is
+open shows when you open the thread again. A thread shows up to 156 messages; the top line says
+`the rest of this thread is not shown` past that.
 
-A fenced code block (three backticks, then three again) shows its lines in a monospace face on one bordered panel that runs
-from just left of the text to the drawer's right edge; the fences are not shown, and nothing inside is read as a style or a
-mention. A fence that is never closed stays as typed. A line that starts with `>` is a quote and shows without it, beside a
-gray bar left of the text, one bar for consecutive quote lines; `>>>` quotes its line and all that follow, and styles and
-mentions work inside a quote. An empty line inside a block or a quote keeps its place in the panel or the bar. Neither indents
-its text, so a line that wraps starts at the text's left edge, and a list shows as Slack sends it (`• `, `1. `) with no
-hanging indent.
-These rules, too, are the drawer's reading of Slack's and have not yet been compared with the desktop app side by side.
+A message that has replies ends with a line in Slack's style: `2 replies` (`1 reply`) and, when it is known,
+`Last reply today at 2:44 PM`.
 
-Links and mentions show as Slack shows them, in blue. A link shows its label, or its address when it has none; the address
-is never shown beside a label, and a link is not clickable. A mention shows `@` and the person's name on a tinted slug, else `@` and the label when the message carries one, else
-`@` and the person's id. The daemon looks the names up when the drawer reads a page of the channel (within ten seconds,
-so a name it could not reach in time shows as the label or the id); a message that arrives live is named only from what
-the daemon already looked up, never by a request of its own, and so is its author's name; a person not yet read shows as the label or the id
-(an author as no name) until the page is read again. A name is looked up once while the daemon runs and is not refreshed. A token inside code stays as typed. A channel shows `#` and its name, else its label, else its id. The daemon looks a channel up the same way, but only a channel mention that carries no label, and it counts toward the same sixteen names a message can have, people before channels. A private channel that is not mapped to a row shows its label or its id, never its name, as Slack shows a channel you may not be in (a private channel mapped to a row is named, so a mention of it shows its name too); whether Slack answers for a channel is not yet confirmed, and when it does not the channel shows as before;
-`@here`, `@channel` and `@everyone` show by name, and a group shows its label. A date shows the plain text Slack sends with it.
-A label is one line, whatever it holds. Any other markup the drawer does not read is shown as the markup text in blue. Text
-that looks like a header or a badge inside a message stays body text, however it is styled.
+## Writing and posting
 
-## Deleted messages
+### The foot of the panel
 
-A message deleted while the drawer watches stays in its place, with its author, time and origin, and reads
-`(message deleted)`. It counts toward the 256 messages the drawer keeps. A new snapshot (the window reads one after any
-loss of the chat feed) drops it, since the snapshot holds only what Slack still has, except a deleted message older than the
-snapshot's oldest when the snapshot reaches back to what the drawer holds, which stays; a snapshot that does not drops it too.
+While the message box is empty, the foot of the panel shows one row:
 
-## When Slack is unreachable
+`> type a message and press Enter to post it`
 
-The title does not show the state of the Slack connection. A socket outage shows only when it costs a snapshot, as
-`not up to date`. The drawer keeps the records it holds until a new snapshot replaces them. `no messages` appears only
-for a channel that was read whole and holds none.
+Under it, until the first post from this computer is made (from any project), a short explanation follows:
 
-## When the window's link drops
+`What you post appears in the channel as your own message, from your Slack account. Ctrl+Shift+k changes this project's channel.`
 
-The records the drawer holds stay on screen and the title says `not connected`. When the link to the computer comes back,
-the window watches the channel again and reads a new snapshot, which replaces the records; a lost chat feed on a link that
-stays up does the same. A draft is kept through both.
+After that first post the explanation is gone for good on this computer; the one-row prompt stays whenever the box is
+empty. With an older Ship of Tools on the computer that runs your sessions, a warning that it posts as your Slack app
+stays there instead. While a thread is open, the foot shows `> ` and `reply in thread of` the message's time
+(`reply in thread of 2:14 PM`) instead of the prompt.
 
-## The draft
+As you type, the foot shows `> ` and the last three rows of the message, and a row saying how many rows are not shown
+when it is longer. Each project has its own message, which keeps the place it was begun in (the channel, or the thread
+open then) through closing the thread, selecting another session and a reconnect; the foot names that place when the
+top line does not. A message holds about 8 KiB; a key or paste past that is refused whole. It is lost when its session
+ends or the window closes.
 
-With the drawer focused, typing writes a draft at its foot: `> ` and the last three rows, then where it goes, unless the title already shows it (`reply in thread of` the parent's time for a draft begun in a thread, and for the next one while a thread is open, with ` in` the draft's channel when that is not the one the title shows; `to` the draft's channel for a channel draft while a thread is open or when the title shows another channel; the channel is spelled `#name` when it is the watched one and its name is known, and by its id otherwise; no such row when the draft has no thread, none is open and its channel is the title's) and, if the
-draft is longer, how many rows are not shown (a line wider than the drawer wraps, and each wrapped row counts). `Shift+Enter`
-(`chat.newline`) starts another line, and a paste is added whole. There is one draft per row, and where it goes
-(the channel, or the thread open then) is fixed when its first character is typed, even if you move the view afterwards. A draft stops at what a post
-can carry (8 KiB, counting `&`, `<` and `>` as five, four and four bytes); a key or paste past it is refused whole and
-the status line says so. Control characters other than tab are dropped. A draft is lost when its row goes or the window
-closes.
+### Your chat name
 
-## Posting
+If no chat name is set, the first time you press Enter with a message typed, the foot asks
+`Your name for chat posts (saved in settings.toml):`. Type a name and press Enter: it is saved in `[chat] name` of
+`settings.toml` (see [the settings reference](../ref/config.md)), and your message stays. Press Enter again to post it.
+Escape cancels and keeps the message. A name with a quote, a backslash or a control character, or longer than 160
+bytes, is refused. Your posts appear in Slack under your own Slack name; the chat name shows only when the computer that
+runs your sessions runs an older Ship of Tools, which posts as your Slack app. To change the name, edit `[chat] name`
+and restart the window.
 
-`Enter` (`chat.send`) posts the draft once, to the channel or thread its compose line names. On a hub that holds your Slack user token the post appears in the channel as your own message, from your Slack account, with no mark of the app, so people and bots in the channel treat it as yours; you must be in the channel (otherwise the post is refused `you are not in that channel in Slack; join it there first`), and a hub that holds no such token, or whose token Slack refused, posts nothing for you, refuses the post and shows the `post as you` screen to connect again ([Setting up Slack](chat-setup.md)). Until the first post from this computer, the line under an empty draft says which a post will be: as your own message on a hub that can post as you, and as a message from your Slack app on an older hub, which posts it as the app, under the name in
-`[chat] name` of `settings.toml` (see [the settings reference](../ref/config.md)), with no badge. After the first post from this computer, in any project, the line under an empty draft is gone; an older hub's warning stays. The window remembers this in `state-<computer name>.toml`, in the `sot` folder of the per-user configuration folder (`~/.config`, or `%APPDATA%` on Windows), not in `settings.toml`. With no name set, nothing is sent: the foot of the drawer becomes the prompt `Your name for chat posts (saved in settings.toml):` and the keys type the name
-instead of the draft. `Enter` saves it to `settings.toml` (the file the window loaded, or the per-user one, made if missing) and uses it at
-once, for every row and project in the window, and the draft stays: the next `Enter` posts it. `Escape` cancels and keeps the draft. A name
-is refused, with the reason on the status line and the prompt open, when it is empty, holds a quote or a backslash, or is longer than
-160 bytes (the prompt takes no more at 160 bytes), and a paste that holds a newline or another control character is refused whole, never
-joined. The prompt ends, with the draft kept, when you change the row, hide the drawer, the link to the hub changes, or the row has no
-mapped channel; scrolling, the mark and a thread's opening still work while it is open. A settings file the window will not edit safely (one that is not valid TOML, or spells `[chat]` or `name` in some other way) is left as it is, and the status line says how to add the name by hand. The name is asked once per settings file; to change it later, edit `[chat] name` and restart the window. While the post waits the draft is frozen: a key or `Enter` is refused with `posting…` on the status line. The draft is cleared only by a
-reply that proves the post was made. Any other outcome keeps it, and the status line says why: `not posted` with the
-reason (a `bad request` says the chat name is not valid and names `[chat] name`; a hub with no token that posts as you says to connect Slack again), a wait when Slack is rate limiting (`Enter` is refused until it passes), or
-`may have been posted` when the answer was lost, in which case look at the channel before sending it again: a post is never
-sent a second time on its own. A typed `<` posts as itself, and a post cannot mention or ping anyone: `@here` and
-`<!channel>` arrive as plain text. A window posts only to a hub that is updated to escape text; to an older hub it says
-`not posted: update Ship of Tools on the computer that runs your agents, then post again` and keeps the draft.
+### What happens when you post
 
-`Primary+u` (`chat.post_file`) posts the file the preview pane shows, for the row the drawer shows, with the draft as
-its comment: once, as your own message from your Slack account (a hub that holds no user token posts nothing for you
-and shows the `post as you` screen), into the channel or thread the draft was begun in, or with no draft into the
-channel and the thread open then. It is the same file a row's figure can be: one of the row's folder, at most 16 MiB,
-never the chat's own configuration files. It waits as a post does, and only a reply that proves the share clears the
-draft, and the status line then says `shared <name> to <channel>`; any other outcome keeps it, with the same words on
-the status line. Holding the key posts once. With nothing in the preview, on an older hub, or while the channel picker
-or the name prompt is open, nothing is sent and the status line says why (unmeasured against Slack itself until a person's first use).
-A picture opened from the chat is not a file of the project, so with one in the preview nothing is sent and the status
-line says so: show a file in the preview, then press the key again.
+`Enter` posts the message once, to the channel or thread the foot names, as your own message from your Slack account.
+You must be a member of the channel in Slack. While the post waits, the message is frozen: a key or Enter is refused
+with `posting…` on the status line. Only Slack's answer that the post was made clears the message; any other outcome
+keeps it, and the status line says why. If the answer was lost (`may have been posted`), look at the channel before
+posting again: a post is never sent twice on its own.
 
-## Selecting
+A post is plain text: what you type, a `<` included, arrives as typed, and `@here` and `<!channel>` arrive as plain
+text that pings no one.
 
-Press the left mouse button on a message's text and drag to select within that message: the selection stays in the message
-where you began, and the name and time line is not selectable. A click on the name and time line, in the margin, or anywhere else, selects
-nothing, and a click in the messages still focuses the drawer. Any other click clears the selection, and so does a change
-to the message (an edit or a delete), a new window width, opening a thread, and changing the row; moving the mark does not. A chat
-selection is never shared with the agent; only the preview's text and your drawing are.
+If the computer that runs your sessions holds no Slack code that posts as you (it was connected before Ship of Tools
+posted as you, or Slack stopped accepting the code), nothing is posted, and the panel shows the `post as you` screen in
+place of the channel, with your message kept: see
+[Give a connected workspace new Slack codes](chat-setup.md#Give-a-connected-workspace-new-Slack-codes).
 
-## Copying
+## Posting a file
 
-`Ctrl+c` or `Ctrl+Shift+c` (`Cmd+c` on macOS; `chat.copy_selection`) with the Chat drawer focused copies the selected text
-exactly as shown: a link's label, a mention's name and a style's text without its marks, a code block's lines without its fences and a quote's without its `>` (an empty line in either copies as an empty line, with no added space), markup the drawer does not read as the markup text, `&lt;` and `&gt;` as `<` and `>`, and a deleted message as
-`(message deleted)`, with the message's own line breaks and none from the wrap. With no selection it copies the marked
-message's text, not its name and time line (a message without a header copies its whole text). `(edited)` is Slack's mark and not the message's text, so no copy holds it. With neither, the status line says there is nothing to copy. Ctrl+c in the
-agent pane, the Terminal and the Julia REPL is unchanged.
+`Ctrl+u` posts the file the preview pane shows, once, as your own message, with what you typed as its comment. It goes
+to the channel or thread your message was begun in, or, with nothing typed, to the channel and the thread open then.
+The status line says `shared <name> to <channel>` when it is posted, and the message is cleared.
+
+The file must be one of the project's files, shown in the preview from the files tree: a file of the selected
+session's folder, at most 16 MiB, and not one of the chat's own configuration files. A picture opened from the chat is
+not a file of the project, so with one in the preview nothing is posted and the status line says so for 10 seconds:
+`not posted: the preview shows a picture opened from the chat, which is not a file of this project; show a file in the
+preview, then press Ctrl+u`. Select the file in the files tree, click in the Chat panel and press `Ctrl+u` again.
+Nothing is posted either while the channel list or the name prompt is open.
+
+A person's post of a file has not yet been checked against Slack itself.
 
 ## Pictures
 
-A message's PNG, JPEG, GIF and WebP files show below its text as square tiles, each with its thumbnail fitted in it once
-Slack's thumbnail has arrived; any other file stays a file line. A click on a tile (pressed and released in place: a drag
-that starts on a tile opens nothing) opens that picture in the preview pane, and `Ctrl+o` (`Cmd+o` on macOS;
-`chat.open_image`) opens the marked message's first picture. The window reads the whole picture from Slack (at most 16 MiB)
-each time it opens one; the status line says `opening the picture…` while it comes and `picture shown in the preview` when
-it is shown. It refuses, with the reason on the status line, a picture that does not decode, an open while the link to the
-hub is down or on a hub too old to send pictures, and one whose link changes before it comes; a refused open is never made
-later by itself. The picture is not a project file: it has no name in the
-files tree, and drawing, crop, the scale and opening in another program do nothing over it. Moving the cursor in the files
-tree, switching to another row, or a change to the file the cursor is on shows a file again. One picture is read at a time;
-opening another while one is on its way waits for it, and only the last one you asked for is shown.
+A message's pictures (PNG, JPEG, GIF and WebP) show below its text as square tiles, each with Slack's thumbnail once
+it arrives; any other file shows as a line with its name. A click on a tile (pressed and released in place) opens that
+picture in the preview pane, and `Ctrl+o` opens the marked message's first picture. The status line says
+`opening the picture…`, then `picture shown in the preview`, or why it was not opened.
 
-The window never decodes the picture itself. It hands the file to a separate process of its own, the one that draws SVG
-files, held to 2 GiB of memory and 10 seconds; that process answers with the picture shrunk to at most 16 megapixels (its
-own shape kept), and only that is shown, so a larger picture shows at less than its full resolution. A picture it cannot
-draw within those bounds, or that ends the process, is refused with the reason on the status line and the window goes on.
-An ordinary 40-megapixel JPEG takes about half a second there, outside the window's own work, and a little more in the
-window to show.
+A picture opened from the chat is not a project file: it has no name in the files tree, `Ctrl+u` does not post it, and
+drawing, cropping and the scale bar do not work on it. Moving the cursor in the files tree, or selecting another
+session, shows a file again. A very large picture is shown at reduced resolution.
+
+## Selecting and copying
+
+Press the left mouse button on a message's text and drag to select within that message; the name and time line is not
+selected. `Ctrl+c` (or `Ctrl+Shift+c`) copies the selection as shown: a link's label, a mention's name, a style's text
+without its marks. With nothing selected it copies the marked message's text. `(edited)` is never copied. The status
+line says `copied chat text`, or `nothing to copy: select text or mark a message`. A chat selection is never shared
+with the agent; only the preview's text and your drawing are.
+
+## How messages look
+
+The panel is dark, like Slack's desktop app in dark mode. Each message starts with a header: the author's name in bold,
+a small gray badge for a post from a Slack app (`APP`) or from an agent in one of your sessions (`AGENT`), and the time
+on a 12-hour clock (`2:14 PM`). Your own posts carry no badge. Messages from one author less than five minutes apart on
+the same day share one header, as in Slack, with a small colored square in the margin; mark such a message to see its
+time in the margin. A divider names each day (`Today`, `Yesterday`, `Monday, November 9th`). A message Slack marks as
+edited ends with `(edited)`. The five-minute grouping is Slack's rule as remembered, and has not been compared with the
+desktop app.
+
+Slack's styles show as styles: `*bold*`, `_italic_`, `~strike~`, `` `code` ``, fenced code blocks and `>` quotes.
+Links show their label (a link is not clickable), people as `@` and their name, channels as `#` and their name, and
+`@here`, `@channel` and `@everyone` by name. A name not looked up yet shows as its label or its ID until the channel is
+read again. Any other markup shows as typed, in blue. These rules are the panel's reading of Slack's, and have not yet
+been compared with the desktop app side by side.
+
+## The agent in the channel
+
+### A reply from the agent
+
+A session's agent posts to its project's channel with `sot-fe chat post [--thread <ts>] (<text> | --stdin)`, run in the
+session. The post appears under the session's handle (its name for [messages between sessions](messaging.md)) as
+`<handle> (row via Ship of Tools)`, in the thread named by
+`--thread`, or else as a new message. It is sent once: it prints `posted <ts>` and exits 0; exits 2 with `refused` and a
+reason, or `limited, wait <n> s`, when nothing was posted; and exits 3 with `unknown` or `no answer` when the post may
+exist, in which case the agent does not post it again and reads the thread first. A reply is public to every member of
+the channel. It is not mail: it does not come back to the session.
+
+### A figure from the agent
+
+Ask the session's agent to post a figure, and it runs `sot-fe chat post [--thread <ts>] --file <path> [<comment> |
+--stdin]` in the session. The file must be in the session's folder: a relative path is taken from the folder the
+command runs in, and a path outside the folder or with a `..` in it is refused before anything is sent. A link inside
+the folder is followed, so a `data/results` link to another disk can be posted; the chat's own configuration files are
+refused. Any regular file of at most 16 MiB can be posted; Slack shows it under `<handle> (row via Ship of Tools)`,
+then the comment. It prints `posted <ts>`, or `posted file <id>` when Slack names no message, with the same exit codes
+as a reply. Sharing into a thread with `--thread` has not yet been checked against Slack itself.
 
 ## Mail to the row
 
-When the hub's `chat.toml` sets `mail_after`, the daemon files each new post a channel member makes (or the drawer makes
-for you) in a mapped channel as one marked line of mail to the row mapped to its folder, with no window open. A free
-Claude row is woken, a busy one reads it at the end of its turn, and a Codex row gets it unwoken. Today this covers the
-posts the daemon sees live and files at once; a recovery pass finds the rest. A post made while the daemon was down or the
-Slack connection was lost, and a post whose filing was refused (the row had no live session for ten minutes, say), are
-found by the first pass after the connection's next hello, or after the refusal, or after 6 hours at the latest (while
-the row stays absent, a pass is tried again after 30 seconds, doubling to 10 minutes), and the daemon log shows each filing and each pass as one line. A
-pass reads the channel back from now to the channel's floor (about one read a second and a half, and one more for each
-thread with a reply since), files at most 200 posts and goes again at once for more. Slack hides older history on some
-plans, and a pass reads what Slack gives. Slack hands each event to one connection, so any other program that opens a
-connection with the chat app's token while the hub delivers (a probe, or a daemon from before the single listener) takes
-some events from it with no sign that any was lost, and those posts wait for the next hello (a few hours) or the
-6-hour sweep, whichever comes first, not for the next pass of any kind.
-A pass and the drawer share Slack's limit on reads: a pass at about 40 reads a minute leaves the drawer the rest of Slack's
-history allowance, and when Slack tells a pass to wait, the drawer's reads wait for the same time (a post is not held by it).
-A restart files nothing twice, because the daemon reads the inboxes at its start and files nothing until it has.
+When `chat.toml` on the computer that runs your sessions sets `mail_after` (see
+[the chat configuration](../ref/config.md#chat.toml-and-chat-secrets.toml)), each new post a channel member makes in a
+mapped channel, yours from the panel included, is filed as one marked line of mail to the session mapped to that
+channel's folder, with no window open. An idle Claude session is woken by it, a busy one reads it at the end of its
+turn, and a Codex session gets it without being woken.
 
-### The row's reply
+A post made while that computer was down or its Slack connection was lost, and a post whose filing was refused (the
+session had not been seen for ten minutes, say), are found by a later recovery pass (one runs at least every 6 hours)
+and filed once; the log of Ship of Tools' service on that computer shows each filing and each pass. A restart files nothing twice. Slack hides older
+history on some plans, and a pass reads what Slack gives. Slack hands each new message to one connection of an app, so
+any other program that connects with the chat app's App-Level Token takes some posts from it, and those wait for a
+later pass.
 
-A row's agent replies with `sot-fe chat post [--thread <ts>] (<text> | --stdin)`, run in the row. It posts for the row it
-runs in, under the handle the row's session joined with, shown as `<handle> (row via Ship of Tools)`, into the channel the
-row is mapped to: into the thread named by `--thread` (the `thread=` value of the mail's second line), else as a new message.
-The skills tell an agent to give the reply on standard input. It asks the daemon for the row's channel and sends one post,
-never a second: a post whose answer is lost is reported as `may exist`, and the agent is told never to send it again. It
-prints `posted <ts>` and exits 0; exits 2 with `refused <code>` or `limited, wait <n> s` when nothing was posted; and exits 3 with
-`unknown` or `no answer` when the post may exist, in which case the agent never posts again and reads the thread first. A reply is public to every member of the channel, so the agent is told to put nothing
-in it that the lab's rules on public text and on partners' work keep out of shared text. The daemon refuses a person's post
-from a connection that is not a window, and a row's post under any name but the row's own handle; the declared role is the
-connection's own word, so this keeps one account's programs apart and is not a security boundary. A reply is not mail: it
-does not come back to the row.
+## What the top line says
 
-### A row's figure
+After the channel, the top line says what the panel is waiting for or why it shows nothing. `<computer>` is
+`this computer`, the other computer's name, or `the computer that runs your agents`.
 
-A row's agent shares a file, such as a figure, with `sot-fe chat post [--thread <ts>] --file <path> [<comment> | --stdin]`,
-under the same rules as its reply: for the row it runs in, under its handle, into the thread (not yet seen against
-Slack itself) or the channel, once. The file is one of the row's folder: a relative path is taken from the folder the
-command runs in, and a path that is not under the row's folder, or that has a `..` in it, is refused before anything is
-sent. A link inside the folder is followed, so a `data/results` link to another disk can be posted, but the chat's own
-configuration files, which hold its tokens, are refused by what file was opened, whatever name reached it (on Windows,
-by its path only). Any regular file of at most 16 MiB can be posted; Slack shows it under the label
-`<handle> (row via Ship of Tools)`, then the comment if there is one, and keeps a PNG's pixels but not its text chunks.
-It prints `posted <ts>`, or `posted file <id>` when Slack named no message, and exits 0; the other exit codes are the
-reply's. The drawer shows the share as the row's message with its file line (unmeasured against Slack itself until a
-person's first use).
+| The top line says | What it means | What to do |
+|---|---|---|
+| (nothing after the channel) | The channel was read whole. | |
+| `reading…` | The channel is being read. | Wait. |
+| `no channel` | The project has no channel. | Press Enter, or `Ctrl+Shift+k`, to pick one ([Setting up Slack](chat-setup.md)). |
+| `set up Slack`, then a step's name | Slack is not connected, its saved codes are refused, or its chat did not start. | Follow the screens ([Setting up Slack](chat-setup.md)). |
+| `post as you` | Your post was refused: no Slack code that posts as you is saved. | Give the workspace new codes, keeping its app ([Setting up Slack](chat-setup.md#Give-a-connected-workspace-new-Slack-codes)). |
+| `connecting…`, `connected` | The codes are being checked; they were accepted. | |
+| `choose this project's channel` | The channel list is open. | Pick a channel, or press Escape. |
+| `your Slack app cannot read this channel` | Slack says your app is not in the channel: a private channel it was never invited to, or a new app. | In that channel in Slack, type `/invite @` and the app's name; the panel says which name. |
+| `not up to date: <reason>` | The channel could not be read whole (`no messages read yet` when nothing came). | It is asked again each minute. |
+| `no connection to <computer>` | The window is not connected to that computer. The messages held stay on screen. | It reads the channel again when the link comes back; a message you typed is kept. |
+| `waiting for <computer> to report this project` | The window has not yet listed the selected session. | Wait. |
+| `the chat does not run on <computer>; ...` | The session runs on a computer other than the one named on the `hub =` line of `hosts.toml`. | Run the project's session on that computer. |
+| `the chat on <computer> is not set up correctly: ...` | `chat.toml` or a secrets file was refused. | Run `sotd log-path` in a terminal on that computer; the log names the file and line. |
+| `the chat is not running on <computer>: ...` | The chat stopped there. | The log on that computer says why. |
+| `the chat on <computer> could not answer: <reason>` | It refused for another reason. | It is asked again after a minute. |
+| `Ship of Tools on <computer> has no chat: update it` | That computer runs an older Ship of Tools. | Update it. |
+| `the row is gone or was replaced` | The session ended or was replaced. | Select the project's session again. |
+| `the row now maps to another channel`, `the row's folder maps to no channel` | The channel changed while it was shown. | Select another session and back. |
+| `your Slack plan hides older messages`, `older messages could not be read`, `older messages are not read: <reason>`, `older messages beyond the limit are not shown` | Scrolling to the oldest found no more to read. | |
+| `the thread is not read: <reason>`, `the rest of this thread is not shown` | In a thread: a read was refused (it is asked again in a few seconds), or the thread is longer than 156 messages. | |
 
-## Moving the hub
+The channel shows as `#` and its name, or as its ID while its name is not known yet. The top line does not show
+whether the computer that runs your sessions is connected to Slack right now; a lost connection shows only when the
+channel cannot be read whole.
 
-The chat listens on one computer for the whole comm folder: the daemon that holds the lock in `chat/` of the comm folder
-(`~/.sot-comm/chat/` by default). To move the hub, edit `hosts.toml` and start the new hub's daemon; nothing else. The old
-hub's chat notices the new topology within a minute, waits for the one message it is filing to be filed or refused (refused when the topology now names another hub; the new hub's first pass finds it), and stops listening, and a new hub whose start finds the lock still
-held tries again each minute and listens once it is free. A computer that was lost should free its lock when the file server's
-lease runs out, in about two minutes; that rests on the lease and has not been measured. A computer that becomes the hub starts its chat when its daemon next starts. Posts made in the minute around a move can reach the row hours late: until the old hub steps down its connection takes some of the app's events, refuses them, and the new hub's connection never sees them, so the new hub finds those posts at its next hello or at the 6-hour sweep.
+## What the status line says
+
+| The status line says | What to do |
+|---|---|
+| `posting…` | Wait for the post's answer. |
+| `nothing to post` | Type a message first. |
+| `not posted: <reason>`, such as `you are not in that channel in Slack; join it there first` | Fix the reason; the message is kept. |
+| `not posted: Slack asked for a pause; wait <n> s` | Wait, then press Enter again. |
+| `may have been posted: check the channel before sending it again` | Look at the channel before posting again. |
+| `not posted: update Ship of Tools on <computer>, then post again` | That computer runs an older Ship of Tools. |
+| `not posted: close the screen open in the chat first` | Close the channel list or the screen shown, then post. |
+| `not posted: the chat name is not valid; ...` | Fix the `name =` line under `[chat]` in `settings.toml`. |
+| `draft is full: nothing added` | The message is at its limit. |
+| `not posted: the preview shows no file` | Select a file in the files tree, then press `Ctrl+u`. |
+| `not posted: the preview shows a picture opened from the chat, ...` | Select a file in the files tree, then press `Ctrl+u`. |
+| `not posted: the file is not a readable file in the row's folder`, `not posted: the file is larger than the chat carries` | Post a file of the project, at most 16 MiB. |
+| `shared <name> to <channel>` | The file was posted. |
+| `chat name saved to <path>` | Your chat name is saved; press Enter to post. |
+| `no message marked: ArrowUp marks one`, `the marked message has no picture` | Mark a message with a picture, then press `Ctrl+o`. |
+| `opening the picture…`, `picture shown in the preview`, `picture not opened: <reason>` | The picture is on its way, shown, or refused. |
+| `copied chat text`, `nothing to copy: select text or mark a message` | |
+| `not set: <reason>` | The channel was not picked; the list stays open and the reason says what to do. |
+| `that is not a Slack code: ...` | While connecting: copy the code named, by how it starts. |
+| `could not open the browser (...): go to api.slack.com/apps` | Open that address yourself. |
+
+## Moving the computer the chat runs on
+
+The chat listens on one computer for all the computers that share the sessions' message folder (`~/.sot-comm` by
+default): the one that holds the lock in its `chat/` folder. To move it, edit the `hub =` line of `hosts.toml` and
+start Ship of Tools' service on the new computer; nothing else. The old computer's chat notices within a minute, finishes the one post it is filing, and stops;
+the new one tries each minute and starts listening once the lock is free. A computer that was lost should free its lock
+when the file server's lease runs out, in about two minutes; that has not been measured. Posts made in the minute
+around a move can reach their session hours late, at the new computer's next recovery pass.
