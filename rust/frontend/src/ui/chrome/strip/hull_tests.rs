@@ -53,6 +53,7 @@ fn scrolled_fleet() -> (Vec<StripMark>, f32, f32, f32) {
         &item_positions,
         &item_widths,
         &"alpha".to_string(),
+        |_| true,
         logo_w,
         cell_w,
         3.0,
@@ -142,6 +143,7 @@ fn every_wheel_is_full_size_and_the_steered_box_is_marked_in_its_name() {
         &item_positions,
         &item_widths,
         &"beta".to_string(),
+        |_| true,
         logo_w,
         cell_w,
         3.0,
@@ -405,6 +407,7 @@ fn ships_sit_five_cells_apart_and_sessions_three() {
         &item_positions,
         &item_widths,
         &"alpha".to_string(),
+        |_| true,
         logo_w,
         cell_w,
         3.0,
@@ -466,6 +469,7 @@ fn a_ships_waterline_touches_its_box_name_on_both_sides() {
         &item_positions,
         &item_widths,
         &"alpha".to_string(),
+        |_| true,
         logo_w,
         cell_w,
         3.0,
@@ -545,77 +549,73 @@ fn a_ships_waterline_touches_its_box_name_on_both_sides() {
 }
 
 #[test]
-fn every_group_of_names_rides_its_own_ship_whichever_row_is_active() {
-    // Seen in use on a window that is not the hub: a box's session names were
-    // drawn with no hull under them while the active row was on another
-    // computer. The ship of a box whose link was down was culled, and its
-    // names, which the strip keeps (`39def8d8`), stayed. The strip now takes
-    // no link at all, so every name drawn sits inside its own box's ship, from
-    // the rake's tip to the stern, whichever row is active.
+fn an_unreachable_boxs_ship_is_gone_but_never_the_steered_boxs() {
+    // Item 9: the cull is STRIP-LOCAL. `workspace_slugs` keeps every row
+    // (three other consumers read it — the revert in `39def8d8`), the
+    // layout keeps the culled bow's slot, and only its marks go. The box
+    // you are steering keeps its ship whatever its link is doing: that is
+    // the invariant which makes this cull safe where the filter was not,
+    // because the bright name is what says where the keystrokes land.
     let cell_w = 10.0;
-    let win_w = 4000.0;
     let logo_w = 16.0;
     let slugs: Vec<WsKey> = vec![
-        ("hub".to_string(), "one".to_string()),
-        ("box-a".to_string(), "two".to_string()),
-        ("box-a".to_string(), "three".to_string()),
-        ("box-b".to_string(), "four".to_string()),
+        ("alpha".to_string(), "one".to_string()),
+        ("beta".to_string(), "two".to_string()),
+        ("gamma".to_string(), "three".to_string()),
     ];
-    let labels: Vec<String> = slugs.iter().map(|(_, s)| s.clone()).collect();
     let items = strip_items(&slugs, |h| h.clone());
-    let label_widths: Vec<f32> =
-        labels.iter().map(|l| l.chars().count() as f32 * cell_w).collect();
+    let label_widths = vec![40.0, 40.0, 40.0];
     let item_widths = strip_item_widths(&items, &label_widths, logo_w);
-    let item_positions =
-        strip_cursor_positions(&item_widths, |i| strip_gap_before(&items[i], cell_w));
-    let offsets = strip_divider_offsets(&items, &item_widths, &label_widths, cell_w);
-    for (active, (steered, _)) in slugs.iter().enumerate() {
-        let scroll = session_strip_target(&labels, active, cell_w, &offsets);
-        let lines = session_strip_lines(
-            &labels, active, scroll, win_w, cell_w, 100.0, &[], false, &[], &[], &offsets,
-        );
-        let marks = ship_marks(
+    let item_positions = strip_cursor_positions(&item_widths, |i| strip_gap_before(&items[i], cell_w));
+    let ships = |steered: &str, down: &'static str| -> Vec<StripMark> {
+        ship_marks(
             &items,
             &item_positions,
             &item_widths,
-            steered,
+            &steered.to_string(),
+            |h| h.as_str() != down,
             logo_w,
             cell_w,
             3.0,
-            scroll,
-            win_w,
-        );
-        // Each ship drawn, rake tip to stern, with the box name set in it.
-        let mut ships: Vec<(f32, f32, String)> = Vec::new();
-        let mut open: Option<(f32, String)> = None;
-        for m in &marks {
-            match &m.kind {
-                StripMarkKind::BowRake => open = Some((m.left, String::new())),
-                StripMarkKind::BoxName { name, .. } => {
-                    if let Some(o) = open.as_mut() {
-                        o.1 = name.clone();
-                    }
-                }
-                StripMarkKind::Stern => {
-                    if let Some((left, name)) = open.take() {
-                        ships.push((left, m.left + m.w, name));
-                    }
-                }
-                _ => {}
-            }
-        }
-        assert_eq!(lines.len(), slugs.len(), "every name is on screen");
-        for ((host, _), line) in slugs.iter().zip(&lines) {
-            let right = line.x + line.text.chars().count() as f32 * cell_w;
-            assert!(
-                ships
-                    .iter()
-                    .any(|(left, stern, name)| name == host && *left <= line.x && right <= *stern),
-                "active row {active} on {steered}: {:?} of {host} rides no ship of its own: {ships:?}",
-                line.text
-            );
-        }
-    }
+            0.0,
+            4000.0,
+        )
+    };
+    let named = |marks: &[StripMark]| -> Vec<String> {
+        marks
+            .iter()
+            .filter_map(|m| match &m.kind {
+                StripMarkKind::BoxName { name, .. } => Some(name.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+    assert_eq!(
+        named(&ships("alpha", "beta")),
+        vec!["alpha".to_string(), "gamma".to_string()],
+        "an unreachable box's ship is simply gone"
+    );
+    assert_eq!(
+        named(&ships("beta", "beta")),
+        vec![
+            "alpha".to_string(),
+            "beta".to_string(),
+            "gamma".to_string()
+        ],
+        "but never the steered box's own, whatever its link is doing"
+    );
+    // And nothing else moves: a dropped link cannot reflow the strip.
+    let all = ships("alpha", "none");
+    let without = ships("alpha", "beta");
+    assert!(
+        without.iter().all(|m| all.contains(m)),
+        "culling one ship moved another's marks: {without:?}"
+    );
+    assert_eq!(
+        all.len() - without.len(),
+        6,
+        "one ship is six marks — rake, wheel, two waterline runs, name, stern"
+    );
 }
 
 /// A reported problem: the badge makes them longer text and the last
@@ -663,6 +663,7 @@ fn a_badged_name_stays_inside_its_hull() {
         &item_positions,
         &item_widths,
         &"alpha".to_string(),
+        |_| true,
         logo_w,
         cell_w,
         bar_w,

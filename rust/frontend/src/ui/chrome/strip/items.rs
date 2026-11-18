@@ -78,8 +78,9 @@ pub(in crate::ui) enum StripItem {
 /// text from `tag_for`, the caller's `host_label` projection — the one place
 /// a host's display name is decided) at the head of EVERY host group, and a
 /// `Session` per slug. A lone host is a ship too (decided 2026-09-27): its
-/// group gets a bow like every other, so the strip has no state in which
-/// session names float with no hull under them. A bow needs no asset check: with no decoded logo
+/// group gets a bow like every other, so the only session names with no hull
+/// under them are those of a box whose link is down (`ship_marks` culls its
+/// ship). A bow needs no asset check: with no decoded logo
 /// its wheel simply measures 0 (`strip_item_widths`' `wheel_w`) and the NAME
 /// still marks the group, matching the logo asset's fail-soft contract. A
 /// host with no visible rows never appears in `slugs` to begin with

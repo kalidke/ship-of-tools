@@ -199,6 +199,7 @@ impl State {
             &item_positions,
             &item_widths,
             self.selected.host(),
+            |h| self.hosts.host_connected.get(h).copied().unwrap_or(false),
             wheel_w,
             self.canvas.cell_w(),
             hull_h,
