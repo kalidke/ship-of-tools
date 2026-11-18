@@ -1522,7 +1522,7 @@ impl State {
         self.on_workspace_destroyed(a.clone(), Ok(destroyed("s1")));
         anyhow::ensure!(at(self, &b, Some("t1")), "a destroy answered moved the view onto a row being destroyed");
         // The link to a ends before those two answered: they are taken as alive.
-        self.note_connection(&a, false);
+        self.note_connection(&a, Err("eof"));
         self.on_workspaces(a.clone(), list("base-a", &["s1", "s2", "s3"]));
         self.switch_to_workspace(a.clone(), Some("s1".into()), None, false);
         self.on_workspace_destroyed(a.clone(), Ok(destroyed("s1")));
@@ -1839,5 +1839,83 @@ impl State {
             .collect();
         let text = self.probe_preview_text();
         Ok((asks, (text.contains(&format!("the {slug} row's words")), text.contains(other_words))))
+    }
+}
+
+impl State {
+    /// The connection line never says `connected` for the selected computer while its link is down. The links' events come
+    /// through the window's own queue: the drop is shown at once, and a word written then, the end of its hold, another
+    /// computer's re-list and a switch to a row on the down computer all leave its disconnect's words; its own reconnect
+    /// brings `connected` back.
+    #[allow(dead_code, reason = "runs only inside a native State, from the window_minimized fixtures child")]
+    pub(in crate::ui) fn the_connection_line_never_says_connected_for_a_computer_whose_link_is_down(&mut self) -> Result<()> {
+        let (near, far) = ("<host-link-near>".to_string(), "<host-link-far>".to_string());
+        let (near_tx, _near_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (far_tx, _far_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (events, receiver) = std::sync::mpsc::channel();
+        let saved = (
+            std::mem::replace(&mut self.conns, vec![(near.clone(), near_tx), (far.clone(), far_tx)]),
+            std::mem::replace(&mut self.evt_rx, receiver),
+            (self.selected.host().clone(), self.selected.workspace_id().clone()),
+        );
+        let result = self.connection_line_run(&near, &far, &events);
+        let (conns, evt_rx, (host, row)) = saved;
+        (self.conns, self.evt_rx) = (conns, evt_rx);
+        self.selected.select(host, row);
+        result
+    }
+
+    fn connection_line_run(&mut self, near: &HostKey, far: &HostKey, events: &std::sync::mpsc::Sender<(HostKey, crate::net::transport::IncomingEvt)>) -> Result<()> {
+        use crate::net::transport::IncomingEvt;
+        let send = |host: &HostKey, evt: IncomingEvt| events.send((host.clone(), evt)).map_err(|_| anyhow::anyhow!("the fixture's event channel closed"));
+        let hello = || IncomingEvt::Connected {
+            session_id: "session".into(), revision: 0, host: None, project_root: None, proxy: false,
+            resolved: crate::net::transport::ResolvedDial::Local, backend_version: "test".into(), repl_running: Vec::new(),
+            posts_as_person: true,
+        };
+        let listing = |slug: &str| IncomingEvt::Workspaces { workspaces: vec![ws_info(slug, &format!("attach-{slug}"))] };
+        // A switch's own words (if any) end with their hold, and the line is what the rebuild writes.
+        let settle = |state: &mut Self| { let _ = state.expire_status_hold(std::time::Instant::now() + crate::ui::chrome::NOTIFY_STICKY); };
+        send(near, hello())?;
+        send(far, hello())?;
+        send(near, listing("here"))?;
+        send(far, listing("there"))?;
+        self.drain_events();
+        self.switch_to_workspace(far.clone(), Some("there".into()), None, false);
+        settle(self);
+        let up = self.status.text().to_string();
+        anyhow::ensure!(up.starts_with("connected · "), "with both links up the line says {up:?}");
+        // The far computer's link drops: shown at once.
+        send(far, IncomingEvt::Disconnected { reason: "dial failed".into(), refused: false })?;
+        self.drain_events();
+        let down = self.status.text().to_string();
+        anyhow::ensure!(down == "disconnected · dial failed", "the drop shows {down:?}");
+        // A word written while it is down; its hold ends.
+        self.status.set("pinned · files:a.txt");
+        anyhow::ensure!(self.expire_status_hold(std::time::Instant::now() + crate::ui::chrome::NOTIFY_STICKY), "the word held nothing");
+        let after_hold = self.status.text().to_string();
+        // The near computer's re-list.
+        send(near, listing("here"))?;
+        self.drain_events();
+        let after_relist = self.status.text().to_string();
+        // A switch to the near computer's row, then back to the row on the far one.
+        self.switch_to_workspace(near.clone(), Some("here".into()), None, false);
+        settle(self);
+        let on_near = self.status.text().to_string();
+        self.switch_to_workspace(far.clone(), Some("there".into()), None, false);
+        settle(self);
+        let back_on_far = self.status.text().to_string();
+        // The far computer's own reconnect.
+        send(far, hello())?;
+        self.drain_events();
+        settle(self);
+        let reconnected = self.status.text().to_string();
+        println!("connection-line down={down:?} after_hold={after_hold:?} after_relist={after_relist:?} on_near={on_near:?} back_on_far={back_on_far:?} reconnected={reconnected:?}");
+        anyhow::ensure!(after_hold == down, "at the hold's end the line says {after_hold:?}, not {down:?}");
+        anyhow::ensure!(after_relist == down, "after the near computer's re-list the line says {after_relist:?}, not {down:?}");
+        anyhow::ensure!(on_near.starts_with("connected · "), "on the near computer's row the line says {on_near:?}");
+        anyhow::ensure!(back_on_far == down, "back on the far computer's row the line says {back_on_far:?}, not {down:?}");
+        anyhow::ensure!(reconnected.starts_with("connected · "), "after the far computer's reconnect the line says {reconnected:?}");
+        Ok(())
     }
 }

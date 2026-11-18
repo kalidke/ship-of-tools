@@ -87,6 +87,7 @@ impl State {
             ),
             hosts: crate::net::hosts::HostTable {
                 host_connected: HashMap::new(),
+                last_disconnect: HashMap::new(),
                 // Filled by `resumed()` from the same `PendingTransport` list
                 // `conns` came from, before that list is consumed spawning
                 // each host's transport task — empty here only briefly.

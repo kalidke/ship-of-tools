@@ -862,14 +862,6 @@ owned by `docs/CLAUDE.md`.
   the pictures owner's review: the drawer holds one set of up hosts and hands it to each owner's asks; each owner keeps
   its own `unsupported` set, which is per op. Left because the change runs through the owner's and the row channel's
   tests, past the 30 lines it was allowed.
-- **CONNECTION-LINE-WHILE-DOWN** [note] `rebuild_connection_status` (`ui/session/workspace_list.rs`) writes
-  `connected · <host>:<row> · rev N` from `ActiveLink`, which no disconnect or refused hello clears, and it runs at any
-  connected computer's re-list, at a row switch and when a hold ends, so with the selected computer's link down the
-  status line can say connected (the strip, the Sessions and Hosts trees and the pane's overlay say otherwise). Since
-  every word is held (STATUS-WORDS-REPLACED-BY-RELIST), a hold's end follows every word: after a word written while the
-  link is down, the line can say connected from the hold's end until the next failed redial's disconnect line (up to
-  about 20 s for a remote computer, whose redial waits up to 30 s; a local daemon's 5 s redial carries the word instead).
-  Found reading code for STATUS-WORDS-REPLACED-BY-RELIST.
 
 ## distribution
 
@@ -1225,6 +1217,8 @@ owned by `docs/CLAUDE.md`.
   probe; installer hooks (superseded, check); stop commands that match only what they stop.
 
 ## Closed
+
+- **CONNECTION-LINE-WHILE-DOWN** (fe-ui) [note] closed by the landing that fixes it, 2026-11-17, found while building the hold of STATUS-WORDS-REPLACED-BY-RELIST, not seen by a person: rebuild_connection_status wrote `connected · <host>:<row> · rev N` from ActiveLink, which no disconnect clears, at any computer's re-list, a row switch and a hold's end, so with the selected computer's link down the status line could say connected; with every word held, each word's hold end made it show more often. The connection line (connection_line) now reads the selected computer's link from HostTable::host_connected and, while it is down, says what its last disconnect wrote (HostTable::last_disconnect), as a state line; only that computer's own reconnect brings `connected` back (session::workspace_list::tests, native fixture the_connection_line_never_says_connected_for_a_computer_whose_link_is_down).
 
 - **CHAT-POST-FILE-SILENT** (fe-ui) [person] closed by the landing that fixes it, 2026-11-17, seen in use by a person on v0.7.1-rc.13 on Windows: with a picture opened from the chat in the preview and the Chat drawer focused, Primary+u (chat.post_file) showed nothing. The preview showed the picture with no node, so ChatDrawer::send_file sent nothing and said `not posted: the preview shows no file`, words a person looking at a picture cannot place, and the status line lost them to the next re-list (STATUS-WORDS-REPLACED-BY-RELIST, which holds them now). State::send_chat_file now tells send_file the preview shows a picture with no node (Previewed::ChatPicture), and the refusal says that the preview shows a picture opened from the chat, which is not a file of this project, and to show a file in the preview, then press the key, by its binding's label (compose_tests::a_picture_opened_from_the_chat_posts_nothing_and_says_what_to_do, native fixture primary_u_over_a_chat_picture_keeps_its_words_through_a_relist_until_the_hold_ends).
 

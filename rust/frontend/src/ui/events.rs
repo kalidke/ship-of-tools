@@ -7,9 +7,11 @@ use super::*;
 impl State {
     /// A computer's link came or went. A destroy written on a link that ended gets no answer, so its outcome is
     /// unknown and the rows noted as destroyed for that computer are taken as alive.
-    pub(in crate::ui) fn note_connection(&mut self, host: &HostKey, connected: bool) {
-        self.hosts.host_connected.insert(host.clone(), connected);
-        if !connected {
+    /// A host's link came up (`Ok`) or went down with its reason (`Err`).
+    pub(in crate::ui) fn note_connection(&mut self, host: &HostKey, link: Result<(), &str>) {
+        self.hosts.host_connected.insert(host.clone(), link.is_ok());
+        if let Err(reason) = link {
+            self.hosts.last_disconnect.insert(host.clone(), reason.to_string());
             self.row_directory.clear_destroyed(host);
         }
     }
@@ -351,12 +353,12 @@ impl State {
         // signal, just watching the two evts that already exist.
         match &evt {
             crate::net::transport::IncomingEvt::Connected { posts_as_person, .. } => {
-                self.note_connection(&event_host, true);
+                self.note_connection(&event_host, Ok(()));
                 self.on_chat_connection(&event_host, true, *posts_as_person);
                 self.selection_share.on_connection(&event_host, true);
             }
-            crate::net::transport::IncomingEvt::Disconnected { .. } => {
-                self.note_connection(&event_host, false);
+            crate::net::transport::IncomingEvt::Disconnected { reason, .. } => {
+                self.note_connection(&event_host, Err(reason));
                 self.on_chat_connection(&event_host, false, false);
                 self.selection_share.on_connection(&event_host, false);
             }

@@ -119,7 +119,7 @@ impl ApplicationHandler for FixturesDriver {
 }
 
 fn run_state_fixtures(state: &mut State) -> Result<()> {
-    let fixtures: [(&str, fn(&mut State) -> Result<()>); 28] = [
+    let fixtures: [(&str, fn(&mut State) -> Result<()>); 29] = [
         ("result_target_uses_host_and_listed_identity", State::result_target_uses_host_and_listed_identity),
         ("passing_a_result_row_keeps_its_badge", State::passing_a_result_row_keeps_its_badge),
         (
@@ -198,6 +198,10 @@ fn run_state_fixtures(state: &mut State) -> Result<()> {
         (
             "primary_u_over_a_chat_picture_keeps_its_words_through_a_relist_until_the_hold_ends",
             State::primary_u_over_a_chat_picture_keeps_its_words_through_a_relist_until_the_hold_ends,
+        ),
+        (
+            "the_connection_line_never_says_connected_for_a_computer_whose_link_is_down",
+            State::the_connection_line_never_says_connected_for_a_computer_whose_link_is_down,
         ),
     ];
     // Every fixture runs and reports; the child fails after the last if any failed.

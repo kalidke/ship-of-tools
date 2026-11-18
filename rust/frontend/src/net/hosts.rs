@@ -94,6 +94,10 @@ pub(crate) struct HostTable {
     /// Sessions tree's host nodes read this to badge status and grey an
     /// unreachable host's (retained) workspace rows.
     pub(crate) host_connected: HashMap<crate::net::dial::HostKey, bool>,
+    /// The reason each host's last `Disconnected` gave (a drop, a failed dial, a wait), written with
+    /// `host_connected` by `State::note_connection` and read only while the host is down: the status line says it
+    /// for the selected host instead of the connection line.
+    pub(crate) last_disconnect: HashMap<crate::net::dial::HostKey, String>,
     /// ADR 0045 decision 1: each host's own `TransportConfig` (its
     /// `lane.connect` bridge dial), so the session pane's capsule attach
     /// can reach THAT row's daemon — never a supervisor socket or a

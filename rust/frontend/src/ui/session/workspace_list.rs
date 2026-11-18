@@ -26,6 +26,21 @@ pub(in crate::ui) fn declared_sessions_from(
         .collect()
 }
 
+/// The connection line for the `selected` computer: `connected · <host>:<row> · rev N` only while its link is up (with the
+/// hello's `host` label, once one has landed); while it is down, the words its last disconnect wrote
+/// (`disconnected · <reason>`), never `connected`; before its first answer (its first dial neither up nor failed),
+/// nothing, so the line is left as it is.
+pub(in crate::ui) fn connection_line(
+    selected: &HostKey, up: &std::collections::HashMap<HostKey, bool>, last_disconnect: &std::collections::HashMap<HostKey, String>,
+    host: Option<&str>, row: &str, revision: u64,
+) -> Option<String> {
+    match up.get(selected) {
+        Some(true) => host.map(|host| format!("connected · {host}:{row} · rev {revision}")),
+        Some(false) => last_disconnect.get(selected).map(|reason| super::replies::disconnect_status(reason, None)),
+        None => None,
+    }
+}
+
 impl State {
     /// Reconcile owed results and chat drafts against the directory's prepared retirement report, before commitment.
     /// Only currently listed rows can acquire a pending result; a disconnect and a kept default do not retire one. A
@@ -77,13 +92,16 @@ impl State {
     /// workspace. No-op until the hello response has landed (no host). A
     /// state line: it never replaces words still held on the line.
     pub(in crate::ui) fn rebuild_connection_status(&mut self) {
-        let Some(host) = self.active_link.host_label().map(str::to_owned) else {
-            return;
-        };
         let label = self
             .active_workspace_label()
             .unwrap_or_else(|| "default".to_string());
-        self.status.show_state(format!("connected · {host}:{label} · rev {}", self.active_link.revision()));
+        let line = connection_line(
+            self.selected.host(), &self.hosts.host_connected, &self.hosts.last_disconnect,
+            self.active_link.host_label(), &label, self.active_link.revision(),
+        );
+        if let Some(line) = line {
+            self.status.show_state(line);
+        }
     }
 
     /// The end of a hold: once one has passed at `now`, the connection line is rebuilt, and true says to redraw.

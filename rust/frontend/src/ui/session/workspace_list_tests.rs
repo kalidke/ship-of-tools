@@ -465,3 +465,61 @@ fn next_row_wraps_and_uses_host_and_default_selection() {
     assert_eq!(p.next_row(1, "unknown", None), Some(key("a", "other")));
     assert_eq!(p.next_row(3, "b", None), Some(key("b", "same")));
 }
+
+/// What `rebuild_connection_status` writes for the selected computer, on `status` at `now`: the line, as a state line.
+fn rebuild_at(status: &mut crate::ui::chrome::StatusLine, selected: &str, links: &Links, row: &str, now: std::time::Instant) {
+    let (up, said) = links;
+    if let Some(line) = connection_line(&selected.to_string(), up, said, Some(selected), row, 3) {
+        status.show_state_at(line, now);
+    }
+}
+
+type Links = (std::collections::HashMap<HostKey, bool>, std::collections::HashMap<HostKey, String>);
+
+/// `near` up, `far` down after a failed redial.
+fn links_with_far_down() -> Links {
+    let up = [("near".to_string(), true), ("far".to_string(), false)].into();
+    let said = [("far".to_string(), "dial failed".to_string())].into();
+    (up, said)
+}
+
+/// A word written while the selected computer's link is down: when its hold ends, the line says what the disconnect said,
+/// never `connected`, and only that computer's own reconnect brings `connected` back.
+#[test]
+fn a_word_written_while_the_selected_computer_is_down_ends_on_its_disconnect_words_until_it_reconnects() {
+    use crate::ui::chrome::{StatusLine, NOTIFY_STICKY};
+    let t0 = std::time::Instant::now();
+    let mut links = links_with_far_down();
+    let mut s = StatusLine::new("disconnected · dial failed");
+    s.set_at("pinned · files:a.txt", t0);
+    assert!(s.expire_hold(t0 + NOTIFY_STICKY));
+    rebuild_at(&mut s, "far", &links, "row", t0 + NOTIFY_STICKY);
+    assert_eq!(s.text(), "disconnected · dial failed", "the hold's end said a down computer is connected");
+    links.0.insert("far".into(), true);
+    rebuild_at(&mut s, "far", &links, "row", t0 + NOTIFY_STICKY);
+    assert_eq!(s.text(), "connected · far:row · rev 3", "the reconnect did not bring the connection line back");
+}
+
+/// Another computer's re-list rebuilds the line for the selected computer, which is down: its disconnect's words stay.
+#[test]
+fn another_computers_relist_never_says_connected_for_the_selected_computer_while_it_is_down() {
+    use crate::ui::chrome::StatusLine;
+    let t0 = std::time::Instant::now();
+    let links = links_with_far_down();
+    let mut s = StatusLine::new("disconnected · dial failed");
+    rebuild_at(&mut s, "far", &links, "row", t0);
+    assert_eq!(s.text(), "disconnected · dial failed", "near's re-list said far is connected");
+}
+
+/// A switch from a row on the computer that is up to a row on the one that is down shows the down one's disconnect words.
+#[test]
+fn a_switch_to_a_row_on_the_down_computer_shows_its_disconnect_words() {
+    use crate::ui::chrome::StatusLine;
+    let t0 = std::time::Instant::now();
+    let links = links_with_far_down();
+    let mut s = StatusLine::new("");
+    rebuild_at(&mut s, "near", &links, "here", t0);
+    assert_eq!(s.text(), "connected · near:here · rev 3");
+    rebuild_at(&mut s, "far", &links, "there", t0);
+    assert_eq!(s.text(), "disconnected · dial failed", "the switch to far's row said far is connected");
+}

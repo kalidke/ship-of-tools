@@ -127,8 +127,10 @@ modes. Details of each built-in mode are on the [Modes](modes.md) page.
   message (`pinned · <path>`). Such a message stays at least 10 seconds,
   whatever the connection line does meanwhile, unless a newer message replaces
   it; then the connection line comes back. A link that drops meanwhile shows as
-  `disconnected · <reason> · <message>`. The line stays at the top of the pane
-  while a long tree scrolls beneath it.
+  `disconnected · <reason> · <message>`. While the link to the computer of the
+  shown row is down, the line reads `disconnected · <reason>`, never
+  `connected`, until that computer connects again. The line stays at the top of
+  the pane while a long tree scrolls beneath it.
 - **`annotation:`** below the tree is the [concept annotation](concept-layer.md)
   status of the cursored entry: `present`, `(none)` when no annotation file
   exists for it, `loading`, or `(no target for this row)` for rows such as

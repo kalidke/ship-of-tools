@@ -570,9 +570,19 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   rest on reading. Limits: a held word keeps the connection line, the pane's attach status and an input outcome notice
   off the line up to 10 s (the notice is said again at the pane's next change; the pane's overlay shows its attach
   reason); a capture harness never runs the idle tick, so its line keeps a word past its hold until the next state line;
-  the destroy's press-again line stays up to 10 s after another key dropped its arm; the connection line is built from
-  `ActiveLink`, which no disconnect clears, so at a hold's end it can say connected while the selected computer's link is
-  down (CONNECTION-LINE-WHILE-DOWN).
+  the destroy's press-again line stays up to 10 s after another key dropped its arm.
+- The connection line (`connection_line`, written by `rebuild_connection_status` at a hold's end, a re-list from any
+  computer, a row switch and a reconnect) never says `connected` for a computer whose link is down: it reads the selected
+  computer's link from `HostTable::host_connected` and says `connected · <host>:<row> · rev N` only while it is up; while
+  it is down, it says what that computer's last disconnect wrote, `disconnected · <reason>`
+  (`HostTable::last_disconnect`, written with `host_connected` by `State::note_connection`), as a state line; before the
+  computer's first answer (its first dial neither up nor failed) it writes nothing and the line stays as it is. A local
+  daemon and a remote one are the same; the drop itself is shown at once by `show_disconnect`, and only that computer's own
+  `Connected` brings `connected` back. Tests: `session::workspace_list::tests::{a_word_written_while_the_selected_computer_is_down_ends_on_its_disconnect_words_until_it_reconnects,
+  another_computers_relist_never_says_connected_for_the_selected_computer_while_it_is_down,
+  a_switch_to_a_row_on_the_down_computer_shows_its_disconnect_words}` and the native State fixture
+  `the_connection_line_never_says_connected_for_a_computer_whose_link_is_down` (the links' events through the window's
+  queue).
 - `PreviewNotice` privately owns the preview's message box: the text and the instant it was shown. `State::preview_says` is the
   one call that writes a boxed message, to the status line and to the box together, so neither shows one the other lacks; the
   one message that goes to the box alone is the refusal of `d` over a picture with no base to draw on (a PDF page, an SVG, a
