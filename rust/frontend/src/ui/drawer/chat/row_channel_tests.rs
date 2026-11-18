@@ -660,5 +660,5 @@ fn a_sentence_names_the_local_a_named_and_an_unnamed_computer() {
     use super::row_channel::computer;
     assert_eq!(computer("local"), "this computer");
     assert_eq!(computer("box-a"), "box-a");
-    assert_eq!(computer(""), "the computer that runs your agents");
+    assert_eq!(computer(""), "the computer that runs your sessions");
 }

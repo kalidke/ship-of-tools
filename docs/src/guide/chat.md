@@ -13,8 +13,8 @@ changed; see [Keybindings](../ref/keybindings.md).
 - **A session's channel.** A session is one coding agent, such as Claude Code or Codex, running in one project's
   folder. The navigation tree, the window's left column, has modes: `s` there shows Sessions mode, which lists the
   sessions, and `f` Files mode, which lists the project's files. The panel shows the channel of the selected session's
-  project, and follows the selection. A message that says `row`, such as `the row is gone or was replaced` or
-  `<handle> (row via Ship of Tools)`, means a session.
+  project, and follows the selection. In Slack, a session's posts are labeled `<handle> (row via Ship of Tools)`: there
+  `row` means a session.
 - **Where it is.** The bottom of the window shows one thing at a time: the Julia REPL, a terminal, the monitor, Help or
   the Chat panel. `Ctrl+k` shows the Chat panel there and gives it the keys; `Ctrl+k` again hides it. A click in the
   messages gives it the keys too, and Escape gives them back to the navigation tree, after closing an open thread first.
@@ -29,8 +29,8 @@ changed; see [Keybindings](../ref/keybindings.md).
   from the window) runs the sessions there. The chat runs on one computer, which this page calls the computer that runs
   your sessions: with one computer, that one; with several, the one your `hosts.toml` (the file that lists your
   computers, in `~/.config/sot` on Linux and macOS and `%LOCALAPPDATA%\sot\config` on Windows) names in its line
-  `hub = "<computer>"`. The panel's messages name a computer by its name, or `this computer` for the one the window runs
-  on; where a message says `the computer that runs your agents`, it means the computer that runs your sessions.
+  `hub = "<computer>"`. The panel's messages name a computer by its name, `this computer` for the one the window runs
+  on, or `the computer that runs your sessions`.
 - **Your Slack app, your account and the Slack codes.** What you write goes out under your own Slack account. What your
   sessions' agents write goes out through your Slack app, the app you made in Slack while setting up, which also reads
   the channel. Three Slack codes (Slack calls them tokens), pasted during setup and kept on the computer that runs your
@@ -240,7 +240,7 @@ back to it. A post missed while the computer was down is filed later, once; the 
 ## What the top line says
 
 After the channel, the top line says what the panel is waiting for or why it shows nothing. `<computer>` is a
-computer's name, `this computer`, or `the computer that runs your agents`.
+computer's name, `this computer`, or `the computer that runs your sessions`.
 
 | The top line says | What it means | What to do |
 |---|---|---|
@@ -261,8 +261,8 @@ computer's name, `this computer`, or `the computer that runs your agents`.
 | `the chat is not running on <computer>: ...` | The chat stopped there. | The log on that computer says why. |
 | `the chat on <computer> could not answer: <reason>` | It refused for another reason. | Wait: the panel tries again each minute. |
 | `Ship of Tools on <computer> has no chat: update it` | That computer runs an older Ship of Tools. | Update it. |
-| `the row is gone or was replaced` | The session ended or was replaced. | Select the project's session again. |
-| `the row now maps to another channel`, `the row's folder maps to no channel` | The channel picked for the project changed, or was removed, while it was shown. | Select another session, then this one again: the panel asks afresh. |
+| `the session is gone or was replaced` | The session ended or was replaced. | Select the project's session again. |
+| `the session's project now has another channel, or none`, `the session's project has no channel` | The channel picked for the project changed, or was removed, while it was shown. | Select another session, then this one again: the panel asks afresh. |
 | `your Slack plan hides older messages`, `older messages could not be read`, `older messages are not read: <reason>`, `older messages beyond the limit are not shown` | Scrolling to the oldest found no more to read: Slack keeps older history only on some plans, a read was refused, or the panel's 256 are full. | |
 | `the thread is not read: <reason>`, `the rest of this thread is not shown` | In a thread: a read was refused (the panel tries again by itself), or the thread is longer than the panel shows. | |
 
@@ -285,7 +285,7 @@ messages to be missed, the top line says `not up to date`.
 | `draft is full: nothing added` | The message is at its limit. |
 | `not posted: the preview shows no file` | Select a file in Files mode, then press `Ctrl+u`. |
 | `not posted: the preview shows a picture opened from the chat, ...` | Select a file in Files mode, then press `Ctrl+u`. |
-| `not posted: the file is not a readable file in the row's folder`, `not posted: the file is larger than the chat carries` | Post a file of the project's folder, at most 16 MiB. |
+| `not posted: the file is not a readable file in the project's folder`, `not posted: the file is larger than the chat carries` | Post a file of the project's folder, at most 16 MiB. |
 | `shared <name> to <channel>` | The file was posted. |
 | `chat name saved to <path>` | Your chat name is saved; press Enter to post. |
 | `no message marked: ArrowUp marks one`, `the marked message has no picture` | Mark a message with a picture, then press `Ctrl+o`. |

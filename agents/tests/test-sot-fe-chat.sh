@@ -238,12 +238,12 @@ case_each_outcome_has_its_words_and_exit_code() {
     done <<'EOF'
 {"outcome":"posted","ts":"1700000000.000100"}|0|posted 1700000000.000100
 {"outcome":"refused","code":"busy"}|2|refused busy the chat is busy; try again in a moment
-{"outcome":"refused","code":"bad_request"}|2|refused bad_request the request is not valid (empty or over-long text, or a name that is not this row's)
+{"outcome":"refused","code":"bad_request"}|2|refused bad_request the request is not valid (empty or over-long text, or a name that is not this session's)
 {"outcome":"limited","retry_after_secs":12,"assumed":false}|2|limited, wait 12 s
 {"outcome":"unknown"}|3|unknown: the post may exist; do not send it again; read the thread first
 {"outcome":"somethingelse"}|3|unknown: the post may exist; do not send it again; read the thread first
 {"error":"the chat request failed","code":"handler_error"}|3|unknown: the post may exist; do not send it again; read the thread first
-{"error":"the row now maps to another channel","code":"stale_mapping"}|2|refused stale_mapping the row now maps to another channel
+{"error":"the session's project now has another channel, or none","code":"stale_mapping"}|2|refused stale_mapping the session's project now has another channel, or none
 EOF
     [ -z "$bad" ] || { echo "$bad"; return 1; }
 }
@@ -257,8 +257,8 @@ case_a_resolve_that_maps_nothing_posts_nothing() {
         p="$(sent chat.post)"; stop_stub_daemon
         { [ "$CH_RC" = 2 ] && [ "$CH_OUT" = "$want" ] && [ "$p" = 0 ]; } || bad="$bad [$payload: rc=$CH_RC post=$p out=$CH_OUT]"
     done <<'EOF'
-{"state":"unmapped"}|refused unmapped this row's folder maps to no channel
-{"state":"invalid"}|refused invalid the chat's configuration does not map this row
+{"state":"unmapped"}|refused unmapped this session's project has no channel
+{"state":"invalid"}|refused invalid the chat's configuration does not map this session's project
 {"error":"the chat is not available here","code":"unavailable"}|refused unavailable the chat is not available here
 EOF
     [ -z "$bad" ] || { echo "$bad"; return 1; }
@@ -371,7 +371,7 @@ case_each_file_outcome_has_its_words_and_exit_code() {
 {"outcome":"posted","file":"F0FILE"}|0|posted file F0FILE
 {"outcome":"refused","code":"busy"}|2|refused busy the chat is busy; try again in a moment
 {"outcome":"refused","code":"failed"}|2|refused failed the chat request failed
-{"error":"the file is not a readable file in the row's folder","code":"not_a_file"}|2|refused not_a_file the file is not a readable file in the row's folder
+{"error":"the file is not a readable file in the project's folder","code":"not_a_file"}|2|refused not_a_file the file is not a readable file in the project's folder
 {"error":"the file is larger than the chat carries","code":"too_large"}|2|refused too_large the file is larger than the chat carries
 {"outcome":"limited","retry_after_secs":12,"assumed":false}|2|limited, wait 12 s
 {"outcome":"unknown"}|3|unknown: the post may exist; do not send it again; read the thread first

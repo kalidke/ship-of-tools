@@ -211,7 +211,7 @@ fn every_outcome_has_a_state_a_next_action_and_words() {
     // No listing for the row: it is read again every frame.
     let mut d = ChatDrawer::default();
     d.tick(None, Instant::now());
-    assert_eq!(d.title(), " chat · waiting for the computer that runs your agents to report this project ");
+    assert_eq!(d.title(), " chat · waiting for the computer that runs your sessions to report this project ");
 
     // The host is not connected: asked at `Connected`.
     let t0 = Instant::now();
@@ -242,7 +242,7 @@ fn every_outcome_has_a_state_a_next_action_and_words() {
 
     // A replaced row: the listing's new id is another row, and is asked.
     let (mut d, at) = answered_with(|r| refused(r, ChatCode::StaleRow));
-    assert_eq!(d.title(), " chat · the row is gone or was replaced ");
+    assert_eq!(d.title(), " chat · the session is gone or was replaced ");
     assert!(!asks_at(&mut d, at + pace * 5));
     d.tick(shown("R2"), at + pace * 6);
     assert!(d.tick(shown("R2"), at + pace * 6 + Duration::from_millis(200)).0.iter().any(|(_, r)| matches!(r, OutgoingReq::ChatResolve { .. })));

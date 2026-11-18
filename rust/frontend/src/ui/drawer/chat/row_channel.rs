@@ -61,7 +61,7 @@ pub(super) enum Stand {
 /// words a person knows it by.
 pub(super) fn computer(host: &str) -> String {
     match host {
-        "" => "the computer that runs your agents".into(),
+        "" => "the computer that runs your sessions".into(),
         "local" => "this computer".into(),
         name => name.to_string(),
     }

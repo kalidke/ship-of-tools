@@ -15,7 +15,7 @@ _chat_refused() {
     if [ -z "$words" ]; then
         case "$code" in
             busy)        words="the chat is busy; try again in a moment" ;;
-            bad_request) words="the request is not valid (empty or over-long text, or a name that is not this row's)" ;;
+            bad_request) words="the request is not valid (empty or over-long text, or a name that is not this session's)" ;;
             failed)      words="the chat request failed" ;;
         esac
     fi
@@ -41,12 +41,12 @@ _chat_ask() {
 _chat_identity() {
     CHAT_ROW="${SOT_WORKSPACE_ID:-}"
     if [ -z "$CHAT_ROW" ]; then
-        echo "refused: SOT_WORKSPACE_ID is unset, so this is not a row and has no channel. Nothing was sent." >&2
+        echo "refused: SOT_WORKSPACE_ID is unset, so this is not a Ship of Tools session and has no channel. Nothing was sent." >&2
         exit 2
     fi
     CHAT_HANDLE="$(_chat_handle)"
     if [ -z "$CHAT_HANDLE" ]; then
-        echo "refused: this session has no comm handle (not joined, or its handle is another row's). Nothing was sent." >&2
+        echo "refused: this session has no comm handle (not joined, or its handle is another session's). Nothing was sent." >&2
         exit 2
     fi
 }
@@ -71,8 +71,8 @@ _chat_resolve() {
     state="$(printf '%s' "$resp" | jq -r '.payload.state // empty')"
     case "$state" in
         mapped) : ;;
-        unmapped) _chat_refused unmapped "this row's folder maps to no channel" ;;
-        *) _chat_refused invalid "the chat's configuration does not map this row" ;;
+        unmapped) _chat_refused unmapped "this session's project has no channel" ;;
+        *) _chat_refused invalid "the chat's configuration does not map this session's project" ;;
     esac
     CHAT_PAIR="$(printf '%s' "$resp" | jq -c '.payload')"
 }
@@ -145,7 +145,7 @@ send_chat_post_file() {
     local file="$1" comment="$2" thread="$3" node req
     _chat_identity
     if ! node="$(_chat_node_id "$file")"; then
-        echo "refused: '$file' is not a file under this row's folder (${SOT_WORKSPACE_ROOT:-SOT_WORKSPACE_ROOT is unset}). Nothing was sent." >&2
+        echo "refused: '$file' is not a file under this session's project folder (${SOT_WORKSPACE_ROOT:-SOT_WORKSPACE_ROOT is unset}). Nothing was sent." >&2
         exit 2
     fi
     _chat_resolve

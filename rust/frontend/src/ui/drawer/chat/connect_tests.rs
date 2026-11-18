@@ -1007,8 +1007,9 @@ fn a_typed_character_is_neither_logged_nor_shown_while_the_keys_take_secrets() {
 /// The project's own words never reach a screen: every text a person reads in the Chat drawer (each code's text, each `Stand`'s
 /// words at a named, the local and an unnamed computer, every Connect screen and refusal, the picker's list and failures, a
 /// refused pair, each post outcome and the foot's hints) holds none of these words. A word Slack names (its field names, its
-/// headings), a file or command a person types and a key of `hosts.toml` is removed first, and the four wire texts that say
-/// `row` stay: a row's agent reads them through `sot-fe chat`, so they keep the word an agent knows.
+/// headings), a file or command a person types and a key of `hosts.toml` is removed first. No text is spared `row`: a
+/// person reads every code's text in the window and from `sot-fe chat post`, where the manual's word is `session`. Nor
+/// does any name a computer as the one that `runs your agents`: the manual calls it the computer that runs your sessions.
 #[test]
 fn no_project_word_reaches_a_screen() {
     use super::compose::{compose_rows, ComposeText};
@@ -1210,19 +1211,21 @@ fn no_project_word_reaches_a_screen() {
     }
 
     // What is taken out first, and why: Slack's own names and headings, a file's, a command's and a key's names a person types
-    // or finds, the four wire texts an agent reads, and the one gloss of Slack's own word at the codes' first mention on the
-    // Connect step's first screen.
+    // or finds, and the one gloss of Slack's own word at the codes' first mention on the Connect step's first screen.
     let kept = [
         "(Slack calls them tokens)",
         "Bot User OAuth Token", "User OAuth Token", "App-Level Tokens", "App-Level Token", "User Token Scopes", "Generate Token and Scopes",
         "`hub =`", "`sotd log-path`",
     ];
-    let agent_texts = [ChatCode::Unmapped, ChatCode::StaleRow, ChatCode::StaleMapping, ChatCode::NotAFile].map(ChatCode::text);
     let banned = ["hub", "daemon", "token", "tokens", "row", "rows", "leg", "capsule", "sotd", "drawer"];
+    // A phrase whose words are each true elsewhere (`your agents` post through your Slack app): the computer is the one
+    // that runs your sessions, as the manual names it.
+    let phrases = ["runs your agents"];
     let mut hits = Vec::new();
     for text in &said {
+        hits.extend(phrases.iter().filter(|p| text.contains(*p)).map(|p| format!("{p:?} in {text:?}")));
         let mut rest = text.clone();
-        for keep in kept.iter().chain(agent_texts.iter()) {
+        for keep in kept.iter() {
             rest = rest.replace(keep, " ");
         }
         for word in rest.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()) {

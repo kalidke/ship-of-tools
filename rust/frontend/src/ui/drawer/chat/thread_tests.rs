@@ -499,7 +499,7 @@ fn the_threads_title_keeps_its_phrases_apart_and_says_an_unsupported_reply() {
     let (mut d, at) = channel(&held);
     let req = history(&open(&mut d, &mut fonts, &[true]));
     on(&mut d, &req, ChatReply::Unsupported, at);
-    assert_eq!(d.title(), " chat · CH1 · thread Ship of Tools on the computer that runs your agents has no chat: update it ");
+    assert_eq!(d.title(), " chat · CH1 · thread Ship of Tools on the computer that runs your sessions has no chat: update it ");
 }
 
 /// Another host's link change leaves the thread's read alone.

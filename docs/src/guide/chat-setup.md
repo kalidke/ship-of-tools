@@ -15,8 +15,7 @@ screens write `Cmd`. A letter in a key is always lowercase: `Ctrl+k` is Ctrl and
 - **Sessions.** A session is one coding agent, such as Claude Code or Codex, running in one project's folder. The
   navigation tree, the window's left column, has modes: press `s` there for Sessions mode, which lists your sessions,
   and `f` for Files mode, which lists the project's files. Select the project's session in Sessions mode, or move
-  between sessions with `Shift+ArrowLeft` and `Shift+ArrowRight`. A message of the panel that says `row`, such as
-  `the row is gone or was replaced`, means a session.
+  between sessions with `Shift+ArrowLeft` and `Shift+ArrowRight`.
 - **The Chat panel.** The bottom of the window shows one thing at a time: the Julia REPL, a terminal, the monitor, Help
   or the Chat panel. `Ctrl+k` shows the Chat panel there and gives it the keys; `Ctrl+k` again hides it. Its top line
   reads `chat ·` and what it shows. What a key did is said on the status line, the line starting `status:` at the top
@@ -26,9 +25,8 @@ screens write `Cmd`. A letter in a key is always lowercase: `Ctrl+k` is Ctrl and
   page calls the computer that runs your sessions: with one computer, it is that one; with several, it is the one your
   `hosts.toml` (the file that lists your computers, in `~/.config/sot` on Linux and macOS and `%LOCALAPPDATA%\sot\config`
   on Windows) names in its line `hub = "<computer>"`. A project whose session runs on another computer has no chat: its
-  panel says `the chat does not run on <computer>`. The panel's messages name a computer by its name, or
-  `this computer` for the one the window runs on; where a message says `the computer that runs your agents`, it means
-  the computer that runs your sessions.
+  panel says `the chat does not run on <computer>`. The panel's messages name a computer by its name, `this computer`
+  for the one the window runs on, or `the computer that runs your sessions`.
 - **Slack.** You need Slack's website open and signed in, in your web browser (the Slack desktop app is not enough),
   and permission to add apps to your workspace, or an administrator who approves them.
 - **Your Slack app.** In each workspace you make a Slack app for yourself. Your Slack app reads the project's channel
