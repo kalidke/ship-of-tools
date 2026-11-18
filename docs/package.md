@@ -187,7 +187,9 @@ instead of a retry forever (`app_token_refused`, `bot_token_refused`), with the 
 a PDF page or a video's poster past the text cap shown whole, up to 64 MiB (a person had seen a zoomed page read
 "binary file" on rc.12); and, after a boot whose rows all started within seconds (seen by a session on the hub), the
 boot's starts begun 3 s apart in the strip's order with a waiting row listed `queued`, and a session start that waits
-up to 40 s for the registry lock. No person's use of it is recorded yet. v0.7.1-rc.12 (2026-11-17) is an unpublished draft, cut
+up to 40 s for the registry lock. The maintainer used it that evening on the hub (a second workspace connected,
+channels picked in both, posts from the drawer, the previewed file posted, a figure posted by a row's agent, all of
+which worked), and what that use found is on `main`. v0.7.1-rc.12 (2026-11-17) is an unpublished draft, cut
 early on the maintainer's word in a session's pane, because Claude Code 2.1.326 stopped every new Claude leg on a
 question about the folder `--add-dir` adds (the comm folder's agent layer) and a leg cannot answer it: the spawn now
 records that folder's trust beside the row's, under the same declared prefix (agents guarantee 6;
@@ -218,7 +220,21 @@ attach client that keeps reading with input around an attach never sent blind or
 unit no longer restarting forever against another daemon; two parts no test reproduced stay open
 (RELAY-SOCKET-HANG's long wait, KEYS-DROPPED-WHILE-A-ROW-ATTACHES's window warning). rc.4 (2026-11-11) carried the
 preview that follows its row, the pane's copy and the chat drawer's look (rc.3 the drawer; rc.1 and rc.2 selection and
-drawing). `main` carries 0.7.1-rc.14-dev, with nothing rc.13 does not. rc.11 carries what the
+drawing). `main` carries 0.7.1-rc.14-dev, which holds what a person's use of rc.13
+found (2026-11-17 and 18), each seen by him unless marked: the Chat drawer's foot explains how a post appears only until
+this computer's first post; a key's letter is written lowercase everywhere in the window; the refusal to draw shows in
+the preview's box only; words that follow a person's action stay on the status line 10 s against background writes (the
+post key over a picture opened from the chat says why nothing is posted), a link going down shows at once, the
+connection line never says connected for a computer whose link is down (a note from building it), a key the row's
+program did not
+take shows in the agent pane itself, and a preview's own words after a re-render or re-fetch nobody asked for go to the
+preview's box (the limit that remains, another program whose words change at each saying, is in fe-ui's contract); a
+project's private channel that a newly connected Slack app cannot read says so, with the line to type in Slack, in the
+drawer, the channel list and the connected screen, whose list of such channels the daemon reads after the connect and
+carries on `chat.workspaces`, and the post-as-you screen names the connected Slack app as the one to keep
+(CHAT-CONNECT-MAKES-A-NEW-APP stays open: a connect of another app is not asked about first); the drawer asks for a chat
+name only when the post goes out under one; and the manual's two Chat pages are rewritten for a first-time reader. No
+person has used any of it. rc.11 carries what the
 maintainer asked of the Chat drawer on rc.10 (2026-11-15): Up and Down ease the view to a marked message out of view,
 and Left over an empty draft leaves an open thread, as the nav pane's Left does. The `release/0.6.6` branch is closed to
 all but fixes found in use. A

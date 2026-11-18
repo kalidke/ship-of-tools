@@ -2760,3 +2760,53 @@ the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the sa
     passed, 44 of 44; `scripts/release.sh 0.7.1-rc.13` at 20:47; the release workflow 22 minutes to the draft; two
     window computers installed it by archive through their own sessions by 21:12 and the hub by 21:14, with a repair
     run after. The comm matrix had not run when this was written.
+- The night after rc.13, 2026-11-17 21:30 to 2026-11-18 03:10, the same conversation; everything a person's first use
+  of rc.13 found, on `main` for the next candidate. Times are the hub's clock; an agent's minutes are its own run time.
+  The comm matrix on rc.13 ran after the record above, between the hub and one window computer: 6 of 6 passed, once
+  the hub's own probe rows were up (the first run failed two lines without them).
+  - The maintainer's use, on the hub: he connected a second Slack workspace, picked channels in both, posted from the
+    drawer, posted the previewed file, and had a row's agent post a figure; all worked. What he found: the foot's
+    explanation stayed after every post; key letters written as capitals read as Shift; the refusal to draw sat on the
+    status line; the post key over a picture opened from the chat said nothing he could see; and after he made a new
+    Slack app for a connected workspace, a project's private channel went unreadable and nothing told him to invite the
+    app. He ruled that all of it, the status line's class included, goes in the next candidate.
+  - The foot, the key letters and the drawing refusal: three small landings, b1c44dfe4, 12525453d and 1f46a14cf, by
+    22:30. The review of the foot found that the brief's own instruction (a
+    durable write of the window's state) put two fsyncs on every move and resize of the window, 12.2 ms against
+    0.055 ms; the write went back to a rename. The builders' minutes for these were not kept.
+  - The status line's hold (STATUS-WORDS-REPLACED-BY-RELIST, CHAT-POST-FILE-SILENT, CONNECTION-LINE-WHILE-DOWN): a
+    design page first, then four commits by one builder by 23:37. Three reviews and three repairs followed. The first
+    review found four blockers (a refused key written at every frame, a carried line never ended by a reconnect, the
+    post key silent over two other pictures, a writer that repeated one line holding it without bound); repair
+    7225801d2. The second, 28 minutes, found two: a second refused key unsaid and a said one lost to the next word, and
+    words whose text changes holding the line without bound, two broken equations at each save of a file among them.
+    The repair, 14 minutes as 2e6362aef, removed both classes and did not patch their cases: a refused key shows in the
+    agent pane's own overlay, and words from a re-render or a re-fetch a person did not ask for go to the preview's box
+    alone. The third review, 19 minutes by a stronger reviewer, found all six closed and one more: a link's loss hidden
+    behind a held word that begins with `disconnected`. A fresh builder, 15 minutes as f8dabbabf, deleted the filter
+    that caused it, told a failed re-fetch by whose request it answers, and pinned three calls with a native fixture;
+    it also showed one of the review's findings false (the pane's title already says a view was not updated). Four
+    scoped gates, all passed; landed 02:02. The first hosted run on it was red in one macOS test, which had asserted
+    the post key's label ends in `+u` where a Mac's is a glyph and the letter; the test was corrected and landed as
+    7a5e4bf82, and the hosted runs passed on all three systems.
+  - The private-channel screens (CHAT-UNREAD-CHANNEL-SAID-NOTHING, CHAT-CONNECT-MAKES-A-NEW-APP): a diagnosis, then
+    two commits by one builder by 00:03. The first review found one blocker, the connect reply waiting on Slack reads
+    of the mapped channels (0.34 s to 10.3 s with one stalled read, the bound unpinned), and seven findings, the worst
+    that the connected screen's first visible line told the person to choose a channel. The repair, 46 minutes as
+    a7426bbe2, moved the list of unreadable channels off the connect reply onto each `chat.workspaces` entry, filled
+    by a task after the reload. The second review, 30 minutes, found no blocker and five findings (an older connect's
+    task replacing a newer one's list; three rules untested; the screen shown before the list is known still offering
+    a choice of channel). A fresh builder, 14 minutes, did them; rebased on the status line's landing with no
+    conflict, 36 native fixture lines passing; landed by 02:20 as 2746cca6b. CHAT-CONNECT-MAKES-A-NEW-APP stays open: a
+    connect of another app is still not asked about first, and two of its premises are unmeasured against Slack.
+  - The manual's two Chat pages, against the ten things the maintainer had tripped on: a writer, 23 minutes, rewrote
+    both (the usage page from 6,033 words to 3,842; the setup page as numbered steps), each sentence checked against
+    the code. Blind readers given only a page's path counted 22 and 15 terms they could not follow; a second round by
+    the writer, 12 minutes, then 18 and 12; a third, 3 minutes, then 14 and 13, with both readers following the main
+    path. What the readers still raise is the window's own words (`row` for a session, and two names for the computer
+    that runs the sessions) and an older install that names no version. The writer's reading of the code found three
+    things outside the pages, built by one builder in 11 minutes as cba577b2b: a refused post named a list entry that
+    is no longer shown, a chat name was asked for that a person's own post never carries, and the configuration
+    reference said mail was not built. Landed 03:03 and, the last round of the pages, 09b0e5615.
+  - Disk: the night's review builds took the hub's disk to 88%; four week-old build folders of finished lanes were
+    deleted, 98 GB.
