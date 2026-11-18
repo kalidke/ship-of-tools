@@ -85,8 +85,8 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `src/license.md`: the license page.
 - `src/ref/`: reference pages (keybindings, configuration, API; the staged comm protocol page lands here).
 - `src/start/`: quickstart, install and setup pages.
-- `src/whats-new.md`: what the release candidate adds to the published release, one line per item, each linked to
-  the guide section that explains it.
+- `src/whats-new.md`: what the newest release adds to the one before it, one line per item, a feature linked to the
+  guide section that explains it, then what was fixed and how a computer updates.
 
 ## Start here
 `make.jl` for how the manual is assembled and what its checks reject; `history/adr/README.md` for the status tokens and the

@@ -42,7 +42,7 @@ hero:
 
 <div class="sot-section">
   <h2>The project's Slack channel, in the window</h2>
-  <p class="sot-why"><code>Ctrl+k</code> shows the Slack channel of the selected session's project in the bottom drawer. A message typed there is posted under the person's own Slack account, <code>Ctrl+u</code> posts the file the preview shows, and the session's agent can post its replies and figures to the same channel. See <a href="./guide/chat-setup">Setting up Slack</a> and <a href="./guide/chat">The project chat</a>.</p>
+  <p class="sot-why"><code>Ctrl+k</code> shows the Slack channel of the selected session's project in the bottom drawer. A message typed there is posted from the person's own Slack account, <code>Ctrl+u</code> posts the file the preview shows, and the session's agent can post its replies and figures to the same channel. See <a href="./guide/chat-setup">Setting up Slack</a> and <a href="./guide/chat">The project chat</a>.</p>
 </div>
 
 <div class="sot-section">
@@ -100,7 +100,7 @@ Install Ship of Tools: fetch https://raw.githubusercontent.com/kalidke/ship-of-t
   <h2>Read next</h2>
   <ul>
     <li><a href="./features">What it does</a> — every feature, most with a short recording.</li>
-    <li><a href="./whats-new">What's new in 0.7.1</a> — what the release candidate adds to 0.7.0.</li>
+    <li><a href="./whats-new">What's new in 0.7.1</a> — what 0.7.1 adds to 0.7.0.</li>
     <li><a href="./start/quickstart">Quickstart</a> — install, launch, start an agent session.</li>
     <li><a href="./start/tour">Your first session</a> — the panes, the agent, drawers and modes, one at a time.</li>
     <li><a href="./guide/architecture">Architecture</a> — the frontend, the daemon, the Julia kernel and the agent sessions.</li>

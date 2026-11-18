@@ -8,13 +8,14 @@ aside: false
 
 The main features, with a short recording where one exists. Planned work is on
 the [roadmap](design/roadmap.md). Keys are given for Linux and Windows; the
-macOS equivalents are in [Keybindings](ref/keybindings.md). What the 0.7.1
-release candidate adds is listed in [What's new in 0.7.1](whats-new.md).
+macOS equivalents are in [Keybindings](ref/keybindings.md). What 0.7.1
+added is listed in [What's new in 0.7.1](whats-new.md).
 
 ```@raw html
 <ul class="sot-index">
-  <li><strong>Agents and sessions</strong>: <a href="#Claude-Code-and-Codex-sessions">sessions</a> · <a href="#Hand-the-agent-a-file-path">hand the agent a file path</a> · <a href="#Crop-an-image-for-the-agent">crop an image for the agent</a> · <a href="#A-drawing-for-the-agent">a drawing for the agent</a> · <a href="#Selected-text-for-the-agent">selected text for the agent</a></li>
-  <li><strong>The project chat</strong>: <a href="#A-Slack-channel-beside-each-project">a Slack channel beside each project</a></li>
+  <li><strong>Agents and sessions</strong>: <a href="#Claude-Code-and-Codex-sessions">sessions</a> · <a href="#Hand-the-agent-a-file-path">hand the agent a file path</a> · <a href="#Crop-an-image-for-the-agent">crop an image for the agent</a> · <a href="#Selected-text-for-the-agent">selected text for the agent</a> · <a href="#Order-of-the-session-strip">order of the session strip</a></li>
+  <li><strong>Slack</strong>: <a href="#A-Slack-channel-in-the-Chat-drawer">a Slack channel in the Chat drawer</a></li>
+  <li><strong>Drawing</strong>: <a href="#A-drawing-on-an-image-or-a-blank-canvas">a drawing on an image or a blank canvas</a></li>
   <li><strong>Navigation and previews</strong>: <a href="#Walk-the-project,-see-the-file">walk the project</a> · <a href="#Modules-mode">Modules mode</a> · <a href="#PDF,-paged">PDF</a> · <a href="#Pan-and-zoom-images">pan and zoom</a> · <a href="#Pin-a-file">pin a file</a> · <a href="#Edit-a-file-yourself">edit a file</a></li>
   <li><strong>The REPL</strong>: <a href="#Run-code,-see-figures-inline">run code, see figures inline</a></li>
   <li><strong>The window</strong>: <a href="#Searchable-help">searchable help</a></li>
@@ -59,20 +60,17 @@ the source file and the region, with the crop attached.
 <DemoLoop name="crop" caption="With the preview focused, pressing c on a zoomed figure puts the visible region into the agent's input, and the question is sent: asked which leg in it is the shortest, the agent reads the answer off the crop." />
 ```
 
-### A drawing for the agent
-
-With the preview focused (`Ctrl+Right`), `d` turns drawing on over an image:
-the left mouse button draws and the right one erases. The session's agent is
-given the image with the marks on it at its next prompt. `Shift+d` shows a
-blank canvas to sketch on instead. Claude Code sessions only. See
-[Drawing and selecting for the agent](guide/drawing.md).
-
 ### Selected text for the agent
 
 Text selected with the mouse in a markdown, source or plain text preview is
 given to the session's agent at its next prompt, labeled with the file and its
 line numbers. Claude Code sessions only. See
 [Selecting text](guide/drawing.md#Selecting-text).
+
+### Order of the session strip
+
+`Ctrl+Shift+o` cycles the order of the session strip along the bottom edge:
+by state, alphabetical, or by recent activity.
 
 ### More on agents
 
@@ -86,28 +84,37 @@ line numbers. Claude Code sessions only. See
   drives the row colours above. See
   [Agents messaging each other](guide/messaging.md).
 
-## The project chat
+## Slack
 
-### A Slack channel beside each project
+### A Slack channel in the Chat drawer
 
 `Ctrl+k` shows the Chat drawer (its guides call it the Chat panel): the Slack
 channel of the selected session's project, newest message at the bottom. A
-message typed there is posted under the person's own Slack account, and
-`ArrowRight` opens the marked message's thread. Slack is connected, and each
-project's channel picked, in the drawer itself. See
-[Setting up Slack](guide/chat-setup.md) and [The project chat](guide/chat.md).
+message typed there is posted from the person's own Slack account, and
+`ArrowRight` opens the marked message's thread. Slack is set up in the drawer
+itself (`Ctrl+Shift+k`), and each project can use a channel of a different
+workspace. See [Setting up Slack](guide/chat-setup.md) and
+[The project chat](guide/chat.md).
 
-### More on the chat
+### More on Slack
 
-- **Files and pictures.** `Ctrl+u` posts the file the preview shows. A
-  message's pictures show as tiles, and a click opens one in the preview. See
-  [Posting a file](guide/chat.md#Posting-a-file).
-- **Posts from the agent.** A session's agent posts text and figures to its
+- **Pictures.** A message's pictures show in the drawer; a click or `Ctrl+o`
+  opens one in the preview. See [Pictures](guide/chat.md#Pictures).
+- **The previewed file.** `Ctrl+u` posts the file the preview shows to the
+  channel. See [Posting a file](guide/chat.md#Posting-a-file).
+- **Posts from the agent.** A session's agent posts text and files to its
   project's channel with `sot-fe chat post`. See
   [The agent in the channel](guide/chat.md#The-agent-in-the-channel).
-- **Channel posts as mail.** Posts in the channel can reach the session's
-  agent as mail, which it can answer with no window open; off until it is set
-  in `chat.toml`. See [Mail to the session](guide/chat.md#Mail-to-the-session).
+
+## Drawing
+
+### A drawing on an image or a blank canvas
+
+With the preview focused (`Ctrl+Right`), `d` turns drawing on over an image:
+the left mouse button draws and the right one erases. The session's agent is
+given the image with the drawing on it at its next prompt. `Shift+d` shows a
+blank canvas to draw on, which the agent is given the same way. Claude Code
+sessions only. See [Drawing and selecting for the agent](guide/drawing.md).
 
 ## Navigation and previews
 
@@ -183,8 +190,11 @@ shows every run the agent made, and with `git` in a shell session.
 
 - **Add a file type in Julia.** A `FileType` subtype, a `matches` method and a
   `preview` method; no Rust changes. See [The dispatch ABI](extend/abi.md).
-- **SVG files preview as their picture.** An `.svg` file is drawn to fit the
-  pane, and zooms and pans as a PNG does. See
+- **SVG files preview as pictures.** An `.svg` file is drawn to fit the pane,
+  and zooms and pans as a PNG does. See
+  [Built-in file types](guide/previews.md#Built-in-file-types).
+- **PDF pages and video posters need no installed tools.** On a computer
+  without poppler or ffmpeg, the first such preview downloads a copy. See
   [Built-in file types](guide/previews.md#Built-in-file-types).
 - **Video and interactive documents open in the browser.** Video shows a
   poster frame in the pane; `o` opens playback in your browser. Pluto
@@ -234,9 +244,9 @@ list.
 
 - **Watching the machines.** The Monitor drawer (`Ctrl+m`) shows CPU, GPU and
   memory across your Linux hosts, for example while a training run is going.
-- **Scrolling eases.** A scroll in the preview, the agent pane and the Chat,
-  Terminal and REPL drawers glides to its place; `smooth_scroll_ms` under
-  `[display]` sets how long it takes, and `0` moves at once. See
+- **Smoother scrolling.** A scroll in the preview, the agent pane and the
+  Chat, Terminal and REPL drawers glides to its place; `smooth_scroll_ms`
+  under `[display]` sets how long it takes, and `0` moves at once. See
   [Configuration files](ref/config.md#display).
 - **Keybindings.** Named actions can be rebound in a keybindings file;
   anything you do not override keeps its default. See
