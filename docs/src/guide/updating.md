@@ -103,7 +103,7 @@ it at the next launch, below.
   scope for the retire to end; a row on Windows or macOS has not been run.
 - Daemons move before windows. A window works only with a daemon of its own release line: a 0.7 window and a 0.6 daemon
   refuse each other, in either direction, and the window shows that computer as refused (for a 0.6 daemon reached over
-  ssh, "the backend there predates the link; update it") with none of its rows; 0.7.0 and the 0.7.1 candidates work
+  ssh, "the backend there predates the link; update it") with none of its rows; 0.7.0 and 0.7.1 work
   together. So on a computer with a window (the `self` row of `sotd status` declares `frontend`; the record is one per
   home, so it cannot say) the runbook reads the newest release and every daemon of the group (`sotd topology plan` and
   `sotd status`) before it changes anything. When one is on another line, or cannot be read, it stops with nothing

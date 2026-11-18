@@ -2835,3 +2835,16 @@ the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the sa
     reached, and the hub by 08:08, with a repair run after (a run of the installer with no arguments had first
     refused, rightly, to move the hub back to the published 0.7.0). The comm matrix was not run: rc.14 changes
     nothing of messaging.
+  - The release of 0.7.1, 2026-11-18: the maintainer asked at 09:36 for a 0.7.1 release by about 11:00. `main`
+    differed from the rc.14 tag in version stamps and two record pages. Whole gate on de7638127 passed at 09:44;
+    `scripts/release.sh 0.7.1` at 09:45; the release workflow 23 minutes to the draft at 10:08, every build, smoke and
+    install smoke green. The release gate's hosted run, dispatched at 09:38, ended at 11:04 with 22 of 25 jobs green.
+    Its three red jobs were faults in tests that run only there: the pane-timing test (Windows and macOS) found no
+    daemon or capsule because the runner's newer Cargo places a test binary in `<profile>/build/<package>/<hash>/out`,
+    and three chat State fixtures (macOS) pressed Ctrl for `chat.open_image` and `chat.post_file`, bound to Primary.
+    Both corrected in test code, scoped gates passed, the three jobs green on the corrected branch at 10:19, landed
+    as e74d89509 and 7dae9c2a4. The question to publish was stamped at 09:55 with its page and had no answer until
+    11:30, the maintainer being away from the keyboard; published on his word at 11:30 with hand-written notes, the
+    hub moved by a plain install at 11:33 (the pin of rc.14 ended), and two window computers were asked through their
+    own sessions. A lesson for the next final: dispatch the release gate when the last candidate is cut, not at the
+    final, so that a fault in a test that only it runs is found a day early.

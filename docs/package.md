@@ -173,8 +173,14 @@ earlier text of the sections above and the integration-test assignment by pass.
 
 ## State
 
-v0.7.0 is published (2026-11-05), and a plain install moves a computer to it; `docs/UPDATE-AGENT.md` is the one update
-procedure an agent follows, from any 0.6 or 0.7 install. v0.7.1-rc.14 (2026-11-18) is an unpublished draft, cut on
+v0.7.1 is published (2026-11-18), and a plain install moves a computer to it; `docs/UPDATE-AGENT.md` is the one update
+procedure an agent follows, from any 0.6 or 0.7 install. It is rc.14's code under a new version stamp, cut from `main`
+the same morning on the maintainer's word after the whole local gate, and published on his word with hand-written
+notes once the release workflow's builds, smokes and install smokes had passed and the release gate's hosted run had
+ended with 22 of 25 jobs green; its three red jobs were faults in tests, corrected on `main` after the tag and green
+there (the pane-timing test looked for the daemon and the capsule two folders above its own binary, which a newer
+Cargo no longer puts there; three chat fixtures pressed Ctrl for keys bound to Primary, which is Cmd on a Mac). The
+hub moved to it by a plain install the same hour. v0.7.0 was published 2026-11-05. v0.7.1-rc.14 (2026-11-18) is an unpublished draft, cut on
 the maintainer's word in a session's pane once everything his use of rc.13 found was on `main`, and installed by archive
 by their own sessions on two window computers and by the maintaining session on the hub, where the daemon restarted and
 the rows' open REPLs ended, on his word; a third window computer was not reachable. What it carries past rc.13 is listed
@@ -225,7 +231,7 @@ attach client that keeps reading with input around an attach never sent blind or
 unit no longer restarting forever against another daemon; two parts no test reproduced stay open
 (RELAY-SOCKET-HANG's long wait, KEYS-DROPPED-WHILE-A-ROW-ATTACHES's window warning). rc.4 (2026-11-11) carried the
 preview that follows its row, the pane's copy and the chat drawer's look (rc.3 the drawer; rc.1 and rc.2 selection and
-drawing). `main` carries 0.7.1-rc.15-dev, with nothing rc.14 does not. rc.14 holds what a person's use of rc.13
+drawing). `main` carries 0.7.2-dev: 0.7.1 and the two test corrections. rc.14 holds what a person's use of rc.13
 found (2026-11-17 and 18), each seen by him unless marked: the Chat drawer's foot explains how a post appears only until
 this computer's first post; a key's letter is written lowercase everywhere in the window; the refusal to draw shows in
 the preview's box only; words that follow a person's action stay on the status line 10 s against background writes (the

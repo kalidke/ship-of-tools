@@ -71,8 +71,8 @@ If the file does not exist, this computer has no release record. Ask the person 
 ## 2. Daemons before windows, then ask before you run it
 
 A Ship of Tools window works only with a daemon that speaks its protocol, and it dials the daemon on this computer and
-the daemon on every other computer its group lists. Inside one release line the protocol holds (0.7.0 and the 0.7.1
-candidates speak the same one); between lines it does not. A 0.6 daemon and a 0.7 window refuse each other, in either
+the daemon on every other computer its group lists. Inside one release line the protocol holds (0.7.0 and 0.7.1
+speak the same one); between lines it does not. A 0.6 daemon and a 0.7 window refuse each other, in either
 direction, and the window then shows that computer as refused ("the backend there predates the link; update it", for a
 0.6 daemon reached over ssh) with none of its rows. (A 0.6.6 candidate before rc9.13 speaks a third protocol.) So
 daemons move before windows: a computer's window moves to a release only when every daemon it dials already runs that
