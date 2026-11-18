@@ -199,7 +199,11 @@ fn answer(teams: &Arc<Vec<Team>>, seen: &Seen, port: u16) -> Reply {
             async move {
                 let t = &teams[team];
                 peer.send(&json!({"type": "hello", "num_connections": 1, "connection_info": {"app_id": own("A", t.id)}})).await;
-                let mut rx = t.rx.lock().await;
+                // A socket that goes while another holds the feed (a connect's probe beside the listener's) never takes it.
+                let mut rx = tokio::select! {
+                    rx = t.rx.lock() => rx,
+                    () = peer.drain() => return,
+                };
                 // Until the client goes, so a restarted listener's socket takes the feed.
                 loop {
                     let envelope = tokio::select! {

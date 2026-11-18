@@ -1068,7 +1068,9 @@ owned by `docs/CLAUDE.md`.
 - **CHAT-CONNECT-ANSWERS-CONNECTED-WHATEVER-THE-RELOAD-DID** [note] `chat.connect` replies `{workspace}` once the tokens are
   saved and the reload's wait ended, and logs and discards the reload's status (`rust/backend/src/chat/setup.rs`), so a
   person who pastes another Slack app's token (or one Slack then refuses) sees the Connected screen, and the chat ends
-  `wrong_app` or `tokens_refused` within moments after it. The reply is blind by design (`a_connect_whose_start_fails_is_saved_and_resolve_says_start_failed`);
+  `wrong_app` or `tokens_refused` within moments after it. Since chat guarantee 34 a set of tokens Slack tells to be two
+  apps' is refused at the connect and never reaches the reload; what stays is a set whose apps Slack did not tell and a
+  token Slack refuses only after the connect. The reply is blind by design (`a_connect_whose_start_fails_is_saved_and_resolve_says_start_failed`);
   the window resolves the row again after a reply and again on a stopped status, which brings the Connect step, but the
   Connected screen has been shown first. From a review, reading code; never seen.
 - **CHAT-START-REFUSAL-IS-START-FAILED** [note] A bot token Slack refuses at the daemon's start is `ServiceError::Api(Slack(_))`,
@@ -1189,17 +1191,24 @@ owned by `docs/CLAUDE.md`.
   Enter opens its own page (`https://api.slack.com/apps/<app_id>/oauth`); before the hub's answer, and from a hub that
   gives none, Enter opens the list of apps and the screen says to look there for the Slack app connected before,
   whatever its name, and to make a new one only if there is none, since a new app is in none of the private channels. Also
-  built, not yet checked in use (the design's second form): while its workspace runs with a known Slack app (told by the
-  start's `bots.info`), a connect whose bot token is another app's, or whose app Slack does not tell (the connect's one
-  `bots.info` failed, stalled to its deadline or named no app), writes nothing and restarts nothing, and is refused
-  `other_app` with the app connected now, decided under the setup lock (`rust/chat/CLAUDE.md` guarantee 31); the window's
-  Connect step then asks on one screen, `a different Slack app`, whose Enter keeps the app connected now (its page opens,
-  the pasted codes are dropped, and a later paste of one of them is refused with words that say whose to paste, so no
-  connect carries the new app's App-Level Token beside the connected app's two codes, which would stop the chat
-  `wrong_app` for every project of the workspace) and whose Right connects the pasted codes anyway (`replace_app`). Not
-  asked about: a chat that is not running, one whose start's `bots.info` failed, and an App-Level Token of the new app
-  other than the one asked about (the app is told by the bot token alone). An older window cannot replace a running app
-  at all (it reads the refusal as an unknown outcome and says Slack may be connected, which is not so). Open: three premises are unmeasured:
+  built, not yet checked in use (the design's second form): a connect that does not say `replace_app` writes only when
+  no chat of its workspace runs or starts, or the running app is told and is the tokens' app; any other writes nothing,
+  restarts nothing and is refused `other_app`, decided under the setup lock with a start waited for first
+  (`rust/chat/CLAUDE.md` guarantee 31). The tokens' app is told by two answers on every connect, `bots.info` under the
+  bot token and the first frame of one probe socket opened with the App-Level Token, closed again before anything is
+  written; told to be two apps, the set is refused `mixed_apps`, with `replace_app` too and on a first connect
+  (guarantee 34), so the daemon writes no set that would stop the chat `wrong_app` for every project of the workspace,
+  by whatever keys it was pasted (from reviews' probes, never seen by a person: the new app's App-Level Token, still
+  on the clipboard, pasted beside the connected app's two codes). The window's Connect step asks on one screen,
+  `a different Slack app`: told to be another app's, Enter keeps the app connected now (its page opens, the pasted codes
+  are dropped) and Right connects the pasted codes anyway (`replace_app`); not told, Enter asks Slack again with the
+  same codes and Right connects them anyway. A mixed set returns to step 3 with the wire's words, the App-Level Token
+  dropped and the other two kept. Not asked about: a chat that is not running or ended on its own. Written though Slack
+  did not tell their apps: tokens on the person's Right, and tokens of a first connect (the listener's `wrong_app` is
+  then the backstop); the user token's app is told by nothing. An older window cannot replace a running app
+  at all (it reads the refusal as an unknown outcome and says Slack may be connected, which is not so). Open: five premises are unmeasured:
+  that Slack's `hello` names the socket's app (`connection_info.app_id`), that an envelope a probe socket left
+  unacknowledged is sent again to the app's other connection,
   that `bots.info`'s `bot.name` is the name Slack calls the app, that the `/oauth` address opens the app's page, and that
   `bots.info` under a new app's bot token names that app. Check them at a person's first use of either screen; close this
   item when a person keeps the connected app through one.

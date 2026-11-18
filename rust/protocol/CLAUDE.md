@@ -118,7 +118,7 @@ name is in this crate's one op table.
     `{row, workspace, channel}`: the canonical row and the expected pair, rechecked by the daemon (resolve alone names the row
     only). A `mapped` resolve reply may carry `name`, the channel's name (public or private, as the channel is mapped; from the daemon's cache, whose names are already cleaned and at most 160 bytes), absent when the daemon does not know it and from a daemon before it (a reader then shows the id); a reader before it ignores the field, and this reader takes a `name` that is empty, over 160 bytes or not a string as no name with the reply still `mapped`, since a cosmetic field is never a reason to refuse the mapping; a `mapped` reply also carries `workspace_name`, the mapping's workspace's name, only while the daemon admits more than one workspace (from its cache of the names Slack gave; read as `name` is, and absent from a daemon before it; a reader before it ignores it; on the struct variant `Mapped` and never on `Unmapped`; the daemon's side is pinned by `rust/backend/src/server/chat_setup_tests.rs`: `a_resolve_names_its_workspace_only_while_the_hub_serves_two`, each row's own workspace's name and none for a workspace admitted without one) (tests `chat_tests.rs`: `every_request_reply_and_event_keeps_its_shape`, `an_older_reader_decodes_the_named_reply_and_this_one_the_unnamed`, `the_setup_family_carries_its_workspace_and_an_older_shape_still_decodes`, `a_name_that_is_too_long_or_not_a_string_reads_as_no_name`). A refusal is the standard error payload whose `code` is a `ChatCode` (`unavailable`, `unmapped`, `stale_row`,
     `stale_mapping`, `bad_request`, `too_many_watches`, `limited`, `busy`, `failed`, and the setup family's `bot_token_refused`, `app_token_refused`, `other_workspace` (an older daemon's, which serves one workspace),
-    `too_many_workspaces`, `no_such_channel`, `not_in_channel`, `channel_taken`, `not_saved`, `other_app`, and the file pair's `not_a_file`, `too_large`, `not_an_image`; a later code reads as `other`; `ChatCode::text` is the one fixed text of a code, the refusal's `error` and what a window shows for it, except `unavailable`, which a window words itself: not the hub, or the hub's service not running), never
+    `too_many_workspaces`, `no_such_channel`, `not_in_channel`, `channel_taken`, `not_saved`, `other_app`, `mixed_apps`, and the file pair's `not_a_file`, `too_large`, `not_an_image`; a later code reads as `other`; `ChatCode::text` is the one fixed text of a code, the refusal's `error` and what a window shows for it, except `unavailable`, which a window words itself: not the hub, or the hub's service not running), never
     Slack's or a library's text; a post's reply is `posted`, `refused`, `limited` or `unknown`. Bounds a decoder enforces:
     a channel id is 1 to 64 of letters, digits, `_`, `-`; a row 256 bytes, a workspace 64; a post's text 8 KiB and name 160; a
     cursor 1 KiB; `limit` 1 to 20; a page or a `chat.changed` list at most 21 and a status 32 channels (a list stops at its
@@ -129,14 +129,17 @@ name is in this crate's one op table.
     app's own post, and one record never spoils its page), a post `outcome` as `unknown` (the post may exist; never resent).
     **The setup family** (so a person sets the chat up from the window): `chat.connect {bot_token, user_token?, app_token, replace_app?}` (the user token `xoxp-` is what a person's post goes out under; it is defaulted and left out when `None`, so an older window's two-token connect decodes, and the daemon refuses it `bad_request`; `replace_app` is the person's word to replace the Slack app the tokens' workspace runs with now, defaulted and left out when false, so an older window's connect is asked about and an older daemon, which ignores the field, replaces as it always did) answers
     `{workspace, name?}` (`name`: the workspace's as Slack gave it, read as the resolve's `name` is, so a bad one is none and
-    an older daemon's reply has none; an unknown field is ignored), or is refused `other_app` (CHAT-CONNECT-MAKES-A-NEW-APP:
-    the tokens are another Slack app's than the one their workspace runs with now, or Slack did not tell whose they are,
-    and nothing was saved; chat guarantee 31), a refusal whose body beside `error` and `code` is `ChatOtherApp {workspace?,
+    an older daemon's reply has none; an unknown field is ignored), or is refused `mixed_apps` (the app-level token is another Slack app's than the
+    bot token's, whatever `replace_app` says, and nothing was saved; chat guarantee 34; no body; its text is what a window
+    shows: which code is the odd one, and to paste the three codes of one Slack app), or is refused `other_app` (CHAT-CONNECT-MAKES-A-NEW-APP:
+    the tokens are another Slack app's than the one their workspace runs or starts with now, or Slack did not tell whose
+    they are or which app runs, and nothing was saved; chat guarantee 31), a refusal whose body beside `error` and `code` is `ChatOtherApp {workspace?,
     name?, app_id?, app_name?, new_app_known?, new_app_name?}`: the workspace and its name, the app connected now (its id
-    and the name Slack gives its bot), whether the daemon told the tokens' app to be another (`new_app_known`, left out
-    when false), and the name Slack gives that app's bot, each read as `chat.workspaces`' fields are (the flag true only
-    for `true`), a bad one none and a bare refusal the weaker claim, nothing told. The code's text is the plain fact; no
-    window shows it. Limit: an older window reads the code as `other`, which its connect takes for the unknown outcome: it
+    and the name Slack gives its bot, both absent while the daemon does not know that app), whether the daemon told the
+    tokens' app to be another than the one that runs (`new_app_known`, left out when false: one of the two was not told),
+    and the name Slack gives that app's bot, each read as `chat.workspaces`' fields are (the flag true only
+    for `true`), a bad one none and a bare refusal the weaker claim, nothing told. `other_app`'s text is the plain fact; no
+    window shows it. Limit: an older window reads either code as `other`, which its connect takes for the unknown outcome: it
     closes the step and shows its own words, that Slack may be connected because the computer did not answer before the
     connection ended, which are not true here (the computer answered, and nothing was connected); it then resolves the row
     again, which still finds the app connected now. It cannot replace the app, nor connect that app's own new tokens while
@@ -179,7 +182,7 @@ name is in this crate's one op table.
     the events `message.channels` and `message.groups`; Socket Mode on, token rotation and org deploy off), and
     `chat::slack_app_url(name)` is `https://api.slack.com/apps?new_app=1&manifest_json=` followed by that manifest with every
     byte outside the unreserved set percent-encoded; it holds no secret. Mechanism: three new ops, one new resolve state
-    and ten new codes (six, then `user_token_refused`, the connect's refusal of the user token; `no_user_token`, a person's post refused because the hub holds no token that posts as them; and `not_a_member`, the person is not in the channel; then `other_app`, with the defaulted `replace_app` and the refusal's defaulted body), each text is fixed (`every_code_has_its_one_text`), all read safely by an older reader, so `PROTOCOL_VERSION` stays 4; an older daemon answers the three
+    and eleven new codes (six, then `user_token_refused`, the connect's refusal of the user token; `no_user_token`, a person's post refused because the hub holds no token that posts as them; and `not_a_member`, the person is not in the channel; then `other_app`, with the defaulted `replace_app` and the refusal's defaulted body, and `mixed_apps`), each text is fixed (`every_code_has_its_one_text`), all read safely by an older reader, so `PROTOCOL_VERSION` stays 4; an older daemon answers the three
     ops as unknown ops (fe-net reads that as `Unsupported`). Limits: the daemon serves all three (chat's guarantees 30 and 31);
     the window's Connect step sends `chat.connect` (fe-ui's Chat owner). Tests `ops/chat_tests.rs`: `a_connect_request_formats_no_token_byte`, `a_pair_with_no_channel_key_unpairs`,
     `an_older_reader_reads_unconfigured_as_invalid`, `a_connect_carries_a_user_token_an_older_payload_lacks`, `a_full_channel_list_fits_the_envelope`,

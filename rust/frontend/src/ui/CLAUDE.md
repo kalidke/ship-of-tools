@@ -1430,46 +1430,62 @@ methods are `pub(super)`, so no other ui code can drop the requests they return.
   the row's host. One connect is in flight at a time, held by the drawer (`connect_sent`), so Escape while connecting
   (whose keys line says the check goes on) and a step begun since never send a second until its reply, and a reply only
   ever acts on the step that is connecting. A refused token (`bot_token_refused`, `user_token_refused`, `app_token_refused`) returns to its step
-  with Slack's words and keeps the others; any other reply but `other_app` drops all three (a refusal shows its words on
-  the first screen);
+  with Slack's words and keeps the others. A set the hub refused `mixed_apps` (its App-Level Token is another Slack app's
+  than its bot token's, and the hub wrote nothing: chat guarantee 34) returns to step 3 with the App-Level Token dropped
+  and the other two kept (`Connect::mixed`, until an App-Level Token is pasted): the step leads with `Not connected:` and
+  the wire's words (`ChatCode::MixedApps`'s text, which names the App-Level Token as the odd code and says to paste the
+  three codes of one Slack app), then what to do (copy the App-Level Token again from the same Slack app as step 2's
+  two, or go back to step 2 and paste the right two there) and Slack's five steps; with the step closed while the hub
+  checked, the status line says `Slack not connected:` and the wire's words (`drawer::mixed_words`). At 60 cells by 12
+  rows the wire's words and what to do are the first rows and the keys are in view
+  (`connect_tests::a_set_of_two_slack_apps_codes_goes_back_to_the_app_level_token_with_the_other_two_kept`). Any other
+  reply but `other_app` drops all three (a refusal shows its words on the first screen);
   `ConnectUnknown` ends a connecting step with a status line; a connect fe-net could not queue reads as `unavailable`
   (`never_written`). Any reply but `other_app` resolves the row again at once. A connect refused `other_app`
   (CHAT-CONNECT-MAKES-A-NEW-APP; `ChatEvt::OtherApp`: the tokens are another Slack app's than the one their workspace is
   connected to now, or Slack did not tell whose they are, and nothing was saved) brings the connecting step the other
-  Slack app's screen, the three tokens kept and remembered (`Connect::asked_codes`, in memory for the step alone, never
-  written, logged or drawn), titled `a different Slack app` (with the step closed while it connected, the status line
-  says nothing changed and how to decide, `drawer::not_replaced_words`). Its first rows say that these Slack codes belong
-  to a different Slack app than the one connected to the workspace now (the hub's `new_app_known`), or that Ship of Tools
-  could not tell whether they belong to it because Slack did not say, with the name Slack calls that app when the hub
-  gave one; that to keep everything as it is the person presses Enter and pastes the connected app's codes instead; and
-  that a new Slack app is in no channel, public ones included, so each project's channel shows nothing until it is
-  picked again in the channel list (a public one) or someone invites the app in it in Slack (a private one), the invite
-  `/invite @<name>` only by the hub's `new_app_name` for a told app and, with none, the words `invites the new Slack app`,
-  since any other name could be the connected app's (this flow names every app it makes alike); then what Enter opens and
-  the key that connects the codes anyway. Enter, the key a hurried person presses, replaces nothing: it opens the
-  connected app's page (`/oauth` by the hub's `app_id`, else the list of apps) and goes to step 2 with the three tokens
-  dropped (`not pasted yet`), step 2 naming the connected app as the one to click (`<name>, the Slack app connected now`)
-  rather than `slack_app_name`, which is the new app's in this flow; a token of another app pasted over the screen does
-  the same, and is held. A paste of a token the step remembers is refused, nothing held, with status-line words that say
-  whose it is and whose to paste (`that is a code of the new Slack app; paste the "App-Level Token" of <name>, the Slack
-  app connected now`, or for an app not told `one of the Slack codes Ship of Tools asked about`), and no connect without
-  `replace_app` carries one (`Connect::send`), so no sequence of keys mixes them with the connected app's; they are
-  forgotten when the person connects them anyway or a connect is made. `chat.thread_open`'s key, named by its default
-  binding's label with the flow's word for it (`→ (Right)` in the keys, `→ (the Right arrow key)` in the words), sends
-  one `chat.connect` of the three held with `replace_app` (once: the step is connecting), after which the flow is any
-  connect's (the connected screen, the channels the new app cannot read first); Left does nothing; Escape closes. At 60
-  cells by 12 rows the whose, the keep and the cost are above the pinned keys, each key whole on its own row
+  Slack app's screen, the three tokens kept, titled `a different Slack app` (with the step closed while it connected,
+  the status line says nothing changed and how to decide, `drawer::not_replaced_words`). The screen has two forms, by the
+  hub's `new_app_known`. **Told to be another app's:** its first rows say that these Slack codes belong to a different
+  Slack app than the one connected to the workspace now, with the name Slack calls that app when the hub gave one; that
+  to keep everything as it is the person presses Enter and pastes the connected app's codes instead; and that the new
+  Slack app is in no channel yet, so each project's channel shows nothing until someone invites the new Slack app in it
+  in Slack, and that the next screen names each channel and what to type (no app is named to invite here: this flow
+  names every app it makes alike, so a name could be the connected app's); then what Enter opens and the key that
+  connects the new app anyway. Enter, the key a hurried person presses, replaces nothing: it opens the connected app's
+  page (`/oauth` by the hub's `app_id`, else the list of apps) and goes to step 2 with the three tokens dropped (`not
+  pasted yet`), steps 2 and 3 naming the connected app as the one to click and to copy from (`<name>, the Slack app
+  connected now`; `Copy it from <name>, the same Slack app as the two codes of step 2`) rather than `slack_app_name`,
+  which is the new app's in this flow; a token pasted over the screen does the same, and is held. **Not told** (Slack
+  did not say whose the tokens are, or which app runs): the screen is one paragraph, that Ship of Tools could not tell
+  whether these Slack codes belong to the Slack app connected to the workspace now (named when the hub gave a name)
+  because Slack did not answer, that Enter asks Slack again, and that the other key connects them anyway, with what
+  that costs if they are a new Slack app's. Enter there sends the same three tokens again with no `replace_app` (the
+  hub's answer decides: connected, the question in either form, or a refused code), nothing dropped and nothing
+  remembered, and no step then names the connected app; a token pasted over the screen takes its place among the three,
+  which are sent again the same way. In both forms `chat.thread_open`'s key, named by its default binding's label with
+  the flow's word for it (`→ (Right)` in the keys, `→ (the Right arrow key)` in the words), sends one `chat.connect` of
+  the three held with `replace_app` (once: the step is connecting), after which the flow is any connect's (the connected
+  screen, the channels the new app cannot read first); Left does nothing; Escape closes. The step remembers no token it
+  was asked about and refuses no paste: the hub writes no set of two Slack apps' codes (chat guarantee 34), so every way
+  to such a set (a paste of the new app's App-Level Token, still on the clipboard, over the question screen, after its
+  Enter, or in a step opened again after Escape, a change of session or a lost link, beside the connected app's two)
+  sends it once and shows the hub's `mixed_apps` on step 3. At 60 cells by 12 rows each form's whole first paragraph is
+  above the pinned keys, each key whole on its own row
   (`connect_tests::the_other_slack_apps_screen_says_whose_codes_these_are_and_how_to_keep_everything`,
-  `the_invite_names_the_new_slack_app_only_by_the_name_the_hub_gave_it`,
+  `the_question_screens_name_no_slack_app_to_invite`,
   `the_screen_says_when_ship_of_tools_could_not_tell_whose_codes_these_are`,
   `the_other_slack_apps_keys_keep_the_codes_or_connect_anyway_once`,
-  `a_token_the_hub_asked_about_is_refused_at_its_paste_and_never_sent_beside_the_connected_apps`,
-  `no_keys_from_the_question_send_a_token_it_asked_about_unless_they_replace` (every sequence of five keys and pastes,
-  both kinds of question), `the_drawer_gives_the_other_slack_app_to_its_connecting_step`; in the table test). Limits: the
-  label is the default binding's, as the compose hint's chord is, whatever the key is rebound to; a token Slack refuses
+  `every_way_to_a_mixed_set_sends_it_once_and_shows_the_hubs_refusal`,
+  `the_drawer_gives_the_other_slack_app_to_its_connecting_step`; in the table test). Limits: the
+  label is the default binding's, as the compose hint's chord is, whatever the key is rebound to, and the flow's other
+  screens name the same key `Right` (and its pair `Left`) with no arrow; a token Slack refuses
   after the person chose to connect anyway sends them back to its step, and the next connect, which does not say
-  `replace_app`, is asked about again; a different code of the new app than the ones asked about (a newly made App-Level
-  Token) is not refused. Another answer for the row ends a step begun from
+  `replace_app`, is asked about again when its tokens are the new app's, and refused `mixed_apps` when the connected
+  app's bot token was pasted beside the new app's App-Level Token; while the hub cannot tell an app (Slack does not
+  answer, or the running chat's start could not tell its app, which is not asked again while it runs), Enter's ask
+  brings the same screen, and only the other key connects; at 60 cells step 3's keys wrap onto a second row where the
+  paste chord is `Ctrl+v`. Another answer for the row ends a step begun from
   `unconfigured` while the person is still pasting, never one connecting or connected, nor one a person asked for. Enter on
   the connected screen opens the picker once the row has resolved again, on the workspace the connect made when it runs
   (`open_picker_at`), and while the row resolves says to wait; a row whose own workspace still failed after another was

@@ -706,9 +706,24 @@ impl<L: Listener> Chat<L> {
     }
 
     /// The Slack app `workspace` runs with now, as `bots.info` gave it at the start: `None` while it does not run, once it
-    /// has ended on its own (a token Slack refused, another app's events), and when its start could not tell the app.
+    /// has ended on its own (a token Slack refused, another app's events), and when its start could not tell the app. A
+    /// test's look; the connect reads [`Chat::app_at_stake`].
+    #[cfg(test)]
     pub(crate) fn connected_app(&self, workspace: &str) -> Option<BotApp> {
         self.service_of(workspace).filter(|s| !s.ended()).and_then(|s| s.app())
+    }
+
+    /// What a connect to `workspace` would replace, for a caller holding the setup lock: `None` when no unit of it runs or
+    /// starts (a first connect, a chat that is off or ended on its own), else the Slack app its running chat told at its
+    /// start, itself `None` when that start could not tell it. A unit still starting is waited for first, within
+    /// [`SETUP_WAIT`]; one that outlasts the wait is at stake with its app not told.
+    pub(crate) async fn app_at_stake(&self, workspace: &str) -> Option<Option<BotApp>> {
+        let unit = self.unit(workspace)?;
+        match tokio::time::timeout(SETUP_WAIT, unit.running()).await {
+            Ok(Some(service)) if !service.ended() => Some(service.app()),
+            Ok(_) => None,
+            Err(_) => Some(None),
+        }
     }
 
     /// The default workspace's running service.

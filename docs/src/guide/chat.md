@@ -250,7 +250,7 @@ computer's name, `this computer`, or `the computer that runs your sessions`.
 | `set up Slack`, then a step's name | Slack is not connected, its saved codes are refused, or its chat did not start. | Follow the screens ([Setting up Slack](chat-setup.md)). |
 | `post as you` | Your post was refused: no Slack code that posts as you is saved. | Give the workspace new codes, keeping its Slack app ([Setting up Slack](chat-setup.md#Give-a-connected-workspace-new-Slack-codes)). |
 | `connecting…`, `connected` | The setup's codes are being checked; they were accepted. | |
-| `a different Slack app` | The codes pasted belong to another Slack app than the one the workspace is connected to now, or Slack did not say whose they are; nothing was changed. | Press Enter to keep the app connected now, or Right to connect the codes anyway ([Setting up Slack](chat-setup.md#If-you-paste-the-codes-of-a-new-app)). |
+| `a different Slack app` | The codes pasted belong to another Slack app than the one the workspace is connected to now, or Slack did not say whose they are; nothing was changed. | Press Enter to keep the app connected now (or, when Slack did not say, to ask it again), or Right to connect the codes anyway ([Setting up Slack](chat-setup.md#If-you-paste-the-codes-of-a-new-app)). |
 | `choose this project's channel` | The channel list is open. | Pick a channel, or press Escape. |
 | `your Slack app cannot read this channel` | Slack says your Slack app is not in the channel: a private channel it was never invited to, or a new app. | In that channel in Slack, type `/invite @` and the app's name; the panel says which name. |
 | `not up to date: <reason>` | The channel could not be read whole (`no messages read yet` when nothing came). | Wait: the panel tries again each minute. If it stays for several minutes, the log on that computer says why (`sotd log-path`, below). |
@@ -292,7 +292,8 @@ messages to be missed, the top line says `not up to date`.
 | `opening the picture…`, `picture shown in the preview`, `picture not opened: <reason>` | The picture is on its way, shown, or refused. |
 | `copied chat text`, `nothing to copy: select text or mark a message` | |
 | `not set: <reason>` | The channel was not picked; the list stays open and the reason says what to do. |
-| `Slack not connected: those codes may be another Slack app's than the one connected now, and nothing changed. ...` | The panel was closed while the codes were checked. Open the channel list (`Ctrl+Shift+k`), choose `Connect a Slack workspace`, paste them again, and choose on the screen that asks. |
+| `Slack not connected: those codes may belong to a different Slack app than the one connected now, and nothing changed. ...` | The panel was closed while the codes were checked. Open the channel list (`Ctrl+Shift+k`), choose `Connect a Slack workspace`, paste the three codes again, and choose on the screen that asks. |
+| `Slack not connected: the "App-Level Token" belongs to a different Slack app than the "Bot User OAuth Token", ...` | The panel was closed while the codes were checked, and the three codes were not from one Slack app; nothing was changed. Paste the three codes of one app ([Setting up Slack](chat-setup.md#If-the-three-codes-are-not-from-one-app)). |
 
 ## Moving the chat to another computer
 

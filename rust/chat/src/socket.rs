@@ -3,7 +3,8 @@
 //! never is), normalized events handed on through a bounded queue, one socket at a time, and a visible gap whenever
 //! anything was lost. A frame of another app than the bot's, and an app-level token Slack refuses by its code, end it
 //! for good. No configuration, no lock, no delivery and no daemon link:
-//! the caller hands in the app `Secret` and the bot identity.
+//! the caller hands in the app `Secret` and the bot identity. The setup's check of an app token (`check_app_token`) opens
+//! one socket more, for one frame: it reads which Slack app the token belongs to, acknowledges nothing and closes.
 
 use std::collections::VecDeque;
 use std::fmt;
@@ -435,25 +436,78 @@ struct Worker {
     _held: Box<dyn Send + Sync>,
 }
 
-/// Whether an app-level token opens Socket Mode connections (guarantee 28): one `apps.connections.open`, whose URL must
-/// pass the websocket destination policy and is then dropped, never dialed. Limits: an undialed URL is assumed to cost
-/// nothing at Slack; an app token of another app than the bot token's is not detected here (the listener ends on it,
-/// `wrong_app`, at its first frame naming the app).
-pub async fn check_app_token(http: &Http, app: Secret) -> Result<(), SocketError> {
-    check_app_token_at(http, app, BASE).await
+/// The waits of the setup's one probe socket (`check_app_token`).
+#[derive(Clone, Copy)]
+pub(crate) struct Probe {
+    /// The connection, the handshake and Slack's first text frame together.
+    pub hello: Duration,
+    /// The close the peer must answer, then the connection is forced down.
+    pub close: Duration,
+}
+
+impl Probe {
+    pub(crate) const PRODUCT: Probe = Probe { hello: Duration::from_secs(13), close: Timing::PRODUCT.close };
+}
+
+// A probe socket holds a connect no longer than one read does.
+const _: () = assert!(Probe::PRODUCT.hello.as_millis() + Probe::PRODUCT.close.as_millis() <= READ_DEADLINE.as_millis());
+
+/// Whether an app-level token opens Socket Mode connections, and the Slack app it belongs to (guarantee 28): one
+/// `apps.connections.open`, whose URL must pass the websocket destination policy; then that URL dialed once, read to
+/// Slack's first text frame and closed before this returns (`probed_app`). `None` is an app Slack did not tell, never an
+/// error: only the open's own answer refuses the token.
+pub async fn check_app_token(http: &Http, app: Secret) -> Result<Option<String>, SocketError> {
+    check_app_token_at(http, app, BASE, Probe::PRODUCT).await
 }
 
 /// `check_app_token` against the fixture's base, for another crate's tests. Exists under `cfg(test)` or the
 /// `test-support` feature alone, like `Service::start_at`.
 #[cfg(any(test, feature = "test-support"))]
-pub async fn check_app_token_for_test(http: &Http, app: Secret, base: &str) -> Result<(), SocketError> {
-    check_app_token_at(http, app, base).await
+pub async fn check_app_token_for_test(http: &Http, app: Secret, base: &str) -> Result<Option<String>, SocketError> {
+    check_app_token_at(http, app, base, Probe::PRODUCT).await
 }
 
-/// `check_app_token` against a base: the product's from `check_app_token`, the fixture's from a test.
-pub(crate) async fn check_app_token_at(http: &Http, app: Secret, base: &str) -> Result<(), SocketError> {
+/// `check_app_token` against a base and with a probe's waits: the product's from `check_app_token`, the fixture's from a
+/// test.
+pub(crate) async fn check_app_token_at(http: &Http, app: Secret, base: &str, probe: Probe) -> Result<Option<String>, SocketError> {
     let url = connection_url(http, &app, base).await.map_err(|(e, _)| e)?;
-    http.check_websocket(&url).map_err(SocketError::Http)
+    http.check_websocket(&url).map_err(SocketError::Http)?;
+    Ok(probed_app(http, &url, probe).await)
+}
+
+/// The app a Socket Mode URL connects: the socket opened and read to its first text frame within `probe.hello`, then
+/// retired within `probe.close`, so it is gone when this returns. The app is the one that frame names (`named_app`:
+/// Slack's `hello`, or an envelope that came first); a socket that does not open, says nothing in time, or whose first
+/// text frame names no app, tells none. Nothing is written to it but the close: an envelope Slack hands this connection
+/// is never acknowledged, so Slack sends it again to a connection of its app (guarantee 17's premise).
+async fn probed_app(http: &Http, url: &str, probe: Probe) -> Option<String> {
+    let end = Instant::now() + probe.hello;
+    let mut ws = http.websocket(url, probe.hello).await.ok()?;
+    let named = tokio::time::timeout_at(end, first_named(&mut ws)).await.ok().flatten();
+    retire(ws, probe.close).await;
+    named
+}
+
+/// The app the socket's first text frame names; none when the socket ends first or the frame names none.
+async fn first_named(ws: &mut Websocket) -> Option<String> {
+    loop {
+        match ws.next().await? {
+            Ok(Message::Text(text)) => return named_app(&serde_json::from_str::<Value>(&text).ok()?).map(String::from),
+            Ok(Message::Close(_)) | Err(_) => return None,
+            Ok(_) => {}
+        }
+    }
+}
+
+/// Close and wait for the peer's answer, within `close`; a peer that does not answer is forced down by dropping the
+/// connection. Returns only when the socket is gone.
+async fn retire(mut ws: Websocket, close: Duration) {
+    let _ = tokio::time::timeout(close, async {
+        let _ = ws.close(None).await;
+        while let Some(Ok(_)) = ws.next().await {}
+    })
+    .await;
+    drop(ws);
 }
 
 /// One `apps.connections.open` under the app token: the websocket URL Slack names, at most `MAX_URL` bytes, or why
@@ -636,7 +690,7 @@ impl Worker {
                 Some(Ok(_)) => {}
             }
         }
-        self.retire(ws).await;
+        retire(ws, self.timing.close).await;
         helloed
     }
 
@@ -703,16 +757,5 @@ impl Worker {
             tokio::time::timeout(self.timing.write, ws.send(message)).await,
             Ok(Ok(()))
         )
-    }
-
-    /// Close and wait for the peer's answer, within `close`; a peer that does not answer is forced down by dropping
-    /// the connection. Returns only when the socket is gone.
-    async fn retire(&self, mut ws: Websocket) {
-        let _ = tokio::time::timeout(self.timing.close, async {
-            let _ = ws.close(None).await;
-            while let Some(Ok(_)) = ws.next().await {}
-        })
-        .await;
-        drop(ws);
     }
 }

@@ -15,7 +15,7 @@ use crate::fake_slack::{eventually, FakeSlack, Flood, Identity, Reply, Seen, WsP
 use crate::http::{HttpError, Secret};
 use crate::normalize::Normalized;
 use crate::socket::{
-    check_app_token_at, GapCause, Socket, SocketError, Timing, MAX_MESSAGE, MAX_PENDING, MAX_PENDING_BYTES,
+    check_app_token_at, GapCause, Probe, Socket, SocketError, Timing, MAX_MESSAGE, MAX_PENDING, MAX_PENDING_BYTES,
 };
 
 const APP: &str = "sentinel-app-token-not-a-credential";
@@ -612,13 +612,25 @@ async fn a_foreign_websocket_url_fails_visibly_and_leaks_nothing() {
     .await;
 }
 
-/// The setup's check of an app token: one `apps.connections.open`, its URL judged by the websocket policy and never
-/// dialed; the socket's codes; nothing shown carries the token, the ticket or the host.
+/// A probe's short waits: its first frame within 2 s, its close within 300 ms.
+fn probe() -> Probe {
+    Probe { hello: SEC, close: Duration::from_millis(300) }
+}
+
+/// The setup's check of an app token: one `apps.connections.open`, its URL judged by the websocket policy before anything
+/// is dialed; the socket's codes; nothing shown carries the token, the ticket or the host. A URL that passes is dialed
+/// once, and the app its `hello` names is the answer, with the socket gone when the check returns.
 #[tokio::test]
-async fn an_app_token_check_opens_no_socket_and_refuses_a_foreign_url() {
+async fn an_app_token_check_tells_the_app_by_one_socket_and_refuses_a_foreign_url() {
     bounded(async {
         let fake = FakeSlack::start(Identity::Trusted, |seen, port| {
             let url = |u: String| Reply::json(&json!({"ok": true, "url": u}));
+            if seen.upgrade {
+                return Reply::socket(|mut peer| async move {
+                    peer.send(&json!({"type": "hello", "num_connections": 1, "connection_info": {"app_id": "A0APP"}})).await;
+                    peer.drain().await;
+                });
+            }
             match seen.path().as_str() {
                 "/api/good/apps.connections.open" => {
                     url(format!("wss://wss-primary.slack.com:{port}/link/?ticket={TICKET}"))
@@ -659,13 +671,17 @@ async fn an_app_token_check_opens_no_socket_and_refuses_a_foreign_url() {
         let check = |mode: &str| {
             let base = fake.url("slack.com", &format!("/api/{mode}/"));
             let http = http.clone();
-            async move { check_app_token_at(&http, Secret::new(APP), &base).await }
+            async move { check_app_token_at(&http, Secret::new(APP), &base, probe()).await }
         };
-        assert_eq!(check("good").await, Ok(()));
+        assert_eq!(check("good").await, Ok(Some("A0APP".to_string())));
+        // The probe's socket is retired before the check answers: the fake's script ends once its peer is gone.
+        eventually("the probe's socket gone", || fake.sockets().0 == 0).await;
+        assert_eq!(fake.sockets(), (0, 1, 1), "one socket, opened once");
         let seen = fake.seen();
-        assert_eq!(seen.len(), 1, "one request");
+        assert_eq!(seen.len(), 2, "one request and one upgrade");
         assert_eq!(seen[0].method, "POST");
         assert_eq!(seen[0].authorization.as_deref(), Some(&*format!("Bearer {APP}")));
+        assert!(seen[1].upgrade && seen[1].authorization.is_none(), "the upgrade carries the ticket alone");
         let mut errors = Vec::new();
         for (mode, want) in [
             ("foreign", SocketError::Http(HttpError::Destination)),
@@ -691,10 +707,96 @@ async fn an_app_token_check_opens_no_socket_and_refuses_a_foreign_url() {
                 assert!(!text.contains(secret), "a check's error shows a secret or a URL ({})", e.code());
             }
         }
-        // No URL was dialed, good or foreign: no upgrade was asked and no socket was ever open.
-        assert!(fake.seen().iter().all(|s| !s.upgrade), "a websocket was dialed");
-        assert_eq!(fake.sockets().2, 0);
-        assert_eq!(fake.seen().len(), 11, "one request a check");
+        // No refused answer was dialed, a foreign URL least of all: the one socket is the good check's.
+        assert_eq!(fake.seen().iter().filter(|s| s.upgrade).count(), 1, "a refused check dialed a websocket");
+        assert_eq!(fake.sockets().2, 1);
+        assert_eq!(fake.seen().len(), 12, "one request a check, and the good check's upgrade");
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+/// What the fake's socket does for a probe, by the upgrade's index.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Says {
+    /// An envelope of the app first, then the hello: a message Slack handed this connection.
+    EnvelopeFirst,
+    /// The hello, then an envelope at once.
+    EnvelopeAfter,
+    /// A hello that names no app.
+    NoApp,
+    /// A first text frame that is not JSON.
+    NotJson,
+    /// Nothing, and no answer to a close.
+    Silent,
+}
+
+/// A probe socket never acknowledges: an envelope Slack hands it, before its hello or after, gets no frame back but the
+/// close, so Slack can send it again to a connection of its app; the app is the first text frame's (an envelope's
+/// `payload.api_app_id` as a hello's `connection_info.app_id`). A socket that names no app, says nothing in time or does
+/// not open tells no app, within the probe's two waits, and is no error.
+#[tokio::test]
+async fn a_probe_socket_acknowledges_no_envelope_and_an_untold_app_is_none_within_its_waits() {
+    bounded(async {
+        let order = [Says::EnvelopeFirst, Says::EnvelopeAfter, Says::NoApp, Says::NotJson, Says::Silent];
+        let got: Arc<Mutex<Vec<(Says, Option<Value>)>>> = Arc::default();
+        let (heard, upgrades) = (got.clone(), Arc::new(AtomicUsize::new(0)));
+        let fake = FakeSlack::start(Identity::Trusted, move |seen, port| {
+            if seen.path() == "/api/apps.connections.open" {
+                return Reply::json(&json!({"ok": true, "url": format!("wss://wss-primary.slack.com:{port}/link/?ticket={TICKET}")}));
+            }
+            if !seen.upgrade {
+                return Reply::json(&json!({"ok": false, "error": "unexpected"}));
+            }
+            // The sixth dial is refused: a socket that does not open.
+            let Some(says) = order.get(upgrades.fetch_add(1, Ordering::SeqCst)).copied() else { return Reply::Drop };
+            let heard = heard.clone();
+            Reply::socket(move |mut peer| {
+                let heard = heard.clone();
+                async move {
+                    let named = json!({"type": "hello", "num_connections": 1, "connection_info": {"app_id": "A0APP"}});
+                    match says {
+                        Says::EnvelopeFirst => {
+                            peer.send(&envelope_for("E1", 1, "A0ENV")).await;
+                            peer.send(&named).await;
+                        }
+                        Says::EnvelopeAfter => {
+                            peer.send(&named).await;
+                            peer.send(&envelope_for("E2", 2, "A0APP")).await;
+                        }
+                        Says::NoApp => peer.send(&hello()).await,
+                        Says::NotJson => peer.send_text("hello".into()).await,
+                        Says::Silent => {
+                            peer.ignore_until_gone().await;
+                            heard.lock().unwrap().push((says, None));
+                            return;
+                        }
+                    }
+                    // Every text frame the client writes until it is gone: a frame that acknowledges would be one.
+                    let frame = peer.recv(Duration::from_secs(5)).await;
+                    heard.lock().unwrap().push((says, frame));
+                }
+            })
+        })
+        .await;
+        let (http, base) = (fake.http(), fake.url("slack.com", "/api/"));
+        let mut told = Vec::new();
+        for n in 0..6 {
+            // Each check within the probe's two waits, the fifth (a silent peer) at their end.
+            let waits = probe().hello + probe().close;
+            let checked = tokio::time::timeout(waits + SEC, check_app_token_at(&http, Secret::new(APP), &base, probe())).await;
+            assert!(checked.is_ok(), "check {n}: a probe socket outlasted its waits of {waits:?}");
+            told.extend(checked);
+            // Its socket is gone before the next check, as before a connect's write.
+            eventually("the probe's socket gone", || fake.sockets().0 == 0).await;
+        }
+        let app = |a: &str| Ok(Some(a.to_string()));
+        assert_eq!(told, [app("A0ENV"), app("A0APP"), Ok(None), Ok(None), Ok(None), Ok(None)]);
+        eventually("every script's end", || got.lock().unwrap().len() == 5).await;
+        for (says, frame) in got.lock().unwrap().iter() {
+            assert_eq!(*frame, None, "{says:?}: the probe wrote a text frame, which is how an envelope is acknowledged");
+        }
+        assert_eq!(fake.sockets(), (0, 1, 5), "never two sockets, and the refused dial opened none");
         fake.shutdown().await;
     })
     .await;

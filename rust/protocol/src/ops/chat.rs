@@ -110,10 +110,13 @@ pub enum ChatCode {
     TooLarge,
     /// A file is not one of the pictures the chat shows, or Slack answered something that is not a picture.
     NotAnImage,
-    /// A `chat.connect` without `replace_app` whose bot token is another Slack app's than the one its workspace runs with
-    /// now, or whose app could not be told: nothing was saved, and the refusal's body says what a window asks with
-    /// (`ChatOtherApp`).
+    /// A `chat.connect` without `replace_app` whose tokens are another Slack app's than the one its workspace runs with
+    /// now, or not known to be that app's (their app or the running one not told): nothing was saved, and the refusal's
+    /// body says what a window asks with (`ChatOtherApp`).
     OtherApp,
+    /// A `chat.connect`, with `replace_app` or without, whose app-level token is another Slack app's than its bot token's:
+    /// nothing was saved. A window sends the person back to the app-level token's step, the other two kept.
+    MixedApps,
     Failed,
     #[serde(other)]
     Other,
@@ -146,6 +149,7 @@ impl ChatCode {
             ChatCode::TooLarge => "the file is larger than the chat carries",
             ChatCode::NotAnImage => "that file is not a picture the chat can show",
             ChatCode::OtherApp => "these Slack codes may belong to a different Slack app than the one this Slack workspace is connected with now; nothing was changed",
+            ChatCode::MixedApps => "the \"App-Level Token\" belongs to a different Slack app than the \"Bot User OAuth Token\", so nothing was changed; paste the three codes of one Slack app",
             ChatCode::Failed | ChatCode::Other => "the chat request failed",
         }
     }
@@ -263,8 +267,9 @@ pub struct ChatConnectReq {
 
 /// The rest of a `chat.connect` refused `other_app`, beside its `error` and `code`: the workspace the tokens are for
 /// (`workspace`, and `name`, its name as Slack gave it), the Slack app it runs with now (`app_id`, and `app_name`, the
-/// name Slack gives that app's bot), whether the daemon told the tokens' app to be another (`new_app_known`; false: Slack
-/// did not say which app they are for), and the name Slack gives that app's bot (`new_app_name`, only when known). Each is
+/// name Slack gives that app's bot; both absent while the daemon does not know the running app), whether the daemon told
+/// the tokens' app to be another than the running one (`new_app_known`; false: Slack did not say which app the tokens are
+/// for, or which app runs), and the name Slack gives that app's bot (`new_app_name`, only when known). Each is
 /// read as `chat.workspaces`' fields are, so a bad one is none (a flag false), never a reason to refuse the refusal, and
 /// a bare refusal is the weaker claim, an app not told; an older reader ignores them all.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

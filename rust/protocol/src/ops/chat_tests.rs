@@ -393,6 +393,12 @@ fn a_connect_that_would_replace_the_connected_app_asks_first_and_older_shapes_st
         code: Option<Code>,
     }
     assert_eq!(serde_json::from_value::<OlderRefusal>(refusal.clone()).unwrap().code, Some(Code::Other), "an older window's reading");
+    // A set of tokens that are not all one Slack app's is refused by a code of its own, with no body; an older window reads
+    // it as `other`, as it reads `other_app`.
+    let mixed = json!({"error": ChatCode::MixedApps.text(), "code": "mixed_apps"});
+    assert_eq!(serde_json::from_value::<ChatRefusal>(mixed.clone()).unwrap().code, Some(ChatCode::MixedApps));
+    assert_eq!(serde_json::to_value(ChatCode::MixedApps).unwrap(), json!("mixed_apps"));
+    assert_eq!(serde_json::from_value::<OlderRefusal>(mixed).unwrap().code, Some(Code::Other), "an older window's reading of a mixed set");
     let body: ChatOtherApp = serde_json::from_value(refusal).unwrap();
     assert_eq!(body, ChatOtherApp { workspace: Some("T1".into()), app_name: Some("Ship of Tools (lab-user)".into()), new_app_known: true, ..ChatOtherApp::default() });
     let bad = json!({"error": "e", "code": "other_app", "workspace": "T 1", "app_id": 7, "app_name": "", "new_app_known": "yes", "new_app_name": "n".repeat(MAX_NAME + 1)});
@@ -633,13 +639,14 @@ fn every_code_has_its_one_text() {
         (ChatCode::TooLarge, "the file is larger than the chat carries"),
         (ChatCode::NotAnImage, "that file is not a picture the chat can show"),
         (ChatCode::OtherApp, "these Slack codes may belong to a different Slack app than the one this Slack workspace is connected with now; nothing was changed"),
+        (ChatCode::MixedApps, "the \"App-Level Token\" belongs to a different Slack app than the \"Bot User OAuth Token\", so nothing was changed; paste the three codes of one Slack app"),
         (ChatCode::Failed, "the chat request failed"),
         (ChatCode::Other, "the chat request failed"),
     ];
     for (code, words) in table {
         assert_eq!(code.text(), words, "{code:?}");
     }
-    for code in ["bot_token_refused", "app_token_refused", "user_token_refused", "no_user_token", "not_a_member", "other_workspace", "not_in_channel", "channel_taken", "not_saved", "not_a_file", "too_large", "not_an_image", "too_many_workspaces", "no_such_channel", "other_app"] {
+    for code in ["bot_token_refused", "app_token_refused", "user_token_refused", "no_user_token", "not_a_member", "other_workspace", "not_in_channel", "channel_taken", "not_saved", "not_a_file", "too_large", "not_an_image", "too_many_workspaces", "no_such_channel", "other_app", "mixed_apps"] {
         let r: ChatRefusal = serde_json::from_value(json!({"error": "text", "code": code})).unwrap();
         assert_ne!(r.code, Some(ChatCode::Other), "{code} is a code of this reader");
     }

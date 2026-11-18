@@ -202,7 +202,12 @@ pub(super) const NO_FILE_WORDS: &str = "not posted: the preview shows no file";
 /// The status line's words for a connect refused `other_app` after its step was closed.
 pub(super) fn not_replaced_words() -> String {
     let p = super::connect::PRIMARY;
-    format!("Slack not connected: those codes may be another Slack app's than the one connected now, and nothing changed. To decide, open the channel list ({p}+Shift+k), choose Connect a Slack workspace and paste them again")
+    format!("Slack not connected: those codes may belong to a different Slack app than the one connected now, and nothing changed. To decide, open the channel list ({p}+Shift+k), choose Connect a Slack workspace and paste the three codes again")
+}
+
+/// The status line's words for a connect refused `mixed_apps` after its step was closed: the wire's.
+pub(super) fn mixed_words() -> String {
+    format!("Slack not connected: {}", ChatCode::MixedApps.text())
 }
 
 /// The status line's words for `chat.post_file` over a picture opened from the chat: what the preview shows, why it is not
@@ -504,6 +509,11 @@ impl ChatDrawer {
             // it (`connect_sent`), so only that step reads it.
             ChatEvt::Connect { reply } => {
                 self.connect_sent = self.connect_sent.take().filter(|h| h != host);
+                // A set of two Slack apps' codes was not saved: with its step closed while it connected, the status line
+                // says so in the wire's words.
+                if matches!(reply, ChatReply::Refused(ChatCode::MixedApps)) && !self.connect().is_some_and(|c| c.host() == host && c.connecting()) {
+                    self.notice = Some(mixed_words());
+                }
                 let mut outs = Vec::new();
                 if let Some(Kind::Connect(c)) = self.modal.as_mut().map(|m| &mut m.kind) {
                     if c.host() == host {
