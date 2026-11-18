@@ -486,7 +486,9 @@ impl State {
             Step::Pending => return false,
         };
         tracing::warn!(why, "svg preview not drawn");
-        self.preview_says(svg_not_drawn(&why));
+        // Over a re-fetch the person did not ask for (another program rewriting the file), the box alone says it.
+        let unasked = self.preview_requests.latest_is_unasked();
+        crate::ui::preview::replies::route_preview_message(&mut self.preview_notice, &mut self.status, svg_not_drawn(&why), std::time::Instant::now(), unasked);
         self.window.request_redraw();
         false
     }

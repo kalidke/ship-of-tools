@@ -109,9 +109,6 @@ pub(in crate::ui) enum AttachOutcome { Checkpoint { cols: u16, rows: u16 }, Atta
 pub(in crate::ui) struct PumpEffect {
     /// The client's status line, at a frame where the client changed: a state line.
     pub status: Option<String>,
-    /// The row's answer to the last input when it is one a person must see (`input_outcome_notice`), once when it comes:
-    /// a word.
-    pub notice: Option<String>,
     pub outcomes: Vec<AttachOutcome>,
     pub since_request_ms: u64,
     pub since_client_ms: u64,
@@ -208,7 +205,6 @@ impl<C: PaneClient> AgentPane<C> {
                 c.set_viewed(true);
             }
             self.pane_attach_term = Some(c);
-            self.outcome_said = None;
             self.copy_quiet = true;
             self.copy_tail = false;
             self.pane_dial_error = None;
@@ -227,7 +223,7 @@ impl<C: PaneClient> AgentPane<C> {
     }
 
     pub(in crate::ui) fn pump(&mut self, mut now: impl FnMut() -> Instant) -> PumpEffect {
-        let mut effect = PumpEffect { status: None, notice: None, outcomes: vec![], since_request_ms: 0, since_client_ms: 0, copy: None };
+        let mut effect = PumpEffect { status: None, outcomes: vec![], since_request_ms: 0, since_client_ms: 0, copy: None };
         let Some(t) = self.pane_attach_term.as_mut() else { return effect };
         let was_checkpointed = t.is_checkpointed();
         let status_before = t.status_line().to_string();
@@ -261,17 +257,6 @@ impl<C: PaneClient> AgentPane<C> {
                 effect.outcomes.push(AttachOutcome::Warning { episode: self.pane_attach_episode_warnings, status: status_after });
                 if t.is_dead() && !t.is_checkpointed() { self.pane_hold = None; }
             }
-        }
-        // The outcome stands until the next input, so it is said once when it comes, not at every frame it stands; an input
-        // answered with nothing to say (or not yet answered) lets the next refusal be said again.
-        let outcome = t.last_input_outcome();
-        match input_outcome_notice(outcome) {
-            None => self.outcome_said = None,
-            Some(words) if self.outcome_said != outcome => {
-                self.outcome_said = outcome;
-                effect.notice = Some(words.to_string());
-            }
-            Some(_) => {}
         }
         if changed {
             effect.status = Some(t.status_line().to_string());
@@ -362,7 +347,6 @@ impl State {
             }
         }
         if let Some(status) = effect.status { self.status.show_state(status); }
-        if let Some(notice) = effect.notice { self.status.set(notice); }
         if let Some(b64) = effect.copy { self.copy_to_clipboard(&b64); }
         if self.agent_pane.spend_scroll(Instant::now()) { self.pacer.mark_dirty(); }
     }

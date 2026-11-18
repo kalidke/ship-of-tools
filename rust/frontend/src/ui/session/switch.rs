@@ -203,6 +203,10 @@ impl State {
         // describe what `self.tree` holds. The swap itself runs after the
         // snapshot-restore below has settled the entering mode.
         let old_tree_key = self.active_tree_key();
+        // A disconnect line carried for the computer left describes no row shown now.
+        if host != *self.selected.host() {
+            self.status.end_carry();
+        }
         self.selected.select(host, slug.clone());
         self.row_presentation.select_host_default(&self.row_directory, self.selected.host());
         // (round 2, finding 14): project the declaration

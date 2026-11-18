@@ -156,8 +156,10 @@ pub(in crate::ui) fn pane_reason_line(
 /// The agent pane's overlay, one row each, top down: why it is not live,
 /// then the discarded-input count. Separate rows, so a long reason never
 /// truncates the count off the pane and the count never hides the reason.
-pub(in crate::ui) fn pane_overlay_lines(reason: Option<String>, notice: Option<String>) -> Vec<String> {
-    reason.into_iter().chain(notice).collect()
+/// The pane's overlay rows: the reason it shows no live screen, the row's answer to the last input while a person must see
+/// it, and the discarded-input notice, last (its row is the one a click dismisses).
+pub(in crate::ui) fn pane_overlay_lines(reason: Option<String>, outcome: Option<&str>, notice: Option<String>) -> Vec<String> {
+    reason.into_iter().chain(outcome.map(str::to_string)).chain(notice).collect()
 }
 
 /// The agent pane's discarded-input notice: the frontend's own count plus
@@ -278,8 +280,12 @@ impl<C: PaneClient> AgentPane<C> {
             ),
             self.pane_dial_error.as_deref(),
         );
+        // The row's answer to the last input stands until the next input, and shows here while it does: no other writer
+        // replaces it, whatever the status line says meanwhile.
+        let outcome = input_outcome_notice(self.pane_attach_term.as_ref().and_then(|t| t.last_input_outcome()));
         let mut pane_overlay = pane_overlay_lines(
             pane_terminal_reason,
+            outcome,
             pane_discard_notice(self.discard.count(), self.pane_attach_term.as_ref().map_or(0, |t| t.inputs_discarded())),
         );
         pane_overlay.splice(0..0, self.held_overlay_lines(Instant::now()));

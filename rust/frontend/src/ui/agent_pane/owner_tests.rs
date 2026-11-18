@@ -457,66 +457,85 @@ fn pruning_drops_only_the_removed_hosts_held_rows() {
     assert!(!p.view(None).1.iter().any(|s| s.starts_with("held, not sent")));
 }
 
+/// The pane's overlay rows, as the window draws them over the pane.
+fn overlay(p: &mut Pane) -> Vec<String> { p.view(None).1 }
+
+/// Whether the pane's overlay shows the refusal of a key.
+fn shows_refusal(p: &mut Pane) -> bool {
+    let refused = input_outcome_notice(Some(InputOutcome::RefusedStale)).expect("a refusal has words");
+    overlay(p).iter().any(|r| r == refused)
+}
+
 #[test]
-fn unknown_delivery_is_reported_by_the_pump() {
+fn unknown_delivery_is_reported_in_the_pane() {
     let t = Instant::now();
     let mut p = Pane::new(None);
     let wire = ready(&mut p, "h", "row", b"", t);
     for (outcome, words) in [(InputOutcome::DeliveryUnknown, Some("delivery unknown")), (InputOutcome::RunEnded, Some("run ended")),
                              (InputOutcome::Recorded, None), (InputOutcome::RefusedStale, Some("not sent"))] {
         let effect = step(&mut p, &wire, Step { outcome: Some(outcome), ..Default::default() }, t);
-        assert_eq!(effect.status.as_deref(), Some("attached"), "{outcome:?}: the client's line");
-        assert_eq!(effect.notice.is_some(), words.is_some(), "{outcome:?}");
-        assert!(words.is_none_or(|w| effect.notice.unwrap().contains(w)), "{outcome:?}");
-        let quiet = p.pump(|| t);
-        assert!(quiet.status.is_none() && quiet.notice.is_none());
+        assert_eq!(effect.status.as_deref(), Some("attached"), "{outcome:?}: the status line carries the client's line alone");
+        let rows = overlay(&mut p);
+        match words {
+            Some(w) => assert!(rows.iter().any(|r| r.contains(w)), "{outcome:?}: the pane shows {rows:?}"),
+            None => assert!(!rows.iter().any(|r| r.starts_with("delivery unknown") || r.starts_with("run ended") || r.starts_with("not sent: another")), "{rows:?}"),
+        }
     }
 }
 
-/// An outcome stands until the next input, and the row may print at every frame meanwhile: its words are said once, so they
-/// cannot renew a hold at each frame; an input answered with nothing to say lets the next refusal be said again.
+/// A second refused key shows as the first did, whether or not the pane saw the outcome cleared between them (the real
+/// client clears it on the window's thread and the answer lands on its worker, often within one frame).
 #[test]
-fn an_input_outcome_is_said_once_however_many_frames_it_stands() {
+fn a_second_refusal_after_the_first_shows() {
     let t = Instant::now();
     let mut p = Pane::new(None);
     let wire = ready(&mut p, "h", "row", b"", t);
-    let first = step(&mut p, &wire, Step { outcome: Some(InputOutcome::RefusedStale), ..Default::default() }, t);
-    assert!(first.notice.is_some_and(|n| n.contains("not sent")));
-    for k in 1..=30 {
-        let frame = step(&mut p, &wire, Step { output: b"x", ..Default::default() }, after(t, k * 16));
-        assert!(frame.status.is_some() && frame.notice.is_none(), "frame {k} said the standing outcome again");
-    }
-    assert!(step(&mut p, &wire, Step { outcome: Some(InputOutcome::Recorded), ..Default::default() }, t).notice.is_none());
-    let again = step(&mut p, &wire, Step { outcome: Some(InputOutcome::RefusedStale), ..Default::default() }, t);
-    assert!(again.notice.is_some_and(|n| n.contains("not sent")), "a later refusal was not said");
+    present(&mut p, t);
+    step(&mut p, &wire, Step { outcome: Some(InputOutcome::RefusedStale), ..Default::default() }, t);
+    let _ = overlay(&mut p);
+    p.send_input(b"y");
+    step(&mut p, &wire, Step { outcome: Some(InputOutcome::RefusedStale), ..Default::default() }, after(t, 30_000));
+    assert!(shows_refusal(&mut p), "the second refusal is not shown: {:?}", overlay(&mut p));
 }
 
-/// A key the row did not take, while a word holds the status line, is still said (as State writes the pump's effect: the
-/// client's line as a state line, the outcome as a word), and the idle tick's connection line does not hide it unseen.
+/// A refusal stays in the pane while other words come and go on the status line (a watcher's failure every second, the
+/// row printing every 100 ms): no writer of the status line reaches the pane's overlay.
 #[test]
-fn a_refused_key_is_said_while_a_word_is_held() {
+fn a_refusal_stays_shown_while_other_words_come_and_go_on_the_status_line() {
     use crate::ui::chrome::StatusLine;
     let t = Instant::now();
-    let s = |k: u64| t + Duration::from_secs(k);
+    let s = |ms: u64| t + Duration::from_millis(ms);
     let mut p = Pane::new(None);
     let wire = ready(&mut p, "h", "row", b"", t);
     let mut status = StatusLine::new("connected · h:row · rev 1");
-    let glue = |status: &mut StatusLine, effect: PumpEffect, at: Instant| {
-        if let Some(line) = effect.status { status.show_state_at(line, at); }
-        if let Some(words) = effect.notice { status.set_at(words, at); }
-    };
-    status.set_at("copied 12 characters from the row to the clipboard", t);
-    let effect = step(&mut p, &wire, Step { outcome: Some(InputOutcome::RefusedStale), ..Default::default() }, s(1));
-    glue(&mut status, effect, s(1));
-    let mut seen = vec![status.text().to_string()];
-    for k in 2..=60 {
-        let effect = p.pump(|| s(k));
-        glue(&mut status, effect, s(k));
-        if status.expire_hold(s(k)) { status.show_state_at("connected · h:row · rev 1", s(k)); }
-        seen.push(status.text().to_string());
+    let mut shown_ms = 0;
+    for ms in (0..60_000u64).step_by(100) {
+        if ms % 1000 == 0 { status.set_at(format!("preview failed · run.h5: try {}", ms / 1000), s(ms)); }
+        let outcome = (ms == 20_500).then_some(InputOutcome::RefusedStale);
+        if let Some(line) = step(&mut p, &wire, Step { outcome, output: b"x", ..Default::default() }, s(ms)).status {
+            status.show_state_at(line, s(ms));
+        }
+        if status.expire_hold(s(ms)) { status.show_state_at("connected · h:row · rev 1", s(ms)); }
+        if ms >= 20_500 {
+            assert!(shows_refusal(&mut p), "at {ms} ms the pane shows {:?}", overlay(&mut p));
+            shown_ms += 100;
+        }
     }
-    seen.dedup();
-    assert!(seen.iter().any(|l| l.contains("not sent")), "the refused key was never said in 60 s: {seen:?}");
+    assert_eq!(shown_ms, 39_500);
+}
+
+/// The refusal stands until the next input: an input the row records clears it.
+#[test]
+fn a_refusal_clears_at_the_next_input_that_is_recorded() {
+    let t = Instant::now();
+    let mut p = Pane::new(None);
+    let wire = ready(&mut p, "h", "row", b"", t);
+    present(&mut p, t);
+    step(&mut p, &wire, Step { outcome: Some(InputOutcome::RefusedStale), ..Default::default() }, t);
+    assert!(shows_refusal(&mut p));
+    p.send_input(b"y");
+    step(&mut p, &wire, Step { outcome: Some(InputOutcome::Recorded), ..Default::default() }, after(t, 100));
+    assert!(!shows_refusal(&mut p), "a recorded input left the refusal shown: {:?}", overlay(&mut p));
 }
 
 #[test]

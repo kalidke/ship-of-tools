@@ -551,42 +551,53 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   `the_spill_names_the_tree_rows_drawn_where_they_are_drawn`, `a_short_tree_sits_under_the_status_as_before`). No
   pointer event maps to a nav row: a press selects text only in the agent pane, the preview and the Chat, and a wheel
   over the focused nav does nothing (`route_wheel_rows`).
-- `StatusLine` privately owns the status line. Words (`set`: every action's and reply's line, a pushed notify, the
-  agent pane's input outcome notice) replace the text at once and hold it for `NOTIFY_STICKY` (10 s) from their own
-  write, so a newer word replaces an older one at once and its hold runs from its own write; the same words written
-  again while they hold the line keep their first hold, so a writer that repeats them (a watcher's failure at each write
-  of the previewed file, a broken equation at each save, a notify loop) holds the line 10 s from its first saying and
-  then gives way, and the same words after their hold ended hold it again (a person's second press). A state line
+- `StatusLine` privately owns the status line. Words (`set`: every action's and reply's line, a pushed notify)
+  replace the text at once and hold it for `NOTIFY_STICKY` (10 s) from their own write, so a newer word replaces an
+  older one at once and its hold runs from its own write; the same words written again while they hold the line keep
+  their first hold, and the same words after their hold ended hold it again (a person's second press). A state line
   (`show_state`: the connection line `rebuild_connection_status` writes, a disconnect with nothing to carry, the agent
   pane's attach lines and its pump's client line, the Terminal drawer's diagnostic, the refused hello's mirror, and a
-  transfer's progress lines, `upload · …` and `download · …` at each chunk) is written only while no hold is live and
-  holds nothing. A line re-said by a timer, a frame, a redial, a re-list or a transfer's chunks is a state line: written
-  as a word it would hold the line for as long as it changes. The agent pane's pump returns the client's line (a state
-  line, at each frame the client changed) and the input outcome notice apart (`PumpEffect::notice`, a word): the notice
-  is said once when the outcome comes, not at each frame it stands, and again only after an input answered with nothing
-  to say (`AgentPane::outcome_said`). `clear` empties the line and ends the hold. A disconnect while words are held
-  carries them (`disconnected · <reason> · <words>`, `session::replies::show_disconnect`, held again at each disconnect
-  line); the selected computer's own reconnect ends that hold (`StatusLine::reconnected`, in `resume_view_if_active`), so
-  its connection line replaces the disconnect line at once (the carried word was on the line since it was written). The
-  idle tick runs `State::expire_status_hold`, which ends an elapsed hold once and rebuilds the connection line, at most
-  about 1 s late; a row switch does not end a hold. The clock is an argument wherever the owner reads it (`set_at`,
-  `show_state_at`, `carried`, `set_carrying`, `expire_hold`); `set` and `show_state` read it for their callers. Tests:
+  transfer's progress lines, `upload · …` and `download · …` at each chunk, after the start's words) is written only
+  while no hold is live and holds nothing. A line re-said by a timer, a frame, a redial, a re-list or a transfer's
+  chunks is a state line. What a re-render or a re-fetch the person did not ask for raises goes to the preview's box
+  alone (`route_preview_message`'s `box_only`), as the refusal of `d` does: a failed equation always
+  (`markdown::replies::say_math_failure`, every render asks for its equations again), and a preview's fetch failure and
+  an SVG it could not draw when the latest preview request was a re-fetch for a watcher's change or a reconnect
+  (`PreviewRequests::issue_refetch`, `latest_is_unasked`, `replies::say_preview_failure`); a failure answering the
+  person's own fetch (selecting the file) is a word on the status line as well. `clear` empties the line and ends the
+  hold. A disconnect while words are held carries them (`disconnected · <reason> · <words>`,
+  `session::replies::show_disconnect`, held again at each disconnect line); the selected computer's own reconnect
+  (`resume_view_if_active`) and a switch to a row of another computer (`retarget_workspace`) end that hold
+  (`StatusLine::end_carry`), so the connection line replaces the carried line at once (the carried word was on the
+  line since it was written). The idle tick runs `State::expire_status_hold`, which ends an elapsed hold once and
+  rebuilds the connection line, at most about 1 s late; a row switch on the same computer does not end a hold. The
+  clock is an argument wherever the owner reads it (`set_at`, `show_state_at`, `carried`, `set_carrying`,
+  `expire_hold`, and `route_preview_message`'s `now`); `set` and `show_state` read it for their callers. Tests:
   `chrome::status_line::tests::{words_hold_the_line_against_a_state_line_until_their_hold_ends,
   newer_words_replace_held_words_at_once_and_hold_from_their_own_time, a_hold_ends_once_at_its_time,
   a_clear_empties_the_line_and_ends_its_hold, a_word_written_again_and_again_keeps_its_first_hold,
   the_same_words_after_their_hold_ended_hold_the_line_again, a_reconnect_ends_the_hold_of_a_disconnect_line_that_carries_a_word}`,
   `session::replies::tests::{a_disconnect_with_nothing_held_gives_way_to_the_connection_line,
   each_disconnect_line_that_carries_a_word_holds_the_line_again}`,
-  `agent_pane::owner_tests::{a_refused_key_is_said_while_a_word_is_held, an_input_outcome_is_said_once_however_many_frames_it_stands}`
-  and the native State fixtures `primary_u_over_a_chat_picture_keeps_its_words_through_a_relist_until_the_hold_ends` (the
-  key's words through a re-list, then the connection line at the hold's end) and
-  `a_reconnect_ends_a_disconnect_line_that_carried_a_word`; the attach, pump, Terminal, hello and progress sites rest on
-  reading. Limits: a held word keeps the connection line and the pane's attach status off the line up to 10 s (the
-  pane's overlay shows its attach reason); words from another program whose text changes at each saying (a notify loop
-  with changing text, a row's copies of different lengths) each hold the line anew, for as long as that program goes on;
-  a transfer's progress waits behind a held word, so the first 10 s of a download show its starting words; a capture
-  harness never runs the idle tick, so its line keeps a word past its hold until the next state line; the destroy's
-  press-again line stays up to 10 s after another key dropped its arm.
+  `preview::markdown::replies::tests::two_broken_equations_saved_again_and_again_never_hold_the_status_line`,
+  `preview::replies::routing_tests::{a_refetch_failure_whose_words_change_never_holds_the_status_line,
+  a_failure_answering_the_persons_own_fetch_is_a_word_on_the_status_line}`,
+  `preview::requests::tests::a_refetch_is_unasked_until_the_next_request`,
+  `nav::files::transfer::tests::an_upload_says_what_it_sends_when_it_starts`, and the native State fixtures
+  `primary_u_over_a_chat_picture_keeps_its_words_through_a_relist_until_the_hold_ends` (the key's words through a
+  re-list, then the connection line at the hold's end) and `a_reconnect_ends_a_disconnect_line_that_carried_a_word`
+  (the reconnect, then a switch to the other computer's row); the attach, pump, Terminal, hello and progress sites, and
+  the calls of the box-only routes from `on_math_render_failed`, `install_preview_failure`, `apply_svg_step` and the
+  two re-fetches, rest on reading. Limits: a held word keeps the connection line and the pane's attach status off the
+  line up to 10 s (the pane's overlay shows its attach reason); a writer saying the same words again takes the line
+  back at its first saying after each hold ends; another program whose words change at each saying keeps the line:
+  an agent's commands (a notify loop sending ever-different words, its nav, show-result, preview and `open_url`
+  commands and their refusals), a row's copies to the clipboard (OSC 52), a REPL's announced browser figures and a
+  failed refresh of an expanded folder that a watcher's change asked for each hold the line anew, so such a program can
+  keep the connection line off the status line for as long as it goes on, while a link going down still shows at once
+  (the carry); a transfer's progress waits behind a held word, after its start's words; a capture harness never runs
+  the idle tick, so its line keeps a word past its hold until the next state line; the destroy's press-again line stays
+  up to 10 s after another key dropped its arm.
 - The connection line (`connection_line`, written by `rebuild_connection_status` at a hold's end, a re-list from any
   computer, a row switch and a reconnect) never says `connected` for a computer whose link is down: it reads the selected
   computer's link from `HostTable::host_connected` and says `connected · <host>:<row> · rev N` only while it is up; while
@@ -601,17 +612,20 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   and the native State fixture
   `the_connection_line_never_says_connected_for_a_computer_whose_link_is_down` (the links' events through the window's
   queue).
-- `PreviewNotice` privately owns the preview's message box: the text and the instant it was shown. `State::preview_says` is the
-  one call that writes a boxed message, to the status line and to the box together, so neither shows one the other lacks; the
-  one message that goes to the box alone is the refusal of `d` over a picture with no base to draw on (a PDF page, an SVG, a
-  video frame, no picture, the connection notice over the preview: `State::refuse_draw`, through `route_preview_message`'s
-  `box_only`), since it answers a key pressed over the preview and the status line above the nav pane keeps what it held.
+- `PreviewNotice` privately owns the preview's message box: the text and the instant it was shown. `route_preview_message` is
+  the one route of a boxed message: `State::preview_says` writes it to the status line and to the box together, so neither
+  shows one the other lacks, and its `box_only` writes the box alone, for the refusal of `d` over a picture with no base to
+  draw on (a PDF page, an SVG, a video frame, no picture, the connection notice over the preview: `State::refuse_draw`),
+  since it answers a key pressed over the preview and the status line above the nav pane keeps what it held, and for what a
+  re-render or a re-fetch the person did not ask for raises (a failed equation always; a preview that failed and
+  `svg not drawn` when the latest request re-fetched for a watcher's change or a reconnect; see `StatusLine` above).
   Boxed: the drawing's lines and its share replies, the canvas, `svg not drawn`, a crop's refusal and progress, the scale
   bar's save and refusals, a preview that failed and a failed equation. Left on the status line alone, by choice: a text
   selection's share replies (they follow every release and each reconnect, and the box would cover the text being read), the
   browser opens (`pluto`, `docs`, `video`, `quarto`) with their failures and browser-launch failures, the editor's saves and
   refusals, pin and unpin, the copy line, the refused-hello line (the overlay already says it) and the nav and agent panes'
-  lines. Nothing but this list says which is which: a new preview message is boxed only if its writer calls `preview_says`.
+  lines. Nothing but this list says which is which: a new preview message is boxed only if its writer goes through
+  `route_preview_message`.
   A newer message replaces the shown one at once. A row switch clears the notice and so does the install of another file's
   preview (`install_preview_reply`, before the new file's own render can raise one; the same file installed again keeps it),
   and edit mode shows none and drops one raised before it (`prepare_overlays`). The box is held `PEEK_HOLD` and fades over
@@ -912,7 +926,7 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   screen run. Every live key, paste and mouse sequence names the checkpoint's `screen_run` through
   `send_input_in_run`. Before sending held keys, a different worker `run()` keeps them and clears the dwell, reporting
   that the restarted row's screen must show again. Limit: a worker that moves after this check can still reject the
-  send as counted `RunEnded`, with its existing notice; unknown delivery is never retried automatically, and a key the row refused as from a client that is not the driver, after the capsule's one retake, is said on the status line as not sent (`agent_pane::attach_tests::keys_the_row_refused_are_said_not_sent`). The worker
+  send as counted `RunEnded`, with its existing notice; unknown delivery is never retried automatically, and a key the row refused as from a client that is not the driver, after the capsule's one retake, is shown as not sent (`agent_pane::attach_tests::keys_the_row_refused_are_said_not_sent`). The row's answer to the last input, when a person must see it (`input_outcome_notice`: delivery unknown, run ended, not sent), is a row of the pane's overlay, between the reason line and the discarded-keys count (`pane_overlay_lines`), read from the client's `last_input_outcome` at each view while it stands, so it shows until the next input and nothing on the status line replaces it (`owner_tests::{unknown_delivery_is_reported_in_the_pane, a_second_refusal_after_the_first_shows, a_refusal_stays_shown_while_other_words_come_and_go_on_the_status_line, a_refusal_clears_at_the_next_input_that_is_recorded}`); the status line carries nothing of it. The worker
   refuses any input before its first attach, so the pane never relies on a queue there. The notice that keys were
   discarded is the pane's count plus the client's own, drawn over the pane, and an attach, cold or warm, does not clear
   it. `DiscardNotice` owns the pane's count with the record of what a frame drew (the notice's row and the total shown),

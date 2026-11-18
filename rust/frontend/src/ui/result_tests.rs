@@ -1922,7 +1922,8 @@ impl State {
 
 impl State {
     /// A word, then the selected computer's link drops (the disconnect line carries the word and holds the line), then the
-    /// link comes back: the reconnect's connection line replaces the disconnect line at once, and re-lists keep it.
+    /// link comes back: the reconnect's connection line replaces the disconnect line at once, and re-lists keep it. A switch
+    /// to another computer's row also ends such a line.
     #[allow(dead_code, reason = "runs only inside a native State, from the window_minimized fixtures child")]
     pub(in crate::ui) fn a_reconnect_ends_a_disconnect_line_that_carried_a_word(&mut self) -> Result<()> {
         let (near, far) = ("<host-carry-near>".to_string(), "<host-carry-far>".to_string());
@@ -1974,6 +1975,17 @@ impl State {
         anyhow::ensure!(dropped.starts_with("disconnected") && dropped.ends_with("pinned · files:a.txt"), "the drop shows {dropped:?}");
         anyhow::ensure!(reconnected.starts_with("connected · "), "with the far link up again the line says {reconnected:?}");
         anyhow::ensure!(relisted.starts_with("connected · "), "after the re-lists the line says {relisted:?}");
+        // A word, the far link drops again, and the person switches to the near computer's row: the carried line, about a
+        // computer no row shown is on, gives way to the near computer's connection line.
+        self.status.set("pinned · files:b.txt");
+        send(far, IncomingEvt::Disconnected { reason: "eof".into(), refused: false })?;
+        self.drain_events();
+        let dropped_again = self.status.text().to_string();
+        self.switch_to_workspace(near.clone(), Some("here".into()), None, false);
+        let switched = self.status.text().to_string();
+        println!("carried-switch dropped={dropped_again:?} switched_to_near={switched:?}");
+        anyhow::ensure!(dropped_again.starts_with("disconnected") && dropped_again.ends_with("pinned · files:b.txt"), "the drop shows {dropped_again:?}");
+        anyhow::ensure!(!switched.starts_with("disconnected"), "on the near computer's row the line says {switched:?}");
         Ok(())
     }
 }

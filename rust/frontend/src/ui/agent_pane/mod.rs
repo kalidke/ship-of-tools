@@ -104,9 +104,6 @@ pub(in crate::ui) struct AgentPane<C = PaneAttachClient> {
     /// A person's wheel and page keys over the local ring, eased in whole rows; the ring's own offset stays the one
     /// position, and typing, a reshape and a switch end what is owed.
     roll: RingRoll,
-    /// The input outcome last said on the status line for the installed client, so each is said once; cleared when an
-    /// input is answered with nothing to say, and at a client's install.
-    outcome_said: Option<sot_capsule::attach_client::client::InputOutcome>,
 }
 
 impl<C: PaneClient> AgentPane<C> {
@@ -118,7 +115,7 @@ impl<C: PaneClient> AgentPane<C> {
             pane_attach_episode_warnings: 0, pane_presentation: PanePresentation::default(),
             pane_feed: PaneFeed::Pending, discard: Default::default(), copy_quiet: false, copy_tail: false,
             held_keys: std::collections::HashMap::new(), live_since: None, live_run: None, painted_live_run: None,
-            roll: RingRoll::default(), outcome_said: None,
+            roll: RingRoll::default(),
         }
     }
 

@@ -5,12 +5,23 @@
 use crate::ui::*;
 use super::requests::{self, RequestReplyContext, PreviewRequests};
 
+/// A preview fetch's failure: in the preview's box, and on the status line as well only when the fetch answered the person's
+/// own act; one answering a re-fetch the person did not ask for (`unasked`: a watcher's change, a reconnect) stays in the
+/// box, so another program writing the file never holds the status line.
+pub(in crate::ui) fn say_preview_failure(
+    notice: &mut super::notice::PreviewNotice, status: &mut StatusLine, node_id: Option<&str>, message: &str, unasked: bool,
+    now: std::time::Instant,
+) {
+    let name = node_id.and_then(|id| id.rsplit(['/', '\\']).next()).unwrap_or("preview");
+    route_preview_message(notice, status, format!("preview failed · {name}: {message}"), now, unasked);
+}
+
 /// Where a preview message shows: in the box over the preview pane, and with it, unless `box_only`, on the status line.
 pub(in crate::ui) fn route_preview_message(
     notice: &mut super::notice::PreviewNotice, status: &mut StatusLine, text: String, now: std::time::Instant, box_only: bool,
 ) {
     if !box_only {
-        status.set(text.clone());
+        status.set_at(text.clone(), now);
     }
     notice.show(text, now);
 }
@@ -372,7 +383,7 @@ impl State {
             && self.preview_requests.refetch_target() == Some(node_id.as_str())
         {
             let (fit_w, fit_h) = self.preview_fit_px();
-            let generation = self.next_preview_gen();
+            let generation = self.next_refetch_gen();
             let _ = self.send_to(
                 &event_host,
                 crate::net::transport::OutgoingReq::PreviewGet {
@@ -511,12 +522,9 @@ impl State {
         // above; the preview pane itself is left as whatever it
         // already showed (no blank/stale flash) rather than
         // inventing a new error widget for it.
-        let name = node_id
-            .as_deref()
-            .and_then(|id| id.rsplit(['/', '\\']).next())
-            .unwrap_or("preview")
-            .to_string();
-        self.preview_says(format!("preview failed · {name}: {message}"));
+        let unasked = self.preview_requests.latest_is_unasked();
+        say_preview_failure(&mut self.preview_notice, &mut self.status, node_id.as_deref(), &message, unasked, std::time::Instant::now());
+        self.window.request_redraw();
         self.preview_requests.refuse(node_id.as_deref());
         if self.preview_requests.fail_page_reply() {
             requests::continue_page_request(self);
@@ -568,3 +576,6 @@ mod pluto_starting_tests;
 #[cfg(test)]
 #[path = "replies_notice_tests.rs"]
 mod notice_tests;
+#[cfg(test)]
+#[path = "replies_routing_tests.rs"]
+mod routing_tests;

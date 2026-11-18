@@ -26,6 +26,9 @@ pub(in crate::ui) struct PreviewRequests {
     scale_save: Option<(String, String)>,
     /// One armed `preview --roi` viewport aim, latest wins.
     roi_aim: Option<RoiAim>,
+    /// The latest preview request re-fetches what the pane shows, unasked by the person (a watcher's change, a
+    /// reconnect): what its reply raises goes to the preview's box alone.
+    preview_unasked: bool,
 }
 
 /// A prepared change can be committed only by consuming its token after a successful send.
@@ -46,8 +49,21 @@ pub(in crate::ui) struct ClearConceptCaches;
 
 impl PreviewRequests {
     pub(in crate::ui) fn issue_preview(&mut self) -> u64 {
+        self.preview_unasked = false;
         self.clear_page_requests();
         self.advance_preview_generation()
+    }
+
+    /// `issue_preview` for a re-fetch the person did not ask for (a watcher's change, a reconnect).
+    pub(in crate::ui) fn issue_refetch(&mut self) -> u64 {
+        let generation = self.issue_preview();
+        self.preview_unasked = true;
+        generation
+    }
+
+    /// Whether the latest preview request was a re-fetch the person did not ask for.
+    pub(in crate::ui) fn latest_is_unasked(&self) -> bool {
+        self.preview_unasked
     }
 
     fn advance_preview_generation(&mut self) -> u64 {

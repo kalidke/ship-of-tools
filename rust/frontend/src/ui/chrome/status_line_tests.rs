@@ -98,7 +98,7 @@ fn a_reconnect_ends_the_hold_of_a_disconnect_line_that_carries_a_word() {
     s.set_at("pinned · files:a.txt", t0);
     let note = s.carried(t0 + Duration::from_secs(1)).expect("the word is carried");
     s.set_carrying("disconnected · eof · pinned · files:a.txt", note, t0 + Duration::from_secs(1));
-    s.reconnected();
+    s.end_carry();
     s.show_state_at("connected · h:row · rev 2", t0 + Duration::from_secs(2));
     assert_eq!(s.text(), "connected · h:row · rev 2", "the disconnect line held the line after the reconnect");
 }

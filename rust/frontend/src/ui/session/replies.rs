@@ -106,7 +106,7 @@ impl State {
         // flow redundantly.
         if event_host == *self.selected.host() {
             // A disconnect line carrying a word is no longer true: the connection line below replaces it.
-            self.status.reconnected();
+            self.status.end_carry();
             // Changes made while the connection was down were never sent: the drift cache and the cursored
             // annotation read are of unknown age, so each file parses (and the annotation reads) again on view.
             self.drift.clear();
@@ -239,7 +239,7 @@ impl State {
             // showing right now".
             if let Some(node_id) = self.preview_requests.refetch_target().map(str::to_owned) {
                 let (fit_w, fit_h) = self.preview_fit_px();
-                let generation = self.next_preview_gen();
+                let generation = self.next_refetch_gen();
                 let _ = self.send(crate::net::transport::OutgoingReq::PreviewGet {
                     node_id,
                     workspace_id: self.selected.workspace_id().clone(),

@@ -45,6 +45,11 @@ impl State {
         self.preview_requests.issue_preview()
     }
 
+    /// `next_preview_gen` for a re-fetch the person did not ask for: what its reply raises goes to the preview's box alone.
+    pub(in crate::ui) fn next_refetch_gen(&mut self) -> u64 {
+        self.preview_requests.issue_refetch()
+    }
+
     /// Same mechanism as `next_preview_gen`, for the concept/annotation slot.
     pub(in crate::ui) fn next_concept_gen(&mut self) -> u64 {
         self.preview_requests.issue_concept_reload()

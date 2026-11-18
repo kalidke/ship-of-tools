@@ -512,3 +512,14 @@ fn a_refused_preview_of_the_fired_node_is_marked_until_something_replaces_it() {
     requests.forget_fired();
     assert!(!requests.fired_refused(), "a first visit");
 }
+
+/// A re-fetch the person did not ask for marks the latest request so; any other request clears the mark.
+#[test]
+fn a_refetch_is_unasked_until_the_next_request() {
+    let mut r = PreviewRequests::default();
+    assert!(!r.latest_is_unasked());
+    let refetch = r.issue_refetch();
+    assert!(r.latest_is_unasked(), "the re-fetch is not marked unasked");
+    assert!(r.issue_preview() > refetch);
+    assert!(!r.latest_is_unasked(), "the person's request kept the re-fetch's mark");
+}

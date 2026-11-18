@@ -2,12 +2,22 @@
 
 use crate::ui::*;
 
+/// A failed equation's words: in the preview's box alone. Every render of the page asks for its equations again (a
+/// watcher's change of the file another program saves, a reflow), so on the status line they would hold it for as long as
+/// that program writes.
+pub(in crate::ui) fn say_math_failure(
+    notice: &mut crate::ui::preview::notice::PreviewNotice, status: &mut StatusLine, message: &str, now: std::time::Instant,
+) {
+    crate::ui::preview::replies::route_preview_message(notice, status, format!("math · {message}"), now, true);
+}
+
 impl State {
     /// A render that will not come: stop waiting on the equation and say why. A failure forces no reflow, so the
     /// removed key cannot loop; the next rebuild of the preview asks for the equation again.
     pub(crate) fn on_math_render_failed(&mut self, latex: String, display: bool, message: String) {
         self.md_media.math_failed(&(latex, display));
-        self.preview_says(format!("math · {message}"));
+        say_math_failure(&mut self.preview_notice, &mut self.status, &message, std::time::Instant::now());
+        self.window.request_redraw();
     }
 
     pub(crate) fn on_math_rendered(
@@ -66,3 +76,7 @@ impl State {
         self.window.request_redraw();
     }
 }
+
+#[cfg(test)]
+#[path = "replies_tests.rs"]
+mod tests;

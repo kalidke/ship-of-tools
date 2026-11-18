@@ -107,6 +107,8 @@ impl State {
                 return;
             }
         };
+        // The start's words: the chunks' progress lines are state lines, so they wait behind a word still held.
+        self.status.set(upload_start_words(&files, &dir));
         self.file_ops.begin_batch(
             self.selected.host().clone(), self.selected.workspace_id().clone(), dir, dir_node_id, files,
         );
@@ -226,6 +228,14 @@ impl State {
             }
         }
         self.window.request_redraw();
+    }
+}
+
+/// What an upload says when it starts: the file and where it goes, or how many files.
+pub(in crate::ui) fn upload_start_words(files: &std::collections::VecDeque<std::path::PathBuf>, dir: &str) -> String {
+    match (files.len(), files.front().and_then(|f| f.file_name())) {
+        (1, Some(name)) => format!("upload · {} → {dir}", name.to_string_lossy()),
+        (n, _) => format!("upload · {n} files → {dir}"),
     }
 }
 

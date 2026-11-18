@@ -29,7 +29,7 @@ impl StatusLine {
     /// `set` at `now`. The same words again, while they still hold the line, keep their first hold.
     pub(in crate::ui) fn set_at(&mut self, text: impl Into<String>, now: Instant) {
         let text = text.into();
-        let again = self.held(now) && self.note.is_none() && self.text == text;
+        let again = self.held(now) && self.text == text;
         self.text = text;
         self.note = None;
         if !again {
@@ -71,9 +71,10 @@ impl StatusLine {
         self.hold(now);
     }
 
-    /// The selected computer's own reconnect: a disconnect line that carries a word is no longer true, so its hold ends
-    /// and the next state line (the connection line) is written; the word it carried was on the line all along.
-    pub(in crate::ui) fn reconnected(&mut self) {
+    /// A disconnect line that carries a word no longer describes what is shown (its computer reconnected, or the shown row
+    /// moved to another computer): its hold ends and the next state line (the connection line) is written; the word it
+    /// carried was on the line all along.
+    pub(in crate::ui) fn end_carry(&mut self) {
         if self.note.take().is_some() {
             self.sticky_until = None;
         }

@@ -23,13 +23,18 @@ fn pane_discard_notice_counts_every_discarded_input() {
 fn pane_overlay_keeps_the_count_beside_any_reason() {
     let n = || Some("2 keystrokes discarded, not sent".to_string());
     assert_eq!(
-        pane_overlay_lines(Some("dial failed".to_string()), n()),
+        pane_overlay_lines(Some("dial failed".to_string()), None, n()),
         vec!["dial failed".to_string(), n().unwrap()]
     );
-    assert_eq!(pane_overlay_lines(None, n()), vec![n().unwrap()]);
+    assert_eq!(pane_overlay_lines(None, None, n()), vec![n().unwrap()]);
     assert_eq!(
-        pane_overlay_lines(Some("dial failed".to_string()), None),
+        pane_overlay_lines(Some("dial failed".to_string()), None, None),
         vec!["dial failed".to_string()]
     );
-    assert!(pane_overlay_lines(None, None).is_empty());
+    assert!(pane_overlay_lines(None, None, None).is_empty());
+    // The row's answer to the last input sits between them, so the count stays the last row (the one a click dismisses).
+    assert_eq!(
+        pane_overlay_lines(Some("dial failed".to_string()), Some("not sent"), n()),
+        vec!["dial failed".to_string(), "not sent".to_string(), n().unwrap()]
+    );
 }

@@ -25,3 +25,12 @@ fn upload_owner_gate_ignores_a_non_owning_hosts_ack() {
         "an ack from any OTHER host is dropped, even mid-batch"
     );
 }
+
+/// An upload says what it sends and where when it starts, before any progress line.
+#[test]
+fn an_upload_says_what_it_sends_when_it_starts() {
+    let one: std::collections::VecDeque<std::path::PathBuf> = [std::path::PathBuf::from("/tmp/fit.png")].into();
+    assert_eq!(upload_start_words(&one, "/data/run"), "upload · fit.png → /data/run");
+    let three: std::collections::VecDeque<std::path::PathBuf> = ["a", "b", "c"].map(std::path::PathBuf::from).into();
+    assert_eq!(upload_start_words(&three, "/data/run"), "upload · 3 files → /data/run");
+}

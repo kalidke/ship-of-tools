@@ -136,10 +136,12 @@ A test of a Windows or macOS arm runs on the hosted runner for its OS;
    for it. A window's input the row refuses as from a connection that is not the driver (another client took the pen
    and the window has not read its demotion; nothing was written) takes the pen back and is sent once more, before the
    next frame; refused again it is `RefusedStale` and lost, as two windows trading the pen can lose one frame, and the window
-   says so on its status line ("not sent: another client holds the row's input", `agent_pane::attach::input_outcome_notice`),
-   said once when the outcome comes, as a word that replaces whatever the line shows and holds it up to 10 s
-   (`agent_pane::owner_tests::a_refused_key_is_said_while_a_word_is_held`), so nothing a person typed disappears unseen. One retake per frame is what keeps two clients from trading the pen
-   without end (`fe_attach::a_window_key_the_row_refuses_twice_is_given_up_after_one_retake`). The window says unknown delivery in its status line as well. Limits: written is not read, the agent may never read
+   shows it in the agent pane, over the row's screen beside the discarded-keys count ("not sent: another client holds the
+   row's input", `agent_pane::attach::input_outcome_notice`), read from the client's last input outcome while it
+   stands, until the next input, where no other writer replaces it
+   (`agent_pane::owner_tests::{a_second_refusal_after_the_first_shows, a_refusal_stays_shown_while_other_words_come_and_go_on_the_status_line,
+   a_refusal_clears_at_the_next_input_that_is_recorded}`), so nothing a person typed disappears unseen. One retake per frame is what keeps two clients from trading the pen
+   without end (`fe_attach::a_window_key_the_row_refuses_twice_is_given_up_after_one_retake`). The window shows unknown delivery and a run ended there in the same way. Limits: written is not read, the agent may never read
    it; a thread that does not end within its bound is noted and left, holding the cloned terminal until the write
    fails.
 8. **A restart shows the last screen.** `<state_dir>/screen` holds the vt100 checkpoint (format 2), handed to one writer
