@@ -317,7 +317,8 @@ a `chat.toml` the daemon refuses is never rewritten. A pairing that changes noth
 workspace of its channel (none means the one `chat.toml` names), and a channel that workspace does not hold is refused.
 A pairing or a connect restarts only the workspaces whose secrets or mappings it changed (a workspace whose chat is not
 running starts again too); each restart costs the open Chat drawers of that workspace one resync, and every other
-workspace's drawers and mail go on untouched.
+workspace's drawers and mail go on untouched. Its answer waits only for the workspace it names, never for another
+workspace's slow or stuck stop; a second pairing or connect sent while the first still waits is answered after it.
 
 Each file is a regular file of at most 64 KiB, and only the keys below are accepted.
 

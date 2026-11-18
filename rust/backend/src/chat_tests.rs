@@ -1057,8 +1057,9 @@ async fn a_reload_after_retirement_began_starts_nothing() {
     assert!(!other.comm().exists(), "a closed chat's reload loaded the files");
 }
 
+/// A going unit's wait that ends after the retirement began starts nothing and leaves the unit where it was, stopped.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_retirement_while_a_reload_waits_for_the_stop_starts_and_swaps_nothing() {
+async fn a_retirement_while_a_reload_waits_for_the_stop_starts_nothing() {
     let home = Home::new(Some(SELF));
     let (a, b) = (home.configured(), home.folder("b"));
     let gate = Arc::new(tokio::sync::Semaphore::new(0));
@@ -1066,6 +1067,7 @@ async fn a_retirement_while_a_reload_waits_for_the_stop_starts_and_swaps_nothing
     let (registry, tries) = (Arc::new(Registry::new()), Arc::new(AtomicUsize::new(0)));
     let chat = begin(&home, &Observed::new(), &registry, in_turn(&listeners, &tries));
     assert_eq!(settled(&chat).await, Status::Running);
+    let old = chat.unit("T0AAAA").unwrap();
     home.chat_toml(&[a.to_string_lossy().into_owned(), b.to_string_lossy().into_owned()]);
     let reloading = tokio::spawn({
         let chat = chat.clone();
@@ -1081,7 +1083,7 @@ async fn a_retirement_while_a_reload_waits_for_the_stop_starts_and_swaps_nothing
     assert_eq!(reloading.await.unwrap(), Status::Stopped);
     assert_eq!(tries.load(Ordering::SeqCst), 1, "a reload started a service after the retirement began");
     assert!(chat.service().is_none());
-    assert_eq!(chat.mapping(&b.to_string_lossy()), Resolution::Unmapped, "the configuration was swapped after the retirement began");
+    assert!(Arc::ptr_eq(&chat.unit("T0AAAA").unwrap(), &old), "the stopped unit was replaced after the retirement began");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1598,8 +1600,18 @@ async fn a_reload_starts_again_a_workspace_that_is_not_running() {
     assert_eq!((s.tries(), chat.status_of("T0BBBB"), chat.status_of("T0AAAA")), ((1, 2), Status::Running, Status::Running));
 }
 
-/// L9 rule 2: one workspace's stop that never ends holds no other's reload: the other's change starts within the wait,
-/// and the stuck one is left stopping, not started again, and logged.
+/// Under paused time, until `log` holds `line`, failing past twice [`SETUP_WAIT`].
+async fn logged_within(log: &sot_platform::test_log::Capture, line: &str) {
+    let waiting = async {
+        while !log.text().contains(line) {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    };
+    tokio::time::timeout(2 * SETUP_WAIT, waiting).await.unwrap_or_else(|_| panic!("never logged: {line}"));
+}
+
+/// L9 rule 2: one workspace's stop that never ends holds no other's reload: the other's change starts and the reply,
+/// the other's, comes well within the wait; the stuck one is left stopping, not started again, and logged at the wait.
 #[tokio::test(start_paused = true)]
 async fn a_stuck_stop_in_one_workspace_holds_no_others_reload() {
     let log = sot_platform::test_log::capture();
@@ -1610,10 +1622,86 @@ async fn a_stuck_stop_in_one_workspace_holds_no_others_reload() {
     until("both running", || chat.status_of("T0BBBB") == Status::Running).await;
     home.rekey(SECRETS_FILE, "cccc");
     home.rekey(OTHER_FILE, "cccc");
+    let t0 = tokio::time::Instant::now();
     tokio::time::timeout(4 * SETUP_WAIT, reload_of(&chat, "T0BBBB")).await.expect("the reload never answered");
+    let took = t0.elapsed();
+    assert!(took < SETUP_WAIT / 2, "B's reply waited {took:?}, on A's stop");
     assert_eq!((chat.status_of("T0AAAA"), chat.status_of("T0BBBB")), (Status::Stopping, Status::Running));
-    assert_eq!(s.tries(), (1, 2), "the stuck workspace was started again");
-    assert!(log.text().contains("gave up waiting for a workspace's chat to stop"));
+    logged_within(&log, "gave up waiting for a workspace's chat to stop").await;
+    assert_eq!((chat.status_of("T0AAAA"), s.tries()), (Status::Stopping, (1, 2)), "the stuck workspace was started again");
+}
+
+/// L9 rule 2: a workspace left stopping by an earlier reload holds no later reload of another: the later one does not
+/// wait for it again, and its reply comes well within the wait.
+#[tokio::test(start_paused = true)]
+async fn a_workspace_left_stopping_holds_no_later_reload_of_another() {
+    let home = two_files();
+    let s = starts();
+    let chat = Chat::begin(&home.env, &|p| config::read_file(p), &Registry::new(), Starts::starter(&s, "", "T0AAAA", ""), setup::Verifier::none(), HUB_CHECK);
+    assert_eq!(settled(&chat).await, Status::Running);
+    until("both running", || chat.status_of("T0BBBB") == Status::Running).await;
+    home.rekey(SECRETS_FILE, "cccc");
+    reload_of(&chat, "T0AAAA").await;
+    assert_eq!(chat.status_of("T0AAAA"), Status::Stopping);
+    home.rekey(OTHER_FILE, "cccc");
+    let t0 = tokio::time::Instant::now();
+    reload_of(&chat, "T0BBBB").await;
+    let took = t0.elapsed();
+    assert_eq!((chat.status_of("T0BBBB"), s.tries()), (Status::Running, (1, 2)));
+    assert!(took < SETUP_WAIT / 2, "a reload whose only change is B's waited {took:?} on A's stop");
+}
+
+/// L9 rule 2: a workspace whose file is removed while its stop never ends stays known until its stop ends, so a
+/// retirement reports it incomplete rather than the chat retired.
+#[tokio::test(start_paused = true)]
+async fn a_removed_workspaces_stuck_stop_is_still_reported_at_retirement() {
+    let home = two_files();
+    let s = starts();
+    let chat = Chat::begin(&home.env, &|p| config::read_file(p), &Registry::new(), Starts::starter(&s, "", "T0BBBB", ""), setup::Verifier::none(), HUB_CHECK);
+    assert_eq!(settled(&chat).await, Status::Running);
+    until("both running", || chat.status_of("T0BBBB") == Status::Running).await;
+    std::fs::remove_file(home.config().join(OTHER_FILE)).unwrap();
+    tokio::time::timeout(4 * SETUP_WAIT, reload_of(&chat, "T0AAAA")).await.expect("the reload never answered");
+    chat.request_stop();
+    until("A off", || chat.status_of("T0AAAA") == Status::Stopped).await;
+    assert!(!chat.wait_retired(Duration::ZERO), "retirement reported complete while B's listener stop is still in flight");
+}
+
+/// L9 rule 2: a reload whose load finds no lock folder stops every workspace, its plan unchanged: none is kept running
+/// while the chat answers `Failed("lock")`.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reload_with_no_lock_folder_stops_every_workspace() {
+    let home = two_files();
+    let (a, b) = (Arc::new(Fake::default()), Arc::new(Fake::default()));
+    let chat = begin(&home, &Observed::new(), &Registry::new(), per_workspace(&a, &b));
+    assert_eq!(settled(&chat).await, Status::Running);
+    until("both running", || chat.status_of("T0BBBB") == Status::Running).await;
+    // A file where the lock folder belongs.
+    std::fs::remove_dir_all(home.comm().join("chat")).unwrap();
+    std::fs::write(home.comm().join("chat"), "not a folder").unwrap();
+    assert_eq!(reload(&chat).await, Status::Failed("lock"));
+    assert!(!chat.any_running(), "a workspace was kept running with no lock folder");
+    until("both stops", || stops(&[a.clone(), b.clone()]) == [1, 1]).await;
+}
+
+/// L9 rule 4: the plan an owner reads is the plan of the unit whose running service it holds: a service a reload
+/// replaced reads none, never the new unit's.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_owner_reads_the_plan_of_its_own_services_unit_alone() {
+    let home = two_files();
+    let s = starts();
+    let chat = Chat::begin(&home.env, &|p| config::read_file(p), &Registry::new(), Starts::starter(&s, "", "", ""), setup::Verifier::none(), HUB_CHECK);
+    assert_eq!(settled(&chat).await, Status::Running);
+    let channels = |plan: Option<Plan>| plan.map(|p| p.mappings().map(|(_, c, _)| c.to_string()).collect::<Vec<_>>());
+    let old = chat.service_of("T0AAAA").unwrap();
+    assert_eq!(channels(chat.plan_of("T0AAAA", &old)), Some(vec!["C0AAAA".to_string()]));
+    // A second mapping in A: its unit is replaced.
+    let (fa, fb) = (home.folder("a"), home.folder("b"));
+    home.chat_toml(&[fa.to_string_lossy().into_owned(), fb.to_string_lossy().into_owned()]);
+    reload_of(&chat, "T0AAAA").await;
+    let new = chat.service_of("T0AAAA").unwrap();
+    assert_eq!(channels(chat.plan_of("T0AAAA", &new)), Some(vec!["C0AAAA".to_string(), "C0BBBB".into()]));
+    assert_eq!(channels(chat.plan_of("T0AAAA", &old)), None, "a replaced service read its successor's plan");
 }
 
 /// L9 rule 3: a reload's answer waits only for its own workspace's start: another's start that never ends goes on, and

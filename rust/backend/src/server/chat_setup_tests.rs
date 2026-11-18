@@ -1085,7 +1085,8 @@ fn two_workspaces_from_nothing_each_project_reads_and_posts_in_its_own() {
         assert!(chat.hub().running_in(A) && chat.hub().running_in(B), "each workspace has its own owner");
         // 9. Alpha moves to A's other channel: A's listener starts again, B's does not (no new `auth.test` under its bot,
         // no new socket), and a message fed to B's socket while A restarts reaches the connection, B's watch told
-        // nothing of A's reload.
+        // nothing of A's reload; A's owner starts again and B's does not (its line in the log, read after the run).
+        tracing::info!("{STEP_9}");
         let (a_starts, b_starts, b_sockets) =
             (w.teams.calls(A, "xoxb", "/auth.test").len(), w.teams.calls(B, "xoxb", "/auth.test").len(), w.teams.calls(B, "xapp", "/apps.connections.open").len());
         conn.send(16, op::CHAT_PAIR, json!({"row": w.ids[0], "channel": "C0AAAA02"})).await;
@@ -1115,6 +1116,7 @@ fn two_workspaces_from_nothing_each_project_reads_and_posts_in_its_own() {
         );
         let ta = w.target(0, A, "C0AAAA02");
         after_hello(&chat, &w.rows, &serde_json::from_value(ta.clone()).unwrap()).await;
+        tracing::info!("{STEP_10}");
         // 10. Slack revokes the first workspace's bot: alpha's read is refused, its workspace ends, and beta's goes on.
         w.teams.revoke(A);
         let history = conn.ask(14, op::CHAT_HISTORY, json!({"target": ta, "limit": 5})).await;
@@ -1141,7 +1143,15 @@ fn two_workspaces_from_nothing_each_project_reads_and_posts_in_its_own() {
     for (n, reply) in seen.iter().enumerate() {
         holds_no_token(&format!("reply or event {n}"), reply, &bodies);
     }
+    let step_9 = text.split(STEP_9).nth(1).and_then(|t| t.split(STEP_10).next()).expect("step 9's lines");
+    let owner = |w: &str| format!("project chat status=the chat service is running workspace={w:?}");
+    assert!(step_9.contains(&owner(A)), "A's owner did not start again at its reload");
+    assert!(!step_9.contains(&owner(B)), "A's reload started B's owner again");
 }
+
+/// The done test's marks in its log, around step 9.
+const STEP_9: &str = "the done test: step 9";
+const STEP_10: &str = "the done test: step 10";
 
 /// Writes a secrets file `file` for workspace `w` with tokens of the fake's form (`mark` tells them apart).
 fn write_secrets_of(home: &Home, file: &str, w: &str, mark: &str) {

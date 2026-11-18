@@ -200,8 +200,13 @@ struct Units<L> {
     off: Status,
     /// Each workspace whose own secrets file was refused, with that file's code.
     refused: BTreeMap<String, ConfigError>,
-    /// One unit per admitted workspace, in workspace order.
+    /// One unit per admitted workspace, in workspace order, and each unit a reload stopped until its own wait ends: it
+    /// stays here, stopping or off, so a retirement still waits for it, until its replacement (or its removal, its file
+    /// gone).
     map: BTreeMap<String, Arc<Shared<L>>>,
+    /// The last load's plan of each admitted workspace and its lock folder: what a stopped unit is replaced with.
+    plans: BTreeMap<String, Plan>,
+    locks: Option<PathBuf>,
     /// No start may begin: the chat never registered with lifecycle (not the hub at its boot, or its registration
     /// refused) or its retirement began. Set and read under this lock.
     closed: bool,
@@ -401,7 +406,8 @@ impl<L: Listener> Chat<L> {
     fn begin(env: &Env, read: Reader, registry: &Registry, start: Starter<L>, verify: setup::Verifier, check: Duration) -> Arc<Chat<L>> {
         let load = Self::load(env, read);
         let hub = load.config.is_some();
-        let units = Units { off: load.off, refused: load.refused, map: units_of(&load.plans), closed: !hub };
+        let map = units_of(&load.plans);
+        let units = Units { off: load.off, refused: load.refused, map, plans: load.plans.into_iter().collect(), locks: load.locks, closed: !hub };
         let (config, handle, start) = (Mutex::new(Arc::new(load.config)), Some(Handle::current()), Arc::new(start));
         let this = Arc::new(Chat {
             config,
@@ -426,8 +432,8 @@ impl<L: Listener> Chat<L> {
             units.closed = true;
         } else {
             drop(tokio::spawn(step_down_when_another_hub(Arc::downgrade(&this), env.clone(), check)));
-            if let Some(locks) = load.locks {
-                for (workspace, _) in &load.plans {
+            if let Some(locks) = units.locks.clone() {
+                for workspace in units.plans.keys() {
                     this.launch(&units, workspace, locks.clone());
                 }
             }
@@ -454,10 +460,13 @@ impl<L: Listener> Chat<L> {
         self.units().map.get(workspace).cloned()
     }
 
-    /// The plan `workspace`'s unit runs from, which its owner reads (never the swapped configuration, so a reload that
-    /// keeps the unit changes nothing its owner holds).
-    pub(crate) fn plan_of(&self, workspace: &str) -> Option<Plan> {
-        self.unit(workspace).map(|u| u.plan.clone())
+    /// The plan of the unit whose running service is `service`, which that service's owner reads (never the swapped
+    /// configuration, so a reload that keeps the unit changes nothing its owner holds); `None` when `workspace`'s unit
+    /// runs another service or none (a service a reload stopped or replaced reads nothing).
+    pub(crate) fn plan_of(&self, workspace: &str, service: &L) -> Option<Plan> {
+        let unit = self.unit(workspace)?;
+        let runs = matches!(&*unit.lock(), Phase::Running(l) if std::ptr::eq(Arc::as_ptr(l), service));
+        runs.then(|| unit.plan.clone())
     }
 
     /// The configuration of the last load.
@@ -544,7 +553,7 @@ impl<L: Listener> Chat<L> {
     /// A chat that is not the hub, for a test's services.
     #[cfg(test)]
     pub(crate) fn off() -> Arc<Chat<L>> {
-        let units = Mutex::new(Units { off: Status::NotHub, refused: BTreeMap::new(), map: BTreeMap::new(), closed: true });
+        let units = Mutex::new(Units { off: Status::NotHub, refused: BTreeMap::new(), map: BTreeMap::new(), plans: BTreeMap::new(), locks: None, closed: true });
         let (config, handle) = (Mutex::new(Arc::new(None)), Handle::try_current().ok());
         let start: Arc<Starter<L>> = Arc::new(Box::new(|_, _, _| Box::pin(std::future::pending())));
         Arc::new(Chat {
@@ -598,13 +607,14 @@ impl<L: Listener> Chat<L> {
         let default = self.default_workspace()?;
         let names = self.names.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let units = self.units();
-        let list = units.map.iter().map(|(w, u)| (w.clone(), names.get(w).cloned(), matches!(*u.lock(), Phase::Running(_)))).collect();
+        let admitted = units.map.iter().filter(|(w, _)| units.plans.contains_key(*w));
+        let list = admitted.map(|(w, u)| (w.clone(), names.get(w).cloned(), matches!(*u.lock(), Phase::Running(_)))).collect();
         Some((default, list))
     }
 
     /// Keeps `name` as the last one Slack gave for `workspace`, when the workspace is admitted.
     pub(crate) fn remember_name(&self, workspace: &str, name: Option<String>) {
-        let admitted = self.units().map.contains_key(workspace);
+        let admitted = self.units().plans.contains_key(workspace);
         if let (true, Some(name)) = (admitted, name) {
             self.names.lock().unwrap_or_else(|e| e.into_inner()).insert(workspace.to_string(), name);
         }
@@ -752,15 +762,21 @@ impl<L: Listener> Chat<L> {
     }
 
     /// The reload, under the setup lock `held`, restarting only the workspaces it changes (C6). In order: the boot's load
-    /// on the blocking pool (it canonicalizes on the shared home); the units that go (a plan changed, a workspace with no
-    /// file now, or a listener neither running nor starting) stopped as a retirement stops one, all at once, each waited for
-    /// with its owner alone within [`SETUP_WAIT`], one that outlasts it left stopping and unstarted (logged); then, under the
-    /// units lock and only while the chat is not closed, the configuration and the units swapped, a kept unit the same
-    /// `Arc` (its listener, owner, watches and mail untouched), and each new or changed workspace launched; then `started`
-    /// with the launched workspaces (the product's starts their owners). A closed chat reads and swaps nothing. Returns once
-    /// `workspace`'s start ended when it was launched, or at [`SETUP_WAIT`] (logged); the other starts go on, and a caller
-    /// reads each workspace's status after it.
-    async fn reload_then(self: &Arc<Self>, held: &Setup<'_>, workspace: &str, started: impl FnOnce(&Arc<Self>, &[String])) {
+    /// on the blocking pool (it canonicalizes on the shared home); then one step under the units lock, only while the chat
+    /// is not closed: the units that go (a plan changed, a workspace with no file now, or a listener neither running nor
+    /// starting) stopped as a retirement stops one and left in the map, stopping or off, a kept unit the same `Arc` (its
+    /// listener, owner, watches and mail untouched), each new workspace given a unit and launched, and the configuration
+    /// and the last load's plans swapped; then `started` with the launched workspaces (the product's starts their owners).
+    /// Each going unit is then waited for alone, on a task of its own ([`Chat::restart_when_stopped`]), one already
+    /// stopping too (a service that ended on its own, or a stop an earlier reload gave up on, which only its own
+    /// workspace's reply then waits for again). A closed chat reads and swaps nothing.
+    /// Returns once `workspace`'s own wait ended, when it has one, and then its start, when it was launched or its stop
+    /// ended, each within [`SETUP_WAIT`] (logged); every other wait and start goes on, and a caller reads each workspace's
+    /// status after it.
+    async fn reload_then<F>(self: &Arc<Self>, held: &Setup<'_>, workspace: &str, started: F)
+    where
+        F: Fn(&Arc<Self>, &[String]) + Clone + Send + Sync + 'static,
+    {
         assert!(std::ptr::eq(tokio::sync::MutexGuard::mutex(&held.0), &self.setup), "a reload under another chat's setup lock");
         if self.closed_now() {
             return;
@@ -770,58 +786,98 @@ impl<L: Listener> Chat<L> {
             tracing::warn!("project chat: a reload's load did not finish and started nothing");
             return;
         };
-        let can_start = load.locks.is_some();
-        let going: Vec<(String, Arc<Shared<L>>)> = self
-            .unit_list()
-            .into_iter()
-            .filter(|(w, u)| !(can_start && load.plans.iter().any(|(pw, p)| pw == w && u.keeps(p))))
-            .collect();
-        for (w, u) in &going {
-            self.stop_unit(u, w, Status::Stopped);
-        }
-        let waits = going.iter().map(|(w, u)| async move {
-            let ended = async {
-                u.stopped().await;
-                self.hub.owner_ended(w).await;
-            };
-            let done = tokio::time::timeout(SETUP_WAIT, ended).await.is_ok();
-            if !done {
-                tracing::warn!(workspace = w.as_str(), "project chat: a reload gave up waiting for a workspace's chat to stop; it is not started again");
-            }
-            (w.clone(), done)
-        });
-        let stuck: Vec<String> = futures_util::future::join_all(waits).await.into_iter().filter(|(_, done)| !done).map(|(w, _)| w).collect();
-        let mut launched = Vec::new();
+        let (mut launched, mut going) = (Vec::new(), Vec::new());
         {
             let mut units = self.units();
             if units.closed {
                 return;
             }
-            *self.config.lock().unwrap_or_else(|e| e.into_inner()) = Arc::new(load.config);
-            let old = std::mem::take(&mut units.map);
-            for (w, plan) in load.plans {
-                let kept = old.get(&w).filter(|_| stuck.contains(&w) || !going.iter().any(|(g, _)| *g == w));
-                let unit = match kept {
-                    Some(u) => u.clone(),
-                    None => {
-                        launched.push(w.clone());
-                        Shared::new(Status::Stopped, plan)
-                    }
-                };
-                units.map.insert(w, unit);
+            let plans: BTreeMap<String, Plan> = load.plans.into_iter().collect();
+            let can_start = load.locks.is_some();
+            for (w, u) in &units.map {
+                if !(can_start && plans.get(w).is_some_and(|p| u.keeps(p))) {
+                    self.stop_unit(u, w, Status::Stopped);
+                    going.push((w.clone(), u.clone()));
+                }
             }
-            (units.off, units.refused) = (load.off, load.refused);
-            self.names.lock().unwrap_or_else(|e| e.into_inner()).retain(|w, _| units.map.contains_key(w));
-            match load.locks {
+            for (w, plan) in &plans {
+                if !units.map.contains_key(w) {
+                    units.map.insert(w.clone(), Shared::new(Status::Stopped, plan.clone()));
+                    launched.push(w.clone());
+                }
+            }
+            *self.config.lock().unwrap_or_else(|e| e.into_inner()) = Arc::new(load.config);
+            self.names.lock().unwrap_or_else(|e| e.into_inner()).retain(|w, _| plans.contains_key(w));
+            (units.off, units.refused, units.plans, units.locks) = (load.off, load.refused, plans, load.locks);
+            match units.locks.clone() {
                 Some(locks) => launched.iter().for_each(|w| self.launch(&units, w, locks.clone())),
                 None => launched.clear(),
             }
         }
         started(self, &launched);
-        let Some(unit) = self.unit(workspace).filter(|_| launched.iter().any(|w| w == workspace)) else { return };
+        let mut own = None;
+        for (w, u) in going {
+            let wait = self.restart_when_stopped(w.clone(), u, started.clone());
+            if w == workspace {
+                own = Some(wait);
+            }
+        }
+        // Its start follows its stop's end, launched by its own wait or another reload's.
+        let stopped = match own {
+            Some(wait) => wait.await.unwrap_or(false),
+            None => false,
+        };
+        if !stopped && !launched.iter().any(|w| w == workspace) {
+            return;
+        }
+        let Some(unit) = self.unit(workspace) else { return };
         if tokio::time::timeout(SETUP_WAIT, unit.running()).await.is_err() {
             tracing::warn!(workspace, "project chat: a reload stopped waiting for a workspace's start, which goes on");
         }
+    }
+
+    /// One going unit's wait, on a task of its own, so no other workspace's reload, start or reply waits for it: its stop
+    /// and its old owner's end (the new service's `ensure_owner` would otherwise find the old owner running and start
+    /// none) within [`SETUP_WAIT`]; then its replacement ([`Chat::replace`]), and `started` with its workspace when that
+    /// launched one. A stop that outlasts the wait leaves the unit stopping and unstarted (logged, fixed words and its
+    /// workspace). Whether the stop ended within the wait.
+    fn restart_when_stopped<F>(self: &Arc<Self>, workspace: String, unit: Arc<Shared<L>>, started: F) -> tokio::task::JoinHandle<bool>
+    where
+        F: Fn(&Arc<Self>, &[String]) + Send + Sync + 'static,
+    {
+        let chat = self.clone();
+        tokio::spawn(async move {
+            let ended = async {
+                unit.stopped().await;
+                chat.hub.owner_ended(&workspace).await;
+            };
+            if tokio::time::timeout(SETUP_WAIT, ended).await.is_err() {
+                tracing::warn!(workspace = workspace.as_str(), "project chat: a reload gave up waiting for a workspace's chat to stop; it is not started again");
+                return false;
+            }
+            if chat.replace(&workspace, &unit) {
+                started(&chat, std::slice::from_ref(&workspace));
+            }
+            true
+        })
+    }
+
+    /// A stopped unit's replacement, under the units lock and only while the chat is not closed and the map still holds
+    /// `unit` (another reload's wait for it may have come first): a unit for the last load's plan of `workspace`, launched
+    /// when that load gave a lock folder (no plan: the entry removed, its file gone). Whether it launched.
+    fn replace(self: &Arc<Self>, workspace: &str, unit: &Arc<Shared<L>>) -> bool {
+        let mut units = self.units();
+        if units.closed || !units.map.get(workspace).is_some_and(|u| Arc::ptr_eq(u, unit)) {
+            return false;
+        }
+        let Some(plan) = units.plans.get(workspace).cloned() else {
+            units.map.remove(workspace);
+            return false;
+        };
+        units.map.insert(workspace.to_string(), Shared::new(Status::Stopped, plan));
+        let Some(locks) = units.locks.clone() else { return false };
+        self.launch(&units, workspace, locks);
+        true
     }
 
     /// Until `workspace`'s unit is `Off` (none: at once).
@@ -862,7 +918,7 @@ impl Chat<Service> {
         // The mapped channels' names, looked up once in the background (`Api::channel_names`, which holds the
         // lookup to a count and a deadline): `chat.resolve` makes no Slack call and carries what the cache holds, so a
         // window's title can name the channel. A channel that got no name keeps its id, and its code is logged.
-        if let (Some(plan), Ok(api)) = (self.plan_of(workspace), service.api()) {
+        if let (Some(plan), Ok(api)) = (self.plan_of(workspace, &service), service.api()) {
             let channels: Vec<String> = plan.mappings().map(|(_, channel, _)| channel.to_string()).collect();
             drop(tokio::spawn(async move {
                 for (channel, code) in api.channel_names(&channels).await {
@@ -908,7 +964,8 @@ impl Chat<Service> {
     /// Load both files again and start what changed, with no daemon restart: [`Chat::reload_then`] with the launched
     /// workspaces' owners started, waiting only for `workspace`'s start (a connect's, or the workspace a pairing pairs in).
     pub(crate) async fn reload_for(self: &Arc<Self>, held: &Setup<'_>, rows: &Workspaces, workspace: &str) {
-        self.reload_then(held, workspace, |chat, launched| drop(chat.start_owner(rows.clone(), launched.to_vec()))).await
+        let rows = rows.clone();
+        self.reload_then(held, workspace, move |chat, launched| drop(chat.start_owner(rows.clone(), launched.to_vec()))).await
     }
 }
 
