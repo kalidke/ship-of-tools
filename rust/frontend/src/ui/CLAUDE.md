@@ -1430,9 +1430,29 @@ methods are `pub(super)`, so no other ui code can drop the requests they return.
   the row's host. One connect is in flight at a time, held by the drawer (`connect_sent`), so Escape while connecting
   (whose keys line says the check goes on) and a step begun since never send a second until its reply, and a reply only
   ever acts on the step that is connecting. A refused token (`bot_token_refused`, `user_token_refused`, `app_token_refused`) returns to its step
-  with Slack's words and keeps the others; any other reply drops all three (a refusal shows its words on the first screen);
+  with Slack's words and keeps the others; any other reply but `other_app` drops all three (a refusal shows its words on
+  the first screen);
   `ConnectUnknown` ends a connecting step with a status line; a connect fe-net could not queue reads as `unavailable`
-  (`never_written`). Any reply resolves the row again at once. Another answer for the row ends a step begun from
+  (`never_written`). Any reply but `other_app` resolves the row again at once. A connect refused `other_app`
+  (CHAT-CONNECT-MAKES-A-NEW-APP; `ChatEvt::OtherApp`: the tokens are another Slack app's than the one their workspace is
+  connected to now, and nothing was saved) brings the connecting step the other Slack app's screen, the three tokens kept,
+  titled `a different Slack app` (with the step closed while it connected, the status line says nothing was changed,
+  `drawer::NOT_REPLACED_WORDS`). Its first rows say that these Slack codes belong to a different Slack app than the one
+  connected to the workspace now, with the name Slack calls it when the hub gave one; that the new Slack app is in none of
+  the private channels, so each project whose channel is private shows nothing until someone types `/invite @<name>` in
+  that channel in Slack (the hub's `new_app_name`, else `slack_app_name`); and that to keep everything as it is the person
+  presses Enter and pastes the connected app's codes instead; then how many projects have their channels in that
+  workspace, what Enter opens, and the key that connects the new app anyway. Enter, the key a hurried person presses,
+  replaces nothing: it opens the connected app's page (`/oauth` by the hub's `app_id`, else the list of apps) and goes to
+  step 2 with the three tokens kept, each shown as the new Slack app's under a line that names whose to paste, and the step
+  sends no connect until each is pasted again (`Connect::again`), so no connect mixes the two apps' tokens; a token pasted
+  over the screen does the same. `chat.thread_open`'s key, named by its default binding's label (`→`), sends one
+  `chat.connect` of the three held with `replace_app` (once: the step is connecting), after which the flow is any
+  connect's (the connected screen, the channels the new app cannot read first); Left does nothing; Escape closes. At 60
+  cells by 12 rows the three are above the pinned keys (`connect_tests::the_other_slack_apps_screen_says_whose_codes_these_are_and_how_to_keep_everything`,
+  `the_other_slack_apps_keys_keep_the_codes_or_connect_anyway_once`, `the_drawer_gives_the_other_slack_app_to_its_connecting_step`;
+  in the table test). Limit: the label is the default binding's, as the compose hint's chord is, whatever the key is
+  rebound to. Another answer for the row ends a step begun from
   `unconfigured` while the person is still pasting, never one connecting or connected, nor one a person asked for. Enter on
   the connected screen opens the picker once the row has resolved again, on the workspace the connect made when it runs
   (`open_picker_at`), and while the row resolves says to wait; a row whose own workspace still failed after another was

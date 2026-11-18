@@ -69,6 +69,7 @@ Slack code until the codes are sent.
 | Step 2 (`step 2 of 3: the first two Slack codes`) | Nothing, unless the status line said to wait: then it sends the codes (see below). | Shows step 3. | Shows step 1. |
 | Step 3 (`step 3 of 3: the last Slack code`) | The same as on step 2. | Nothing. | Shows step 2. |
 | `connecting…` | Nothing. | Nothing. | Nothing. |
+| The different Slack app's screen (`chat · a different Slack app`) | Keeps the Slack app the workspace is connected to now: opens that app's page in your browser and shows step 2, holding the codes you pasted until you paste that app's three in their place. | Connects the new Slack app anyway, in place of the one connected now (the screen names this key `→`). | Nothing. |
 | The connected screen (`chat · connected`) | Opens the channel list. | Nothing. | Nothing. |
 
 The three codes are sent by themselves when the last one is pasted. Only if an earlier check is still running does the
@@ -250,12 +251,33 @@ Press `Ctrl+Shift+k`, choose `Connect a Slack workspace`, and on the first scree
 Slack's page that makes a new app. At [api.slack.com/apps](https://api.slack.com/apps) click the app this workspace is
 connected to now, and copy its codes as steps 2 and 3 describe.
 
+### If you paste the codes of a new app
+
+When the codes you paste belong to a different Slack app than the one the workspace is connected to now, nothing is
+changed yet: the panel asks first. Its top line reads `chat · a different Slack app`, and it names the app connected
+now as Slack calls it, says that the new app is in none of the private channels, so each project whose channel is
+private would show nothing until someone types `/invite @` and the new app's name in that channel in Slack, and says how
+many projects have their channels in that workspace.
+
+- **Enter keeps everything as it is.** Your browser opens the page of the app connected now, and the panel shows step 2.
+  The codes you pasted are kept, each marked as the new app's, and nothing is sent until you paste all three codes of
+  the app connected now in their place (steps 2 and 3); then they are sent by themselves.
+- **Right (`→`) connects the new app anyway**, in place of the one connected now. The connected screen follows (below).
+
+The panel asks only when the computer that runs your sessions knows which app the workspace is connected to now. It
+does not ask, and connecting a new app replaces the old one at once, when the workspace's chat is not running (for
+example because Slack stopped accepting its codes, when a new app is the right repair), when Slack does not tell which
+app the new codes belong to, or when Ship of Tools on that computer is older than this question. New codes of the app
+connected now are never asked about. A Ship of Tools window older than this question cannot connect a new app while the
+old one runs: it says `Slack may be connected`, and the workspace keeps its app; paste the old app's codes, or update
+the window.
+
 ### If you connected a new app
 
-Connecting a new app replaces the workspace's old codes without asking first. A new app is in no channel, public or
-private, until it is invited, so each project whose channel it is not in shows nothing. A few seconds after the codes
-are accepted, the connected screen names each project's channel the new app is not in, and what to type in it. Read it before pressing Enter: Enter
-opens the channel list, and choosing another channel there gives up the one the project had. To recover:
+A new app is in no channel, public or private, until it is invited, so each project whose channel it is not in shows
+nothing. A few seconds after the codes are accepted, the connected screen names each project's channel the new app is
+not in, and what to type in it. Read it before pressing Enter: Enter opens the channel list, and choosing another channel
+there gives up the one the project had. To recover:
 
 - In each channel it names, type `/invite @` and the new app's name in Slack's message box, and send it. The panel
   tries the channel again each minute, so it shows within two minutes of the invite.

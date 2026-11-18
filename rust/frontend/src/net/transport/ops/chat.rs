@@ -3,7 +3,7 @@
 
 use super::*;
 use sot_protocol::ops::{
-    ChatChangedEvt, ChatChannel, ChatChannelsRes, ChatCode, ChatConnectRes, ChatFileReq, ChatFileRes, ChatFileVariant, ChatHistoryReq, ChatHistoryRes, ChatPairRes, ChatPostFileReq, ChatPostFileRes, ChatPostReq,
+    ChatChangedEvt, ChatChannel, ChatChannelsRes, ChatCode, ChatConnectRes, ChatOtherApp, ChatFileReq, ChatFileRes, ChatFileVariant, ChatHistoryReq, ChatHistoryRes, ChatPairRes, ChatPostFileReq, ChatPostFileRes, ChatPostReq,
     ChatPostRes, ChatRefusal, ChatResolveRes, ChatStatusEvt, ChatTarget, ChatWatchRes, ChatWorkspacesRes, MAX_CHAT_FILE, MAX_THUMB,
 };
 
@@ -31,6 +31,9 @@ pub(crate) enum ChatEvt {
     PostNotSent { req: ChatPostReq },
     /// A `chat.connect`'s reply. It names nothing of the request, so no token is held here.
     Connect { reply: ChatReply<ChatConnectRes> },
+    /// A `chat.connect` refused `other_app`: the tokens are another Slack app's than the one their workspace runs with now,
+    /// and nothing was saved; what the hub said to ask the person with (all of it unknown when the body did not parse).
+    OtherApp(ChatOtherApp),
     /// The connection ended, or the daemon's answer did not prove it, before a `chat.connect` was answered: the tokens
     /// may have been saved, so the owner resolves again and never sends the request again.
     ConnectUnknown,
@@ -154,7 +157,13 @@ fn proven<T: serde::de::DeserializeOwned>(frame: Frame) -> Option<ChatReply<T>> 
     }
 }
 
+/// A refusal `other_app` carries what the window asks with beside its code; any other reply is read as a pair's is.
 pub(crate) fn on_chat_connect(frame: Frame, emit: &impl Fn(IncomingEvt)) {
+    let refusal = frame.payload.get("error").and_then(|_| serde_json::from_value::<ChatRefusal>(frame.payload.clone()).ok());
+    if refusal.and_then(|r| r.code) == Some(ChatCode::OtherApp) {
+        emit(IncomingEvt::Chat(ChatEvt::OtherApp(serde_json::from_value(frame.payload).unwrap_or_default())));
+        return;
+    }
     emit(IncomingEvt::Chat(match proven(frame) {
         Some(reply) => ChatEvt::Connect { reply },
         None => ChatEvt::ConnectUnknown,

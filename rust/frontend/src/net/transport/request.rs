@@ -354,10 +354,11 @@ pub enum OutgoingReq {
     /// gets no event, and the owner asks again at `Connected`.
     ChatFile { req: sot_protocol::ops::ChatFileReq },
     /// The chat's setup, a window's alone. `ChatConnect` carries the three tokens and is written on one connection at
-    /// most (it may have been saved, so no later connection repeats it); its `Debug` prints no token byte (`ChatToken`).
+    /// most (it may have been saved, so no later connection repeats it); its `Debug` prints no token byte (`ChatToken`);
+    /// `replace_app` is the person's word to replace the Slack app the workspace runs with now (sent only when true).
     /// `ChatWorkspaces` and `ChatChannels` are reads. `ChatPair` is written on one connection at most; no channel unpairs
     /// the row. A `workspace` is sent only when it is `Some` (none: `chat.toml`'s, as an older daemon has only that one).
-    ChatConnect { bot_token: sot_protocol::ops::ChatToken, user_token: sot_protocol::ops::ChatToken, app_token: sot_protocol::ops::ChatToken },
+    ChatConnect { bot_token: sot_protocol::ops::ChatToken, user_token: sot_protocol::ops::ChatToken, app_token: sot_protocol::ops::ChatToken, replace_app: bool },
     ChatWorkspaces,
     ChatChannels { workspace: Option<String> },
     ChatPair { row: String, workspace: Option<String>, channel: Option<sot_protocol::ops::ChatChannel> },
@@ -571,8 +572,8 @@ pub(super) async fn send_request<W: AsyncWrite + Unpin>(
             let kind = PendingKind::ChatFile { req: req.clone() };
             send_chat(&mut tx, pending, id, op::CHAT_FILE, req, Some(kind)).await?
         }
-        OutgoingReq::ChatConnect { bot_token, user_token, app_token } => {
-            let req = sot_protocol::ops::ChatConnectReq { bot_token, user_token: Some(user_token), app_token };
+        OutgoingReq::ChatConnect { bot_token, user_token, app_token, replace_app } => {
+            let req = sot_protocol::ops::ChatConnectReq { bot_token, user_token: Some(user_token), app_token, replace_app };
             send_chat(&mut tx, pending, id, op::CHAT_CONNECT, req, Some(PendingKind::ChatConnect)).await?
         }
         OutgoingReq::ChatWorkspaces => {

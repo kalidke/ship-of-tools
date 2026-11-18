@@ -13,7 +13,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use anyhow::Result;
-use sot_chat::api::{Api, ApiError, Channel, Identified, JoinOutcome, TOKEN_REFUSALS};
+use sot_chat::api::{Api, ApiError, BotApp, Channel, Identified, JoinOutcome, TOKEN_REFUSALS};
 use sot_chat::config::{self, ConfigError, PairError, Secrets, Writers};
 use sot_chat::http::{Http, Secret};
 use sot_chat::service::{Service, APP_TOKEN_REFUSED, BOT_TOKEN_REFUSED, WRONG_APP};
@@ -21,31 +21,34 @@ use sot_chat::socket::SocketError;
 use sot_platform::host::env::Env;
 use sot_protocol::chat::Ts;
 use sot_protocol::ops::{
-    op, ChatChannel, ChatChannelInfo, ChatChannelsReq, ChatChannelsRes, ChatCode, ChatConnectReq, ChatConnectRes, ChatPairReq,
-    ChatPairRes, ChatUnconfigured, ChatUnread, ChatWorkspacesReq, ChatWorkspacesRes, MAX_WATCHED, MAX_WORKSPACES,
+    op, ChatChannel, ChatChannelInfo, ChatChannelsReq, ChatChannelsRes, ChatCode, ChatConnectReq, ChatConnectRes, ChatOtherApp,
+    ChatPairReq, ChatPairRes, ChatUnconfigured, ChatUnread, ChatWorkspacesReq, ChatWorkspacesRes, MAX_WATCHED, MAX_WORKSPACES,
 };
 use sot_protocol::reply::HandlerOutput;
 
-use super::ops::{code_of, decode, refuse, reply};
+use super::ops::{code_of, decode, refuse, refuse_with, reply};
 use super::{canon_of, is_hub, Chat, Status};
 use crate::rows::Workspaces;
 
 type Checked<T, E> = Pin<Box<dyn Future<Output = Result<T, E>> + Send>>;
 
 /// The connect's Slack checks: the bot token's identity with no workspace expected (and the user token's, by the same
-/// `identify`), then the app token's one `apps.connections.open`. The product's reach Slack ([`Verifier::product`]); a test's reach the fake.
+/// `identify`), then the app token's one `apps.connections.open`, and, only when the workspace runs with a known Slack app
+/// and the request does not say to replace it, the bot's app (`bots.info` under the bot token, for the bot's id). The
+/// product's reach Slack ([`Verifier::product`]); a test's reach the fake.
 pub(crate) struct Verifier {
     pub(crate) identify: Box<dyn Fn(Secret) -> Checked<Identified, ApiError> + Send + Sync>,
     pub(crate) app: Box<dyn Fn(Secret) -> Checked<(), SocketError> + Send + Sync>,
+    pub(crate) bot_app: Box<dyn Fn(Secret, String) -> Checked<BotApp, ApiError> + Send + Sync>,
 }
 
 impl Verifier {
-    /// `api::identify` and `socket::check_app_token` through one client, made at the first check, so every connect's
-    /// calls share its bound on operations at once (`http::MAX_OPERATIONS`).
+    /// `api::identify`, `socket::check_app_token` and `api::bot_app_of` through one client, made at the first check, so
+    /// every connect's calls share its bound on operations at once (`http::MAX_OPERATIONS`).
     pub(crate) fn product() -> Verifier {
         let client = Arc::new(std::sync::OnceLock::new());
         let one = move || client.get_or_init(Http::new).clone();
-        let other = one.clone();
+        let (other, third) = (one.clone(), one.clone());
         Verifier {
             identify: Box::new(move |bot| {
                 let http = one();
@@ -55,14 +58,19 @@ impl Verifier {
                 let http = other();
                 Box::pin(async move { sot_chat::socket::check_app_token(&http.map_err(SocketError::Http)?, app).await })
             }),
+            bot_app: Box::new(move |token, bot| {
+                let http = third();
+                Box::pin(async move { sot_chat::api::bot_app_of(&http.map_err(ApiError::Http)?, token, &bot).await })
+            }),
         }
     }
 
-    /// Both checks against the fake Slack's base.
+    /// Every check against the fake Slack's base.
     #[cfg(test)]
     pub(crate) fn at(fake: &sot_chat::fake_slack::FakeSlack) -> Verifier {
         let (http, base) = (fake.http(), fake.url("slack.com", "/api/"));
         let (h, b) = (http.clone(), base.clone());
+        let (h3, b3) = (http.clone(), base.clone());
         Verifier {
             identify: Box::new(move |bot| {
                 let (http, base) = (h.clone(), b.clone());
@@ -72,13 +80,21 @@ impl Verifier {
                 let (http, base) = (http.clone(), base.clone());
                 Box::pin(async move { sot_chat::socket::check_app_token_for_test(&http, app, &base).await })
             }),
+            bot_app: Box::new(move |token, bot| {
+                let (http, base) = (h3.clone(), b3.clone());
+                Box::pin(async move { sot_chat::api::bot_app_of_for_test(&http, token, &bot, base).await })
+            }),
         }
     }
 
     /// Checks that never reach Slack, for a chat no test connects.
     #[cfg(test)]
     pub(crate) fn none() -> Verifier {
-        Verifier { identify: Box::new(|_| Box::pin(async { Err(ApiError::Closed) })), app: Box::new(|_| Box::pin(async { Err(SocketError::BadRequest) })) }
+        Verifier {
+            identify: Box::new(|_| Box::pin(async { Err(ApiError::Closed) })),
+            app: Box::new(|_| Box::pin(async { Err(SocketError::BadRequest) })),
+            bot_app: Box::new(|_, _| Box::pin(async { Err(ApiError::Closed) })),
+        }
     }
 }
 
@@ -96,9 +112,10 @@ pub(crate) fn unconfigured(status: Status) -> Option<ChatUnconfigured> {
     }
 }
 
-/// `chat.connect`: three tokens checked with Slack, saved, and the chat reloaded from its files. The order and its codes
-/// are `rust/chat/CLAUDE.md` guarantee 31's. Nothing here logs on the blocking pool: the writes answer their reason as a
-/// value, and this task logs it.
+/// `chat.connect`: three tokens checked with Slack, saved, and the chat reloaded from its files; tokens of another Slack
+/// app than the one their workspace runs with now are refused `other_app`, nothing written, unless the request says
+/// `replace_app`. The order and its codes are `rust/chat/CLAUDE.md` guarantee 31's. Nothing here logs on the blocking
+/// pool: the writes answer their reason as a value, and this task logs it.
 pub(crate) async fn connect(req_id: u64, payload: serde_json::Value, chat: &Arc<Chat>, rows: &Workspaces, window: bool) -> Result<HandlerOutput> {
     const NAME: &str = op::CHAT_CONNECT;
     let req = match (window, serde_json::from_value::<ChatConnectReq>(payload)) {
@@ -117,10 +134,11 @@ pub(crate) async fn connect(req_id: u64, payload: serde_json::Value, chat: &Arc<
     let Ok(bot) = config::bot_token(req.bot_token.expose()) else { return Ok(refuse(req_id, NAME, ChatCode::BotTokenRefused)) };
     let Ok(user) = config::user_token(user_token.expose()) else { return Ok(refuse(req_id, NAME, ChatCode::UserTokenRefused)) };
     let Ok(app) = config::app_token(req.app_token.expose()) else { return Ok(refuse(req_id, NAME, ChatCode::AppTokenRefused)) };
+    let replace = req.replace_app;
     drop(req);
     // Only Slack's answers that name the token refuse it; a rate limit, an outage or a transport failure is `failed`.
-    let (workspace, name) = match (chat.verify.identify)(bot.clone()).await {
-        Ok(id) => (id.workspace, id.name),
+    let (workspace, name, bot_id) = match (chat.verify.identify)(bot.clone()).await {
+        Ok(id) => (id.workspace, id.name, id.own.bot_id),
         Err(ApiError::Slack(code)) if TOKEN_REFUSALS.contains(&code.as_str()) => return Ok(refuse(req_id, NAME, ChatCode::BotTokenRefused)),
         Err(e) => {
             tracing::warn!(code = e.code(), "project chat: a connect could not check the bot token");
@@ -145,10 +163,32 @@ pub(crate) async fn connect(req_id: u64, payload: serde_json::Value, chat: &Arc<
             return Ok(refuse(req_id, NAME, ChatCode::Failed));
         }
     }
+    // The Slack app the tokens are for, asked only when the workspace runs with a known one they could replace unasked.
+    // Not known (no bot id, any failure of the call), nothing is asked: the connect fails open, as the listener's check does.
+    let new_app = match (replace, chat.connected_app(&workspace), bot_id) {
+        (false, Some(_), Some(bot_id)) => match (chat.verify.bot_app)(bot.clone(), bot_id).await {
+            Ok(a) => Some(a),
+            Err(e) => {
+                tracing::warn!(code = e.code(), "project chat: a connect could not tell its tokens' Slack app, so it asks nothing");
+                None
+            }
+        },
+        _ => None,
+    };
     let held = chat.setup().await;
     // A retirement that began while Slack was asked: nothing is written for a daemon that is going away.
     if chat.closed_now() {
         return Ok(refuse(req_id, NAME, ChatCode::Unavailable));
+    }
+    // Under the lock, against the app the workspace runs with now: another app's tokens write nothing and restart nothing,
+    // and the refusal says what a window asks with.
+    if let (Some(now), Some(new)) = (chat.connected_app(&workspace), new_app) {
+        if now.id != new.id {
+            let channels = Some(u32::try_from(mapped_channels(chat, &workspace).len()).unwrap_or(u32::MAX));
+            let body = ChatOtherApp { workspace: Some(workspace.clone()), name, app_id: Some(now.id), app_name: now.name, new_app_name: new.name, channels };
+            tracing::info!(workspace, "project chat: a connect's tokens are another Slack app's than the connected one; nothing was saved");
+            return refuse_with(req_id, NAME, ChatCode::OtherApp, &body);
+        }
     }
     let (env, named) = (chat.env.clone(), workspace.clone());
     let saved = tokio::task::spawn_blocking(move || save_tokens(&env, &named, &bot, &user, &app)).await;

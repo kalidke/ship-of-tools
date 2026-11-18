@@ -199,6 +199,9 @@ pub(in crate::ui) enum Previewed<'a> {
 /// The status line's words for `chat.post_file` with nothing in the preview, or only the window's start-up picture.
 pub(super) const NO_FILE_WORDS: &str = "not posted: the preview shows no file";
 
+/// The status line's words for a connect refused `other_app` after its step was closed.
+pub(super) const NOT_REPLACED_WORDS: &str = "Slack not connected: those Slack codes belong to a different Slack app than the one connected now, and nothing was changed; to choose between them, choose Connect a Slack workspace in the channel list and paste them again";
+
 /// The status line's words for `chat.post_file` over a picture opened from the chat: what the preview shows, why it is not
 /// posted, and what to do.
 pub(super) fn chat_picture_words(key: &str) -> String {
@@ -508,6 +511,16 @@ impl ChatDrawer {
                 }
                 self.rows.ask_again(host);
                 outs
+            }
+            // Nothing was saved, so the row is not resolved again: the connecting step asks the person, and with none (closed
+            // while it was connecting) the status line says nothing changed.
+            ChatEvt::OtherApp(other) => {
+                self.connect_sent = self.connect_sent.take().filter(|h| h != host);
+                match self.modal.as_mut().map(|m| &mut m.kind) {
+                    Some(Kind::Connect(c)) if c.host() == host && c.connecting() => c.asked(other),
+                    _ => self.notice = Some(NOT_REPLACED_WORDS.into()),
+                }
+                Vec::new()
             }
             ChatEvt::ConnectUnknown => {
                 self.connect_sent = self.connect_sent.take().filter(|h| h != host);

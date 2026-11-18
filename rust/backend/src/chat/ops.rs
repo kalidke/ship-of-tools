@@ -32,6 +32,15 @@ pub(super) fn refuse(req_id: u64, op: &str, code: ChatCode) -> HandlerOutput {
     vec![(Frame::res(req_id, op, payload), None)]
 }
 
+/// A refusal that says more than its code: `body`'s fields beside the fixed text and the code.
+pub(super) fn refuse_with<T: serde::Serialize>(req_id: u64, op: &str, code: ChatCode, body: &T) -> Result<HandlerOutput> {
+    let mut payload = serde_json::to_value(body)?;
+    let fields = payload.as_object_mut().ok_or_else(|| anyhow::anyhow!("a refusal's body is no object"))?;
+    fields.insert("error".into(), code.text().into());
+    fields.insert("code".into(), serde_json::to_value(code)?);
+    Ok(vec![(Frame::res(req_id, op, payload), None)])
+}
+
 pub(super) fn reply<T: serde::Serialize>(req_id: u64, op: &str, body: &T) -> Result<HandlerOutput> {
     Ok(vec![(Frame::res(req_id, op, serde_json::to_value(body)?), None)])
 }

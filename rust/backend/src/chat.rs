@@ -705,6 +705,12 @@ impl<L: Listener> Chat<L> {
         self.unit(workspace)?.service()
     }
 
+    /// The Slack app `workspace` runs with now, as `bots.info` gave it at the start: `None` while it does not run, once it
+    /// has ended on its own (a token Slack refused, another app's events), and when its start could not tell the app.
+    pub(crate) fn connected_app(&self, workspace: &str) -> Option<BotApp> {
+        self.service_of(workspace).filter(|s| !s.ended()).and_then(|s| s.app())
+    }
+
     /// The default workspace's running service.
     #[cfg(test)]
     fn service(&self) -> Option<Arc<L>> {

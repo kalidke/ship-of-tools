@@ -599,6 +599,34 @@ pub(crate) async fn identify_at(http: &Http, bot: Secret, base: String) -> Resul
     })
 }
 
+/// The Slack app of a bot token no workspace is configured with yet: one `bots.info` for `bot` (the bot's id as `identify`
+/// gave it) under the token, by the read rules, answered as [`Api::bot_app`] answers (`BadRequest`, unsent, for a `bot`
+/// that is no id). The setup asks it when a connect's tokens may be another app's than the one connected.
+pub async fn bot_app_of(http: &Http, token: Secret, bot: &str) -> Result<BotApp, ApiError> {
+    bot_app_at(http, token, bot, BASE.into()).await
+}
+
+/// `bot_app_of` against the fixture's base, for another crate's tests, under the same features as `identify_for_test`.
+#[cfg(any(test, feature = "test-support"))]
+pub async fn bot_app_of_for_test(http: &Http, token: Secret, bot: &str, base: String) -> Result<BotApp, ApiError> {
+    bot_app_at(http, token, bot, base).await
+}
+
+pub(crate) async fn bot_app_at(http: &Http, token: Secret, bot: &str, base: String) -> Result<BotApp, ApiError> {
+    if !valid_id(bot) {
+        return Err(ApiError::BadRequest);
+    }
+    let api = Api::build(http.clone(), token.clone(), String::new(), base);
+    bot_app_in(&api.read_as(token, "bots.info", &[("bot", bot.into())], MAX_BODY).await?)
+}
+
+/// A `bots.info` answer's app: `bot.app_id`, required and an id (`Malformed` otherwise), and `bot.name`, read as a
+/// workspace's name is.
+fn bot_app_in(v: &Value) -> Result<BotApp, ApiError> {
+    let app = v.pointer("/bot/app_id").and_then(Value::as_str).filter(|a| valid_id(a)).ok_or(ApiError::Malformed)?;
+    Ok(BotApp { id: app.into(), name: v.get("bot").and_then(|b| name_at(b, "name")) })
+}
+
 impl Api {
     /// `workspace` is the Slack team id the token must belong to.
     pub fn new(http: Http, token: Secret, workspace: &str) -> Result<Api, ApiError> {
@@ -750,9 +778,7 @@ impl Api {
     /// a bot with none). Its failure, any code, only leaves the app unknown and ends nothing: the check it serves fails open.
     pub async fn bot_app(&self) -> Result<BotApp, ApiError> {
         let bot = self.identity()?.bot_id.ok_or(ApiError::NoIdentity)?;
-        let v = self.read_as(self.token.clone(), "bots.info", &[("bot", bot)], MAX_BODY).await?;
-        let app = v.pointer("/bot/app_id").and_then(Value::as_str).filter(|a| valid_id(a)).ok_or(ApiError::Malformed)?;
-        Ok(BotApp { id: app.into(), name: v.get("bot").and_then(|b| name_at(b, "name")) })
+        bot_app_in(&self.read_as(self.token.clone(), "bots.info", &[("bot", bot)], MAX_BODY).await?)
     }
 
     /// The bot identity, which history needs. The token must belong to the configured workspace.

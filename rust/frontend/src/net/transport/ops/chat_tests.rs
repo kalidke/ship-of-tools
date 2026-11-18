@@ -145,7 +145,7 @@ fn marker_in(text: &str) -> bool {
 #[tokio::test]
 async fn a_connect_formats_and_logs_no_token_byte() {
     let log = sot_platform::test_log::capture();
-    let req = OutgoingReq::ChatConnect { bot_token: token("xoxb"), user_token: token("xoxp"), app_token: token("xapp") };
+    let req = OutgoingReq::ChatConnect { bot_token: token("xoxb"), user_token: token("xoxp"), app_token: token("xapp"), replace_app: false };
     assert!(!marker_in(&format!("{req:?}")), "the request's Debug holds a token");
     let mut wire = Vec::new();
     let mut pending = HashMap::new();
@@ -160,6 +160,7 @@ async fn a_connect_formats_and_logs_no_token_byte() {
         serde_json::json!({ "error": "x", "code": "user_token_refused" }),
         serde_json::json!({ "error": "handler failed", "code": "handler_error" }),
         serde_json::json!({ "error": "unknown op: chat.connect" }),
+        serde_json::json!({ "error": "x", "code": "other_app", "workspace": "T1", "app_name": "Ship of Tools (lab-user)", "channels": 2 }),
     ];
     for (n, reply) in replies.into_iter().enumerate() {
         let mut pending = HashMap::from([(1, PendingKind::ChatConnect)]);
@@ -184,7 +185,7 @@ async fn a_connect_or_pair_without_its_reply_is_unknown_once_and_never_written_a
     }
     let (out_tx, out_rx) = outgoing_channel();
     let mut outbox = Outbox::new(out_rx);
-    out_tx.send(OutgoingReq::ChatConnect { bot_token: token("xoxb"), user_token: token("xoxp"), app_token: token("xapp") }).unwrap();
+    out_tx.send(OutgoingReq::ChatConnect { bot_token: token("xoxb"), user_token: token("xoxp"), app_token: token("xapp"), replace_app: false }).unwrap();
     out_tx.send(OutgoingReq::ChatPair { row: "r2".into(), workspace: None, channel: None }).unwrap();
     out_tx.send(OutgoingReq::ChatChannels { workspace: Some("T2".into()) }).unwrap();
     out_tx.send(OutgoingReq::ChatWorkspaces).unwrap();
@@ -252,6 +253,18 @@ fn the_setup_replies_carry_their_request_and_refusal() {
     assert_eq!(shown[9], "Chat(Channels { workspace: Some(\"T2\"), reply: Refused(NoSuchChannel) })", "a refused list still names its workspace");
     assert_eq!(shown[10], "Chat(Workspaces { reply: Unsupported })", "an older daemon serves one workspace");
     assert!(shown[11].contains("ChatConnectRes { workspace: \"T2\", name: Some(\"Beta Lab\") }"), "{}", shown[11]);
+}
+
+/// A connect refused `other_app` is its own event, carrying the refusal's body: what the window asks the person with.
+/// Nothing was saved, so it is never the unknown outcome an older window takes the code for.
+#[test]
+fn a_connect_refused_for_another_slack_app_carries_what_to_ask_with() {
+    let mut pending = HashMap::from([(1, PendingKind::ChatConnect), (2, PendingKind::ChatConnect)]);
+    let asked = serde_json::json!({ "error": "x", "code": "other_app", "workspace": "T1", "name": "Alpha Lab", "app_id": "A0OLD", "app_name": "Ship of Tools (lab-user)", "channels": 2 });
+    let shown = events(&mut pending, vec![Frame::res(1, op::CHAT_CONNECT, asked), Frame::res(2, op::CHAT_CONNECT, serde_json::json!({ "error": "x", "code": "other_app" }))]);
+    let body = "ChatOtherApp { workspace: Some(\"T1\"), name: Some(\"Alpha Lab\"), app_id: Some(\"A0OLD\"), app_name: Some(\"Ship of Tools (lab-user)\"), new_app_name: None, channels: Some(2) }";
+    assert_eq!(shown[0], format!("Chat(OtherApp({body}))"));
+    assert_eq!(shown[1], "Chat(OtherApp(ChatOtherApp { workspace: None, name: None, app_id: None, app_name: None, new_app_name: None, channels: None }))", "a bare refusal asks with nothing known");
 }
 
 fn file_req(variant: &str) -> ChatFileReq {

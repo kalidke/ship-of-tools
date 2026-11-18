@@ -123,12 +123,28 @@ fn every_request_reply_and_event_keeps_its_shape() {
         json!({"state": "unconfigured", "reason": "tokens_refused"}),
     );
     pinned(
-        ChatConnectReq { bot_token: token("xoxb-", 2), user_token: None, app_token: token("xapp-", 2) },
+        ChatConnectReq { bot_token: token("xoxb-", 2), user_token: None, app_token: token("xapp-", 2), replace_app: false },
         json!({"bot_token": "xoxb-a1a1", "app_token": "xapp-a1a1"}),
     );
     pinned(
-        ChatConnectReq { bot_token: token("xoxb-", 2), user_token: Some(token("xoxp-", 2)), app_token: token("xapp-", 2) },
+        ChatConnectReq { bot_token: token("xoxb-", 2), user_token: Some(token("xoxp-", 2)), app_token: token("xapp-", 2), replace_app: false },
         json!({"bot_token": "xoxb-a1a1", "user_token": "xoxp-a1a1", "app_token": "xapp-a1a1"}),
+    );
+    pinned(
+        ChatConnectReq { bot_token: token("xoxb-", 2), user_token: Some(token("xoxp-", 2)), app_token: token("xapp-", 2), replace_app: true },
+        json!({"bot_token": "xoxb-a1a1", "user_token": "xoxp-a1a1", "app_token": "xapp-a1a1", "replace_app": true}),
+    );
+    pinned(ChatOtherApp::default(), json!({}));
+    pinned(
+        ChatOtherApp {
+            workspace: Some("T1".into()),
+            name: Some("Alpha Lab".into()),
+            app_id: Some("A0OLD".into()),
+            app_name: Some("Ship of Tools (lab-user)".into()),
+            new_app_name: Some("Ship of Tools (lab-user) 2".into()),
+            channels: Some(3),
+        },
+        json!({"workspace": "T1", "name": "Alpha Lab", "app_id": "A0OLD", "app_name": "Ship of Tools (lab-user)", "new_app_name": "Ship of Tools (lab-user) 2", "channels": 3}),
     );
     pinned(ChatConnectRes { workspace: "T1".into(), name: None }, json!({"workspace": "T1"}));
     pinned(ChatConnectRes { workspace: "T1".into(), name: Some("Alpha Lab".into()) }, json!({"workspace": "T1", "name": "Alpha Lab"}));
@@ -283,7 +299,7 @@ fn a_pair_with_no_channel_key_unpairs() {
 fn a_connect_request_formats_no_token_byte() {
     let (bot, app) = (token("xoxb-", 20), token("xapp-", 20));
     let user = token("xoxp-", 20);
-    let req = ChatConnectReq { bot_token: bot.clone(), user_token: Some(user.clone()), app_token: app.clone() };
+    let req = ChatConnectReq { bot_token: bot.clone(), user_token: Some(user.clone()), app_token: app.clone(), replace_app: true };
     for shown in [format!("{req:?}"), format!("{req:#?}"), format!("{bot:?}"), format!("{:?}", Some(&app)), format!("{user:?}")] {
         assert!(!shown.contains("a1a1") && !shown.contains("xoxb") && !shown.contains("xoxp") && !shown.contains("xapp"), "a Debug form holds token bytes");
         assert!(shown.contains("<redacted>"), "a Debug form says the token is redacted");
@@ -345,6 +361,46 @@ fn a_connect_carries_a_user_token_an_older_payload_lacks() {
     let user = |n: usize| json!({"bot_token": "b", "user_token": "u".repeat(n), "app_token": "a"});
     assert!(serde_json::from_value::<ChatConnectReq>(user(MAX_TOKEN)).is_ok());
     assert!(serde_json::from_value::<ChatConnectReq>(user(MAX_TOKEN + 1)).is_err());
+}
+
+/// CHAT-CONNECT-MAKES-A-NEW-APP: a connect that would replace the connected Slack app is asked about first. A request with
+/// no `replace_app` (an older window's) decodes as false, which is not written, and an older daemon's reader ignores the
+/// field; the refusal `other_app` reads as `other` to an older window, and its body decodes beside `error` and `code`, a bad
+/// field read as none and an older daemon's bare refusal as nothing known.
+#[test]
+fn a_connect_that_would_replace_the_connected_app_asks_first_and_older_shapes_still_decode() {
+    let old: ChatConnectReq = serde_json::from_value(json!({"bot_token": "b", "user_token": "u", "app_token": "a"})).unwrap();
+    assert!(!old.replace_app);
+    assert!(!serde_json::to_string(&old).unwrap().contains("replace_app"));
+    #[derive(Debug, Deserialize)]
+    struct Before {
+        #[allow(dead_code)]
+        bot_token: ChatToken,
+    }
+    let newer = ChatConnectReq { replace_app: true, ..old };
+    assert!(serde_json::from_value::<Before>(serde_json::to_value(&newer).unwrap()).is_ok(), "an older daemon reads a newer window's connect");
+    let refusal = json!({"error": ChatCode::OtherApp.text(), "code": "other_app", "workspace": "T1", "app_name": "Ship of Tools (lab-user)", "channels": 2});
+    assert_eq!(serde_json::from_value::<ChatRefusal>(refusal.clone()).unwrap().code, Some(ChatCode::OtherApp));
+    #[derive(Debug, PartialEq, Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    enum Code {
+        Failed,
+        #[serde(other)]
+        Other,
+    }
+    #[derive(Debug, Deserialize)]
+    struct OlderRefusal {
+        code: Option<Code>,
+    }
+    assert_eq!(serde_json::from_value::<OlderRefusal>(refusal.clone()).unwrap().code, Some(Code::Other), "an older window's reading");
+    let body: ChatOtherApp = serde_json::from_value(refusal).unwrap();
+    assert_eq!(body, ChatOtherApp { workspace: Some("T1".into()), app_name: Some("Ship of Tools (lab-user)".into()), channels: Some(2), ..ChatOtherApp::default() });
+    let bad = json!({"error": "e", "code": "other_app", "workspace": "T 1", "app_id": 7, "app_name": "", "new_app_name": "n".repeat(MAX_NAME + 1), "channels": "two"});
+    assert_eq!(serde_json::from_value::<ChatOtherApp>(bad).unwrap(), ChatOtherApp::default(), "a bad field is none");
+    assert_eq!(serde_json::from_value::<ChatOtherApp>(json!({"error": "unknown op: chat.connect"})).unwrap(), ChatOtherApp::default());
+    for (n, want) in [(json!(0), Some(0)), (json!(u64::from(u32::MAX) + 1), None), (json!(-1), None), (json!(1.5), None)] {
+        assert_eq!(serde_json::from_value::<ChatOtherApp>(json!({"channels": n})).unwrap().channels, want, "{n}");
+    }
 }
 
 #[test]
@@ -576,13 +632,14 @@ fn every_code_has_its_one_text() {
         (ChatCode::NotAFile, "the file is not a readable file in the row's folder"),
         (ChatCode::TooLarge, "the file is larger than the chat carries"),
         (ChatCode::NotAnImage, "that file is not a picture the chat can show"),
+        (ChatCode::OtherApp, "these Slack codes belong to a different Slack app than the one this Slack workspace is connected with now, so nothing was changed: to keep every channel as it is, paste the codes of the Slack app connected now instead; to connect the new Slack app in its place, update Ship of Tools on this computer first"),
         (ChatCode::Failed, "the chat request failed"),
         (ChatCode::Other, "the chat request failed"),
     ];
     for (code, words) in table {
         assert_eq!(code.text(), words, "{code:?}");
     }
-    for code in ["bot_token_refused", "app_token_refused", "user_token_refused", "no_user_token", "not_a_member", "other_workspace", "not_in_channel", "channel_taken", "not_saved", "not_a_file", "too_large", "not_an_image", "too_many_workspaces", "no_such_channel"] {
+    for code in ["bot_token_refused", "app_token_refused", "user_token_refused", "no_user_token", "not_a_member", "other_workspace", "not_in_channel", "channel_taken", "not_saved", "not_a_file", "too_large", "not_an_image", "too_many_workspaces", "no_such_channel", "other_app"] {
         let r: ChatRefusal = serde_json::from_value(json!({"error": "text", "code": code})).unwrap();
         assert_ne!(r.code, Some(ChatCode::Other), "{code} is a code of this reader");
     }

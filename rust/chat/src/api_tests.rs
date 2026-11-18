@@ -3185,6 +3185,34 @@ async fn the_bots_app_is_read_at_start_and_a_failure_leaves_it_unknown() {
     .await;
 }
 
+/// The setup's question of a connect's bot token: one `bots.info` for the bot id given, under that token, read as the
+/// service's own is (the app and its bot's name, `Malformed` with no app id, Slack's refusal as its code), and an id that
+/// is no id asks nothing.
+#[tokio::test]
+async fn a_connects_bot_token_is_asked_its_app_once_under_its_own_token() {
+    bounded(async {
+        let fake = FakeSlack::start(Identity::Trusted, move |seen, _| match (seen.path().as_str(), seen.param("bot").as_deref()) {
+            ("/api/bots.info", Some("B0NEW")) => Reply::json(&json!({"ok": true, "bot": {"id": "B0NEW", "app_id": "A0NEW", "name": "Ship of Tools (lab-user)"}})),
+            ("/api/bots.info", Some("B0BARE")) => Reply::json(&json!({"ok": true, "bot": {"id": "B0BARE"}})),
+            _ => Reply::json(&json!({"ok": false, "error": "bot_not_found"})),
+        })
+        .await;
+        let (base, http) = (fake.url("slack.com", "/api/"), fake.http());
+        let ask = |bot: &'static str| crate::api::bot_app_of_for_test(&http, Secret::new(TOKEN), bot, base.clone());
+        assert_eq!(ask("B0NEW").await, Ok(crate::api::BotApp { id: "A0NEW".into(), name: Some("Ship of Tools (lab-user)".into()) }));
+        let asked: Vec<Seen> = fake.seen().into_iter().filter(|s| s.path() == "/api/bots.info").collect();
+        assert_eq!(asked.len(), 1);
+        assert_eq!(asked[0].authorization.as_deref(), Some(&*format!("Bearer {TOKEN}")));
+        assert_eq!(ask("B0BARE").await, Err(ApiError::Malformed));
+        assert_eq!(ask("B0GONE").await, Err(ApiError::Slack("bot_not_found".into())));
+        let before = calls(&fake, "bots.info");
+        assert_eq!(ask("not an id").await, Err(ApiError::BadRequest));
+        assert_eq!(calls(&fake, "bots.info"), before, "a bot id that is no id was asked about");
+        fake.shutdown().await;
+    })
+    .await;
+}
+
 /// L5 rule 3: `auth.test`'s `team` is the workspace's name, kept by the client and answered by `identify`; absent, not a
 /// string, empty, past `MAX_NAME`, or nothing but a control character reads as no name.
 #[tokio::test]

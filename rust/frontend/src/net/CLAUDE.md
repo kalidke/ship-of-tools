@@ -104,6 +104,9 @@ through the channel types below.
   connection that ends first, a `handler_error` and an answer that does not parse give `ChatEvt::ConnectUnknown` or
   `PairUnknown { row, channel }` once, never a refusal, and the owner resolves again and never sends it again (tests
   `a_connect_or_pair_without_its_reply_is_unknown_once_and_never_written_again`, `the_setup_replies_carry_their_request_and_refusal`).
+  `ChatConnect`'s `replace_app` is sent only when true (the person's word to replace the Slack app the workspace runs with
+  now), and a connect refused `other_app` is `ChatEvt::OtherApp(ChatOtherApp)`, the refusal's body (all of it none when it
+  does not parse), never `ConnectUnknown`, since nothing was saved (`a_connect_refused_for_another_slack_app_carries_what_to_ask_with`).
   `ChatFile` asks for one picture of the target's channel (`chat.file`) and is the one chat reply that takes the frame's
   blob: `ChatEvt::File { req, reply }`, `reply` `Done(ChatPicture { mime, bytes })` only when the blob is the length the
   reply declares and within the request's own variant's bound (`MAX_THUMB` for a thumbnail, `MAX_CHAT_FILE` for an

@@ -110,6 +110,9 @@ pub enum ChatCode {
     TooLarge,
     /// A file is not one of the pictures the chat shows, or Slack answered something that is not a picture.
     NotAnImage,
+    /// A `chat.connect` without `replace_app` whose bot token is another Slack app's than the one its workspace runs with
+    /// now: nothing was saved, and the refusal's body says what a window asks with (`ChatOtherApp`).
+    OtherApp,
     Failed,
     #[serde(other)]
     Other,
@@ -141,6 +144,7 @@ impl ChatCode {
             ChatCode::NotAFile => "the file is not a readable file in the row's folder",
             ChatCode::TooLarge => "the file is larger than the chat carries",
             ChatCode::NotAnImage => "that file is not a picture the chat can show",
+            ChatCode::OtherApp => "these Slack codes belong to a different Slack app than the one this Slack workspace is connected with now, so nothing was changed: to keep every channel as it is, paste the codes of the Slack app connected now instead; to connect the new Slack app in its place, update Ship of Tools on this computer first",
             ChatCode::Failed | ChatCode::Other => "the chat request failed",
         }
     }
@@ -243,12 +247,43 @@ impl ChatToken {
 
 /// `chat.connect`: the three tokens of a Slack app (`xoxb-`, `xoxp-` and `xapp-`); the daemon checks them all before it
 /// saves any. A request with no `user_token` (an older window's) decodes with `None` and is refused `bad_request`.
+/// `replace_app`: the person chose to replace the Slack app the workspace runs with now by the one these tokens are for (the
+/// window's answer to `other_app`); defaulted and left out when false, so an older window's connect is asked about, and an
+/// older daemon, which ignores the field, replaces as it always did.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChatConnectReq {
     pub bot_token: ChatToken,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user_token: Option<ChatToken>,
     pub app_token: ChatToken,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub replace_app: bool,
+}
+
+/// The rest of a `chat.connect` refused `other_app`, beside its `error` and `code`: the workspace the tokens are for
+/// (`workspace`, and `name`, its name as Slack gave it), the Slack app it runs with now (`app_id`, and `app_name`, the
+/// name Slack gives that app's bot), the name Slack gives the bot of the app the tokens are for (`new_app_name`), and how
+/// many channels the workspace's projects use (`channels`). Each is read as `chat.workspaces`' fields are, a count as a
+/// whole number, so a bad one is none, never a reason to refuse the refusal; an older reader ignores them all.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChatOtherApp {
+    #[serde(default, deserialize_with = "named_id", skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
+    #[serde(default, deserialize_with = "channel_name", skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, deserialize_with = "named_id", skip_serializing_if = "Option::is_none")]
+    pub app_id: Option<String>,
+    #[serde(default, deserialize_with = "channel_name", skip_serializing_if = "Option::is_none")]
+    pub app_name: Option<String>,
+    #[serde(default, deserialize_with = "channel_name", skip_serializing_if = "Option::is_none")]
+    pub new_app_name: Option<String>,
+    #[serde(default, deserialize_with = "count", skip_serializing_if = "Option::is_none")]
+    pub channels: Option<u32>,
+}
+
+/// A count a reply gives for words: a whole number within `u32`; anything else is none.
+fn count<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<u32>, D::Error> {
+    Ok(serde_json::Value::deserialize(d)?.as_u64().and_then(|n| u32::try_from(n).ok()))
 }
 
 /// Reply to `chat.connect`: the Slack workspace the bot token belongs to, and its name as Slack gave it (absent from an
