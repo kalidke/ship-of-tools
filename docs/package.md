@@ -174,7 +174,20 @@ earlier text of the sections above and the integration-test assignment by pass.
 ## State
 
 v0.7.0 is published (2026-11-05), and a plain install moves a computer to it; `docs/UPDATE-AGENT.md` is the one update
-procedure an agent follows, from any 0.6 or 0.7 install. v0.7.1-rc.12 (2026-11-17) is an unpublished draft, cut
+procedure an agent follows, from any 0.6 or 0.7 install. v0.7.1-rc.13 (2026-11-17) is an unpublished draft, cut on
+the maintainer's word in a session's pane once everything built was on `main` (his word that day: a candidate has
+everything, and is the release if it works), and installed by archive by their own sessions on two window computers
+and by the maintaining session on the hub, where the daemon restarted and the rows' open REPLs ended, on his word. It
+carries several Slack workspaces on one hub, one per project, up to 8: a person connects each from the Chat drawer and
+picks a project's channel in any of them, no request crosses workspaces, a reload restarts only the workspaces it
+changes and no workspace's stop holds another's, and the drawer's title names the workspace when the hub serves more
+than one; the Chat drawer's words in plain language; a Socket Mode listener that serves only its own app (an envelope
+of another app ends it unacknowledged, `wrong_app`) and a token Slack refuses by its own code ending the chat's service
+instead of a retry forever (`app_token_refused`, `bot_token_refused`), with the Connect step saying whose token it was;
+a PDF page or a video's poster past the text cap shown whole, up to 64 MiB (a person had seen a zoomed page read
+"binary file" on rc.12); and, after a boot whose rows all started within seconds (seen by a session on the hub), the
+boot's starts begun 3 s apart in the strip's order with a waiting row listed `queued`, and a session start that waits
+up to 40 s for the registry lock. No person's use of it is recorded yet. v0.7.1-rc.12 (2026-11-17) is an unpublished draft, cut
 early on the maintainer's word in a session's pane, because Claude Code 2.1.326 stopped every new Claude leg on a
 question about the folder `--add-dir` adds (the comm folder's agent layer) and a leg cannot answer it: the spawn now
 records that folder's trust beside the row's, under the same declared prefix (agents guarantee 6;
@@ -205,14 +218,7 @@ attach client that keeps reading with input around an attach never sent blind or
 unit no longer restarting forever against another daemon; two parts no test reproduced stay open
 (RELAY-SOCKET-HANG's long wait, KEYS-DROPPED-WHILE-A-ROW-ATTACHES's window warning). rc.4 (2026-11-11) carried the
 preview that follows its row, the pane's copy and the chat drawer's look (rc.3 the drawer; rc.1 and rc.2 selection and
-drawing). `main` carries 0.7.1-rc.13-dev, with what rc.12 does not: a Socket Mode listener serves only its own app (an
-envelope of another app ends it unacknowledged, `wrong_app`), a token Slack refuses by its own code ends the chat's
-service instead of a retry forever (`app_token_refused`, `bot_token_refused`), the daemon turns the chat off with that
-code before a watcher is told, and the window resolves the row again and brings the Connect step, which says whose
-token it was. Several Slack workspaces on one hub, one per project, are built, up to 8, on `main` and in no release
-candidate yet: a person connects each from the Chat drawer and picks a project's channel in any of them, no request
-crosses workspaces, a reload restarts only the workspaces it changes, and the drawer's title names the workspace when
-the hub serves more than one; no person's use of it is recorded. rc.11 carries what the
+drawing). `main` carries 0.7.1-rc.14-dev, with nothing rc.13 does not. rc.11 carries what the
 maintainer asked of the Chat drawer on rc.10 (2026-11-15): Up and Down ease the view to a marked message out of view,
 and Left over an empty draft leaves an open thread, as the nav pane's Left does. The `release/0.6.6` branch is closed to
 all but fixes found in use. A

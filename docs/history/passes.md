@@ -2721,3 +2721,42 @@ the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the sa
 - The records, 2026-11-16 to 2026-11-17: the commits that were records only were b51f05633 (the registry note), 0e7ed06bd
   (with the writers' landing) and cd234e931 (the reader's contract); and this commit, which writes these entries, moves
   CHAT-FIGURES to Closed and brings the package page's State to rc.11 and the landing after it.
+- The landings between rc.12 and rc.13 before 16:00 on 2026-11-17 (the listener's own app and the refused codes, the
+  secrets per workspace, the Chat drawer's words, several workspaces in the daemon and in the window) have no entry
+  here: the session that landed them ended in a reboot of the hub before it wrote them. Their commits and the
+  maintaining session's own notes hold what is known.
+- The rc.13 evening, 2026-11-17, 16:13 to 21:14, one conversation of the maintaining session after the hub's reboot
+  ended the one before it (a gate, two reviews and a builder were lost with it and started again). Times are the
+  hub's clock.
+  - A picture past the text cap (PDF-ZOOM-PAGE-PAST-TEXT-CAP): built before the reboot; scoped gate 134 s; review 22
+    minutes, no blocker and two findings (a picture past 64 MiB fell to the reader again; any non-text output took the
+    larger bound); fix builder 12 minutes; gate again; landed 17:03 as 2289bc8e7; hosted runs passed.
+  - A reload restarts only the workspaces it changes (CHAT-RELOAD-RESTARTS-EVERY-WORKSPACE): built before the reboot.
+    First review 18 minutes, one blocker: the reload waited for every stopping workspace before it started anything,
+    and the commit's own test allowed four times the wait. Fix builder 32 minutes. Its scoped gate passed; the gate on
+    the stack two commits later failed one test once ("the reload went on while the filing was in flight"). A second
+    review, 22 minutes, given that failure, found the cause in the first commit: a unit whose service had ended was
+    kept as running until its owner saw the end. Fix builder 18 minutes, with a test that orders the events and the
+    once-red test run twenty times. The stack's gate ran twice in a row, both passed, and it landed with the title as
+    9297e1824; hosted runs passed.
+  - The drawer's title names the workspace: builder 13 minutes; review 21 minutes, no blocker and four findings (a
+    title cut by characters, not cells; a manual sentence naming the wrong party; a contract's test paths; two rules
+    unpinned); fix builder 8 minutes; landed in the stack above.
+  - A boot's starts (BOOT-STARTS-EVERY-ROW-AT-ONCE, SESSION-START-FAILS-ON-A-HELD-REGISTRY-LOCK): both filed that
+    afternoon from another session's report of three boots; a diagnosis of 45 minutes read the hub's log and wrote the
+    change as a diff; a builder applied it in 8 minutes; review 26 minutes, no blocker, seven findings, six of its
+    eight mutants alive; fix builder 29 minutes, 18 of them a test that hung on a paused clock under a blocking read;
+    gate; landed 20:18 as 2876a7c3f. Neither item is closed: no boot has been seen since.
+  - The strip's hull: a person reported a missing hull under another computer's sessions. A diagnosis of 20 minutes
+    reproduced it (the ship of a computer whose link is down is not drawn) and a builder removed the rule in 5 minutes;
+    it landed as 33d0e161a. The person then found that computer's link had been down, and said a missing hull on a
+    disconnected computer is right; the change was taken back as 4208204da, with the rule's reason in its comment. The
+    landing went in before the person had been asked whether the rule was wanted.
+  - Two hours of the evening, 17:04 to 19:07, were lost to the maintaining session: it put a question to the
+    maintainer in a dialog that held its turn, and two fixes and the diagnosis that finished meanwhile waited for his
+    answer. A question now goes to his queue while the work goes on.
+  - The cut: whole gate on 2876a7c3f, 337 s, passed; hosted runs red once, in one Linux job's setup step, where the
+    runner's download of the graphics packages reached the step's bound before any test ran; that job run again
+    passed, 44 of 44; `scripts/release.sh 0.7.1-rc.13` at 20:47; the release workflow 22 minutes to the draft; two
+    window computers installed it by archive through their own sessions by 21:12 and the hub by 21:14, with a repair
+    run after. The comm matrix had not run when this was written.
