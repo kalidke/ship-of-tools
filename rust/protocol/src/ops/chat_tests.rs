@@ -148,12 +148,15 @@ fn every_request_reply_and_event_keeps_its_shape() {
         ChatWorkspacesRes {
             default: "T1".into(),
             workspaces: vec![
-                ChatWorkspaceInfo { id: "T1".into(), name: Some("Alpha".into()), running: true },
-                ChatWorkspaceInfo { id: "T2".into(), name: None, running: false },
+                ChatWorkspaceInfo { id: "T1".into(), name: Some("Alpha".into()), running: true, app_name: Some("Ship of Tools (lab-user)".into()) },
+                ChatWorkspaceInfo { id: "T2".into(), name: None, running: false, app_name: None },
             ],
         },
-        json!({"default": "T1", "workspaces": [{"id": "T1", "name": "Alpha", "running": true}, {"id": "T2", "running": false}]}),
+        json!({"default": "T1", "workspaces": [{"id": "T1", "name": "Alpha", "running": true, "app_name": "Ship of Tools (lab-user)"}, {"id": "T2", "running": false}]}),
     );
+    // The connected app's name is read as a workspace's name is: one that is not a usable string is none, and the entry stays.
+    let read: ChatWorkspacesRes = serde_json::from_value(json!({"default": "T1", "workspaces": [{"id": "T1", "running": true, "app_name": 7}, {"id": "T2", "running": true, "app_name": ""}]})).unwrap();
+    assert_eq!(read.workspaces.iter().map(|w| (w.id.as_str(), w.app_name.clone())).collect::<Vec<_>>(), [("T1", None), ("T2", None)]);
     pinned(
         ChatChannelsRes {
             channels: vec![ChatChannelInfo { id: channel("C1"), name: "general".into(), private: false, member: true }],
@@ -239,7 +242,7 @@ fn a_workspace_list_past_its_bound_or_with_a_bad_entry_still_decodes() {
     assert_eq!(res.workspaces[0].id, "T0");
     let mixed = json!({"default": "T0", "workspaces": [{"id": "not an id", "running": true}, {"running": true}, 7, {"id": "T1", "name": 5, "running": false}]});
     let res: ChatWorkspacesRes = serde_json::from_value(mixed).unwrap();
-    assert_eq!(res.workspaces, [ChatWorkspaceInfo { id: "T1".into(), name: None, running: false }]);
+    assert_eq!(res.workspaces, [ChatWorkspaceInfo { id: "T1".into(), name: None, running: false, app_name: None }]);
     assert!(serde_json::from_value::<ChatWorkspacesRes>(json!({"workspaces": []})).is_err(), "a reply names its default");
 }
 

@@ -144,6 +144,43 @@ fn after_a_refused_post() -> (ChatDrawer, Instant) {
     (d, at)
 }
 
+/// The hub's `chat.workspaces`: `WS1` runs, connected to the Slack app whose bot Slack calls `app`.
+fn connected_app(app: &str) -> ChatReply<sot_protocol::ops::ChatWorkspacesRes> {
+    ChatReply::Done(serde_json::from_value(serde_json::json!({ "default": "WS1", "workspaces": [{ "id": "WS1", "name": "Alpha Lab", "running": true, "app_name": app }] })).unwrap())
+}
+
+/// F1 of CHAT-CONNECT-MAKES-A-NEW-APP: a person's post refused because the hub holds no code that posts as them asks which
+/// Slack app the workspace is connected to, and the post-as-you screen names that app as the one to keep, by the name the
+/// hub gives (not the name the login would give a new app), with why a new app loses the private channels; a hub that
+/// names none (an older one, or a start whose `bots.info` gave no name) keeps the screen's words before.
+#[test]
+fn the_post_as_you_screen_names_the_connected_slack_app_to_keep() {
+    let (mut d, at, req) = post_in_flight();
+    d.set_login("");
+    let outs = d.on_evt(&host(), ChatEvt::Posted { req, reply: no_user_token() }, at);
+    assert!(outs.iter().any(|(h, r)| h == &host() && matches!(r, OutgoingReq::ChatWorkspaces)), "the step asks which Slack app is connected: {outs:?}");
+    assert_eq!(d.title(), " chat · post as you ");
+    let before = drawn(&d).replace('\n', " ");
+    assert!(before.contains("In it, click Ship of Tools. Then copy its codes again"), "until the hub answers, the screen says what it said: {before}");
+    d.on_evt(&host(), ChatEvt::Workspaces { reply: connected_app(NAME) }, at);
+    let body = drawn(&d).replace('\n', " ");
+    let keep = format!("Keep the Slack app a is connected to now: Slack calls it {NAME}, though your list of Slack apps may show it under another name. A new Slack app is in none of your private channels, so they would show nothing here until you invited it to each. Press Enter: your list of Slack apps opens in your browser. In it, click that app. Then, on its page, add the permissions to post as you and install it again, as step 2 shows (it follows here), and copy its codes into this panel. Press Left to make a new Slack app (step 1) only if that app is no longer in the list.");
+    assert!(body.contains(&keep), "{body}");
+    assert!(body.contains("a holds none that works: it was connected before Ship of Tools posted as you, or Slack stopped accepting the one it had."), "{body}");
+    assert!(!body.contains("click Ship of Tools."), "the name a new app would have is not offered: {body}");
+    assert!(body.contains("Enter  open your Slack apps    Left  make your Slack app again    Esc  close"));
+    // Another workspace's entry, one that does not run, and an older hub name no app.
+    for reply in [
+        ChatReply::Done(serde_json::from_value(serde_json::json!({ "default": "WS2", "workspaces": [{ "id": "WS2", "running": true, "app_name": NAME }] })).unwrap()),
+        ChatReply::Done(serde_json::from_value(serde_json::json!({ "default": "WS1", "workspaces": [{ "id": "WS1", "running": false, "app_name": NAME }] })).unwrap()),
+        ChatReply::Unsupported,
+    ] {
+        let mut c = Connect::for_post(host(), LOGIN, "WS1".into());
+        c.on_workspaces(&reply);
+        assert!(c.body().head.contains(&format!("In it, click {NAME}. Then copy its codes again")), "{reply:?}: {}", c.body().head);
+    }
+}
+
 #[test]
 fn the_connect_step_says_each_reason_and_its_next_action() {
     for reason in ["not_connected", "start_failed"] {
@@ -236,13 +273,13 @@ fn left_and_right_move_between_steps_and_the_refused_screen_opens_its_pages() {
     let (_, asks) = c.key(ENTER, None, false);
     assert_eq!(asks.open.as_deref(), Some("https://api.slack.com/apps"));
     assert_eq!(c.screen(), &Screen::Tokens, "the apps' list, then step 2");
-    let mut c = Connect::for_post(host(), LOGIN);
+    let mut c = Connect::for_post(host(), LOGIN, "WS1".into());
     let (_, asks) = c.key(ENTER, None, false);
     assert_eq!((asks.open.as_deref(), c.screen()), (Some("https://api.slack.com/apps"), &Screen::Tokens), "screen 9: the apps' list, then step 2");
-    let mut c = Connect::for_post(host(), LOGIN);
+    let mut c = Connect::for_post(host(), LOGIN, "WS1".into());
     let (_, asks) = c.key(LEFT, None, false);
     assert_eq!((asks.open, c.screen()), (Some(slack_app_url(NAME)), &Screen::Make), "screen 9: make the app again");
-    assert_eq!(Connect::for_post(host(), LOGIN).key(RIGHT, None, false).1, Asks::default(), "screen 9 has no Right");
+    assert_eq!(Connect::for_post(host(), LOGIN, "WS1".into()).key(RIGHT, None, false).1, Asks::default(), "screen 9 has no Right");
     let mut c = step(ChatUnconfigured::TokensRefused);
     let (_, asks) = c.key(LEFT, None, false);
     assert_eq!(asks.open, Some(slack_app_url(NAME)));
@@ -871,7 +908,10 @@ fn no_project_word_reaches_a_screen() {
         screens.extend([c.title(), c.body().head, c.body().pin]);
         screens.push(c.key(PASTE, Some("not a code"), false).1.notice.unwrap_or_default());
     }
-    let c = Connect::for_post(host(), LOGIN);
+    let mut c = Connect::for_post(host(), LOGIN, "WS1".into());
+    screens.extend([c.title(), c.body().head, c.body().pin]);
+    // The same screen once the hub names the Slack app the workspace is connected to.
+    c.on_workspaces(&connected_app("Ship of Tools (lab-user)"));
     screens.extend([c.title(), c.body().head, c.body().pin]);
     said.extend(screens);
     // The picker: a list, a narrowed list with no match, each failure, and a refused pair.

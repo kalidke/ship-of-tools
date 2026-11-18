@@ -18,7 +18,7 @@ use sot_chat::delivery::Timing;
 use sot_chat::http::Http;
 use sot_chat::service::Service;
 use sot_platform::host::env::Env;
-use sot_protocol::ops::{ChatCode, ChatTarget};
+use sot_protocol::ops::{ChatCode, ChatTarget, ChatWorkspaceInfo};
 use tokio::runtime::Handle;
 use tokio::sync::Notify;
 use tokio::task::AbortHandle;
@@ -45,6 +45,10 @@ pub(crate) trait Listener: Send + Sync + 'static {
     fn ended(&self) -> bool {
         false
     }
+    /// The name Slack gave the connected Slack app's bot at the start, which `chat.workspaces` carries.
+    fn app_name(&self) -> Option<String> {
+        None
+    }
 }
 
 impl Listener for Service {
@@ -53,6 +57,9 @@ impl Listener for Service {
     }
     fn ended(&self) -> bool {
         Service::ended(self).is_some()
+    }
+    fn app_name(&self) -> Option<String> {
+        Service::app_name(self)
     }
 }
 
@@ -615,14 +622,19 @@ impl<L: Listener> Chat<L> {
         self.units().map.values().any(|u| matches!(*u.lock(), Phase::Running(_)))
     }
 
-    /// `chat.toml`'s workspace and every connected workspace with its last name and whether it runs, for
-    /// `chat.workspaces`; `None` while no `chat.toml` is admitted.
-    pub(crate) fn workspaces(&self) -> Option<(String, Vec<(String, Option<String>, bool)>)> {
+    /// `chat.toml`'s workspace and every connected workspace with its last name, whether it runs and, while it runs, the
+    /// name Slack gave its Slack app's bot at the start, for `chat.workspaces`; `None` while no `chat.toml` is admitted.
+    pub(crate) fn workspaces(&self) -> Option<(String, Vec<ChatWorkspaceInfo>)> {
         let default = self.default_workspace()?;
         let names = self.names.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let units = self.units();
         let admitted = units.map.iter().filter(|(w, _)| units.plans.contains_key(*w));
-        let list = admitted.map(|(w, u)| (w.clone(), names.get(w).cloned(), matches!(*u.lock(), Phase::Running(_)))).collect();
+        let list = admitted
+            .map(|(w, u)| {
+                let running = u.service();
+                ChatWorkspaceInfo { id: w.clone(), name: names.get(w).cloned(), running: running.is_some(), app_name: running.and_then(|s| s.app_name()) }
+            })
+            .collect();
         Some((default, list))
     }
 

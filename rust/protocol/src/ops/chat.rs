@@ -307,8 +307,9 @@ fn named_workspace<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Stri
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChatWorkspacesReq {}
 
-/// One connected workspace: its id, its name as Slack last gave it (a reader shows the id without one), and whether its
-/// chat runs now.
+/// One connected workspace: its id, its name as Slack last gave it (a reader shows the id without one), whether its chat
+/// runs now, and, while it runs, `app_name`: the name Slack gives the bot of the Slack app it is connected to (absent when
+/// Slack gave none, while it does not run, and from an older daemon; read as `name` is).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChatWorkspaceInfo {
     #[serde(deserialize_with = "an_id")]
@@ -316,6 +317,8 @@ pub struct ChatWorkspaceInfo {
     #[serde(default, deserialize_with = "channel_name", skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     pub running: bool,
+    #[serde(default, deserialize_with = "channel_name", skip_serializing_if = "Option::is_none")]
+    pub app_name: Option<String>,
 }
 
 /// Reply to `chat.workspaces`: `chat.toml`'s workspace (the one a request naming none means) and every connected

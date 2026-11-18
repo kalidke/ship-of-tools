@@ -81,8 +81,9 @@ pub(super) struct Connect {
     /// person asked for (`Connect Slack again`) or a refused post brought stays until they leave it.
     follows: bool,
     /// The step began from a person's post the hub refused `no_user_token`: its first screen is the post-as-you screen, with
-    /// the refused tokens' keys.
-    post_as_you: bool,
+    /// the refused tokens' keys. The workspace the post went to, and the name Slack gives the bot of the Slack app it is
+    /// connected to once `chat.workspaces` says it (`on_workspaces`), which the screen names as the app to keep.
+    post_in: Option<(String, Option<String>)>,
     screen: Screen,
     bot: Option<ChatToken>,
     user: Option<ChatToken>,
@@ -112,7 +113,7 @@ impl Connect {
             host,
             reason,
             follows,
-            post_as_you: false,
+            post_in: None,
             screen: Screen::First,
             bot: None,
             user: None,
@@ -130,9 +131,14 @@ impl Connect {
         Connect { failed_in: workspace.map(|w| (w, None)), ..self }
     }
 
-    /// The hub's running workspaces: whether another than the failed one runs, and the failed one's name.
+    /// The hub's running workspaces: for a refused post, the name of the Slack app its workspace is connected to; for a
+    /// failed workspace, whether another runs, and the failed one's name.
     pub(super) fn on_workspaces(&mut self, reply: &ChatReply<ChatWorkspacesRes>) {
-        let (ChatReply::Done(res), Some((failed, name))) = (reply, self.failed_in.as_mut()) else { return };
+        let ChatReply::Done(res) = reply else { return };
+        if let Some((workspace, app)) = self.post_in.as_mut() {
+            *app = res.workspaces.iter().find(|w| &w.id == workspace && w.running).and_then(|w| w.app_name.clone());
+        }
+        let Some((failed, name)) = self.failed_in.as_mut() else { return };
         self.elsewhere = res.workspaces.iter().any(|w| w.running && &w.id != failed);
         if let Some(w) = res.workspaces.iter().find(|w| &w.id == failed) {
             name.clone_from(&w.name);
@@ -153,9 +159,10 @@ impl Connect {
         self.screen == Screen::First && self.failed_in.is_some() && self.elsewhere
     }
 
-    /// The step a person's refused post brings: the hub holds no token that posts as them, or Slack stopped accepting it.
-    pub(super) fn for_post(host: HostKey, login: &str) -> Connect {
-        Connect { post_as_you: true, ..Connect::new(host, ChatUnconfigured::NotConnected, login, false) }
+    /// The step a person's refused post into `workspace` brings: the hub holds no token that posts as them, or Slack stopped
+    /// accepting it. The caller asks `chat.workspaces`, whose answer names the Slack app to keep.
+    pub(super) fn for_post(host: HostKey, login: &str, workspace: String) -> Connect {
+        Connect { post_in: Some((workspace, None)), ..Connect::new(host, ChatUnconfigured::NotConnected, login, false) }
     }
 
     /// Whether any token is pasted: a late reply to an older post leaves such a step alone.
@@ -190,12 +197,12 @@ impl Connect {
 
     /// The hub's reason, read again: the first screen follows it.
     pub(super) fn reason(&mut self, reason: ChatUnconfigured) {
-        (self.reason, self.post_as_you) = (reason, false);
+        (self.reason, self.post_in) = (reason, None);
     }
 
     /// Whether the first screen is one whose app exists but whose tokens are copied again: its keys open the person's apps.
     fn refused_screen(&self) -> bool {
-        matches!(self.reason, ChatUnconfigured::TokensRefused | ChatUnconfigured::WrongApp) || self.post_as_you
+        matches!(self.reason, ChatUnconfigured::TokensRefused | ChatUnconfigured::WrongApp) || self.post_in.is_some()
     }
 
     fn name(&self) -> String {
@@ -313,7 +320,7 @@ impl Connect {
     /// The drawer's title for the screen.
     pub(super) fn title(&self) -> String {
         let words = match self.screen {
-            Screen::First if self.post_as_you => "post as you",
+            Screen::First if self.post_in.is_some() => "post as you",
             Screen::First => "set up Slack",
             Screen::Make => "set up Slack · step 1 of 3: make your Slack app",
             Screen::Tokens => "set up Slack · step 2 of 3: the first two Slack codes",
@@ -348,8 +355,13 @@ impl Connect {
             Screen::First if refused => {
                 out.push(if self.reason == ChatUnconfigured::WrongApp {
                     format!("The chat stopped: the \"App-Level Token\" it holds belongs to another Slack app than your Slack app (the bot that reads the channel and posts for your agents), so the chat would have received that other app's messages. To fix it, paste your own Slack app's codes: press Enter, and your list of Slack apps opens in your browser. Click {name}, then copy its three Slack codes again, as steps 2 and 3 show (they follow here).")
-                } else if self.post_as_you {
-                    format!("Ship of Tools posts your messages in Slack as you, so the people and bots in the channel see them as yours. For that it needs a Slack code from {APP}, and {c} holds none that works: it was connected before Ship of Tools posted as you, or Slack stopped accepting the one it had. Press Enter: your list of Slack apps opens in your browser. In it, click {name}. Then copy its codes again, as steps 2 and 3 show (they follow here), and paste each into this panel. If {name} is not in the list, press Left to make your Slack app again (step 1).")
+                } else if let Some((_, connected)) = &self.post_in {
+                    let why = format!("Ship of Tools posts your messages in Slack as you, so the people and bots in the channel see them as yours. For that it needs a Slack code from {APP}, and {c} holds none that works: it was connected before Ship of Tools posted as you, or Slack stopped accepting the one it had.");
+                    match connected.as_deref().map(cell_row) {
+                        // The Slack app connected now, by the name Slack gives its bot: keeping it keeps every channel it is in.
+                        Some(app) => format!("{why} Keep the Slack app {c} is connected to now: Slack calls it {app}, though your list of Slack apps may show it under another name. A new Slack app is in none of your private channels, so they would show nothing here until you invited it to each. Press Enter: your list of Slack apps opens in your browser. In it, click that app. Then, on its page, add the permissions to post as you and install it again, as step 2 shows (it follows here), and copy its codes into this panel. Press Left to make a new Slack app (step 1) only if that app is no longer in the list."),
+                        None => format!("{why} Press Enter: your list of Slack apps opens in your browser. In it, click {name}. Then copy its codes again, as steps 2 and 3 show (they follow here), and paste each into this panel. If {name} is not in the list, press Left to make your Slack app again (step 1)."),
+                    }
                 } else {
                     format!("Slack no longer accepts the Slack codes Ship of Tools holds. Press Enter: your list of Slack apps opens in your browser. If {name}, {APP}, is in it, click it and copy its three codes again (steps 2 and 3 follow here). If it is not, press Left here to make your Slack app again (step 1).")
                 });

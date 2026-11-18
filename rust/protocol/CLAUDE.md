@@ -131,13 +131,16 @@ name is in this crate's one op table.
     `{workspace, name?, unread?}` (`unread`: the workspace's mapped channels its app cannot read after the connect, each `{id, name?}`, at most `MAX_WATCHED`, absent when none and from an older daemon, a reader keeping the entries it can read: `every_request_reply_and_event_keeps_its_shape`; `name`: the workspace's as Slack gave it, read as the resolve's `name` is, so a bad one is none and
     an older daemon's reply has none), `chat.channels {workspace?}` answers `{channels: [{id, name, private, member}], more}`, `chat.pair {row,
     workspace?, channel?}` answers `{}` (an absent or null `channel` unpairs the row's folder), and `chat.workspaces {}` (a
-    read, any connection's) answers `{default, workspaces: [{id, name?, running}]}`. A request's `workspace` is an id
+    read, any connection's) answers `{default, workspaces: [{id, name?, running, app_name?}]}` (`app_name`: while the
+    workspace runs, the name Slack gives the bot of the Slack app it is connected to, so a window names the app to keep;
+    read as `name` is, absent when Slack gave none and from an older daemon, which a reader before it ignores). A request's `workspace` is an id
     within 64 bytes when present, defaulted and left out when `None` (absent: `chat.toml`'s workspace, so an older window's
     request means what it always did, and an older daemon ignores the field); `workspaces` holds at most `MAX_WORKSPACES`
     entries, and a reader keeps the first `MAX_WORKSPACES` it can read and skips the rest and any entry it cannot read, never
-    refusing the reply, and reads a `name` as the resolve's `name` is read (tests `chat_tests.rs`:
+    refusing the reply, and reads a `name` and an `app_name` as the resolve's `name` is read (tests `chat_tests.rs`:
     `the_setup_family_carries_its_workspace_and_an_older_shape_still_decodes`,
-    `a_workspace_list_past_its_bound_or_with_a_bad_entry_still_decodes`). No hello flag: a newer window learns a daemon
+    `a_workspace_list_past_its_bound_or_with_a_bad_entry_still_decodes`, and `every_request_reply_and_event_keeps_its_shape` for
+    `app_name`). No hello flag: a newer window learns a daemon
     serves several workspaces from `chat.workspaces` answering, and an older daemon answers it as an unknown op. A token field is a `ChatToken`: serialized as its
     string, at most `MAX_TOKEN` (512) bytes, its `Debug` the text `<redacted>`, no `Display` (its bytes are read by `expose`, in
     the one place that sends or checks them), so a derived `Debug` of a request that holds one prints no byte of it; a decode

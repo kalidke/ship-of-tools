@@ -71,7 +71,9 @@ posted your messages as you, or whose User OAuth Token Slack stopped accepting, 
 same screen, titled `post as you`, in place of the channel: your draft is kept, and the codes are copied again as above.
 Copy them from the app the hub is connected to now: adding the two user permissions to it (step 2) and installing it
 again keeps it in every channel it is in, while a new app is in none of your private channels until you invite it to
-each (see the list below). Paste your own User OAuth Token only: the hub cannot tell whose it is, and would post as that person. To give a workspace new Slack codes at any
+each (see the list below). The `post as you` screen names that app by the name Slack gives its bot, which is your app's
+name unless the app or its bot was renamed in Slack (your list of apps may then show another name), and offers Left to
+make a new app only for when that app is gone. Paste your own User OAuth Token only: the hub cannot tell whose it is, and would post as that person. To give a workspace new Slack codes at any
 time, or to add one, choose **Connect a Slack workspace** (marked `add a Slack workspace, or give one new Slack codes`), last in the channel list (`Ctrl+Shift+k`).
 
 ## Per project: choose its channel

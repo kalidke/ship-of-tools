@@ -3142,7 +3142,7 @@ async fn the_bots_app_is_read_at_start_and_a_failure_leaves_it_unknown() {
         })
         .await;
         let api = ready(&fake).await;
-        assert_eq!(api.bot_app().await, Ok("A0OWN".to_string()));
+        assert_eq!(api.bot_app().await, Ok(crate::api::BotApp { id: "A0OWN".into(), name: None }));
         let asked: Vec<Seen> = fake.seen().into_iter().filter(|s| s.path() == "/api/bots.info").collect();
         assert_eq!(asked.len(), 1);
         assert_eq!(asked[0].param("bot").as_deref(), Some(OWN_BOT));
@@ -3155,6 +3155,18 @@ async fn the_bots_app_is_read_at_start_and_a_failure_leaves_it_unknown() {
         ] {
             *answer.lock().unwrap() = reply;
             assert_eq!(api.bot_app().await, Err(want));
+        }
+        // The name Slack gives the bot, read as a workspace's name is: cleaned, and none when it is not a usable string.
+        let long = "x".repeat(crate::normalize::MAX_NAME + 1);
+        for (name, want) in [
+            (json!("Ship of Tools (lab-user)"), Some("Ship of Tools (lab-user)")),
+            (json!("  Ship of Tools\u{7} (lab-user) "), Some("Ship of Tools (lab-user)")),
+            (json!(""), None),
+            (json!(7), None),
+            (json!(long), None),
+        ] {
+            *answer.lock().unwrap() = json!({"ok": true, "bot": {"id": OWN_BOT, "app_id": "A0OWN", "name": name}});
+            assert_eq!(api.bot_app().await, Ok(crate::api::BotApp { id: "A0OWN".into(), name: want.map(String::from) }), "{name}");
         }
         *answer.lock().unwrap() = Value::Null;
         assert!(matches!(api.bot_app().await, Err(ApiError::Http(_))));

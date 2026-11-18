@@ -1375,6 +1375,8 @@ async fn two_apps() -> (FakeSlack, Arc<Mutex<Vec<(&'static str, &'static str)>>>
         match method.as_str() {
             "auth.test" if person => Reply::json(&json!({"ok": true, "team_id": "T0AAAA", "team": "Alpha Lab", "user_id": "U0PERSON"})),
             "auth.test" => Reply::json(&json!({"ok": true, "team_id": "T0AAAA", "team": "Alpha Lab", "user_id": user, "bot_id": bot})),
+            // The old app's bot is named as the setup's manifest names it; the new one's answer carries no name.
+            "bots.info" if app == "old" => Reply::json(&json!({"ok": true, "bot": {"id": bot, "app_id": app_id, "name": "Ship of Tools (lab-user)"}})),
             "bots.info" => Reply::json(&json!({"ok": true, "bot": {"id": bot, "app_id": app_id}})),
             "apps.connections.open" => Reply::json(&json!({"ok": true, "url": format!("wss://wss-primary.slack.com:{port}/link/?ticket={app}")})),
             "conversations.list" => {
@@ -1395,6 +1397,42 @@ async fn two_apps() -> (FakeSlack, Arc<Mutex<Vec<(&'static str, &'static str)>>>
     })
     .await;
     (fake, members)
+}
+
+/// A window's connection to a hub whose one workspace maps the private channel (folder `a`'s row, the first id) and the
+/// public one (folder `b`'s, the second), running `two_apps`' old app with no user token held; then what must outlive it.
+async fn on_two_apps(fake: &FakeSlack) -> (Conn, String, String, Home, tempfile::TempDir) {
+    let home = Home::new(Some(SELF));
+    let (a, b) = (home.folder("a"), home.folder("b"));
+    let mapping = |folder: &std::path::Path, channel: &str| format!("[[mapping]]\nfolder = '{}'\nchannel = \"{channel}\"\n", folder.display());
+    home.write(CONFIG_FILE, &format!("workspace = \"T0AAAA\"\nchannels = [\"{PRIVATE}\", \"{PUBLIC}\"]\n{}{}", mapping(&a, PRIVATE), mapping(&b, PUBLIC)));
+    home.write(SECRETS_FILE, &format!("workspace = \"T0AAAA\"\nbot_token = \"{}\"\napp_token = \"{}\"\n", bot("old"), app("old")));
+    let rows = Workspaces::new();
+    let alpha = rows.insert(row("alpha", &a)).workspace_id.clone();
+    let beta = rows.insert(row("beta", &b)).workspace_id.clone();
+    let chat = Chat::boot(&home.env, &rows, &|p| config::read_file(p), &Registry::new(), starter(fake), Verifier::at(fake), HUB_CHECK, Timing::PRODUCT);
+    running(&chat).await;
+    let root = tempfile::tempdir().unwrap();
+    let mut services = Services::for_test("t", root.path());
+    (services.chat, services.workspaces) = (chat, rows);
+    (connect_window(services).await, alpha, beta, home, root)
+}
+
+/// F1 of CHAT-CONNECT-MAKES-A-NEW-APP: `chat.workspaces` names the Slack app a running workspace is connected to by the name
+/// `bots.info` gave its bot at the start, so a window can say which app to keep; after a connect of another app it says
+/// that app's (here none: its `bots.info` gives no name), never the one before.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_workspaces_read_names_the_connected_slack_app() {
+    let (fake, _) = two_apps().await;
+    let (mut conn, _, _, _home, _root) = on_two_apps(&fake).await;
+    let listed = conn.ask(2, op::CHAT_WORKSPACES, json!({})).await;
+    assert_eq!((&listed["workspaces"][0]["id"], &listed["workspaces"][0]["running"]), (&json!("T0AAAA"), &json!(true)), "{listed}");
+    assert_eq!(listed["workspaces"][0]["app_name"], "Ship of Tools (lab-user)", "{listed}");
+    let connected = conn.ask(3, op::CHAT_CONNECT, connect_with(&bot("new"), &user("new"), &app("new"))).await;
+    assert_eq!(connected["workspace"], "T0AAAA", "{connected}");
+    let listed = conn.ask(4, op::CHAT_WORKSPACES, json!({})).await;
+    assert_eq!(listed["workspaces"][0]["running"], true, "{listed}");
+    assert_eq!(listed["workspaces"][0].get("app_name"), None, "the app before is not named for the new one: {listed}");
 }
 
 /// The next `chat.status` on `conn` that names `channel` for a new snapshot, past every other frame.
@@ -1434,20 +1472,7 @@ async fn ask_until(conn: &mut Conn, first: u64, name: &str, payload: Value, mut 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_new_slack_app_outside_a_mapped_channel_is_told_not_in_channel_until_it_is_invited() {
     let (fake, members) = two_apps().await;
-    let home = Home::new(Some(SELF));
-    let (a, b) = (home.folder("a"), home.folder("b"));
-    let mapping = |folder: &std::path::Path, channel: &str| format!("[[mapping]]\nfolder = '{}'\nchannel = \"{channel}\"\n", folder.display());
-    home.write(CONFIG_FILE, &format!("workspace = \"T0AAAA\"\nchannels = [\"{PRIVATE}\", \"{PUBLIC}\"]\n{}{}", mapping(&a, PRIVATE), mapping(&b, PUBLIC)));
-    home.write(SECRETS_FILE, &format!("workspace = \"T0AAAA\"\nbot_token = \"{}\"\napp_token = \"{}\"\n", bot("old"), app("old")));
-    let rows = Workspaces::new();
-    let alpha = rows.insert(row("alpha", &a)).workspace_id.clone();
-    let beta = rows.insert(row("beta", &b)).workspace_id.clone();
-    let chat = Chat::boot(&home.env, &rows, &|p| config::read_file(p), &Registry::new(), starter(&fake), Verifier::at(&fake), HUB_CHECK, Timing::PRODUCT);
-    running(&chat).await;
-    let root = tempfile::tempdir().unwrap();
-    let mut services = Services::for_test("t", root.path());
-    (services.chat, services.workspaces) = (chat, rows);
-    let mut conn = connect_window(services).await;
+    let (mut conn, alpha, beta, _home, _root) = on_two_apps(&fake).await;
     let target = |row: &str, channel: &str| json!({"row": row, "workspace": "T0AAAA", "channel": channel});
     let history = |row: &str, channel: &str| json!({"target": target(row, channel), "limit": 5});
     assert_eq!(conn.ask(2, op::CHAT_HISTORY, history(&alpha, PRIVATE)).await["records"][0]["text"], "hello", "the first app reads it");

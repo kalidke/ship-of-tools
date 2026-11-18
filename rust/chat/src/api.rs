@@ -142,6 +142,15 @@ pub struct Identity {
     pub app_id: Option<String>,
 }
 
+/// The bot's app as `bots.info` gives it: the app's id, and the name Slack gives the bot (`bot.name`, read as a
+/// workspace's name is; none when absent or unusable). Whether that name is the app's in the person's list of Slack apps
+/// or the bot's own display name is not measured; an app made from the setup's manifest gives both the same name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BotApp {
+    pub id: String,
+    pub name: Option<String>,
+}
+
 /// A channel as `conversations.list` and `conversations.info` give it. `private` is true unless Slack says the channel is
 /// not private, and `member` false unless it says the bot is in it, so a reply that does not say never offers more.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -737,13 +746,13 @@ impl Api {
         Some(dropped)
     }
 
-    /// The bot's app (`bots.info`'s `bot.app_id` for the identity's `bot_id`; `NoIdentity`, unsent, for a bot with
-    /// none). Its failure, any code, only leaves the app unknown and ends nothing: the check it serves fails open.
-    pub async fn bot_app(&self) -> Result<String, ApiError> {
+    /// The bot's app (`bots.info`'s `bot.app_id` for the identity's `bot_id`, and its `bot.name`; `NoIdentity`, unsent, for
+    /// a bot with none). Its failure, any code, only leaves the app unknown and ends nothing: the check it serves fails open.
+    pub async fn bot_app(&self) -> Result<BotApp, ApiError> {
         let bot = self.identity()?.bot_id.ok_or(ApiError::NoIdentity)?;
         let v = self.read_as(self.token.clone(), "bots.info", &[("bot", bot)], MAX_BODY).await?;
         let app = v.pointer("/bot/app_id").and_then(Value::as_str).filter(|a| valid_id(a)).ok_or(ApiError::Malformed)?;
-        Ok(app.into())
+        Ok(BotApp { id: app.into(), name: v.get("bot").and_then(|b| name_at(b, "name")) })
     }
 
     /// The bot identity, which history needs. The token must belong to the configured workspace.
@@ -1409,10 +1418,15 @@ fn identity_of(v: &Value) -> Result<Identity, ApiError> {
     })
 }
 
-/// An `auth.test` answer's `team`, the workspace's name, its control characters dropped and trimmed; absent, not a
-/// string, empty, or past `MAX_NAME` is none (words only: the window then shows the id).
+/// An `auth.test` answer's `team`, the workspace's name, read by [`name_at`].
 fn name_of(v: &Value) -> Option<String> {
-    let (name, cut) = clean(v.get("team")?.as_str()?, MAX_NAME);
+    name_at(v, "team")
+}
+
+/// A name Slack gave under `key`, its control characters dropped and trimmed; absent, not a string, empty, or past
+/// `MAX_NAME` is none (words only: the window then shows an id, or words without the name).
+fn name_at(v: &Value, key: &str) -> Option<String> {
+    let (name, cut) = clean(v.get(key)?.as_str()?, MAX_NAME);
     (!name.is_empty() && !cut).then_some(name)
 }
 

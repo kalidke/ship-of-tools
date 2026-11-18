@@ -609,14 +609,17 @@ impl ChatDrawer {
         let shown = self.rows.row().is_some_and(|r| &r.host == host && r.workspace_id == target.row);
         // A reply that comes late never replaces a Connect step that holds a pasted token (one re-paste is the cost).
         let holds_token = self.connect().is_some_and(Connect::holds_token);
+        let mut outs = Vec::new();
         if shown && !holds_token && reply == PostReply::Refused(ChatCode::NoUserToken) {
-            self.open_modal(Kind::Connect(Connect::for_post(host.clone(), self.login)));
+            self.open_modal(Kind::Connect(Connect::for_post(host.clone(), self.login, target.workspace.clone())));
+            // Which Slack app the workspace is connected to, so the screen names the one to keep.
+            outs.push((host.clone(), OutgoingReq::ChatWorkspaces));
         }
         let mut made = None;
-        let mut outs = self.owner_outs(|o| {
+        outs.extend(self.owner_outs(|o| {
             made = o.on_posted(host, &post, reply, now);
             Vec::new()
-        });
+        }));
         if let Some(row) = made {
             self.first_post |= !self.posted_before;
             self.posted_before = true;

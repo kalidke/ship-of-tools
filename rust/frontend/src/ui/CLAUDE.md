@@ -1399,7 +1399,11 @@ methods are `pub(super)`, so no other ui code can drop the requests they return.
   because its App-Level Token is another Slack app's, and would have received that app's messages; it names
   the person's app and says to copy its three Slack codes again) or the post-as-you screen (brought by a person's post the hub refused `no_user_token`, never by `chat.resolve`: the hub
   holds no token that posts as the person, or Slack stopped accepting it; titled `post as you`, a step a person leaves, never
-  one another answer ends), steps 1 to 3 with Left and Right between them (step 2
+  one another answer ends; it asks `chat.workspaces` once, and when the post's workspace runs and its entry carries
+  `app_name`, the screen names that Slack app as the one to keep, by Slack's name for its bot (saying the person's list
+  of Slack apps may show it under another name), says a new Slack app is in none of the private channels, and says to add
+  the permissions to post as you to that app and install it again as step 2 shows, Left making a new app only if that one is
+  gone; with no `app_name` it names `slack_app_name` as before: `connect_tests::the_post_as_you_screen_names_the_connected_slack_app_to_keep`), steps 1 to 3 with Left and Right between them (step 2
   takes the user token and the bot token from one page, step 3 the app-level token, whose words say to copy it from the
   same app as step 2's two), connecting, connected. The labels of
   Slack's OAuth page that step 2 and its hint name (a User OAuth Token beside the Bot User OAuth Token, User Token Scopes,

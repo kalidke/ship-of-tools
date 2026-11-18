@@ -22,7 +22,7 @@ use sot_platform::host::env::Env;
 use sot_protocol::chat::Ts;
 use sot_protocol::ops::{
     op, ChatChannel, ChatChannelInfo, ChatChannelsReq, ChatChannelsRes, ChatCode, ChatConnectReq, ChatConnectRes, ChatPairReq,
-    ChatPairRes, ChatUnconfigured, ChatUnread, ChatWorkspaceInfo, ChatWorkspacesReq, ChatWorkspacesRes, MAX_WATCHED, MAX_WORKSPACES,
+    ChatPairRes, ChatUnconfigured, ChatUnread, ChatWorkspacesReq, ChatWorkspacesRes, MAX_WATCHED, MAX_WORKSPACES,
 };
 use sot_protocol::reply::HandlerOutput;
 
@@ -373,16 +373,16 @@ fn now() -> Ts {
     Ts::parse(&format!("{}.{:06}", t.as_secs(), t.subsec_micros())).expect("seconds and six digits are a timestamp")
 }
 
-/// `chat.workspaces`: `chat.toml`'s workspace and every connected (admitted) workspace, each with its last name and
-/// whether its chat runs, ordered by name with the id breaking a tie, at most `MAX_WORKSPACES`. A read of memory that
-/// makes no Slack call; a daemon with no admitted `chat.toml` is `unavailable`.
+/// `chat.workspaces`: `chat.toml`'s workspace and every connected (admitted) workspace, each with its last name, whether
+/// its chat runs and, while it runs, the name Slack gave its Slack app's bot (so a window can name the app to keep),
+/// ordered by name with the id breaking a tie, at most `MAX_WORKSPACES`. A read of memory that makes no Slack call; a
+/// daemon with no admitted `chat.toml` is `unavailable`.
 pub(crate) async fn workspaces(req_id: u64, payload: serde_json::Value, chat: &Arc<Chat>) -> Result<HandlerOutput> {
     const NAME: &str = op::CHAT_WORKSPACES;
     if let Err(code) = decode::<ChatWorkspacesReq>(payload) {
         return Ok(refuse(req_id, NAME, code));
     }
-    let Some((default, list)) = chat.workspaces() else { return Ok(refuse(req_id, NAME, ChatCode::Unavailable)) };
-    let mut workspaces: Vec<ChatWorkspaceInfo> = list.into_iter().map(|(id, name, running)| ChatWorkspaceInfo { id, name, running }).collect();
+    let Some((default, mut workspaces)) = chat.workspaces() else { return Ok(refuse(req_id, NAME, ChatCode::Unavailable)) };
     workspaces.sort_by(|a, b| (a.name.as_deref().unwrap_or(&a.id), &a.id).cmp(&(b.name.as_deref().unwrap_or(&b.id), &b.id)));
     workspaces.truncate(MAX_WORKSPACES);
     reply(req_id, NAME, &ChatWorkspacesRes { default, workspaces })
