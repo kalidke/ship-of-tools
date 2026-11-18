@@ -129,7 +129,7 @@ name is in this crate's one op table.
     app's own post, and one record never spoils its page), a post `outcome` as `unknown` (the post may exist; never resent).
     **The setup family** (so a person sets the chat up from the window): `chat.connect {bot_token, user_token?, app_token}` (the user token `xoxp-` is what a person's post goes out under; it is defaulted and left out when `None`, so an older window's two-token connect decodes, and the daemon refuses it `bad_request`) answers
     `{workspace, name?}` (`name`: the workspace's as Slack gave it, read as the resolve's `name` is, so a bad one is none and
-    an older daemon's reply has none; an unknown field, such as the `unread` an unreleased build put here, is ignored), `chat.channels {workspace?}` answers `{channels: [{id, name, private, member}], more}`, `chat.pair {row,
+    an older daemon's reply has none; an unknown field is ignored), `chat.channels {workspace?}` answers `{channels: [{id, name, private, member}], more}`, `chat.pair {row,
     workspace?, channel?}` answers `{}` (an absent or null `channel` unpairs the row's folder), and `chat.workspaces {}` (a
     read, any connection's) answers `{default, workspaces: [{id, name?, running, app_name?, app_id?, unread?}]}`, the
     last three only while the workspace runs, of the Slack app it is connected to, each absent while not known and from an

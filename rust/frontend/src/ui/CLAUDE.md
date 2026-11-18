@@ -1400,12 +1400,12 @@ methods are `pub(super)`, so no other ui code can drop the requests they return.
   the person's app and says to copy its three Slack codes again) or the post-as-you screen (brought by a person's post the hub refused `no_user_token`, never by `chat.resolve`: the hub
   holds no token that posts as the person, or Slack stopped accepting it; titled `post as you`, a step a person leaves, never
   one another answer ends; it asks `chat.workspaces` once, and when the post's workspace runs and its entry carries
-  `app_id`, the screen says first to keep that Slack app, by the name its messages show when the entry has `app_name`, to
+  `app_id`, the screen says first to keep that Slack app, with the name Slack calls it (`(Slack calls it <name>)`) when the entry has `app_name`, to
   open its page with Enter (`https://api.slack.com/apps/<app_id>/oauth`, an id of letters and digits only), add the
   permissions to post as you and install it again (step 2 shows how), and not to make a new Slack app, which would be in
   none of the private channels, Left making one only if that app is gone; without it (before the answer, from an older
   hub, or a start whose `bots.info` failed) Enter opens the list of Slack apps, the screen names `slack_app_name`, and says
-  to look there for the app connected under another name and to make a new one only if there is none, for the same
+  to look there for the Slack app the person connected this workspace with before, whatever its name, and to make a new one only if there is none, for the same
   reason; on both the why follows the action and the keys say Left makes a new Slack app; at 60 cells by 12 rows the
   action is the first row: `connect_tests::the_post_as_you_screen_names_the_connected_slack_app_to_keep`; the `/oauth`
   address is from Slack's documentation and unseen: check it at a person's first use), steps 1 to 3 with Left and Right between them (step 2
@@ -1440,13 +1440,20 @@ methods are `pub(super)`, so no other ui code can drop the requests they return.
   connected, and any other stand gets the step back (`connecting_another_workspace_from_a_failed_row_opens_its_list`); that screen names the workspace by the reply's `name`, its ID when it
   has none. The reply says nothing of the channels the Slack app connected can read: the screen asks `chat.workspaces` at
   once and each second after (`UNREAD_PACE`), at most 12 times (`UNREAD_ASKS`, past the hub's 10 s), until the connected
-  workspace's entry carries `unread`, waking the window for each (`Connect::next_ask`); an older hub's answer ends the asks.
-  Until it is known the screen says nothing of the other projects' channels; an `unread` of none adds that they keep the
-  channels they have; one that names channels leads the screen with them (`#name`, else `the channel with ID <ID>`), that
-  their projects show nothing, the invite that keeps them, naming the Slack app as the entry does, and not to choose
-  another channel here (`unread_words`), the connection's words after, and its keys say `Enter  open the channel list`; at
-  60 cells by 12 rows one channel's words and invite are whole in view
-  (`connect_tests::the_connected_screen_names_the_channels_the_new_slack_app_is_not_in`). Limits, unpinned: that
+  workspace's entry carries `unread`, waking the window for each (`Connect::next_ask`); a known list (empty or not) and an
+  older hub's answer each end the asks at once (`the_connected_screens_asks_end_with_a_known_list_or_an_older_hub`).
+  Until it is known the screen says it is checking which of the projects' channels the Slack app can read, and neither its
+  words nor its keys (`Enter  open the channel list`) offer to choose this project's channel, since a person who did
+  would lose the channel the connect exists to keep; asks that end with no list (a read cut off, a rate limit, an older
+  hub) say that it could not check and, for a project whose panel shows nothing, to open its channel in Slack and type
+  `/invite @<app>`, with the same keys. An `unread` of none adds that the other projects keep the channels they have, with
+  its own keys (`Enter  choose this project's channel in <workspace>`); one that names channels leads the screen with them
+  (`#name`, else `the channel with ID <ID>` with the address `app.slack.com/client/<workspace>/<ID>` that opens it, since
+  Slack's search does not find a channel by its ID), that the projects that use them show nothing, the invite that keeps
+  them, naming the Slack app as the entry does, and not to choose another channel here (`unread_words`), the connection's
+  words after, and its keys say `Enter  open the channel list`; at 60 cells by 12 rows one channel's words and invite are
+  whole in view (`connect_tests::the_connected_screen_names_the_channels_the_new_slack_app_is_not_in`, which holds the
+  checking and could-not-check forms too). Limits, unpinned: that
   `next_ask` wakes an idle window for these asks (the window's wait reads it as it reads the owner's), that a link change
   ends the drawer's once-per-link ask, and how these screens draw in a real window (their rows are counted by
   `Body::lines`, not from a drawn panel). **A row whose workspace failed** (`unconfigured` naming the mapped row's `workspace`, kept by

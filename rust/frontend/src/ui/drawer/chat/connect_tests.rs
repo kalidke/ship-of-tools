@@ -156,9 +156,9 @@ fn connected_app(app: &str) -> ChatReply<sot_protocol::ops::ChatWorkspacesRes> {
 
 /// CHAT-CONNECT-MAKES-A-NEW-APP: a person's post refused because the hub holds no code that posts as them asks which Slack
 /// app the workspace is connected to. Until the hub answers, and from a hub that gives no app, the screen opens the
-/// person's list of Slack apps and says to look there for the app connected under another name before making a new one,
-/// which would be in none of the private channels. Once the hub gives the app, the screen says first to keep it, by the
-/// name its messages show, and Enter opens that app's own page; the why follows, and Left makes a new app only if it is
+/// person's list of Slack apps and says to look there for the app connected before, whatever its name, before making a new
+/// one, which would be in none of the private channels. Once the hub gives the app, the screen says first to keep it, with
+/// the name Slack calls it, and Enter opens that app's own page; the why follows, and Left makes a new app only if it is
 /// gone. In a panel 60 cells by 12 the action is in view at once.
 #[test]
 fn the_post_as_you_screen_names_the_connected_slack_app_to_keep() {
@@ -167,15 +167,15 @@ fn the_post_as_you_screen_names_the_connected_slack_app_to_keep() {
     let outs = d.on_evt(&host(), ChatEvt::Posted { req, reply: no_user_token() }, at);
     assert!(outs.iter().any(|(h, r)| h == &host() && matches!(r, OutgoingReq::ChatWorkspaces)), "the step asks which Slack app is connected: {outs:?}");
     assert_eq!(d.title(), " chat · post as you ");
-    let warning = "If Ship of Tools is not in the list, look there for the Slack app this workspace was connected with under another name. Press Left to make a new one (step 1) only if there is none: a new Slack app is in none of your private channels.";
+    let warning = "If Ship of Tools is not in the list, look there for the Slack app you connected this workspace with before, whatever its name, and click that one. Press Left to make a new one (step 1) only if there is none: a new Slack app is in none of your private channels.";
     let before = drawn(&d).replace('\n', " ");
     assert!(before.contains("Press Enter: your list of Slack apps opens in your browser. In it, click Ship of Tools, your Slack app (the bot that reads the channel and posts for your agents), and copy its codes again, as steps 2 and 3 show (they follow here)."), "{before}");
     assert!(before.contains(warning), "until the hub answers: {before}");
     assert!(before.ends_with("Enter  open your Slack apps    Left  make a new Slack app    Esc  close"), "{before}");
     d.on_evt(&host(), ChatEvt::Workspaces { reply: connected_app(NAME) }, at);
     let body = drawn(&d).replace('\n', " ");
-    let keep = format!("Keep your Slack app (the bot that reads the channel and posts for your agents), the one a is connected to now, whose messages in Slack show the name {NAME}. Press Enter to open its page in Slack, add the permissions to post as you and install it again (step 2 shows how), then paste its codes here. Do not make a new Slack app: it would be in none of your private channels. Press Left to make one only if that Slack app is gone.");
-    assert!(body.contains(&format!("{keep}  Why: Ship of Tools posts your messages in Slack as you, and a holds no Slack code that works for that: it was connected before")), "{body}");
+    let keep = format!("Keep your Slack app (the bot that reads the channel and posts for your agents), the one a is connected to now (Slack calls it {NAME}). Press Enter to open its page in Slack, add the permissions to post as you and install it again (step 2 shows how), then paste its codes here. Do not make a new Slack app: it would be in none of your private channels. Press Left to make one only if that Slack app is gone.");
+    assert!(body.contains(&format!("{keep}  Why: Ship of Tools posts your messages in Slack as you, and a holds no Slack code that works for that: a was connected to Slack before")), "{body}");
     assert!(!body.contains("click Ship of Tools"), "the name a new app would have is not offered: {body}");
     assert!(body.ends_with("Enter  open your Slack app's page    Left  make a new Slack app    Esc  close"), "{body}");
     let rows = d.body().unwrap().lines(60, 12);
@@ -224,9 +224,9 @@ fn the_connect_step_says_each_reason_and_its_next_action() {
     let (d, _) = after_a_refused_post();
     assert_eq!(d.title(), " chat · post as you ");
     let body = drawn(&d).replace('\n', " ");
-    assert!(body.contains("Why: Ship of Tools posts your messages in Slack as you, and a holds no Slack code that works for that: it was connected before Ship of Tools posted as you, or Slack stopped accepting the code it had."), "both causes are said");
+    assert!(body.contains("Why: Ship of Tools posts your messages in Slack as you, and a holds no Slack code that works for that: a was connected to Slack before Ship of Tools could post as you, or Slack stopped accepting the code it had."), "both causes are said");
     assert!(body.contains("Press Enter: your list of Slack apps opens in your browser."));
-    assert!(body.contains(&format!("If {NAME} is not in the list, look there for the Slack app this workspace was connected with under another name.")));
+    assert!(body.contains(&format!("If {NAME} is not in the list, look there for the Slack app you connected this workspace with before, whatever its name, and click that one.")));
     assert!(body.contains("Enter  open your Slack apps    Left  make a new Slack app    Esc  close"));
 
     // Each step names itself and its keys.
@@ -662,7 +662,7 @@ fn the_connect_step_parks_the_channels_records() {
     d.layout(&mut fonts, body(), 1.0, body());
     assert_eq!(d.title(), " chat · connected ");
     assert!(d.placed_text().is_empty(), "the connected screen draws over no record");
-    assert!(drawn(&d).contains("It keeps that workspace's three Slack codes on a, readable only by your login there. Next, press Enter"));
+    assert!(drawn(&d).contains("It keeps that workspace's three Slack codes on a, readable only by your login there. It is now checking which of the projects' channels"));
 }
 
 #[test]
@@ -1000,6 +1000,10 @@ fn no_project_word_reaches_a_screen() {
     }
     c.answered(ChatReply::Done(ChatConnectRes { workspace: "T1".into(), name: Some("Alpha Lab".into()) }));
     picks.extend([c.title(), c.body().head, c.body().pin]);
+    // Its asks spent with no list: it could not check.
+    let t0 = Instant::now();
+    (0..14).for_each(|n| drop(c.ask_unread(t0 + Duration::from_secs(n))));
+    picks.extend([c.body().head, c.body().pin]);
     // A connect whose Slack app reads every mapped channel, is not in one, and is not in two, one known by its ID.
     for unread in [serde_json::json!([]), serde_json::json!([{ "id": "G0PRIVATE1", "name": "lab-private" }]), serde_json::json!([{ "id": "G0PRIVATE1", "name": "lab-private" }, { "id": "C0PUBLIC1" }])] {
         let mut c = step(ChatUnconfigured::NotConnected);
@@ -1146,7 +1150,12 @@ fn the_connected_screen_names_the_workspace_and_opens_its_list() {
     paste(&mut d, &app());
     d.on_evt(&host(), ChatEvt::Connect { reply: ChatReply::Done(ChatConnectRes { workspace: "TNEWW5".into(), name: Some("Delta Lab".into()) }) }, t);
     let shown_now = drawn_at(&d, 2000, 60);
-    assert!(shown_now.contains("Ship of Tools is connected to the Slack workspace Delta Lab. It keeps that workspace's three Slack codes on a, readable only by your login there. Next, press Enter to choose this project's channel in Delta Lab; each project picks its own."), "{shown_now}");
+    assert!(shown_now.contains("Ship of Tools is connected to the Slack workspace Delta Lab. It keeps that workspace's three Slack codes on a, readable only by your login there. It is now checking which of the projects' channels"), "{shown_now}");
+    assert!(shown_now.ends_with("Enter  open the channel list    Esc  close"), "{shown_now}");
+    let said = serde_json::from_value(serde_json::json!({ "default": "TNEWW5", "workspaces": [{ "id": "TNEWW5", "name": "Delta Lab", "running": true, "unread": [] }] })).unwrap();
+    d.on_evt(&host(), ChatEvt::Workspaces { reply: ChatReply::Done(said) }, t);
+    let shown_now = drawn_at(&d, 2000, 60);
+    assert!(shown_now.contains("Other projects keep the channels they have. Next, press Enter to choose this project's channel in Delta Lab; each project picks its own."), "{shown_now}");
     assert!(shown_now.ends_with("Enter  choose this project's channel in Delta Lab    Esc  close"), "{shown_now}");
     d.on_evt(&host(), answer("ROW1", serde_json::json!({ "state": "unmapped" })), t);
     d.tick(shown("ROW1"), t);
@@ -1288,9 +1297,11 @@ fn a_channel_the_connected_slack_app_is_not_in_says_so_and_what_to_type_in_slack
 
 /// B1 and S1: the connect's reply says nothing of the channels its Slack app cannot read. The connected screen asks
 /// `chat.workspaces` at once and each second after, at most 12 times, until the workspace's entry says; until then it says
-/// nothing of the other projects' channels. An entry that names none says they keep them; one that names some puts first,
-/// in view in a panel 60 cells by 12, which channel cannot be read and the line to type in Slack, naming the connected Slack
-/// app as the hub names it, and its keys no longer say to choose a channel.
+/// it is checking, and neither its words nor its keys offer to choose this project's channel (a person who did would lose the
+/// channel the connect exists to keep); asks that end with no list say it could not check and what to type in Slack for a
+/// project whose panel shows nothing. An entry that names none says the other projects keep their channels; one that names
+/// some puts first, in view in a panel 60 cells by 12, which channel cannot be read and the line to type in Slack, naming the
+/// connected Slack app as the hub names it, and its keys no longer say to choose a channel.
 #[test]
 fn the_connected_screen_names_the_channels_the_new_slack_app_is_not_in() {
     // The login gives the person's app another name than the hub's, `Ship of Tools`.
@@ -1301,9 +1312,9 @@ fn the_connected_screen_names_the_channels_the_new_slack_app_is_not_in() {
     let outs = d.on_evt(&host(), ChatEvt::Connect { reply: ChatReply::Done(ChatConnectRes { workspace: "T0AAAA".into(), name: Some("Alpha Lab".into()) }) }, t);
     assert_eq!(lists(&outs), 1, "the screen asks at once");
     let unknown = drawn(&d).replace('\n', " ");
-    assert!(unknown.contains("readable only by your login there. Next, press Enter to choose this project's channel in Alpha Lab; each project picks its own."), "{unknown}");
-    assert!(!unknown.contains("Other projects keep") && !unknown.contains(" is not in "), "nothing is said before it is known: {unknown}");
-    assert!(unknown.ends_with("Enter  choose this project's channel in Alpha Lab    Esc  close"), "{unknown}");
+    assert!(unknown.contains("readable only by your login there. It is now checking which of the projects' channels your Slack app (the bot that reads the channel and posts for your agents) can read; this takes a few seconds."), "{unknown}");
+    assert!(!unknown.contains("press Enter") && !unknown.contains("Other projects keep") && !unknown.contains(" is not in "), "nothing is offered or said of the channels before it is known: {unknown}");
+    assert!(unknown.ends_with("Enter  open the channel list    Esc  close"), "{unknown}");
     // An entry that does not say yet: asked again each second, 12 times in all, and never between.
     let entry = |unread: serde_json::Value| {
         let res = serde_json::from_value(serde_json::json!({ "default": "T0AAAA", "workspaces": [{ "id": "T0AAAA", "name": "Alpha Lab", "running": true, "app_name": NAME, "app_id": "A0NEW", "unread": unread }] })).unwrap();
@@ -1314,23 +1325,67 @@ fn the_connected_screen_names_the_channels_the_new_slack_app_is_not_in() {
     assert_eq!(lists(&d.tick(shown("ROW1"), t + Duration::from_millis(900)).0), 0, "not before its pace");
     let asked: usize = (1..=30).map(|n| lists(&d.tick(shown("ROW1"), t + Duration::from_secs(n)).0)).sum();
     assert_eq!(asked + 1, 12, "12 asks in all");
-    assert!(drawn(&d).replace('\n', " ").contains("each project picks its own"), "and the screen still says nothing false");
+    // The asks ended with no list: it says it could not check, and what to type for a project whose panel shows nothing.
+    let unchecked = drawn(&d).replace('\n', " ");
+    assert!(unchecked.contains(&format!("readable only by your login there. Ship of Tools could not check which of the projects' channels your Slack app (the bot that reads the channel and posts for your agents) can read. If a project's panel shows nothing, open its channel in Slack and type /invite @{NAME}.")), "{unchecked}");
+    assert!(!unchecked.contains("press Enter") && !unchecked.contains("checking"), "{unchecked}");
+    assert!(unchecked.ends_with("Enter  open the channel list    Esc  close"), "{unchecked}");
     // The entry says the app reads every mapped channel: the other projects keep theirs.
     d.on_evt(&host(), entry(serde_json::json!([])), t);
     assert!(drawn(&d).replace('\n', " ").contains("readable only by your login there. Other projects keep the channels they have. Next, press Enter"));
     // It names one: what to do leads, in view at once, with the Slack app named as the hub names it.
     d.on_evt(&host(), entry(serde_json::json!([{ "id": "G0PRIVATE1", "name": "lab-private" }])), t);
     let body = d.body().unwrap();
-    let one = format!("Your Slack app (the bot that reads the channel and posts for your agents) is not in #lab-private yet, so that project shows nothing. To keep its channel, open #lab-private in Slack and type /invite @{NAME}. Do not choose another channel here. (A new Slack app is in no channel until someone in the channel invites it.)\n\nShip of Tools is connected to the Slack workspace Alpha Lab. It keeps that workspace's three Slack codes on a, readable only by your login there.");
+    let one = format!("Your Slack app (the bot that reads the channel and posts for your agents) is not in #lab-private yet, so the project that uses #lab-private shows nothing here. To keep that channel, open #lab-private in Slack and type /invite @{NAME} in its message box. Do not choose another channel here. (A new Slack app is in no channel until someone in the channel invites it.)\n\nShip of Tools is connected to the Slack workspace Alpha Lab. It keeps that workspace's three Slack codes on a, readable only by your login there.");
     assert_eq!(body.head, one);
     assert_eq!(body.pin, "Enter  open the channel list    Esc  close");
     let rows = body.lines(60, 12);
     let shown_first = rows[..12 - 2].join(" ");
-    assert!(rows[0].starts_with("Your Slack app") && shown_first.contains("#lab-private") && shown_first.contains(&format!("type /invite @{NAME}.")), "{rows:#?}");
-    // Several, one known only by its ID.
+    assert!(rows[0].starts_with("Your Slack app") && shown_first.contains("#lab-private") && shown_first.contains(&format!("type /invite @{NAME} in its message box.")), "{rows:#?}");
+    // Several, one known only by its ID: Slack's search does not find a channel by its ID, so the address that opens it is given.
     d.on_evt(&host(), entry(serde_json::json!([{ "id": "G0PRIVATE1", "name": "lab-private" }, { "id": "G0PRIVATE2", "name": "lab-data" }, { "id": "C0PUBLIC1" }])), t);
-    assert!(d.body().unwrap().head.starts_with(&format!("Your Slack app (the bot that reads the channel and posts for your agents) is not in #lab-private, #lab-data and the channel with ID C0PUBLIC1 yet, so those projects show nothing. To keep them, open each of those channels in Slack and type /invite @{NAME}. Do not choose other channels here.")), "{}", d.body().unwrap().head);
-    assert_eq!(lists(&d.tick(shown("ROW1"), t + Duration::from_secs(60)).0), 0, "a known list ends the asks");
+    assert!(d.body().unwrap().head.starts_with(&format!("Your Slack app (the bot that reads the channel and posts for your agents) is not in #lab-private, #lab-data and the channel with ID C0PUBLIC1 (to find it, open app.slack.com/client/T0AAAA/C0PUBLIC1 in your web browser) yet, so the projects that use them show nothing here. To keep those channels, open each one in Slack and type /invite @{NAME} in its message box. Do not choose other channels here.")), "{}", d.body().unwrap().head);
+    let (mut d, t) = in_step_as("", "not_connected");
+    for token in [bot(), user(), app()] {
+        paste(&mut d, &token);
+    }
+    d.on_evt(&host(), ChatEvt::Connect { reply: ChatReply::Done(ChatConnectRes { workspace: "T0AAAA".into(), name: Some("Alpha Lab".into()) }) }, t);
+    d.on_evt(&host(), entry(serde_json::json!([{ "id": "C0PUBLIC1" }])), t);
+    let head = d.body().unwrap().head;
+    assert!(head.starts_with("Your Slack app (the bot that reads the channel and posts for your agents) is not in the channel with ID C0PUBLIC1 (to find it, open app.slack.com/client/T0AAAA/C0PUBLIC1 in your web browser) yet, so the project that uses the channel with ID C0PUBLIC1 (to find it, open app.slack.com/client/T0AAAA/C0PUBLIC1 in your web browser) shows nothing here."), "{head}");
+}
+
+/// The connected screen's asks end when the entry says which channels are unreadable (a known list, empty or not) and when
+/// an older hub has no such answer; each ends them at once, so nothing is asked after it however long the screen stays, and an
+/// older hub's screen says it could not check.
+#[test]
+fn the_connected_screens_asks_end_with_a_known_list_or_an_older_hub() {
+    let connect = || {
+        let (mut d, t) = in_step_as("", "not_connected");
+        for token in [bot(), user(), app()] {
+            paste(&mut d, &token);
+        }
+        let outs = d.on_evt(&host(), ChatEvt::Connect { reply: ChatReply::Done(ChatConnectRes { workspace: "T0AAAA".into(), name: Some("Alpha Lab".into()) }) }, t);
+        assert_eq!(lists(&outs), 1, "the screen asks at once");
+        (d, t)
+    };
+    let entry = |unread: serde_json::Value| {
+        let res = serde_json::from_value(serde_json::json!({ "default": "T0AAAA", "workspaces": [{ "id": "T0AAAA", "name": "Alpha Lab", "running": true, "unread": unread }] })).unwrap();
+        ChatEvt::Workspaces { reply: ChatReply::Done(res) }
+    };
+    for list in [serde_json::json!([]), serde_json::json!([{ "id": "G0PRIVATE1", "name": "lab-private" }])] {
+        let (mut d, t) = connect();
+        assert_eq!(lists(&d.tick(shown("ROW1"), t + Duration::from_secs(1)).0), 1, "the second ask");
+        d.on_evt(&host(), entry(list.clone()), t + Duration::from_secs(1));
+        assert_eq!(lists(&d.tick(shown("ROW1"), t + Duration::from_secs(5)).0), 0, "a known list {list} ends the asks");
+        assert_eq!(d.next_ask(), None, "{list}: and wakes nothing");
+    }
+    let (mut d, t) = connect();
+    d.on_evt(&host(), ChatEvt::Workspaces { reply: ChatReply::Unsupported }, t);
+    assert_eq!(lists(&d.tick(shown("ROW1"), t + Duration::from_secs(5)).0), 0, "an older hub ends the asks");
+    assert_eq!(d.next_ask(), None);
+    let said = drawn(&d).replace('\n', " ");
+    assert!(said.contains("could not check which of the projects' channels") && !said.contains("checking"), "{said}");
 }
 
 /// S2: a channel the connected Slack app cannot read names that app in its invite as the hub names it: until the hub's

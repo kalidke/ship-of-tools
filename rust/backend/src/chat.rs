@@ -666,8 +666,12 @@ impl<L: Listener> Chat<L> {
     }
 
     /// Keeps what a connect's task found `workspace`'s Slack app cannot read, read through `service`, in place of what an
-    /// earlier task found.
+    /// earlier task found, but only while `service` is the workspace's running one: a task of an older connect, ending after
+    /// a newer connect's, keeps nothing, and nothing is kept for a workspace that is gone.
     pub(crate) fn keep_unread(&self, workspace: &str, service: &Weak<L>, channels: Vec<ChatUnread>) {
+        if !self.service_of(workspace).is_some_and(|s| std::ptr::eq(Arc::as_ptr(&s), service.as_ptr())) {
+            return;
+        }
         self.unread.lock().unwrap_or_else(|e| e.into_inner()).found.insert(workspace.to_string(), (service.clone(), channels));
     }
 

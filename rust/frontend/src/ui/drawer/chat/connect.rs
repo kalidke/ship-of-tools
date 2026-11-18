@@ -413,16 +413,16 @@ impl Connect {
                 out.push(if self.reason == ChatUnconfigured::WrongApp {
                     format!("The chat stopped: the \"App-Level Token\" it holds belongs to another Slack app than your Slack app (the bot that reads the channel and posts for your agents), so the chat would have received that other app's messages. To fix it, paste your own Slack app's codes: press Enter, and your list of Slack apps opens in your browser. Click {name}, then copy its three Slack codes again, as steps 2 and 3 show (they follow here).")
                 } else if self.post_in.is_some() {
-                    let why = format!("Why: Ship of Tools posts your messages in Slack as you, and {c} holds no Slack code that works for that: it was connected before Ship of Tools posted as you, or Slack stopped accepting the code it had.");
+                    let why = format!("Why: Ship of Tools posts your messages in Slack as you, and {c} holds no Slack code that works for that: {c} was connected to Slack before Ship of Tools could post as you, or Slack stopped accepting the code it had.");
                     let app = self.about.as_ref().filter(|a| a.app_id.is_some());
                     let keep = match app.and_then(|a| a.app_name.as_deref()).map(cell_row) {
                         // The Slack app connected now, which keeping keeps in every channel it is in; its page opens by its id.
-                        Some(named) => format!("Keep {APP}, the one {c} is connected to now, whose messages in Slack show the name {named}."),
+                        Some(named) => format!("Keep {APP}, the one {c} is connected to now (Slack calls it {named})."),
                         None if app.is_some() => format!("Keep {APP}, the one {c} is connected to now."),
                         None => String::new(),
                     };
                     if keep.is_empty() {
-                        format!("Press Enter: your list of Slack apps opens in your browser. In it, click {name}, {APP}, and copy its codes again, as steps 2 and 3 show (they follow here). If {name} is not in the list, look there for the Slack app this workspace was connected with under another name. Press Left to make a new one (step 1) only if there is none: a new Slack app is in none of your private channels.\n\n{why}")
+                        format!("Press Enter: your list of Slack apps opens in your browser. In it, click {name}, {APP}, and copy its codes again, as steps 2 and 3 show (they follow here). If {name} is not in the list, look there for the Slack app you connected this workspace with before, whatever its name, and click that one. Press Left to make a new one (step 1) only if there is none: a new Slack app is in none of your private channels.\n\n{why}")
                     } else {
                         format!("{keep} Press Enter to open its page in Slack, add the permissions to post as you and install it again (step 2 shows how), then paste its codes here. Do not make a new Slack app: it would be in none of your private channels. Press Left to make one only if that Slack app is gone.\n\n{why}")
                     }
@@ -480,20 +480,35 @@ impl Connect {
                 let (w, label) = (workspace_words(id, wname.as_deref()), workspace_label(id, wname.as_deref()));
                 let kept = format!("Ship of Tools is connected to {w}. It keeps that workspace's three Slack codes on {c}, readable only by your login there.");
                 let unread = self.about.as_ref().and_then(|a| a.unread.as_deref());
+                let app = self.about.as_ref().and_then(|a| a.app_name.as_deref()).map_or(name, |n| cell_row(n).into_owned());
                 match unread {
                     // What a person must do first leads: invite the Slack app where it is not, and choose no other channel.
                     Some(list) if !list.is_empty() => {
-                        let app = self.about.as_ref().and_then(|a| a.app_name.as_deref()).map_or(name, |n| cell_row(n).into_owned());
-                        let labels: Vec<String> = list.iter().map(|u| u.name.as_deref().map_or_else(|| format!("the channel with ID {}", u.id.as_str()), |n| format!("#{}", cell_row(n)))).collect();
+                        let labels: Vec<String> = list
+                            .iter()
+                            .map(|u| match u.name.as_deref() {
+                                Some(n) => format!("#{}", cell_row(n)),
+                                // Slack's search does not find a channel by its ID: the address that opens it does.
+                                None => format!("the channel with ID {0} (to find it, open app.slack.com/client/{id}/{0} in your web browser)", u.id.as_str()),
+                            })
+                            .collect();
                         out.push(unread_words(&labels, &app));
                         out.push(kept);
                         "Enter  open the channel list    Esc  close".to_string()
                     }
-                    // Until the hub says which channels the Slack app reads, nothing is said of the other projects' channels.
-                    known => {
-                        let others = if known.is_some() { " Other projects keep the channels they have." } else { "" };
-                        out.push(format!("{kept}{others} Next, press Enter to choose this project's channel in {label}; each project picks its own."));
+                    Some(_) => {
+                        out.push(format!("{kept} Other projects keep the channels they have. Next, press Enter to choose this project's channel in {label}; each project picks its own."));
                         format!("Enter  choose this project's channel in {label}    Esc  close")
+                    }
+                    // Until the hub says which channels the Slack app reads, nothing offers to choose this project's channel: the
+                    // person could choose away the one this connect exists to keep.
+                    None if self.asking.is_some() => {
+                        out.push(format!("{kept} It is now checking which of the projects' channels {APP} can read; this takes a few seconds."));
+                        "Enter  open the channel list    Esc  close".to_string()
+                    }
+                    None => {
+                        out.push(format!("{kept} Ship of Tools could not check which of the projects' channels {APP} can read. If a project's panel shows nothing, open its channel in Slack and type /invite @{app}."));
+                        "Enter  open the channel list    Esc  close".to_string()
                     }
                 }
             }
@@ -503,12 +518,12 @@ impl Connect {
 }
 
 /// What the connected screen says first of the mapped channels the Slack app connected cannot read (`labels`, each as a
-/// sentence names a channel; `app`, the name to invite it by): which, what that costs, and what to type in Slack, before
-/// any choice of channel. Never empty.
+/// sentence names a channel and, for one known only by its ID, how to find it; `app`, the name to invite it by): which, what
+/// that costs, and what to type in Slack, before any choice of channel. Never empty.
 fn unread_words(labels: &[String], app: &str) -> String {
     match labels {
-        [one] => format!("{} is not in {one} yet, so that project shows nothing. To keep its channel, open {one} in Slack and type /invite @{app}. Do not choose another channel here. (A new Slack app is in no channel until someone in the channel invites it.)", cap(APP)),
-        [rest @ .., last] => format!("{} is not in {} and {last} yet, so those projects show nothing. To keep them, open each of those channels in Slack and type /invite @{app}. Do not choose other channels here. (A new Slack app is in no channel until someone in the channel invites it.)", cap(APP), rest.join(", ")),
+        [one] => format!("{} is not in {one} yet, so the project that uses {one} shows nothing here. To keep that channel, open {one} in Slack and type /invite @{app} in its message box. Do not choose another channel here. (A new Slack app is in no channel until someone in the channel invites it.)", cap(APP)),
+        [rest @ .., last] => format!("{} is not in {} and {last} yet, so the projects that use them show nothing here. To keep those channels, open each one in Slack and type /invite @{app} in its message box. Do not choose other channels here. (A new Slack app is in no channel until someone in the channel invites it.)", cap(APP), rest.join(", ")),
         [] => String::new(),
     }
 }

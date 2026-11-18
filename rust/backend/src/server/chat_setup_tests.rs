@@ -1357,8 +1357,9 @@ const PUBLIC: &str = "C0PUBLIC1";
 
 /// Which app is in which channel, by (app, channel).
 type Members = Arc<Mutex<Vec<(&'static str, String)>>>;
-/// The channels whose `conversations.info` the new app asks and is never answered.
-type Stalled = Arc<Mutex<Vec<&'static str>>>;
+/// The channels whose `conversations.info` the new app asks and is not answered: with no status, never; with one, that
+/// HTTP status and no body.
+type Stalled = Arc<Mutex<Vec<(&'static str, Option<u16>)>>>;
 
 /// `apps` for the private channel `#lab-private` and the public `#lab-general`, the old app in both.
 async fn two_apps() -> (FakeSlack, Members, Stalled) {
@@ -1370,7 +1371,7 @@ async fn two_apps() -> (FakeSlack, Members, Stalled) {
 /// to an app outside a channel, as its documentation gives them: a private channel is not listed, and its info, history
 /// and a bot's post are `channel_not_found`; a public one is listed with `is_member: false`, its info answers, and its
 /// history and a bot's post are `not_in_channel`. The person is in all. The new app's `conversations.info` of a channel
-/// `stalled` lists is never answered.
+/// `stalled` lists is not answered as above.
 async fn apps(all: Vec<(String, String, bool)>) -> (FakeSlack, Members, Stalled) {
     let members: Members = Arc::new(Mutex::new(all.iter().map(|(id, ..)| ("old", id.clone())).collect()));
     let stalled: Stalled = Arc::default();
@@ -1405,7 +1406,10 @@ async fn apps(all: Vec<(String, String, bool)>) -> (FakeSlack, Members, Stalled)
                 let listed: Vec<Value> = all.iter().filter(|(id, _, private)| !private || member(app, id)).map(channel).collect();
                 Reply::json(&json!({"ok": true, "channels": listed, "response_metadata": {"next_cursor": ""}}))
             }
-            "conversations.info" if app == "new" && hung.lock().unwrap().iter().any(|c| *c == wanted) => Reply::Hang,
+            "conversations.info" if app == "new" && hung.lock().unwrap().iter().any(|(c, _)| *c == wanted) => {
+                let how = hung.lock().unwrap().iter().find(|(c, _)| *c == wanted).and_then(|(_, status)| *status);
+                how.map_or(Reply::Hang, |code| Reply::Status { code, headers: Vec::new(), body: Vec::new() })
+            }
             "conversations.info" => match facts(&wanted) {
                 Some(f) if !f.2 || member(app, &f.0) => Reply::json(&json!({"ok": true, "channel": channel(f)})),
                 _ => refuse("channel_not_found"),
@@ -1556,7 +1560,7 @@ async fn a_new_slack_app_outside_a_mapped_channel_is_told_not_in_channel_until_i
 #[tokio::test(flavor = "multi_thread")]
 async fn a_connect_replies_before_its_mapped_channels_are_read() {
     let (fake, _, stalled) = two_apps().await;
-    stalled.lock().unwrap().extend([PRIVATE, PUBLIC]);
+    stalled.lock().unwrap().extend([(PRIVATE, None), (PUBLIC, None)]);
     let on = on_apps(&fake, &[PRIVATE, PUBLIC]).await;
     let mut conn = on.conn;
     let asked = std::time::Instant::now();
@@ -1570,14 +1574,16 @@ async fn a_connect_replies_before_its_mapped_channels_are_read() {
 
 /// The reads of a connect's task end at their bound in time: a channel whose `conversations.info` is never answered is cut
 /// off at the chat's wait (shortened here), and what was found by then is told, since a list that names a channel is true
-/// however it ends; a cut that found none leaves the list not known, so an empty list only ever means every mapped channel
+/// however it ends; a cut that found none leaves the list not known, and so does a read Slack refused (here a rate limit on
+/// the first channel's, which holds the second's too) that found none, so an empty list only ever means every mapped channel
 /// was read and is readable.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_reads_of_the_channels_an_app_cannot_read_end_at_their_bound() {
     let wait = std::time::Duration::from_millis(400);
-    for (stall, told) in [(PUBLIC, Some(json!([{"id": PRIVATE, "name": "lab-private"}]))), (PRIVATE, None)] {
+    let cases = [(PUBLIC, None, Some(json!([{"id": PRIVATE, "name": "lab-private"}]))), (PRIVATE, None, None), (PRIVATE, Some(429), None)];
+    for (stall, status, told) in cases {
         let (fake, _, stalled) = two_apps().await;
-        stalled.lock().unwrap().push(stall);
+        stalled.lock().unwrap().push((stall, status));
         let on = on_apps(&fake, &[PRIVATE, PUBLIC]).await;
         on.chat.set_unread_wait(wait);
         let arm = Holds::here().arm("chat.unread.found").key(Arc::as_ptr(&on.chat) as usize).hold(1);
@@ -1589,7 +1595,7 @@ async fn the_reads_of_the_channels_an_app_cannot_read_end_at_their_bound() {
         assert!(took < wait * 4, "{stall} stalled: the reads ended {took:?} after the reply, past their bound of {wait:?}");
         arm.release(0);
         let listed = conn.ask(4, op::CHAT_WORKSPACES, json!({})).await;
-        assert_eq!(listed["workspaces"][0].get("unread"), told.as_ref(), "{stall} stalled: {listed}");
+        assert_eq!(listed["workspaces"][0].get("unread"), told.as_ref(), "{stall} stalled ({status:?}): {listed}");
     }
 }
 
@@ -1613,6 +1619,33 @@ async fn the_channels_an_app_cannot_read_are_at_most_max_watched_with_bounded_na
         let name = u["name"].as_str().unwrap_or_default();
         assert!(!name.is_empty() && name.len() <= MAX_NAME, "{}: a name of {} bytes", u["id"], name.len());
     }
+}
+
+/// An older connect's task, ending after a newer connect's, keeps nothing: the list belongs to the service it was read for, so
+/// the newer connect's known list (here empty: its app reads both channels) is not replaced by one for a service that has
+/// stopped, which `chat.workspaces` would tell as not known. The older task is held between its reads and its keeping
+/// (`chat.unread.read`) until the newer connect's list is kept (`chat.unread.found`).
+#[tokio::test(flavor = "multi_thread")]
+async fn an_older_connects_task_never_replaces_a_newer_connects_list() {
+    let (fake, ..) = two_apps().await;
+    let on = on_apps(&fake, &[PRIVATE, PUBLIC]).await;
+    let key = Arc::as_ptr(&on.chat) as usize;
+    let read = Holds::here().arm("chat.unread.read").key(key).hold(1);
+    let found = Holds::here().arm("chat.unread.found").key(key).hold(0);
+    let mut conn = on.conn;
+    // The first connect: the new app, which is in neither channel; its reads end and its task is held before it keeps them.
+    conn.ask(3, op::CHAT_CONNECT, connect_with(&bot("new"), &user("new"), &app("new"))).await;
+    read.reached_async(0).await;
+    // The second connect: an app in both, whose reload stops the first's service; its task keeps its list.
+    conn.ask(4, op::CHAT_CONNECT, connect_with(&bot("old"), &user("old"), &app("old"))).await;
+    found.reached_async(0).await;
+    let listed = conn.ask(5, op::CHAT_WORKSPACES, json!({})).await;
+    assert_eq!(listed["workspaces"][0]["unread"], json!([]), "the newer connect's list: {listed}");
+    // The first connect's task goes on and keeps nothing.
+    read.release(0);
+    found.reached_async(1).await;
+    let listed = conn.ask(6, op::CHAT_WORKSPACES, json!({})).await;
+    assert_eq!(listed["workspaces"][0]["unread"], json!([]), "the older task replaced it: {listed}");
 }
 
 /// What a connect's task found is told only while the service it read through runs: a reload that starts the workspace

@@ -191,14 +191,17 @@ fn mapped_channels(chat: &Arc<Chat>, workspace: &str) -> Vec<(String, Option<Str
 /// Starts, on a task of its own, the reads that find which of `channels` (each with the name the app before had for it)
 /// the Slack app `workspace` runs now cannot read, kept for `chat.workspaces` against that app's service
 /// (`Chat::keep_unread`); nothing when the workspace does not run. The task holds the chat and the service only weakly, so
-/// neither waits on it, and a stopped service's reads end at once.
+/// neither waits on it. A stopped service refuses the task's next read at once; a read already sent runs to `wait`.
 fn find_unread(chat: &Arc<Chat>, workspace: &str, channels: Vec<(String, Option<String>)>) {
     let Some(service) = chat.service_of(workspace) else { return };
     let Ok(api) = service.api() else { return };
     let (held, of, workspace, wait) = (Arc::downgrade(chat), Arc::downgrade(&service), workspace.to_string(), chat.unread_wait());
     drop(service);
     drop(tokio::spawn(async move {
-        if let (Some(found), Some(chat)) = (unread(&api, channels, wait).await, held.upgrade()) {
+        let found = unread(&api, channels, wait).await;
+        // A test's hold point, keyed by the chat's address: the reads have ended and nothing is kept yet.
+        sot_platform::hold_point_async!("chat.unread.read", held.as_ptr() as usize);
+        if let (Some(found), Some(chat)) = (found, held.upgrade()) {
             chat.keep_unread(&workspace, &of, found);
         }
         // A test's hold point, keyed by the chat's address: the reads have ended, and what they found is kept or not.
