@@ -417,6 +417,42 @@ async fn a_filing_in_flight_at_an_end_returns_before_a_reload_starts_the_next_se
     assert_eq!(w.filed(), vec![stamp(1)], "the post was filed twice");
 }
 
+/// L9 rule 2 in the moment after a service ended on its own and before its owner turned the unit off (the owner held at
+/// `chat.owner.end`, the unit still `Running` the ended service): a reload stops that unit as one that is not running,
+/// waits for its filing in flight, and starts the workspace again; it neither keeps the ended service nor leaves the
+/// workspace off.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reload_before_the_owner_sees_its_services_end_waits_for_the_filing_and_starts_it_again() {
+    let w = world(true).await;
+    *w.lv.bot_app.lock().unwrap() = Some("A0OWN".into());
+    let chat = w.start(&w.fake).await;
+    let (arm, service) = hold_a_filing(&w, &chat).await;
+    serve(&w.lv, posts(&[1]));
+    let owner = Holds::here().arm("chat.owner.end").key(Arc::as_ptr(chat.hub()) as usize).hold(1);
+    // An envelope of another app ends the service while the filing is held.
+    let mut other = message("C0AAAA", 2);
+    other["payload"]["api_app_id"] = json!("A0OTHER");
+    other["envelope_id"] = json!("e2");
+    w.lv.feed.send(other).unwrap();
+    assert!(soon(|| service.ended() == Some("wrong_app")).await, "the service did not end");
+    owner.reached_async(0).await;
+    assert_eq!(chat.status(), Status::Running, "the unit no longer holds the ended service");
+    let reloading = tokio::spawn({
+        let (chat, rows) = (chat.clone(), w.rows.clone());
+        async move {
+            chat.reload_for(&chat.setup().await, &rows, "T0AAAA").await;
+            chat.status()
+        }
+    });
+    // The reload either answers at once, having kept the unit, or begins its stop, which the held filing holds.
+    until("the reload's decision", || reloading.is_finished() || chat.status() == Status::Stopping).await;
+    assert!(!reloading.is_finished(), "the reload went on while the filing was in flight: it kept the unit of an ended service");
+    owner.release(0);
+    arm.release(0);
+    assert_eq!(tokio::time::timeout(LONG, reloading).await.unwrap().unwrap(), Status::Running, "the workspace was not started again");
+    assert_eq!(w.filed(), vec![stamp(1)], "the reload answered before the filing in flight was appended");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_pass_in_flight_at_a_step_down_ends_with_the_delivery() {
     let w = world(true).await;

@@ -1667,6 +1667,63 @@ async fn a_removed_workspaces_stuck_stop_is_still_reported_at_retirement() {
     assert!(!chat.wait_retired(Duration::ZERO), "retirement reported complete while B's listener stop is still in flight");
 }
 
+/// L9 rule 2: a workspace whose secrets file is gone is stopped by the next reload and, once its stop ends, removed from
+/// the units, so it reads `Secrets(Missing)` (what brings a window the Connect step), not `Stopped`.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_workspace_whose_file_is_gone_reads_missing_once_its_stop_ends() {
+    let home = two_files();
+    let s = starts();
+    let chat = Chat::begin(&home.env, &|p| config::read_file(p), &Registry::new(), Starts::starter(&s, "", "", ""), setup::Verifier::none(), HUB_CHECK);
+    assert_eq!(settled(&chat).await, Status::Running);
+    until("both running", || chat.status_of("T0BBBB") == Status::Running).await;
+    std::fs::remove_file(home.config().join(OTHER_FILE)).unwrap();
+    reload_of(&chat, "T0AAAA").await;
+    until("B removed", || chat.status_of("T0BBBB") == Status::Secrets(ConfigError::Missing)).await;
+    assert!(chat.unit("T0BBBB").is_none());
+}
+
+/// A starter whose first listener for `T0AAAA` stops only on a permit of `gate`; each listener it makes for `T0AAAA` is
+/// kept in `made`, in the order of its starts.
+fn gated_a(gate: &Arc<tokio::sync::Semaphore>, made: &Arc<Mutex<Vec<Arc<Fake>>>>) -> Starter<Fake> {
+    let (gate, made) = (gate.clone(), made.clone());
+    Box::new(move |workspace, _, _| {
+        let l = if workspace == "T0AAAA" {
+            let mut list = made.lock().unwrap();
+            let l = Arc::new(Fake { gate: list.is_empty().then(|| gate.clone()), ..Fake::default() });
+            list.push(l.clone());
+            l
+        } else {
+            Arc::new(Fake::default())
+        };
+        Box::pin(async move { Ok(l) })
+    })
+}
+
+/// L9 rule 2: two reloads that both stop A while its stop is held make two waits on one old unit. Once the stop ends,
+/// one wait replaces it, and the other, finding that the units no longer hold the unit it waited for, starts nothing: A
+/// is started once more, from the last load's plan, and no listener is left running unstopped.
+#[tokio::test(start_paused = true)]
+async fn two_reloads_waiting_on_one_stop_start_the_workspace_once_from_the_last_plan() {
+    let home = two_files();
+    let (gate, made) = (Arc::new(tokio::sync::Semaphore::new(0)), Arc::new(Mutex::new(Vec::new())));
+    let chat = Chat::begin(&home.env, &|p| config::read_file(p), &Registry::new(), gated_a(&gate, &made), setup::Verifier::none(), HUB_CHECK);
+    assert_eq!(settled(&chat).await, Status::Running);
+    until("both running", || chat.status_of("T0BBBB") == Status::Running).await;
+    home.rekey(SECRETS_FILE, "cccc");
+    reload_of(&chat, "T0BBBB").await;
+    assert_eq!(chat.status_of("T0AAAA"), Status::Stopping);
+    home.rekey(SECRETS_FILE, "dddd");
+    reload_of(&chat, "T0BBBB").await;
+    gate.add_permits(1);
+    until("A running", || chat.status_of("T0AAAA") == Status::Running).await;
+    // Paused time moves on only once every task is idle, so both waits have ended when this sleep does.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let list = made.lock().unwrap().clone();
+    assert_eq!(list.len(), 2, "A was started {} times over one old unit", list.len());
+    assert!(Arc::ptr_eq(&chat.service_of("T0AAAA").unwrap(), &list[1]));
+    assert!(chat.unit("T0AAAA").unwrap().plan == chat.units().plans["T0AAAA"], "the replacement is not the last load's plan");
+}
+
 /// L9 rule 2: a reload whose load finds no lock folder stops every workspace, its plan unchanged: none is kept running
 /// while the chat answers `Failed("lock")`.
 #[tokio::test(flavor = "multi_thread")]

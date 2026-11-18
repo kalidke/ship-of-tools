@@ -40,11 +40,19 @@ const _: () = assert!(STOP_WITHIN.as_millis() < RETIRE_WAIT.as_millis());
 /// What the composition needs of a running service. `Service` is the product; the test's listener is the other.
 pub(crate) trait Listener: Send + Sync + 'static {
     fn stop(&self, within: Duration) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+    /// Whether the service has ended on its own. Its unit stays `Running` until the owner sees the end and turns it off,
+    /// so a reload reads this to tell a running listener from an ended one.
+    fn ended(&self) -> bool {
+        false
+    }
 }
 
 impl Listener for Service {
     fn stop(&self, within: Duration) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
         Box::pin(Service::stop(self, within))
+    }
+    fn ended(&self) -> bool {
+        Service::ended(self).is_some()
     }
 }
 
@@ -128,14 +136,20 @@ struct Shared<L> {
     launches: AtomicU64,
 }
 
-impl<L> Shared<L> {
+impl<L: Listener> Shared<L> {
     fn new(off: Status, plan: Plan) -> Arc<Self> {
         Arc::new(Shared { plan, phase: Mutex::new(Phase::Off(off)), off: Condvar::new(), started: Notify::new(), launches: AtomicU64::new(0) })
     }
 
-    /// Whether a reload keeps this unit for `plan`: the same plan, and a listener running or starting.
+    /// Whether a reload keeps this unit for `plan`: the same plan, and a listener starting, or running and not ended on
+    /// its own (an ended one goes, so its stop waits for its filing in flight and its workspace starts again).
     fn keeps(&self, plan: &Plan) -> bool {
-        self.plan == *plan && matches!(*self.lock(), Phase::Running(_) | Phase::Starting(..))
+        self.plan == *plan
+            && match &*self.lock() {
+                Phase::Running(l) => !l.ended(),
+                Phase::Starting(..) => true,
+                _ => false,
+            }
     }
 
     fn lock(&self) -> MutexGuard<'_, Phase<L>> {
@@ -313,7 +327,7 @@ struct Load {
 }
 
 /// One unit per admitted workspace, each `Off(Stopped)` until it is launched.
-fn units_of<L>(plans: &[(String, Plan)]) -> BTreeMap<String, Arc<Shared<L>>> {
+fn units_of<L: Listener>(plans: &[(String, Plan)]) -> BTreeMap<String, Arc<Shared<L>>> {
     plans.iter().map(|(w, p)| (w.clone(), Shared::new(Status::Stopped, p.clone()))).collect()
 }
 
@@ -763,13 +777,14 @@ impl<L: Listener> Chat<L> {
 
     /// The reload, under the setup lock `held`, restarting only the workspaces it changes (C6). In order: the boot's load
     /// on the blocking pool (it canonicalizes on the shared home); then one step under the units lock, only while the chat
-    /// is not closed: the units that go (a plan changed, a workspace with no file now, or a listener neither running nor
-    /// starting) stopped as a retirement stops one and left in the map, stopping or off, a kept unit the same `Arc` (its
-    /// listener, owner, watches and mail untouched), each new workspace given a unit and launched, and the configuration
-    /// and the last load's plans swapped; then `started` with the launched workspaces (the product's starts their owners).
-    /// Each going unit is then waited for alone, on a task of its own ([`Chat::restart_when_stopped`]), one already
-    /// stopping too (a service that ended on its own, or a stop an earlier reload gave up on, which only its own
-    /// workspace's reply then waits for again). A closed chat reads and swaps nothing.
+    /// is not closed: the units that go (a plan changed, a workspace with no file now, a listener neither running nor
+    /// starting, or one that ended on its own before its owner turned the unit off) stopped as a retirement stops one and
+    /// left in the map, stopping or off, a kept unit the same `Arc` (its listener, owner, watches and mail untouched), each
+    /// new workspace given a unit and launched, and the configuration and the last load's plans swapped; then `started`
+    /// with the launched workspaces (the product's starts their owners). Each going unit is then waited for alone, on a
+    /// task of its own ([`Chat::restart_when_stopped`]), one already stopping too (a service its owner is turning off after
+    /// it ended on its own, or a stop an earlier reload gave up on, which only its own workspace's reply then waits for
+    /// again). A closed chat reads and swaps nothing.
     /// Returns once `workspace`'s own wait ended, when it has one, and then its start, when it was launched or its stop
     /// ended, each within [`SETUP_WAIT`] (logged); every other wait and start goes on, and a caller reads each workspace's
     /// status after it.

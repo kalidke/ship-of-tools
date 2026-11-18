@@ -305,8 +305,8 @@ daemon's log, on the "project chat" line, as a fixed explanation that starts wit
 (`chat.toml:` or `chat-secrets.toml:`) and gives the mapping's number or the line, or the name of a key that the other
 file takes (`channels` in the secrets file, say), never a value; `sotd log-path` prints the log's path. A workspace's
 start that Slack refuses or cannot reach (a rejected token, no network) is logged as "a workspace's chat did not start"
-with the workspace's ID, and stays failed until the daemon restarts or the chat starts again: for now every connect and
-every pairing from a window starts every workspace again.
+with the workspace's ID, and stays failed until the daemon restarts or a window's next connect, or next pairing that
+changes `chat.toml`, starts it again: each of those starts again every workspace whose chat is not running.
 
 A window can pair a project's folder with a channel, or unpair it, and the daemon then rewrites `chat.toml` whole and
 starts the chat again from the two files, with no restart; the Chat drawer's channel list sends this request. The daemon keeps every key
@@ -317,8 +317,10 @@ a `chat.toml` the daemon refuses is never rewritten. A pairing that changes noth
 workspace of its channel (none means the one `chat.toml` names), and a channel that workspace does not hold is refused.
 A pairing or a connect restarts only the workspaces whose secrets or mappings it changed (a workspace whose chat is not
 running starts again too); each restart costs the open Chat drawers of that workspace one resync, and every other
-workspace's drawers and mail go on untouched. Its answer waits only for the workspace it names, never for another
-workspace's slow or stuck stop; a second pairing or connect sent while the first still waits is answered after it.
+workspace's drawers and mail go on untouched. One pairing or connect at a time writes the files and restarts the chat,
+and its answer waits only for the chat of the workspace it names: up to 30 seconds for that chat to stop, then up to 30
+more for it to start. One sent while another is doing so waits for that one to finish first, so its answer can take up
+to a minute longer.
 
 Each file is a regular file of at most 64 KiB, and only the keys below are accepted.
 
