@@ -48,7 +48,7 @@ session gets one short wake line and reads the messages itself with
 typed into (no Codex screen has been captured yet), so it reads its mail when it
 next runs `comm-poll.sh`. A post from a mapped Slack channel
 (a line from `#chat`, filed by the hub's daemon, see
-[the project chat](chat.md#Mail-to-the-row)) wakes a Claude row in the same way,
+[the project chat](chat.md#Mail-to-the-session)) wakes a Claude row in the same way,
 with the same one fixed line: none of the post's words is typed into the row.
 The wake is refused while the row shows a
 permission dialog or a menu, so it can never answer one by accident, and while
