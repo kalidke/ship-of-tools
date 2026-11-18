@@ -82,7 +82,7 @@ pub(super) struct Connect {
     host: HostKey,
     reason: ChatUnconfigured,
     /// The step began from the hub's `unconfigured`, so another answer ends it while the person is still pasting; a step a
-    /// person asked for (`Connect Slack again`) or a refused post brought stays until they leave it.
+    /// person asked for (the picker's last entry) or a refused post brought stays until they leave it.
     follows: bool,
     /// The step began from a person's post into this workspace, which the hub refused `no_user_token`: its first screen is
     /// the post-as-you screen, with the refused tokens' keys.

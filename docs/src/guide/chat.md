@@ -122,13 +122,13 @@ whole, with `draft is full: nothing added` (the draft is your message). It is lo
 
 ### Your chat name
 
-If no chat name is set, the first time you press Enter with a message typed, the foot asks
+If no chat name is set and the computer that runs your sessions runs an older Ship of Tools, which posts as your Slack
+app, the first time you press Enter with a message typed, the foot asks
 `Your name for chat posts (saved in settings.toml):`. Type a name and press Enter: it is saved in `[chat] name` of
 `settings.toml` (see [the settings reference](../ref/config.md)), and your message stays. Press Enter again to post it.
 Escape cancels and keeps the message. A name with a quote, a backslash or a control character, or longer than 160
-bytes, is refused. Your posts appear in Slack under your own Slack name; the chat name shows only when the computer that
-runs your sessions runs an older Ship of Tools, which posts as your Slack app. To change the name, edit `[chat] name`
-and restart the window.
+bytes, is refused. Otherwise your posts appear in Slack under your own Slack name, Enter posts with no question, and the
+chat name is not used. To change the name, edit `[chat] name` and restart the window.
 
 ### What happens when you post
 

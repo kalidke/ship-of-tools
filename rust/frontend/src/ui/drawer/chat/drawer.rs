@@ -561,7 +561,9 @@ impl ChatDrawer {
 
     /// Enter: posts `row`'s draft once, to the channel and thread it was begun in, under `name` (`[chat] name`, `None` when unset or
     /// blank). It needs a draft with something in it, no post waiting and no `limited` wait running; with no name it asks for
-    /// one (`asking`) and sends nothing. The draft stays until a reply proves the post.
+    /// one (`asking`) and sends nothing. A daemon that posts as the person (its hello said so) puts no name on the post, so
+    /// the window neither asks for one nor sends one (an empty name, as a file's post does). The draft stays until a reply
+    /// proves the post.
     pub(in crate::ui) fn send(&mut self, row: Option<&ResultRowIdentity>, name: Option<&str>, now: Instant) -> Result<Vec<Out>, String> {
         let Some(row) = row else { return Err("no project is selected to write to".into()) };
         self.may_post()?;
@@ -573,8 +575,10 @@ impl ChatDrawer {
             return Err("posting…".into());
         }
         let Some(draft) = self.compose.draft(row).filter(|d| !d.text.trim().is_empty()) else { return Err("nothing to post".into()) };
-        // No name set: the foot asks for one, the draft stays, and nothing is sent; the next Enter posts it.
-        let Some(name) = name else {
+        // A daemon that posts as the person reads no name; any other posts under it. No name set: the foot asks for one, the
+        // draft stays, and nothing is sent; the next Enter posts it.
+        let as_person = self.posts_as_person.get(&row.host) == Some(&true);
+        let Some(name) = name.or(as_person.then_some("")) else {
             // The prompt is for a row whose channel is mapped (`tick` ends it anywhere else): any other stand says its own words.
             let stand = self.rows.stand();
             if stand != Stand::Mapped {
@@ -586,7 +590,7 @@ impl ChatDrawer {
         if let Some((secs, assumed)) = self.owner.waiting(now) {
             return Err(wait_words(secs, assumed));
         }
-        let req = ChatPostReq { target: draft.dest.clone(), thread: draft.thread.clone(), kind: ChatPostKind::Person, name: name.to_string(), text: draft.text.clone() };
+        let req = ChatPostReq { target: draft.dest.clone(), thread: draft.thread.clone(), kind: ChatPostKind::Person, name: if as_person { String::new() } else { name.to_string() }, text: draft.text.clone() };
         let host = row.host.clone();
         Ok(self.owner_outs(|o| o.post(host, Posting::Text(req)).into_iter().collect()))
     }

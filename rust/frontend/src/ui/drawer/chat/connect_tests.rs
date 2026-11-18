@@ -586,7 +586,7 @@ fn a_hub_that_holds_no_user_token_shows_post_as_you_and_enter_opens_the_apps() {
 #[test]
 fn a_post_refused_for_no_user_token_brings_the_post_as_you_screen_and_keeps_the_draft() {
     let (mut d, at) = after_a_refused_post();
-    assert_eq!(d.take_notice().as_deref(), Some("not posted: no Slack code that posts as you is saved; open the channel list (Ctrl+Shift+k, or Cmd+Shift+k on a Mac) and choose Connect Slack again"));
+    assert_eq!(d.take_notice().as_deref(), Some("not posted: no Slack code that posts as you is saved; open the channel list (Ctrl+Shift+k, or Cmd+Shift+k on a Mac) and choose its last entry, Connect a Slack workspace (Connect Slack again on an older computer)"));
     assert!(d.in_setup());
     assert_eq!(d.title(), " chat · post as you ");
     assert_eq!(d.draft(), Some(("hello", "CH1")), "the draft is kept");

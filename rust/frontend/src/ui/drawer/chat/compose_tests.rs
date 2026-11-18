@@ -385,6 +385,23 @@ fn enter_with_no_name_opens_the_prompt_and_sends_nothing_until_the_next_enter() 
     assert_eq!(d.asking(), None);
 }
 
+/// A daemon whose hello says it posts as the person puts no name on the post, so the window asks for none and sends none;
+/// the other side, a daemon too old to, is the test above: it asks, and posts under the name it is given.
+#[test]
+fn enter_posts_with_no_prompt_and_no_name_when_the_daemon_posts_as_the_person() {
+    let r = row("R");
+    let (mut d, at) = watching_as_person();
+    d.edit(Some(&r), Edit::Text("hello")).unwrap();
+    let outs = d.send(Some(&r), None, at).unwrap();
+    assert_eq!(d.asking(), None, "no name is asked for");
+    let req = posted(outs);
+    assert_eq!((req.name.as_str(), req.text.as_str(), req.kind), ("", "hello", ChatPostKind::Person));
+    // A name saved earlier is not sent either: the daemon posts under the person's own Slack account.
+    reply(&mut d, &req, ChatReply::Done(ChatPostRes::Refused { code: ChatCode::Busy }), at);
+    let req = posted(d.send(Some(&r), Some("Ada"), at).unwrap());
+    assert_eq!(req.name, "");
+}
+
 #[test]
 fn enter_with_no_name_on_a_row_that_is_not_mapped_says_why_and_opens_no_prompt() {
     let (mut d, at) = watching();
@@ -790,7 +807,7 @@ fn no_post_key_posts_behind_the_picker_or_the_name_prompt() {
                 Held::Picker => {
                     d.open_picker(Some(&r)).unwrap();
                 }
-                Held::Prompt => assert!(d.send(Some(&r), None, at).unwrap().is_empty()),
+                Held::Prompt => d.ask_name(),
             }
             let sent = if file { d.send_file(Some(&r), Previewed::File("files:a.png"), at) } else { d.send(Some(&r), Some("tester"), at) };
             match (held, sent) {

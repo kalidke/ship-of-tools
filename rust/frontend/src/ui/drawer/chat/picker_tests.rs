@@ -136,6 +136,40 @@ fn the_picker_lists_channels_by_name_with_their_marks_and_says_how_a_private_one
     assert!(d.picker_enter().is_empty() && d.in_setup(), "Connect Slack again sends nothing and starts the Connect step");
 }
 
+/// The name of the picker's last entry, as the list shows it.
+fn last_entry(lines: &[String]) -> String {
+    let line = lines.iter().rfind(|l| l.trim_start_matches(['>', ' ']).starts_with("Connect")).expect("a Connect entry");
+    line.trim_start_matches(['>', ' ']).split("  ").next().unwrap().to_string()
+}
+
+/// The words of a post refused for want of a Slack code that posts as the person name the picker's last entry as the
+/// person will see it: `Connect a Slack workspace`, or `Connect Slack again` against an older computer's daemon, and
+/// the wire cannot tell which, so the words carry both.
+#[test]
+fn the_refused_posts_words_name_the_last_entry_the_picker_shows() {
+    let words = ChatCode::NoUserToken.text();
+    let (mut d, at, _) = unmapped();
+    d.on_evt(&host(), channels_reply(false), at);
+    let older = last_entry(&listed(&d));
+    assert_eq!(older, "Connect Slack again");
+    assert!(words.contains(&older), "{words}");
+
+    let t0 = Instant::now();
+    let mut d = ChatDrawer::default();
+    d.set_focused(true);
+    d.on_connection(&host(), true, false, t0);
+    d.tick(shown("ROW1"), t0);
+    d.tick(shown("ROW1"), t0 + Duration::from_millis(200));
+    let at = t0 + Duration::from_millis(210);
+    d.on_evt(&host(), answer("ROW1", serde_json::json!({ "state": "unmapped" })), at);
+    d.tick(shown("ROW1"), at);
+    d.on_evt(&host(), workspaces("TAAAA1111", &[("TAAAA1111", Some("Alpha Lab"), true)]), at);
+    d.on_evt(&host(), listed_in("TAAAA1111", false), at);
+    let newer = last_entry(&listed(&d));
+    assert_eq!(newer, "Connect a Slack workspace");
+    assert!(words.contains(&newer), "{words}");
+}
+
 /// An older computer's listed picker says whose channels these are, that Ship of Tools there connects one Slack workspace
 /// and who can update it, and where the manual says how to move it; a filter that matches nothing keeps the line and adds its own.
 #[test]

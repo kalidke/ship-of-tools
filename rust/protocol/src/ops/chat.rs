@@ -130,7 +130,7 @@ impl ChatCode {
             ChatCode::BotTokenRefused => "Slack refused the \"Bot User OAuth Token\"",
             ChatCode::AppTokenRefused => "Slack refused the \"App-Level Token\"",
             ChatCode::UserTokenRefused => "Slack refused the \"User OAuth Token\"",
-            ChatCode::NoUserToken => "no Slack code that posts as you is saved; open the channel list (Ctrl+Shift+k, or Cmd+Shift+k on a Mac) and choose Connect Slack again",
+            ChatCode::NoUserToken => "no Slack code that posts as you is saved; open the channel list (Ctrl+Shift+k, or Cmd+Shift+k on a Mac) and choose its last entry, Connect a Slack workspace (Connect Slack again on an older computer)",
             ChatCode::NotAMember => "you are not in that channel in Slack; join it there first",
             ChatCode::OtherWorkspace => "these Slack codes are for another Slack workspace, and Ship of Tools on the computer that runs your agents is too old to connect more than one: whoever runs Ship of Tools there can update it",
             ChatCode::TooManyWorkspaces => "the computer that runs your agents already holds 8 Slack workspaces, the most it can: to add another, remove one workspace's file chat-secrets-<id>.toml (<id> is that workspace's ID) from Ship of Tools' settings folder there, ~/.config/sot on Linux and macOS or %LOCALAPPDATA%\\sot\\config on Windows",

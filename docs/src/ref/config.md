@@ -79,7 +79,7 @@ out-of-range values warn and fall back to the default.
 |---------------|------|---------|---------|
 | `[terminal] shell` | string | *(auto)* | Shell the Terminal drawer spawns. Unset resolves per platform: `$SHELL`, then `/bin/bash`, `/bin/sh` on Unix; `pwsh.exe`, `powershell.exe`, `cmd.exe` on Windows. |
 | `[downloads] dir` | path | *(OS download dir)* | Local directory `d` (download) writes to. Empty means the OS download directory. |
-| `[chat] name` | string | *(unset)* | The author a chat post carries beside the app's name. Unset or blank, the first `Enter` in the Chat drawer asks for it and saves it to the settings file the window loaded (the per-user file when it loaded none, made if missing), and the window uses it at once; a hand edit of the file is read at the next window start. The prompt refuses a name that is longer than 160 bytes, holds a control character, a double quote or a backslash. |
+| `[chat] name` | string | *(unset)* | The author a chat post carries beside the app's name, only when the computer that runs your sessions runs an older Ship of Tools, which posts as your Slack app. A newer one posts as your own Slack account: nothing asks for this name and nothing uses it. Unset or blank, with an older one, the first `Enter` in the Chat drawer asks for it and saves it to the settings file the window loaded (the per-user file when it loaded none, made if missing), and the window uses it at once; a hand edit of the file is read at the next window start. The prompt refuses a name that is longer than 160 bytes, holds a control character, a double quote or a backslash. |
 | `[sessions] new_session_root` | path | *(fallback chain)* | Backend-host directory the new-session picker starts browsing from. Unset falls back to `$SOT_PROJECTS_ROOT`, `$SOT_REMOTE_HOME`, the daemon's default root, then `$HOME`. |
 
 ### `[gpu]`
@@ -144,7 +144,7 @@ fullscreen_vsync_pin = false    # default false | true on a VRR/OLED panel
 smooth_scroll_ms = 150          # how long a scroll takes to arrive; 0 moves at once
 
 [chat]
-name = "Ada"                    # the author a chat post carries; quote it
+name = "Ada"                    # the author a chat post carries from an older Ship of Tools; quote it
 ```
 
 ## `hosts.toml`
@@ -281,7 +281,7 @@ The project chat's configuration, `chat.toml` and one secrets file per workspace
 [Setting up Slack](../guide/chat-setup.md).
 
 *Status: the daemon reads the files and connects to Slack with the tokens. The Chat drawer shows the channel's held messages (see
-[The project chat](../guide/chat.md)), and a person's post goes out as that person, with your own Slack user token; mail is not built.*
+[The project chat](../guide/chat.md)), and a person's post goes out as that person, with your own Slack user token. A channel's new posts become mail to its project's session only when `chat.toml` is made delivering (`mail_after`, below); no computer does that yet.*
 
 Only the hub's daemon reads them: the chat runs on the computer that `hosts.toml` (above) parses and names, by
 `SOT_SELF_HOST` or its host name, as its `hub`, and on a computer with no `hosts.toml` at all, which is its own hub. A
