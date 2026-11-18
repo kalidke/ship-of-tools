@@ -2828,3 +2828,10 @@ the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the sa
   - The hosted runs on cba577b2b: red twice in the Linux job's setup step (the runner's download of one graphics
     package outran the step's 120 s), green on the third attempt with no change. The step is in the test workflow
     alone.
+  - The cut of rc.14, 2026-11-18: whole gate on 5bc4f27b9 passed; hosted runs green on the last code commit at the
+    first attempt; the dry run clean; the question stamped at 07:31 with its page. On the maintainer's word,
+    `scripts/release.sh 0.7.1-rc.14` at 07:37; the release workflow 23 minutes to the draft; two window computers
+    installed it by archive through their own sessions by 08:05, a third was not linked to the hub and was not
+    reached, and the hub by 08:08, with a repair run after (a run of the installer with no arguments had first
+    refused, rightly, to move the hub back to the published 0.7.0). The comm matrix was not run: rc.14 changes
+    nothing of messaging.

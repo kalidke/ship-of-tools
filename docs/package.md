@@ -174,7 +174,12 @@ earlier text of the sections above and the integration-test assignment by pass.
 ## State
 
 v0.7.0 is published (2026-11-05), and a plain install moves a computer to it; `docs/UPDATE-AGENT.md` is the one update
-procedure an agent follows, from any 0.6 or 0.7 install. v0.7.1-rc.13 (2026-11-17) is an unpublished draft, cut on
+procedure an agent follows, from any 0.6 or 0.7 install. v0.7.1-rc.14 (2026-11-18) is an unpublished draft, cut on
+the maintainer's word in a session's pane once everything his use of rc.13 found was on `main`, and installed by archive
+by their own sessions on two window computers and by the maintaining session on the hub, where the daemon restarted and
+the rows' open REPLs ended, on his word; a third window computer was not reachable. What it carries past rc.13 is listed
+below, where this page says what `main` holds of that use. No person's use of it is recorded yet. v0.7.1-rc.13
+(2026-11-17) is an unpublished draft, cut on
 the maintainer's word in a session's pane once everything built was on `main` (his word that day: a candidate has
 everything, and is the release if it works), and installed by archive by their own sessions on two window computers
 and by the maintaining session on the hub, where the daemon restarted and the rows' open REPLs ended, on his word. It
@@ -220,7 +225,7 @@ attach client that keeps reading with input around an attach never sent blind or
 unit no longer restarting forever against another daemon; two parts no test reproduced stay open
 (RELAY-SOCKET-HANG's long wait, KEYS-DROPPED-WHILE-A-ROW-ATTACHES's window warning). rc.4 (2026-11-11) carried the
 preview that follows its row, the pane's copy and the chat drawer's look (rc.3 the drawer; rc.1 and rc.2 selection and
-drawing). `main` carries 0.7.1-rc.14-dev, which holds what a person's use of rc.13
+drawing). `main` carries 0.7.1-rc.15-dev, with nothing rc.14 does not. rc.14 holds what a person's use of rc.13
 found (2026-11-17 and 18), each seen by him unless marked: the Chat drawer's foot explains how a post appears only until
 this computer's first post; a key's letter is written lowercase everywhere in the window; the refusal to draw shows in
 the preview's box only; words that follow a person's action stay on the status line 10 s against background writes (the
@@ -238,8 +243,7 @@ window older than this cannot show the question); the daemon writes no set of co
 it learns by opening the App-Level Token's socket once at the connect (a mixed set had ended a workspace's chat as
 `wrong_app`, found in review, never seen by a person); the chat's messages say session and the computer that runs your
 sessions, where some said row and the computer that runs your agents; the drawer asks for a chat name only when the post
-goes out under one; and the manual's two Chat pages are rewritten for a first-time reader. No person has used any of
-it. rc.11 carries what the
+goes out under one; and the manual's two Chat pages are rewritten for a first-time reader. rc.11 carries what the
 maintainer asked of the Chat drawer on rc.10 (2026-11-15): Up and Down ease the view to a marked message out of view,
 and Left over an empty draft leaves an open thread, as the nav pane's Left does. The `release/0.6.6` branch is closed to
 all but fixes found in use. A
