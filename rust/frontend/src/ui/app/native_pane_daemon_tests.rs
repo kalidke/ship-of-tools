@@ -168,10 +168,12 @@ pub(super) struct Daemon {
 }
 
 pub(super) fn locate(name: &str) -> Result<PathBuf> {
+    // Cargo has put a test binary in `<profile>/deps` and, in a newer layout, in `<profile>/build/<package>/<hash>/out`;
+    // the programs built before the test sit in `<profile>`, the nearest folder above the test binary that holds them.
     let exe = std::env::current_exe()?;
-    let path = exe.parent().and_then(Path::parent).context("test binary has no target folder")?.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
-    ensure!(path.exists(), "pane-timing prerequisite missing: build sotd and sot-capsule first");
-    Ok(path)
+    let file = format!("{name}{}", std::env::consts::EXE_SUFFIX);
+    exe.ancestors().skip(1).map(|dir| dir.join(&file)).find(|path| path.is_file())
+        .context("pane-timing prerequisite missing: build sotd and sot-capsule first")
 }
 
 fn stamp() -> String {
