@@ -142,6 +142,20 @@ function Invoke-SotTopologySync {
 $SotSshOpts = @('-T', '-o', 'BatchMode=yes', '-o', 'ServerAliveInterval=15', '-o', 'ServerAliveCountMax=3',
                 '-o', 'ConnectTimeout=10', '-o', 'ControlMaster=no', '-o', 'ControlPath=none', '-o', 'ControlPersist=no')
 
+# One command line of $Arguments, for Start-Process -ArgumentList and ProcessStartInfo, which take one string: each
+# argument is quoted so a Windows program splitting its command line by the C runtime's rule reads it back whole. An
+# argument with no space, tab or double quote goes as it is; any other, the empty one too, goes in double quotes, with
+# each quote inside escaped and the backslashes before a quote or the closing quote doubled. Windows PowerShell 5.1's
+# Start-Process joins an -ArgumentList array with spaces and quotes nothing, so a path under a profile whose user name
+# has a space, or the daemon's pipe, which carries that name, would reach the program as two arguments.
+function Join-SotCommandLine([string[]]$Arguments) {
+    $quoted = foreach ($a in $Arguments) {
+        if ($a -ne '' -and $a -notmatch '[\s"]') { $a }
+        else { '"' + ($a -replace '(\\*)"', '$1$1\"' -replace '(\\+)$', '$1$1') + '"' }
+    }
+    return ($quoted -join ' ')
+}
+
 # Runs a native command under a wall-clock bound: the whole call, so a hang in key exchange or authentication ends
 # at the bound as surely as a silent link. Returns @{ Code; Output; Stdout }: Output is stdout then stderr, Stdout
 # the stdout alone. The call ends when the command has exited and its output has closed, both within the bound; at the
@@ -149,7 +163,8 @@ $SotSshOpts = @('-T', '-o', 'BatchMode=yes', '-o', 'ServerAliveInterval=15', '-o
 # "<FilePath> did not finish within <Seconds> s"; a command that cannot start is Code 127 with Output "<FilePath>
 # could not start: <why>". It starts through sot-lease.ps1's Start-SotRedirected (its caller dot-sources that file
 # too), so its input carries only $Stdin (at most 4000 bytes, so its write cannot block on a fresh pipe), written and
-# closed. Windows PowerShell 5.1 has no ArgumentList, so each argument is quoted into one string here.
+# closed. Windows PowerShell 5.1's ProcessStartInfo has no ArgumentList, so the arguments go as one command line
+# (Join-SotCommandLine).
 function Invoke-SotWithin {
     param(
         [int]$Seconds,
@@ -160,13 +175,9 @@ function Invoke-SotWithin {
     if ([System.Text.Encoding]::UTF8.GetByteCount($Stdin) -gt 4000) {
         throw 'Invoke-SotWithin: stdin is over 4000 bytes'
     }
-    $quoted = foreach ($a in $Arguments) {
-        if ($a -ne '' -and $a -notmatch '[\s"]') { $a }
-        else { '"' + ($a -replace '(\\*)"', '$1$1\"' -replace '(\\+)$', '$1$1') + '"' }
-    }
     $clock = [System.Diagnostics.Stopwatch]::StartNew()
     try {
-        $p = Start-SotRedirected $FilePath ($quoted -join ' ')
+        $p = Start-SotRedirected $FilePath (Join-SotCommandLine $Arguments)
     } catch {
         return @{ Code = 127; Output = "$FilePath could not start: $($_.Exception.GetBaseException().Message)"; Stdout = '' }
     }

@@ -353,6 +353,14 @@ Launch (`launch-sot.sh`, the rendered `sot-launch`, `lib/sot-daemon.sh`, `launch
   executes it, locally or hosted), and carries on.
 - It keeps this computer's daemon only when it runs the launch's version, unless a window holds it (`sotd
   same-version` exit 4); one launcher per user; on Windows no window spawns without a lease held across the gap.
+- On Windows a program the launcher starts gets its arguments whole when a user name or a path holds a space (the
+  daemon's pipe carries the user name, `\\.\pipe\sot-<USERNAME>-local`, and the launcher's folder, its logs and its
+  status file lie under the profile): Windows PowerShell 5.1's `Start-Process` joins an `-ArgumentList` array with
+  spaces and quotes nothing, so the window's and the splash's arguments go as one command line from
+  `Join-SotCommandLine` (`sot-hosts.ps1`, the quoting `Invoke-SotWithin` uses), and `sot-local-daemon.ps1` writes the
+  daemon's line with its own quotes. `tests/test-launcher-leases.ps1` case 18 runs both window spawn paths with a pipe
+  whose name holds a space and the splash from a folder whose name holds one; `tests/test-local-daemon.ps1` case 3
+  starts the daemon with a project root that holds one. No suite runs the whole launcher under such a profile.
 - On Windows, before every window start (the first, -Local and each relaunch), nonempty `frontend.stdout.log` and
   `frontend.stderr.log` move to `frontend.stdout.prev.log` and `frontend.stderr.prev.log`, replacing older backups.
   Empty logs leave the backups alone; a failed move is logged in `supervisor.log` and the window still starts.

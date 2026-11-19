@@ -228,8 +228,8 @@ Set-LaunchStatus 'Starting Ship of Tools...'
 function Start-Splash {
     try {
         $script:splash = Start-Process -FilePath 'powershell.exe' `
-            -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
-                '-File', (Join-Path $PSScriptRoot 'launch-splash.ps1'), '-StatusFile', $statusFile) `
+            -ArgumentList (Join-SotCommandLine @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
+                '-File', (Join-Path $PSScriptRoot 'launch-splash.ps1'), '-StatusFile', $statusFile)) `
             -WindowStyle Hidden -PassThru
     } catch { $script:splash = $null }
 }
@@ -866,7 +866,7 @@ if ($Local) {
     $localOnlyArgs = if ($localSocket) { @('--socket', $localSocket) } else { @() }
     $feStartedAt = Get-Date
     $frontend = Start-Process -FilePath $frontendExe `
-        -ArgumentList $localOnlyArgs `
+        -ArgumentList (Join-SotCommandLine $localOnlyArgs) `
         -RedirectStandardOutput $frontendStdout `
         -RedirectStandardError $frontendStderr `
         -WindowStyle Hidden `
@@ -1092,7 +1092,7 @@ try {
         $feStartedAt = Get-Date
         Rotate-FrontendLogs
         $frontend = Start-Process -FilePath $stagedExe `
-            -ArgumentList $frontendArgs `
+            -ArgumentList (Join-SotCommandLine $frontendArgs) `
             -RedirectStandardOutput $frontendStdout `
             -RedirectStandardError $frontendStderr `
             -WindowStyle Hidden `

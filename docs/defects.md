@@ -881,6 +881,14 @@ owned by `docs/CLAUDE.md`.
 
 ## distribution
 
+- **WIN-COMM-HOOK-HOME-SPACE** [note] From reading code, never seen in use: the two hooks the comm installer writes into
+  a person's own Claude settings (`comm-status-idle.sh` on Stop, `comm-subagent-guard.sh` on PreToolUse) run the command
+  `$HOME/.sot-comm/bin/<script>` (`_hook_command`, `src/claude_hooks.jl`), with `$HOME` unquoted, so a shell that runs
+  it splits a home that holds a space (`/c/Users/First Last` in Git Bash) into two words and the hook fails. The Unix
+  installer refuses such a home; Windows refuses none. Unmeasured: which shell Claude Code on Windows runs a hook
+  command with. The layer's hooks are written by quoted absolute path and are not affected. Fix not decided: a quoted
+  home, `"$HOME"/.sot-comm/bin/<script>`; the unquoted spelling is already in `_EARLIER_HOOK_COMMANDS`, which an install
+  retires, and `_comm_keep_json` and `_add_comm_hook!`'s manual line put the command into JSON text unescaped.
 - **WIN-SSH-JUNCTION-UNTRUSTED** [session] On a Windows computer, a sign-in over ssh by key cannot follow the
   install's junctions (`repo\current`, `julia\current`): a listing through either answers "The path cannot be
   traversed because it contains an untrusted mount point", and so does a process created through WMI from that
@@ -1269,6 +1277,8 @@ owned by `docs/CLAUDE.md`.
   probe; installer hooks (superseded, check); stop commands that match only what they stop.
 
 ## Closed
+
+- **WIN-LAUNCHER-SPACE-ARGV** (distribution) [person] closed by the landing that fixes it, 2026-11-19, seen in use by a person (the Windows launcher did not work for a user name with a space; what was seen and on which release was not recorded): Windows PowerShell 5.1's `Start-Process` joins an `-ArgumentList` array with spaces and quotes nothing, so `launch-sot.ps1` started the window with `--socket \\.\pipe\sot-First Last-local` as two arguments and the window dialed `\\.\pipe\sot-First`, which nothing serves (this computer's daemon never reached; by reading, a relaunch's or a converge's handed-over lease never taken up, so the daemon ends its sessions at the handover bound), and started the splash with `-File C:\Users\First`, so no splash showed. Both now go through `Join-SotCommandLine` (`sot-hosts.ps1`, the quoting `Invoke-SotWithin` already used); test `scripts/tests/test-launcher-leases.ps1` case 18.
 
 - **CHAT-MAIL-TESTS-SHARE-THE-REGISTRY-TURN** (chat) [note] closed by the landing that fixes it, 2026-11-19, a red in a hosted run (Windows), no use: `chat_mail_tests::a_restart_after_live_filings_files_nothing_again` timed out waiting for its second filing. A chat filing is the guarded one, which takes the registry lock within what is left of the 2 s inbox wait, and the lock's turn is process-wide; the chat's mail test fixtures held `TURN_TESTS` shared (`TestHome::new`), so other tests' holds of the turn, the other chat tests' filings among them, could spend that bound and refuse the filing `file_failed`, and the fake Slack's empty history left the next pass nothing to file the post from. The hosted log does not say why the filing failed; on Linux another test's holds of the turn across the filing make the same red every run, and so do the chat tests' own filings when each hold of the turn is slowed to 0.6 s. The fixtures that file (`server/chat_mail_tests.rs`'s `world_with` and `mail_two`, `chat/mail_tests.rs`'s `World::new`) now hold the turn alone (`TestHome::exclusive`), as comm's guarded-filing tests do (REGISTRY-TEMPFAIL-LOCK-TURN); the product files a refused live post from the next pass, which reads Slack's history.
 
