@@ -623,3 +623,48 @@ fn the_kept_column_survives_a_change_of_scale() {
     let again = rows::vertical(&large.buffer, &body, down.cursor, Some(down.goal), 1).unwrap();
     assert_eq!(again.cursor, 72 + 40);
 }
+
+#[test]
+fn a_crlf_file_is_followed_row_by_row() {
+    let text = (0..80).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\r\n");
+    let mut h = Harness::new(&text, 40);
+    let mut pane = Pane::new(&mut h, 200.0);
+    pane.after_key(&mut h);
+    for _ in 0..40 {
+        h.act(Action::EditDown);
+        pane.after_key(&mut h);
+        assert!(pane.shows_cursor(&h), "the cursor is out of view at {}", h.cursor());
+    }
+    assert!(pane.view.scroll() > 0.0, "the view followed the cursor down the file");
+}
+
+#[test]
+fn a_pane_shorter_than_a_row_does_not_flip_the_view() {
+    let mut h = Harness::new("one row of text here", 40);
+    let mut pane = Pane::new(&mut h, 2.0);
+    pane.after_key(&mut h);
+    let mut seen = Vec::new();
+    for _ in 0..6 {
+        h.act(Action::EditRight);
+        pane.after_key(&mut h);
+        seen.push(pane.view.scroll());
+    }
+    assert!(seen.windows(2).all(|w| w[0] == w[1]), "{seen:?}");
+}
+
+#[test]
+fn a_follow_counts_the_distance_a_wheel_scroll_still_owes() {
+    let mut h = Harness::new(&long_text(), 40);
+    let mut pane = Pane::new(&mut h, 200.0);
+    pane.after_key(&mut h);
+    // The wheel asks for 40 lines over 150 ms; the cursor stands at the top, in view where the view is now.
+    let t0 = Instant::now();
+    pane.view.scroll_by(40, t0, Duration::from_millis(150));
+    h.act(Action::EditRight);
+    h.reshape();
+    h.editor.follow_cursor(&mut pane.view, pane.visible, t0, Duration::ZERO);
+    let line_h = pane.view.md().line_height();
+    let max = crate::ui::preview::pane::preview_max_scroll(line_h, pane.visible, h.editor.shaped().unwrap());
+    pane.view.advance(t0 + Duration::from_secs(2), max, pane.visible / line_h, true);
+    assert!(pane.shows_cursor(&h), "the wheel's owed lines took the view from the cursor");
+}

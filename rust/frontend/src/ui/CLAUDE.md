@@ -381,16 +381,20 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   character, only newlines, CRLF throughout, one CRLF among LF lines, a lone CR, and frontmatter as a concept header
   and in a file: no text is excepted). A key that moved the cursor or changed the text (`EditorKey::Edited`) is
   followed by `State::follow_edit_cursor`: the view scrolls just far enough, in whole lines of the shown preview
-  (`ShapedPreview::follow`, counting what the easing still owes), to show the cursor's row, and moves nothing for a row
-  already in view; the row is the editor's buffer's (`cursor_place`), so its height and the preview's line height,
-  which differ (19 px against a prose preview's 22), meet only in pixels. The wheel moves the edit view as before and
-  the next motion or edit brings it back; a reload, a save, a restored row, a resize and the mouse follow nothing. A
-  body that is not the shaped text has no place, so the view stays. Pinned by
-  `the_view_scrolls_just_far_enough_to_show_the_cursor_row`, `a_motion_that_keeps_the_cursor_in_view_does_not_scroll`
-  and `the_wheel_scrolls_away_and_the_next_key_brings_the_view_back`, and in the window's own layout by the native
-  fixture `an_edit_view_follows_its_cursor` (`preview/editor/keys_native_fixture_tests.rs`, in `run_state_fixtures`,
-  so only under a display; it puts the cursor and calls the key path's `rebuild_edit_preview` and `follow_edit_cursor`,
-  and is red with `ShapedPreview::follow` made a no-op). Limits: the tests press through `edit_buffer_key` because a
+  (`ShapedPreview::follow`, counting what a wheel's easing still owes, and with the pane floored at one line as the
+  scroll clamp floors it), to show the cursor's row, at once whatever `smooth_scroll_ms` is (an eased follow leaves a
+  held key's row below the pane for most of its frames), and moves nothing for a row already in view; the row is the
+  editor's buffer's (`cursor_place`), so its height and the preview's line height, which differ (19 px against a
+  prose preview's 22), meet only in pixels. The wheel moves the edit view as before and the next motion or edit brings
+  it back (a zoom, a drawer or layout chord and a line-scroll chord are handled before the editor and do not); a
+  reload, a save, a restored row, a resize and the mouse follow nothing. A body that is not the shaped text has no
+  place, so the view stays. Pinned by `the_view_scrolls_just_far_enough_to_show_the_cursor_row`,
+  `a_motion_that_keeps_the_cursor_in_view_does_not_scroll`, `the_wheel_scrolls_away_and_the_next_key_brings_the_view_back`,
+  `a_crlf_file_is_followed_row_by_row`, `a_pane_shorter_than_a_row_does_not_flip_the_view` and
+  `a_follow_counts_the_distance_a_wheel_scroll_still_owes`, and in the window's own layout by the native fixture
+  `an_edit_view_follows_its_cursor` (`preview/editor/keys_native_fixture_tests.rs`, in `run_state_fixtures`, so only
+  under a display; it puts the cursor and calls the key path's `rebuild_edit_preview` and `follow_edit_cursor`, with
+  the default easing on, and is red with `ShapedPreview::follow` made a no-op or the follow eased). Limits: the tests press through `edit_buffer_key` because a
   winit `KeyEvent` cannot be built outside the event loop, so `Editor::key`'s hand-off, the `Edited` arm in
   `editor_key` and the paint of the cursor's bar (the render pass, no pure test reaches it) rest on reading; each
   key and each frame builds the buffer's row list once, linear in the file (1.8 ms and 0.6 ms on a 465 KB file, release

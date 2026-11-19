@@ -162,6 +162,8 @@ impl ShapedPreview {
     /// preview, to show it in a pane `visible_px` tall, counting what is already owed. A row in view moves nothing.
     pub(in crate::ui) fn follow(&mut self, top: f32, bottom: f32, visible_px: f32, now: Instant, length: Duration) {
         let line_h = self.md.line_height().max(1.0);
+        // The scroll clamp floors the pane at a line, so a pane shorter than the row never flips between two views.
+        let visible_px = visible_px.max(line_h);
         let from = (self.scroll + self.motion.owed()) * line_h;
         let target = if top < from {
             (top / line_h).floor()

@@ -184,7 +184,7 @@ paragraph. Hold `Shift` with any of these to extend the selection. A row of
 right-to-left text is the exception: a step onto it goes by the file's line.
 The cursor is a thin bar drawn over the text. The view follows the cursor: when
 a key moves it above or below the pane, the text scrolls just far enough to
-show it again. The mouse wheel can still scroll the text away from the cursor,
+show it again, at once. The mouse wheel can still scroll the text away from the cursor,
 and the next key that moves the cursor or changes the text brings it back.
 
 A save is written inside the project and never through a link: a file whose

@@ -10,8 +10,9 @@ impl State {
     /// two calls follow, `rebuild_edit_preview` then `follow_edit_cursor`.
     #[allow(dead_code, reason = "runs only inside a native State, from the window_minimized fixtures child; no libtest body can construct one")]
     pub(in crate::ui) fn an_edit_view_follows_its_cursor(&mut self) -> anyhow::Result<()> {
-        // An earlier fixture left the scroll easing on; this one reads each position as it is asked.
-        self.settings.smooth_scroll_ms = 0;
+        // The default easing: a follow still lands at once, since a held key's row would stay below the pane for
+        // the frames of an eased one.
+        self.settings.smooth_scroll_ms = 150;
         let content = (0..300).map(|n| format!("line {n}")).collect::<Vec<_>>().join("\n");
         self.editor.arm_file("files:long.txt".into());
         self.editor.open_file("files:long.txt", true, content.clone(), "v".into());
@@ -29,6 +30,11 @@ impl State {
             s.redraw()
         };
         ensure!(self.shaped.scroll() == 0.0 && shown(self)?, "the edit does not open at its top: {}", self.shaped.scroll());
+        self.editor.put_cursor(content.len());
+        self.rebuild_edit_preview();
+        self.follow_edit_cursor();
+        ensure!(self.shaped.scroll() > 0.0, "an eased follow waited for frames: scroll {}", self.shaped.scroll());
+        self.settings.smooth_scroll_ms = 0;
         moved(self, content.len())?;
         ensure!(shown(self)? && self.shaped.scroll() > 0.0, "a cursor at the end is out of view: scroll {}", self.shaped.scroll());
         moved(self, 0)?;

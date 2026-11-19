@@ -132,9 +132,10 @@ pub(in crate::ui) fn enter_editor(state: &mut State) {
 }
 
 impl State {
-    /// Scroll the edit view just far enough to show the cursor's row (the pane's height as the scroll clamp reads it).
+    /// Scroll the edit view just far enough to show the cursor's row (the pane's height as the scroll clamp reads it),
+    /// at once: an eased follow leaves the row of a held key below the pane for most of its frames.
     pub(in crate::ui) fn follow_edit_cursor(&mut self) {
-        let (now, length) = self.scroll_ask();
+        let (now, length) = (std::time::Instant::now(), std::time::Duration::ZERO);
         let visible = self.concept.rect().h - crate::ui::render::text::EXTRA_TOP_PAD_PX;
         self.editor.follow_cursor(&mut self.shaped, visible, now, length);
     }
