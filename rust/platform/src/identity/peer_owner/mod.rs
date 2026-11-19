@@ -6,8 +6,9 @@
 //! - Windows: the owner-module TCP table (`GetExtendedTcpTable`, IPv4 then IPv6 with v4-mapped addresses): the binding
 //!   process and the bind time; a process created after the bind is a recycled pid and refused; then that process's
 //!   token user SID.
-//! - macOS: the kernel's TCP table (sysctl `net.inet.tcp.pcblist_n`, the one netstat reads); the peer's own
-//!   connection carries the uid that created its socket, as on Linux.
+//! - macOS: on macOS 27 the kernel's TCP table shows a process no other process's connection, so the lookup walks
+//!   this account's processes with libproc (`libproc.rs`), and the first process found holding the peer's own
+//!   established end decides, by its effective uid.
 //! Every failure refuses: only [`PeerOwner::Mine`] is served. [`serve_own`] is the one TCP accept loop of the Rust
 //! processes, and applies it.
 
@@ -242,69 +243,19 @@ mod imp {
     }
 }
 
-/// The macOS TCP table, `net.inet.tcp.pcblist_n`, read as XNU writes it (`get_pcblist_n`, bsd/netinet/in_pcblist.c):
-/// an `xinpgen`, then per connection an `xinpcb_n`, `xsocket_n`, two `xsockbuf_n`, an `xsockstat_n` and an
-/// `xtcpcb_n`, each starting with its u32 length and u32 kind and padded to 8 bytes, then a closing `xinpgen`.
-/// Compiled for tests on every platform, so the walk is tested where the tests run.
+/// The macOS owner lookup: a walk of this account's processes through libproc, and the decode of the one record
+/// it reads from each socket. Compiled for tests on every platform, so the decode and the walk are tested where the
+/// tests run; only its libproc calls are macOS's.
 #[cfg(any(target_os = "macos", test))]
-mod pcblist_n;
+mod libproc;
 
 #[cfg(target_os = "macos")]
 mod imp {
-    use super::{pcblist_n, PeerOwner};
+    use super::{libproc, PeerOwner};
     use std::net::SocketAddr;
 
-    /// `net.inet.tcp.pcblist_n`, the TCP table netstat reads; any account may read it.
-    fn table() -> Result<Vec<u8>, String> {
-        let name = c"net.inet.tcp.pcblist_n";
-        // The size the kernel names allows for an eighth more connections; a table that outgrows even that between
-        // the two calls fails with ENOMEM and is asked for again.
-        for _ in 0..3 {
-            let mut len: libc::size_t = 0;
-            // SAFETY: a null buffer asks only for the size, which the kernel writes to `len`.
-            if unsafe {
-                libc::sysctlbyname(
-                    name.as_ptr(),
-                    std::ptr::null_mut(),
-                    &mut len,
-                    std::ptr::null_mut(),
-                    0,
-                )
-            } != 0
-            {
-                return Err(format!(
-                    "net.inet.tcp.pcblist_n: {}",
-                    std::io::Error::last_os_error()
-                ));
-            }
-            let mut buf = vec![0u8; len];
-            // SAFETY: `buf` has `len` writable bytes; the kernel writes at most that many and stores the count in `len`.
-            if unsafe {
-                libc::sysctlbyname(
-                    name.as_ptr(),
-                    buf.as_mut_ptr().cast(),
-                    &mut len,
-                    std::ptr::null_mut(),
-                    0,
-                )
-            } == 0
-            {
-                buf.truncate(len);
-                return Ok(buf);
-            }
-            let e = std::io::Error::last_os_error();
-            if e.raw_os_error() != Some(libc::ENOMEM) {
-                return Err(format!("net.inet.tcp.pcblist_n: {e}"));
-            }
-        }
-        Err("net.inet.tcp.pcblist_n kept growing past its size".into())
-    }
-
     pub(super) fn lookup(local: SocketAddr, peer: SocketAddr, own: &str) -> PeerOwner {
-        match table() {
-            Ok(buf) => pcblist_n::owner(&buf, peer, local, own),
-            Err(e) => PeerOwner::Unknown(e),
-        }
+        libproc::owner(&libproc::Libproc, peer, local, own)
     }
 }
 

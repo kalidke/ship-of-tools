@@ -67,8 +67,23 @@ where each lives).
    A wrong, partial or late reply is `Foreign` or `Undetermined`; a second complete reply inside the same read is
    `Foreign`, and bytes after a conclusive answer are the exchange's to refuse (the row hello's do). On macOS the peer is
    attributed by `LOCAL_PEERPID` and its start time; the assumptions are stated in `challenge_macos.rs`'s module doc. A TCP connection on loopback is admitted only when the OS names this account as its owner
-   (`peer_owner::serve_own`). Rests on SO_PEERCRED/pidfd, LOCAL_PEERPID/kqueue, the pipe's SID and impersonation
-   level, the TCP owner tables.
+   (`peer_owner::serve_own`):
+   - on Linux, by the uid the kernel's TCP table gives the peer's own row;
+   - on Windows, by the token user of the process that bound the peer's end, created no later than the bind;
+   - on macOS, by the effective uid of a process that holds the peer's end, the first holder found deciding. The
+     holder is found by walking this account's processes through libproc: `proc_listpids` by effective uid, each
+     process's socket descriptors, each socket's `socket_fdinfo` (`peer_owner/libproc.rs`).
+
+   Every failure refuses, and a process the walk could not read never counts. Limits on macOS:
+   - The rule is the holder's account, not the creator's: no public record names a socket's creator on macOS 27, and
+     `socket_fdinfo`'s `soi_stat` is never filled. So a socket another account created is admitted while a process of
+     this account holds it, and a copy another account holds is not seen.
+   - A process of this account that the kernel refuses to the walk is refused.
+   - A lookup costs two system calls per process of this account, one per socket descriptor they hold and one for the
+     holder.
+
+   Rests on SO_PEERCRED/pidfd, LOCAL_PEERPID/kqueue, the pipe's SID and impersonation level, the TCP owner tables
+   (Linux, Windows) and libproc's process and descriptor records (macOS).
 7. **Storage exhaustion is known by its native code.** ENOSPC and EDQUOT; on Windows ERROR_DISK_FULL,
    ERROR_HANDLE_DISK_FULL and ERROR_DISK_QUOTA_EXCEEDED, read from the `io::Error` an `Error::Io` carries, never from
    text and never from a transport error (`native_storage_code`; the capsule reads its own error type through it). `preflight_volume` and Windows `io_ctx` return such
@@ -232,7 +247,7 @@ registry, the window's settings and the window's resume file. Platform offers th
 converts its own reader in its own pass and then deletes it.
 
 ## Calls in
-The OS (renameat2, renamex_np, MoveFileEx, flock, LockFileEx, SO_PEERCRED, pidfd, kqueue, the TCP owner tables), the
+The OS (renameat2, renamex_np, MoveFileEx, flock, LockFileEx, SO_PEERCRED, pidfd, kqueue, the TCP owner tables (Linux, Windows), libproc (macOS: `proc_listpids`, `proc_pidinfo`, `proc_pidfdinfo`)), the
 C compiler for the native launcher (build time), and std, libc, windows-sys (its `Wdk_Foundation`, `Wdk_Storage_FileSystem` and `Win32_System_Kernel` features for the Windows write beneath a root, `Win32_System_Diagnostics_Debug` for the error mode), tokio and tracing (peer_owner only),
 gethostname, sha2, thiserror, getrandom; tracing-subscriber and tempfile for the test support alone.
 
@@ -257,7 +272,7 @@ TOML.
 
 ## Platforms
 Per OS: Linux (pidfd, procfs start ticks, renameat2, per-child fork guard by O_CLOEXEC), macOS (kqueue exit watch,
-LOCAL_PEERPID, pidversion, the fork birth lock, renamex_np), Windows (SDDL and SID helpers, MoveFileEx,
+LOCAL_PEERPID, pidversion, the fork birth lock, renamex_np, libproc's descriptor walk), Windows (SDDL and SID helpers, MoveFileEx,
 LockFileEx, GetExtendedTcpTable, impersonation-level probe). Bounding oneself: Unix signals and `rlimit`s, Linux's `close_range` and `PR_SET_PDEATHSIG`, Windows' error mode and job assignment. No fourth OS builds.
 
 ## Tests
@@ -273,7 +288,7 @@ Windows or macOS arm runs on the hosted runner for its OS.
 | 3 | kernel lock | `host/lock_tests.rs`: `a_dropped_writer_lock_is_free_while_a_forked_child_waits_to_exec`, `a_dropped_daemon_lock_is_free_while_a_forked_child_waits_to_exec`, `a_child_spawned_while_the_daemon_lock_is_held_never_holds_it`, `try_lock_daemon_excludes_a_second_holder`, `lock_supervisor_refuses_a_second_concurrent_holder` |
 | 4 | held folder | `host/held_dir_tests.rs`: `a_held_folder_goes_once_its_maker_has_ended_and_only_then`, `a_held_folder_goes_while_a_removal_holds_its_lock_file_open` |
 | 5 | cloexec births | `host/fd_tests.rs` (socket, pipe, pty, the fork birth lock); `tests/winhandle_windows.rs` |
-| 6 | challenge | `identity/challenge_unix_tests.rs`, `identity/challenge_identity_tests.rs`, `identity/deadline_tests.rs`, `identity/peer_owner/tests.rs`, `identity/exit_watch_macos_tests.rs`; `rust/capsule/tests/challenge_unix.rs`, `challenge_macos.rs`, `macos_kernel_facts/`; `tests/other_account.rs` |
+| 6 | challenge | `identity/challenge_unix_tests.rs`, `identity/challenge_identity_tests.rs`, `identity/deadline_tests.rs`, `identity/peer_owner/tests.rs`, `identity/peer_owner/libproc_tests.rs`, `identity/exit_watch_macos_tests.rs`; `rust/capsule/tests/challenge_unix.rs`, `challenge_macos.rs`, `macos_kernel_facts/`; `tests/other_account.rs` |
 | 7 | storage codes | `host/storage_tests.rs`: `storage_codes_are_recognized_by_native_code_only`; `rust/capsule/src/storage_tests.rs`: `a_transport_error_is_never_storage_exhaustion` |
 | 8 | volume preflight | `host/volume_tests.rs` |
 | 9 | redial | `host/redial_tests.rs`: `a_short_connection_keeps_the_doubling`, `a_connection_that_lasted_stable_starts_over`, `a_reset_starts_over` |
