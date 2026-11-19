@@ -46,6 +46,8 @@ impl State {
                     // version so further edits start clean and
                     // the next save's conflict check is current.
                     self.editor.mark_file_saved(version);
+                    // The footer says clean now.
+                    self.reshape_edit_if_owed();
                     // Surface the save (peer report 2026-08-19):
                     // this arm used to set no status and request
                     // no redraw, so an active-edit save was

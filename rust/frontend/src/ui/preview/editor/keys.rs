@@ -17,8 +17,19 @@ pub(in crate::ui) fn editor_key(state: &mut State, key: KeyPress<'_>) -> Control
     let Some(outcome) = state.editor.key(key, page_rows) else {
         return Continue(());
     };
+    apply_editor_outcome(state, outcome);
+    state.window.request_redraw();
+    Break(())
+}
+
+/// What the window does for what a key did to the editor: the outcome's own effects, then, for every outcome alike,
+/// the one re-shape owed (`Editor::owes_shaping`: the text, the selection, the footer's words or a banner changed;
+/// none for a motion with no selection), and the follow for a key that moved the cursor or changed the text. No
+/// outcome can leave a change of what is drawn unshaped, as the discard prompt's raising and dismissal once did.
+pub(in crate::ui) fn apply_editor_outcome(state: &mut State, outcome: EditorKey) {
+    let followed = matches!(outcome, EditorKey::Edited);
     match outcome {
-        EditorKey::DiscardAnswered | EditorKey::ConfirmDiscard => {}
+        EditorKey::DiscardAnswered | EditorKey::ConfirmDiscard | EditorKey::StaleAnswered | EditorKey::Edited => {}
         EditorKey::ReloadFile(node_id) => {
             let ws = state.selected.workspace_id().clone();
             if let Err(e) = state.send(OutgoingReq::FileRead {
@@ -28,7 +39,6 @@ pub(in crate::ui) fn editor_key(state: &mut State, key: KeyPress<'_>) -> Control
                 tracing::warn!(error = %e,
                     "drop file.read for stale reload");
             }
-            state.rebuild_edit_preview();
         }
         EditorKey::ReloadConcept(target) => {
             let ws = state.selected.workspace_id().clone();
@@ -41,7 +51,6 @@ pub(in crate::ui) fn editor_key(state: &mut State, key: KeyPress<'_>) -> Control
                 tracing::warn!(error = %e,
                     "drop concept.read for stale reload");
             }
-            state.rebuild_edit_preview();
         }
         EditorKey::Closed => {
             // Re-fetch the underlying preview so
@@ -66,7 +75,6 @@ pub(in crate::ui) fn editor_key(state: &mut State, key: KeyPress<'_>) -> Control
                 tracing::warn!(error = %e,
                     "drop file.write — channel closed");
             }
-            state.rebuild_edit_preview();
         }
         EditorKey::SaveConcept { target, content, expected_ast_hash } => {
             let ws = state.selected.workspace_id().clone();
@@ -79,23 +87,12 @@ pub(in crate::ui) fn editor_key(state: &mut State, key: KeyPress<'_>) -> Control
                 tracing::warn!(error = %e,
                     "drop concept.write — channel closed");
             }
-            state.rebuild_edit_preview();
-        }
-        // Cursor moves rebuild too: the buffer's selection tint and
-        // footer follow the edit, and the next vertical step reads the
-        // rows this shaping gives.
-        EditorKey::StaleAnswered => state.rebuild_edit_preview(),
-        // The cursor moved or the text changed: the view follows it.
-        EditorKey::Edited => {
-            // A motion that changes no text, selection or footer leaves the shaped text as it is: the bar moves.
-            if state.editor.needs_reshape() {
-                state.rebuild_edit_preview();
-            }
-            state.follow_edit_cursor();
         }
     }
-    state.window.request_redraw();
-    Break(())
+    state.reshape_edit_if_owed();
+    if followed {
+        state.follow_edit_cursor();
+    }
 }
 
 pub(in crate::ui) fn enter_editor(state: &mut State) {
@@ -158,6 +155,9 @@ impl State {
     pub(in crate::ui) fn reshape_edit_to_pane(&mut self) {
         let width = self.concept.rect().w;
         let scale = self.canvas.scale() * self.canvas.text_scale_mult();
+        if self.editor.owes_shaping(width) {
+            return self.rebuild_edit_preview();
+        }
         let fit = self.editor.fit(width, scale);
         if fit == Fit::Fits {
             return;
@@ -168,11 +168,22 @@ impl State {
         }
     }
 
+    /// Re-shape the edit buffer if it is owed at the pane's width (`Editor::owes_shaping`).
+    pub(in crate::ui) fn reshape_edit_if_owed(&mut self) {
+        if self.editor.owes_shaping(self.concept.rect().w) {
+            self.rebuild_edit_preview();
+        }
+    }
+
     /// Re-shape the edit preview from the active edit buffer. Called
     /// whenever a key mutates the buffer; cheap enough for a
     /// few-KB annotation. Without an edit it clears the shaped
     /// buffer so the next render falls back to the read-only path.
     pub(in crate::ui) fn rebuild_edit_preview(&mut self) {
+        // A pane with no width is not shaped for (a full-height drawer): the frame shapes when the width returns.
+        if self.editor.is_editing() && self.concept.rect().w < 1.0 {
+            return;
+        }
         if self.editor.is_editing() { self.shaped.clear_selection(); }
         let width = self.concept.rect().w.max(1.0);
         let scale = self.canvas.scale() * self.canvas.text_scale_mult();

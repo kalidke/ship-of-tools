@@ -275,6 +275,8 @@ impl State {
                     // keep editing without an instant dirty
                     // flag after a save.
                     self.editor.mark_saved();
+                    // The footer says clean now.
+                    self.reshape_edit_if_owed();
                 }
             }
             crate::net::transport::ConceptWriteResult::Stale => {

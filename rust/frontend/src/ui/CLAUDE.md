@@ -391,7 +391,12 @@ The remaining concepts below still reach shared fields through `impl State` bloc
     (`Editor::needs_reshape`: the body's revision, the selection's range, the unsaved edits and the banners, which
     cut the spans and change the footer): a motion with no selection before or after, the keys held for scrolling a
     file, changes none of them, so the bar moves over the same text and nothing is shaped. A selection that changes,
-    and every edit, re-shape the whole file (limits below). The frame fits the buffer to the pane before it draws
+    and every edit, re-shape the whole file (limits below). The decision is in one place: `apply_editor_outcome` (what
+    the window does for an outcome) re-shapes if owed after every outcome alike, the landed save's reply does too
+    (the footer then says clean), and the frame checks again before it draws, so the discard prompt's raising and
+    dismissal, the stale banner and a save each reach the screen at the next frame. A pane with no width (a
+    full-height drawer) is not shaped for, by any caller (`rebuild_edit_preview` returns for it, and
+    `Editor::owes_shaping` is false at it): the frame shapes when the width returns. The frame fits the buffer to the pane before it draws
     (`State::reshape_edit_to_pane`, from `Editor::fit`): a new width lays the same buffer out again
     (`Buffer::set_size`, as the preview's text does on a resize) and rebuilds the index, and only a new text scale
     (a zoom) or a text not yet shaped shapes it again; a pane with no width (a full-height drawer) is left alone. A
@@ -420,7 +425,10 @@ The remaining concepts below still reach shared fields through `impl State` bloc
     `the_row_list_is_built_once_per_shaping_and_not_by_a_key_a_frame_or_a_follow`,
     `a_new_pane_width_lays_the_buffer_out_again_and_the_rows_are_those_of_a_fresh_shaping`,
     `the_edit_buffer_fits_a_pane_by_width_by_scale_or_not_at_all`,
-    `a_motion_with_no_selection_owes_no_reshape_and_a_selection_or_an_edit_does`. Lines and CRLF:
+    `a_motion_with_no_selection_owes_no_reshape_and_a_selection_or_an_edit_does`,
+    `a_landed_save_changes_the_footer_and_owes_a_reshape`,
+    `escape_on_an_edited_buffer_draws_the_discard_prompt_and_any_other_key_takes_it_down` (through `Editor::press`, the
+    key's own path under a key event) and `a_pane_with_no_width_is_not_shaped_for_and_is_when_it_returns`. Lines and CRLF:
     `every_short_text_has_one_row_for_each_cursor_position` and
     `from_every_position_of_a_short_text_up_then_down_and_down_then_up_come_back_to_the_row` (every text of up to six, and
     five, characters from `a`, CR and LF, and of up to four from a wide and a right-to-left letter, CR and LF),
@@ -449,9 +457,12 @@ The remaining concepts below still reach shared fields through `impl State` bloc
     `an_edit_view_follows_its_cursor` (`preview/editor/keys_native_fixture_tests.rs`, in `run_state_fixtures`, so only
     under a display; it puts the cursor and runs the key path's re-shape (when owed) and `follow_edit_cursor` with the
     default easing on, resizes the canvas and back, and is red with `ShapedPreview::follow` made a no-op or eased, or
-    the frame's fit removed).
+    the frame's fit removed), and `an_edit_footer_says_what_the_edit_is` (the same file: an outcome through
+    `apply_editor_outcome` and a save reply through `on_file_write_done` draw the prompt, take it down and say clean,
+    and a pane with no width is not shaped for; red with the outcome's re-shape and the frame's check both removed,
+    which is `main`'s behavior, and with the guard in `rebuild_edit_preview` removed).
   - Limits. The tests press through `edit_buffer_key` because a winit `KeyEvent` cannot be built outside the event
-    loop, so `Editor::key`'s hand-off, the `Edited` arm in `editor_key` and the paint of the bar (the render pass, no
+    loop, so `Editor::key`'s hand-off, `editor_key`'s call of `apply_editor_outcome` and the paint of the bar (the render pass, no
     pure test reaches it) rest on reading. A key itself costs 0.02 ms on a 465 KB file (release build), and a motion
     with no selection shapes nothing (it was 496 ms there before). Not yet so: a key that changes the selection or the
     text re-shapes the whole file, about 500 ms at 465 KB and 50 ms at 46 KB (EDIT-KEY-RESHAPES-WHOLE-FILE). Drawing
@@ -459,9 +470,7 @@ The remaining concepts below still reach shared fields through `impl State` bloc
     skip it too, but it changes the selection's look (today it is amber text with no ground, and the bar's brush is a
     pale yellow that a gold letter would not read on) and is more than the 40 lines it was meant to take, so it is
     not done; a selection that begins or ends changes the footer's words besides, which is shaped text. A pane under
-    about 44 px tall hides a row that is off the preview's line grid, text and bar alike (the whole-line clip), and a
-    key that reaches the editor in the frame between a full-height drawer's close and the next draw reads a layout
-    shaped at one pixel. No person has used it yet.
+    about 44 px tall hides a row that is off the preview's line grid, text and bar alike (the whole-line clip). No person has used it yet.
 - `ConceptSlot` privately owns the concept slot: the last `concept.read` (`ConceptInfo`, its fields private), its
   shaped body and the rect it is shaped for. A reply installs the read and its shape together; a follow's commit and a
   first visit clear both; a row parks the read alone, and its restore drops the shape until the next read. The layout

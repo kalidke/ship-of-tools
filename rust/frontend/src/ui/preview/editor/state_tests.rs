@@ -46,6 +46,20 @@ impl Harness {
         h
     }
 
+    /// A key pressed at the editor as the window does: the editor's outcome, then the re-shape if it is owed.
+    fn press_key(&mut self, action: Option<Action>, typed: Option<&str>) -> Option<EditorKey> {
+        let outcome = self.editor.press_for_test(action, typed, 3);
+        if self.editor.owes_shaping(self.width) {
+            self.reshape();
+        }
+        outcome
+    }
+
+    /// The last line the edit draws: its footer.
+    fn footer(&mut self) -> String {
+        self.editor.shaped().unwrap().buffer.lines.last().unwrap().text().to_string()
+    }
+
     fn edit(&mut self) -> &mut EditState {
         self.editor.edit.as_mut().unwrap()
     }
@@ -1122,4 +1136,44 @@ fn the_bar_on_a_right_to_left_glyph_stands_at_the_edge_it_is_read_from() {
     assert_eq!(h.place().x, first.2 + first.3, "at the start: the right edge of the first glyph");
     h.put(HEBREW.len());
     assert_eq!(h.place().x, last.2, "at the end: the left edge of the last glyph");
+}
+
+#[test]
+fn a_landed_save_changes_the_footer_and_owes_a_reshape() {
+    let mut h = Harness::new("alpha\nbeta", 40);
+    h.press_key(None, Some("x"));
+    assert!(h.footer().contains("modified"));
+    assert!(!h.editor.needs_reshape());
+    // The reply snaps the baseline: no text, selection or banner changed, only the footer's words.
+    h.editor.mark_file_saved("v2".into());
+    assert!(h.editor.needs_reshape(), "the footer says modified until it is shaped again");
+    h.reshape();
+    assert!(h.footer().contains("clean"), "{}", h.footer());
+    assert!(!h.editor.needs_reshape());
+}
+
+#[test]
+fn escape_on_an_edited_buffer_draws_the_discard_prompt_and_any_other_key_takes_it_down() {
+    let mut h = Harness::new("alpha\nbeta", 40);
+    h.press_key(None, Some("x"));
+    assert!(matches!(h.press_key(Some(Action::Cancel), None), Some(EditorKey::ConfirmDiscard)));
+    assert!(h.footer().contains("DISCARD UNSAVED EDITS?"), "{}", h.footer());
+    assert!(matches!(h.press_key(Some(Action::EditRight), None), Some(EditorKey::DiscardAnswered)));
+    assert!(h.footer().contains("modified") && !h.footer().contains("DISCARD"), "{}", h.footer());
+    // The stale banner, raised by a refused save and answered by keeping the edit.
+    h.edit().stale_banner = true;
+    h.reshape();
+    assert!(h.footer().contains("STALE"), "{}", h.footer());
+    assert!(matches!(h.press_key(Some(Action::StaleKeep), None), Some(EditorKey::StaleAnswered)));
+    assert!(h.footer().contains("modified") && !h.footer().contains("STALE"), "{}", h.footer());
+}
+
+#[test]
+fn a_pane_with_no_width_is_not_shaped_for_and_is_when_it_returns() {
+    let mut h = Harness::new("alpha", 40);
+    h.press_key(None, Some("x"));
+    h.edit().buf.insert_char('y');
+    assert!(h.editor.needs_reshape());
+    assert!(!h.editor.owes_shaping(0.0), "no shaping to a pixel for a pane with no width");
+    assert!(h.editor.owes_shaping(h.width), "and the width's return owes it");
 }

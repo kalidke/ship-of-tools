@@ -367,6 +367,13 @@ impl Editor {
         self.edit.as_ref().map(EditState::drawn) != self.drawn
     }
 
+    /// Whether the shaped text is owed at a pane of `width`: what it was shaped from has changed (`needs_reshape`)
+    /// and the pane has a width to shape for. A pane with none (a full-height drawer leaves the preview none) is not
+    /// shaped for; the frame shapes when the width returns.
+    pub(in crate::ui) fn owes_shaping(&self, width: f32) -> bool {
+        width >= 1.0 && self.needs_reshape()
+    }
+
     /// Lay the shaped buffer out again for a new pane width, from `font_system`, and rebuild the index from it: the
     /// text is unchanged, so only the rows are. `false` (and nothing done) where the text is not what was shaped.
     pub(in crate::ui) fn relayout(&mut self, width: f32, font_system: &mut cosmic_text::FontSystem) -> bool {
@@ -377,6 +384,14 @@ impl Editor {
         shaped.resize(font_system, width, 0.0);
         self.index = rows::Index::new(&shaped.buffer, edit.buf.body(), edit.buf.rev());
         true
+    }
+
+    /// Press `action` (with the character `typed` for the typing key), as a native fixture's stand-in for the keys it
+    /// cannot send.
+    #[cfg(test)]
+    pub(in crate::ui) fn press_for_test(&mut self, action: Option<Action>, typed: Option<&str>, page_rows: usize) -> Option<EditorKey> {
+        let logical = typed.map_or(Key::Named(NamedKey::ArrowDown), |t| Key::Character(t.into()));
+        self.press(Pressed { logical: &logical, action, ctrl: false, alt: false, shift: false, super_: false }, false, page_rows)
     }
 
     /// Put the cursor at `at`, as a native fixture's stand-in for the keys it cannot press.
@@ -424,6 +439,13 @@ impl Editor {
     /// banner only reload or keep; otherwise cancel, save, or the buffer's own keys. `page_rows` is the paging step.
     pub(in crate::ui) fn key(&mut self, key: KeyPress<'_>, page_rows: usize) -> Option<EditorKey> {
         let KeyPress { event, action, ctrl, alt, shift, super_ } = key;
+        self.press(Pressed { logical: &event.logical_key, action, ctrl, alt, shift, super_ }, event.repeat, page_rows)
+    }
+
+    /// `key` on what a press carries: a winit key event cannot be built outside the event loop, so the tests press
+    /// here.
+    fn press(&mut self, key: Pressed<'_>, repeat: bool, page_rows: usize) -> Option<EditorKey> {
+        let Pressed { logical, action, ctrl, alt, shift, super_ } = key;
         let edit = self.edit.as_mut()?;
         // When the discard-confirm modal is up,
         // the key handler is just y/n/Esc. Any
@@ -438,7 +460,7 @@ impl Editor {
             // chosen 2026-06-09: first Esc raises this
             // prompt, a second Esc exits). `n` or any
             // other key cancels back to editing.
-            if action == Some(Action::DiscardConfirm) && !event.repeat {
+            if action == Some(Action::DiscardConfirm) && !repeat {
                 self.close();
             } else {
                 edit.confirm_discard = false;
@@ -452,7 +474,7 @@ impl Editor {
         // will fail again until the underlying
         // file changes or the user reloads.
         if edit.stale_banner {
-            if action == Some(Action::StaleReload) && !event.repeat {
+            if action == Some(Action::StaleReload) && !repeat {
                 // Reload from disk, discarding edits. For
                 // a file edit re-fire file.read (the
                 // FileRead handler replaces the buffer +
@@ -465,13 +487,13 @@ impl Editor {
                 }
                 return Some(EditorKey::ReloadConcept(edit.target.clone()));
             }
-            if action == Some(Action::StaleKeep) && !event.repeat {
+            if action == Some(Action::StaleKeep) && !repeat {
                 edit.stale_banner = false;
             }
             // Any other key: ignored. Banner stays up until the user picks r or k.
             return Some(EditorKey::StaleAnswered);
         }
-        if action == Some(Action::Cancel) && !event.repeat {
+        if action == Some(Action::Cancel) && !repeat {
             // Dirty buffer → confirm modal.
             // Clean buffer → discard right
             // away (no value in asking when
@@ -499,7 +521,7 @@ impl Editor {
                 },
             });
         }
-        let pressed = Pressed { logical: &event.logical_key, action, ctrl, alt, shift, super_ };
+        let pressed = Pressed { logical, action, ctrl, alt, shift, super_ };
         edit_buffer_key(edit, pressed, page_rows, self.shaped.as_ref().zip(self.index.as_ref()));
         Some(EditorKey::Edited)
     }

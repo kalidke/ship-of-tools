@@ -66,4 +66,52 @@ impl State {
         self.shaped.scroll_to_top(now, length);
         self.redraw()
     }
+
+    /// What the footer of the edit says follows what the edit is, through the window's own handlers: Escape on an edited
+    /// buffer draws the discard prompt and any other key takes it down, a landed save says clean, and a text changed
+    /// while the pane has no width (a full-height drawer) is not shaped to a pixel but when the width returns. The keys
+    /// are pressed at the editor (a winit key event cannot be built) and their outcomes handed to the window's own
+    /// `apply_editor_outcome`, the one place a key's re-shape is decided.
+    #[allow(dead_code, reason = "runs only inside a native State, from the window_minimized fixtures child; no libtest body can construct one")]
+    pub(in crate::ui) fn an_edit_footer_says_what_the_edit_is(&mut self) -> anyhow::Result<()> {
+        use crate::ui::input::keybindings::Action;
+        self.settings.smooth_scroll_ms = 0;
+        self.editor.arm_file("files:foot.txt".into());
+        self.editor.open_file("files:foot.txt", true, "alpha\nbeta".into(), "v".into());
+        self.rebuild_edit_preview();
+        self.redraw()?;
+        let footer = |s: &State| s.editor.shaped().and_then(|sh| sh.buffer.lines.last().map(|l| l.text().to_string())).unwrap_or_default();
+        let mut press = |s: &mut State, action: Option<Action>, typed: Option<&str>| -> anyhow::Result<()> {
+            let outcome = s.editor.press_for_test(action, typed, 3).ok_or_else(|| anyhow::anyhow!("the editor took no key"))?;
+            super::apply_editor_outcome(s, outcome);
+            s.redraw()
+        };
+        ensure!(footer(self).contains("clean"), "a fresh edit is not clean: {}", footer(self));
+        press(self, None, Some("x"))?;
+        ensure!(footer(self).contains("modified"), "a typed edit is not modified: {}", footer(self));
+        press(self, Some(Action::Cancel), None)?;
+        ensure!(footer(self).contains("DISCARD UNSAVED EDITS?"), "Escape drew no prompt: {}", footer(self));
+        press(self, Some(Action::EditRight), None)?;
+        ensure!(footer(self).contains("modified") && !footer(self).contains("DISCARD"), "the prompt stayed up: {}", footer(self));
+        self.on_file_write_done("files:foot.txt".into(), crate::net::transport::FileWriteResult::Ok { path: "foot.txt".into(), version: "v2".into() });
+        self.redraw()?;
+        ensure!(footer(self).contains("clean"), "a landed save did not say clean: {}", footer(self));
+        // A pane with no width: the text is not shaped to a pixel, and is shaped when the width returns.
+        let rect = self.concept.rect();
+        let canvas = &mut self.canvas;
+        let concept = &mut self.concept;
+        canvas.shape(|fs| concept.layout(ScreenRect { w: 0.0, ..rect }, fs));
+        let before = self.editor.shaped().and_then(|sh| sh.buffer.size().0);
+        let outcome = self.editor.press_for_test(None, Some("y"), 3).ok_or_else(|| anyhow::anyhow!("the editor took no key"))?;
+        super::apply_editor_outcome(self, outcome);
+        // A reply, a row switch's restore and the like re-shape unasked: not to a pixel either.
+        self.rebuild_edit_preview();
+        ensure!(self.editor.needs_reshape(), "a typed edit in a hidden pane is not owed");
+        ensure!(self.editor.shaped().and_then(|sh| sh.buffer.size().0) == before, "a pane with no width was shaped for");
+        self.redraw()?;
+        ensure!(!self.editor.needs_reshape() && self.editor.cursor_place().is_some() && footer(self).contains("modified"),
+            "the width's return did not shape the text: {}", footer(self));
+        self.editor.close();
+        self.redraw()
+    }
 }
