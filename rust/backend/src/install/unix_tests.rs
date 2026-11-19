@@ -436,3 +436,86 @@ fn a_listing_with_no_answer_stops_decide_and_fails_the_check() {
     let (line, code) = verdict::line(&found, "");
     assert!(code == 1 && line.starts_with("FAIL: daemon: could not list this account's processes") && line.contains(why), "exit {code}: {line}");
 }
+
+/// The app's identifier has one owner, the library's `sot_bundle_id`: the plist the installer writes carries what the
+/// library answers, and the answer is a reverse-domain name, never empty.
+#[test]
+fn the_apps_bundle_identifier_is_the_librarys() {
+    let id = lib(&tree(), "sot_bundle_id", &[]);
+    assert!(id.ok(), "{}", id.err);
+    let id = id.first_line();
+    assert!(id.contains('.') && !id.contains(char::is_whitespace), "{id}");
+    assert!(bundle_plist(&id).contains(&format!("<key>CFBundleIdentifier</key><string>{id}</string>")));
+}
+
+/// A bundle in a temporary folder made from `app_bundle`'s own texts (its Info.plist and its program), whose program
+/// starts a stand-in `sot-launch`: that sets the account's folder to the test's own and runs the rendered wrapper over
+/// a stand-in window and a stand-in `sotd` that names a state folder of the test's own and a socket it listens on.
+/// Returns the state folder and the bundle; the listener must be kept alive by the caller.
+#[cfg(target_os = "macos")]
+fn icon_bundle(root: &Path) -> (PathBuf, PathBuf, std::os::unix::net::UnixListener) {
+    let (home, prefix, state, sock) = (root.join("h"), root.join("p"), root.join("st"), root.join("s"));
+    let library = prefix.join("repo/current/scripts/lib");
+    for d in [home.join(".sot-comm/bin"), prefix.join("bin"), prefix.join("updates"), library.clone()] {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    let listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+    sot_platform::test_exec::write_executable(&library.join("sot-daemon.sh"), std::fs::read(tree().join("scripts/lib/sot-daemon.sh")).unwrap());
+    sot_platform::test_exec::write_executable(
+        &prefix.join("bin/sotd"),
+        format!("#!/bin/sh\ncase \"$1\" in log-path) echo '{}' ;; session-socket-path) echo '{}' ;; esac\nexit 0\n", state.join("sotd.log").display(), sock.display()),
+    );
+    sot_platform::test_exec::write_executable(&prefix.join("bin/sot"), "#!/bin/sh\necho \"window out\"\necho \"window err\" >&2\nexit 0\n");
+    let inner = root.join("inner");
+    let rendered = sot_platform::test_wait::run_within(
+        Command::new("bash")
+            .args(["-c", ". \"$1\" && render_sot_launch \"$2\" testtarget \"$3\""])
+            .arg("sot")
+            .arg(library.join("sot-daemon.sh"))
+            .arg(&prefix)
+            .arg(&inner)
+            .env("HOME", &home),
+        std::time::Duration::from_secs(30),
+    );
+    rendered.ok();
+    // The stand-in wrapper path: the account's folder is the test's own, then the rendered wrapper takes this process over.
+    let outer = root.join("sot-launch");
+    sot_platform::test_exec::write_executable(&outer, format!("#!/bin/sh\nHOME='{}'\nexport HOME\nexec '{}'\n", home.display(), inner.display()));
+    let contents = root.join("Ship of Tools.app/Contents");
+    std::fs::create_dir_all(contents.join("MacOS")).unwrap();
+    let id = lib(&tree(), "sot_bundle_id", &[]).first_line();
+    std::fs::write(contents.join("Info.plist"), bundle_plist(&id)).unwrap();
+    sot_platform::test_exec::write_executable(&contents.join("MacOS/sot-launch"), icon_program(outer.to_str().unwrap()));
+    (state, root.join("Ship of Tools.app"), listener)
+}
+
+#[cfg(target_os = "macos")]
+fn read(p: &Path) -> String {
+    std::fs::read_to_string(p).unwrap_or_default()
+}
+
+/// The icon, as macOS runs it, and the trigger itself (no forcing): `open -W` on a bundle that holds `app_bundle`'s own
+/// program and Info.plist starts the real rendered wrapper from LaunchServices, which gives it the app's identifier
+/// in `__CFBundleIdentifier` and launchd as its parent (`exec` keeps both through the stand-in `sot-launch`), and the
+/// window's output ends in the log file beside the daemon's log. The same wrapper started directly by this test has
+/// no identifier and this process as its parent: it writes no log file and its lines arrive on this test's pipes. `open`
+/// is given the bundle's path, so an app registered under the same identifier elsewhere is not the one started.
+/// Runs only on macOS (the hosted macOS 26 and 27 jobs); a later macOS that stopped setting the variable would fail here.
+#[cfg(target_os = "macos")]
+#[test]
+fn an_icon_started_by_macos_leaves_the_windows_output_in_the_log_file() {
+    // A short path: a socket's name is held to 104 bytes on macOS.
+    let dir = tempfile::Builder::new().prefix("sw").tempdir_in("/tmp").unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let (state, app, _listener) = icon_bundle(&root);
+    let direct = sot_platform::test_wait::run_within(
+        Command::new(root.join("sot-launch")).env_remove("__CFBundleIdentifier"),
+        std::time::Duration::from_secs(60),
+    )
+    .ok();
+    assert_eq!((direct.stdout.as_str(), direct.stderr.as_str()), ("window out\n", "window err\n"), "a direct start leaves its streams alone");
+    assert!(!state.join("frontend.log").exists(), "and writes no log file");
+    let opened = sot_platform::test_wait::run_within(Command::new("open").arg("-W").arg(&app), std::time::Duration::from_secs(90));
+    opened.ok();
+    assert_eq!(read(&state.join("frontend.log")), "window out\nwindow err\n", "an icon start leaves its log beside the daemon's");
+}

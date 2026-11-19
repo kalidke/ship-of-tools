@@ -1084,6 +1084,16 @@ fn wire_launcher(plan: &Plan) -> Result<(), Stop> {
     if plan.macos { app_bundle(plan, &dest) } else { desktop_entry(plan, &dest) }
 }
 
+/// The app bundle's Info.plist, for the identifier the library names (`sot_bundle_id`, its one owner).
+fn bundle_plist(id: &str) -> String {
+    format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\"><dict>\n    <key>CFBundlePackageType</key><string>APPL</string>\n    <key>CFBundleName</key><string>Ship of Tools</string>\n    <key>CFBundleIdentifier</key><string>{id}</string>\n    <key>CFBundleExecutable</key><string>sot-launch</string>\n    <key>CFBundleIconFile</key><string>sot</string>\n    <key>NSHighResolutionCapable</key><true/>\n</dict></plist>\n")
+}
+
+/// The app bundle's program: it starts the `sot-launch` wrapper, and `role::exec_target` reads that line.
+fn icon_program(wrapper: &str) -> String {
+    format!("#!/usr/bin/env bash\nexec \"{wrapper}\"\n")
+}
+
 /// A minimal app bundle, so the window starts from Launchpad, Spotlight and the Dock; its icon made from the checkout's
 /// logo with sips and iconutil (both ship with macOS). A bundle made here carries no quarantine attribute.
 fn app_bundle(plan: &Plan, wrapper: &str) -> Result<(), Stop> {
@@ -1091,13 +1101,17 @@ fn app_bundle(plan: &Plan, wrapper: &str) -> Result<(), Stop> {
     for d in ["MacOS", "Resources"] {
         let _ = std::fs::create_dir_all(app.join(d));
     }
-    let plist = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\"><dict>\n    <key>CFBundlePackageType</key><string>APPL</string>\n    <key>CFBundleName</key><string>Ship of Tools</string>\n    <key>CFBundleIdentifier</key><string>dev.ship-of-tools.sot</string>\n    <key>CFBundleExecutable</key><string>sot-launch</string>\n    <key>CFBundleIconFile</key><string>sot</string>\n    <key>NSHighResolutionCapable</key><true/>\n</dict></plist>\n";
+    let id = lib(&plan.checkout, "sot_bundle_id", &[]);
+    if !id.ok() || id.first_line().is_empty() {
+        return Err(Stop::new(1, "could not read the app's bundle identifier from the library"));
+    }
+    let plist = bundle_plist(&id.first_line());
     let write = |name: &str, text: &str, mode: u32| -> Result<(), Stop> {
         let src = plan.scratch.join(name.replace('/', "-"));
         std::fs::write(&src, text).and_then(|()| copy_whole(&src, &app.join(name), Some(mode))).map_err(|e| Stop::new(1, format!("writing {} failed: {e}", app.join(name).display())))
     };
-    write("Info.plist", plist, 0o644)?;
-    write("MacOS/sot-launch", &format!("#!/usr/bin/env bash\nexec \"{wrapper}\"\n"), 0o755)?;
+    write("Info.plist", &plist, 0o644)?;
+    write("MacOS/sot-launch", &icon_program(wrapper), 0o755)?;
     let logo = plan.checkout.clone().join("logo.png");
     if logo.is_file() && cmd::on_path("sips") && cmd::on_path("iconutil") {
         let iconset = plan.scratch.join("sot.iconset");

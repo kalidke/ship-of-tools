@@ -19,6 +19,27 @@ session (X11 or Wayland) and a working Vulkan driver.
   for example an SSH login. Run the window on the machine in front of you and
   keep the backend on the server; see [Going remote](../start/remote.md).
 
+## Where the window's log is
+
+The window writes what it refuses or fails at to its log. Started from a
+terminal with `sot-launch`, it prints that log in that terminal, on every
+system. Started from an icon, there is no terminal, so where it goes depends on
+the system:
+
+- **macOS**: the file `frontend.log` in the folder that holds the daemon's
+  log, `~/.local/state/sot` unless you moved your state folder (`sotd log-path`
+  prints the daemon's log, `sotd.log`, in that folder). It holds the output of
+  the latest start from the icon; `frontend.prev.log` beside it holds the start
+  before that, and nothing older is kept. A start that printed nothing does not
+  replace the older file. An icon made by an earlier release gets this file
+  after the next update, with no new install.
+- **Windows**: the files in `%LOCALAPPDATA%\sot\logs` named under
+  [The Windows taskbar launch looks dead](#The-Windows-taskbar-launch-looks-dead).
+- **Linux**: your desktop session's log, which is where a desktop entry's
+  output goes. On most desktops `journalctl --user` shows it; some older ones
+  write `~/.xsession-errors`. For a window that fails to start, run
+  `sot-launch` in a terminal instead.
+
 ## The connection dropped
 
 Press **`F5`** to reconnect. The daemon replays what you missed or sends a

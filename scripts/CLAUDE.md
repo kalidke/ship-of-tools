@@ -359,7 +359,35 @@ Launch (`launch-sot.sh`, the rendered `sot-launch`, `lib/sot-daemon.sh`, `launch
   `supervisor.log` names both current output files on an exit other than 0, 75 (relaunch) or 76 (converge).
   `tests/test-launcher-leases.ps1` case 17 executes both spawn paths and the relaunch loop with a stand-in window:
   exit 101's stderr survives the next start, empty output preserves it, and 75 and 76 rotate before respawning.
-  Linux and macOS log rotation is out of scope: the window's output goes to the desktop session's log.
+  On macOS the window started from the Ship of Tools icon has its log in a file (`sot_window_log` in
+  `lib/sot-daemon.sh`, called once at the start of both rendered wrappers, the all-in-one one and the one that dials the
+  plan). The wrapper counts as started by macOS as the app when `__CFBundleIdentifier` equals `sot_bundle_id`'s answer
+  (the one owner of the app's identifier; `sotd install` writes the same value into the bundle's Info.plist) and its
+  parent is process 1: the variable says which app macOS started, the parent says this process is that start and not a
+  descendant that inherited the variable (a session's shell inside the app). Then its standard output and error (macOS
+  gives the program pipes) go, appended, to `frontend.log` in the folder of the daemon's own log, the one `sotd
+  log-path` names; a nonempty `frontend.log` moves to `frontend.prev.log` first, replacing the older backup, so a launch
+  keeps its own log and the one before and nothing older (the wrapper's respawns of the window add to the launch's
+  file); an empty one leaves the backup alone. The wrapper started again after an apply keeps the variable and its
+  parent, so it asks a fact instead: when standard output already is the log file, nothing is rotated again. Every
+  other start, a terminal, a pipe, a file or /dev/null a caller gave, a descendant of the app, and every start on
+  Linux and Windows, is left exactly as it is. Each step fails open: with no folder, no `sotd` or a file that cannot be
+  opened, the window starts with its streams as they were. Measured on the hosted macOS 26.7 and 27.0 runners on
+  2026-11-19: a bundle's program started by `open -W` has the variable, parent `launchd` (1) and pipes for both streams,
+  and a child it starts has the variable and another parent; the same program from a shell has no variable. A later
+  macOS that stopped setting the variable would lose the file, and the macOS-only test below is what would show it.
+  Because the wrapper is what an automatic update re-renders (`sot_rerender_owned`) and the library it reads is the
+  checkout's, an existing install gets the rule at its next update, with no rewrite of the app bundle. Proven by
+  `tests/installer-wrapper.sh` on Linux and macOS, each case under its own HOME and a state folder of its own: the
+  trigger as a truth table (ours and parent 1, ours and another parent, another app, none); the mechanics with the
+  trigger forced (the file and its mode 0600, the two logs and nothing older, a folder that cannot be made, a log that is
+  a folder, no answer from `sotd` and a relative one, one rotation across the wrapper's re-exec after an apply, the
+  two-line icon launcher of an earlier install, the remote form); and that a pipe, files a caller gave and a descendant
+  of the app are left alone. A wrapper whose parent is process 1 cannot be made on Linux, so the real trigger end to
+  end is proven only by `unix_tests::an_icon_started_by_macos_leaves_the_windows_output_in_the_log_file`, which runs
+  on the hosted macOS jobs: `open -W` on a bundle made from `app_bundle`'s own texts starts the real rendered wrapper,
+  and a direct start of the same wrapper writes no file. No person's Mac has run it. On Linux the desktop entry's
+  program keeps its streams as the desktop gives them, the desktop session's log, and rotating that is out of scope.
 - A script reaches a daemon only through `sotd stdio-bridge --endpoint` and finds it by its socket or pipe owner,
   never by a pattern over command lines; socket and pipe paths come from `sotd session-socket-path`.
 

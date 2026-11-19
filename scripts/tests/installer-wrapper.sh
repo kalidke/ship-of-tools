@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
 # installer-wrapper.sh -- the rendered all-in-one sot-launch (render_sot_launch) under the sandboxed PATH: the probe before
 # every spawn, the crash-loop rollback, the exit-75 respawn, the service operations by unit ownership, the re-exec after
-# an apply, and an armed pointer the installed sotd refuses (no stop, no restart, one sot-apply to drop it).
+# an apply, an armed pointer the installed sotd refuses (no stop, no restart, one sot-apply to drop it), and the window's
+# log file (sot_window_log): the trigger as a truth table, what lands in the file, what it keeps, that it fails open, that
+# a start that is not an icon launch is left alone, and one rotation across the wrapper's re-exec. A wrapper whose parent
+# is process 1 cannot be made here, so the cases that need the log written force the trigger (force_log) and the
+# trigger's end to end proof is the macOS-only test in rust/backend/src/install/unix_tests.rs.
+# Every case runs under its own HOME, and the stand-in sotd names a state folder under the case's own folder, so no run
+# writes into this account's state folder.
 #
 # Run: scripts/tests/installer-wrapper.sh
 
@@ -32,12 +38,15 @@ SC
     cp "$LIB" "$lib/sot-daemon.sh"
     printf '%s\n' "$codes" > "$d/codes"
     : > "$d/log"
+    printf '%s\n' "$d/state/sotd.log" > "$d/logpath"
     python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$d/sot.sock"
     cat > "$prefix/bin/sotd" <<SD
 #!/bin/sh
 case "\$1 \$2 \$3" in
     "stdio-bridge --endpoint unix:"*) echo probe >> "\$STUB_LOG"; exit 0 ;;
 esac
+# The daemon's log, under the case's own folder (the file logpath holds, so a case can change it).
+[ "\$1" = log-path ] && { cat "$d/logpath"; exit 0; }
 [ "\$1 \$2" = "update pointer" ] && exit "\$(cat "$d/pointer-exit" 2>/dev/null || echo 0)"
 [ "\$1" = session-socket-path ] && echo "$d/sot.sock"
 exit 0
@@ -45,6 +54,8 @@ SD
     cat > "$prefix/bin/sot" <<'SOT'
 #!/bin/sh
 echo spawn >> "$STUB_LOG"
+echo "window out $(grep -c '^spawn$' "$STUB_LOG")"
+echo "window err $(grep -c '^spawn$' "$STUB_LOG")" >&2
 d="$(dirname "$0")/../.."
 code="$(head -1 "$d/codes")"; sed -i.bak 1d "$d/codes"
 exit "${code:-0}"
@@ -58,6 +69,15 @@ rm -f "${prefix:?}/updates/pending-testtarget.json"
 printf '#!/bin/sh\necho hop >> "\$STUB_LOG"\n' > "$d/home/.local/bin/sot-launch.new"
 chmod +x "$d/home/.local/bin/sot-launch.new"
 mv "$d/home/.local/bin/sot-launch.new" "$d/home/.local/bin/sot-launch"
+SA
+            ;;
+        consume-keep)
+            # Consumes the pointer, says something, and leaves the wrapper: the real wrapper re-execs itself.
+            cat > "$prefix/bin/sot-apply" <<SA
+#!/bin/sh
+echo apply >> "\$STUB_LOG"
+echo apply-said >&2
+rm -f "${prefix:?}/updates/pending-testtarget.json"
 SA
             ;;
         *)
@@ -208,6 +228,126 @@ d="$WORK/w-nohop"; mk_wrapper "$d" "0" 0 1
 run_wrapper "$d"
 check "an apply that leaves the pointer re-execs nothing and spawns once" \
     "0 0 1" "$WR_RC $(grep -c '^hop$' "$d/log" || true) $(grep -c '^spawn$' "$d/log" || true)"
+
+# ---------------------------------------------------------------------------
+# The window's log (sot_window_log). run_as <dir> <how> [launcher]: the launcher (default the wrapper) under its own HOME,
+# with its streams as <how> says: null (both at /dev/null), outnull (standard output at /dev/null, standard error to
+# $d/err), pipe (both into one pipe, captured in $d/piped), files (to $d/o and $d/err); the environment of an app macOS
+# started (__CFBundleIdentifier) is set when $ICON_ENV is. Sets WR_RC.
+run_as() {
+    local d="$1" how="$2" l="${3:-$1/home/.local/bin/sot-launch}"
+    WR_RC=0
+    local env=(env HOME="$d/home" PATH="$d/stubs:$TOOLS" STUB_LOG="$d/log")
+    [ -z "${ICON_ENV:-}" ] || env=("${env[@]}" __CFBundleIdentifier="$ICON_ENV")
+    case "$how" in
+        null) "${env[@]}" "$l" >/dev/null 2>&1 || WR_RC=$? ;;
+        outnull) "${env[@]}" "$l" >/dev/null 2>"$d/err" || WR_RC=$? ;;
+        pipe) "${env[@]}" "$l" 2>&1 | cat > "$d/piped" || true; WR_RC=${PIPESTATUS[0]} ;;
+        files) "${env[@]}" "$l" >"$d/o" 2>"$d/err" || WR_RC=$? ;;
+    esac
+}
+# force_log <dir>: the case's copy of the library says every launch wants its log, so a case tests the log's mechanics
+# (what it keeps, that it fails open, one rotation) apart from the trigger, which has its own cases.
+force_log() { printf '\nsot_window_log_wanted() { return 0; }\n' >> "$1/prefix/repo/current/scripts/lib/sot-daemon.sh"; }
+windows() { grep -h '^window' "$1" 2>/dev/null | tr '\n' ' ' | sed 's/ $//'; }   # the stand-in window's lines in a file
+
+case_start "window_log_the_file"
+d="$WORK/l-file"; mk_wrapper "$d" "0" 0 0; force_log "$d"
+run_as "$d" null
+check "output and error at /dev/null land in frontend.log beside the daemon's log, the folder made" \
+    "0 window out 1 window err 1" "$WR_RC $(windows "$d/state/frontend.log")"
+check "the log is private to the account" "600" "$(stat -c %a "$d/state/frontend.log" 2>/dev/null || stat -f %Lp "$d/state/frontend.log")"
+
+case_start "window_log_is_bounded"
+d="$WORK/l-bound"; mk_wrapper "$d" "$(printf '0\n0\n0\n0\n0')" 0 0; force_log "$d"
+for _ in 1 2 3; do run_as "$d" null; done
+check "three launches keep the last two and nothing older" \
+    "out 3 err 3|out 2 err 2|frontend.log frontend.prev.log" \
+    "$(windows "$d/state/frontend.log" | sed 's/window //g')|$(windows "$d/state/frontend.prev.log" | sed 's/window //g')|$(ls "$d/state" | tr '\n' ' ' | sed 's/ $//')"
+printf '#!/bin/sh\necho spawn >> "$STUB_LOG"\nexit 0\n' > "$d/prefix/bin/sot"
+run_as "$d" null
+run_as "$d" null
+check "a launch that said nothing leaves the older backup alone" \
+    "out 3 err 3||" \
+    "$(windows "$d/state/frontend.prev.log" | sed 's/window //g')|$(windows "$d/state/frontend.log")|"
+cat > "$d/prefix/bin/sot" <<'SOT'
+#!/bin/sh
+echo spawn >> "$STUB_LOG"
+echo "window out $(grep -c '^spawn$' "$STUB_LOG")"
+exit 0
+SOT
+run_as "$d" null
+check "the next launch that speaks keeps that older backup" "out 6|out 3 err 3" \
+    "$(windows "$d/state/frontend.log" | sed 's/window //g')|$(windows "$d/state/frontend.prev.log" | sed 's/window //g')"
+
+case_start "window_log_fails_open"
+touch "$WORK/a-file"
+mkdir -p "$WORK/l-open-state/frontend.log"
+i=0
+for variant in "a folder under a file|$WORK/a-file/sot/sotd.log" "a log that is a folder|$WORK/l-open-state/sotd.log" \
+               "no answer from sotd|" "a relative answer|sotd.log"; do
+    i=$((i + 1)); d="$WORK/l-open-$i"; mk_wrapper "$d" "0" 0 0; force_log "$d"
+    printf '%s\n' "${variant#*|}" > "$d/logpath"
+    run_as "$d" outnull
+    check "${variant%%|*}: the window still starts, and its error stays where it was with nothing added" \
+        "0 probe spawn|window err 1" "$WR_RC $(events "$d")|$(cat "$d/err")"
+done
+check "a folder that cannot be made leaves nothing behind" "no" "$([ -e "$WORK/a-file/sot" ] && echo yes || echo no)"
+
+case_start "window_log_trigger"
+ours="$(sot_bundle_id)"
+check "the trigger is a truth table of the app identifier and the parent pid: ours and 1, ours and another parent, another app and 1, none" \
+    "yes no no no no" \
+    "$(sot_window_log_wanted "$ours" 1 && echo yes || echo no) $(sot_window_log_wanted "$ours" 4242 && echo yes || echo no) $(sot_window_log_wanted com.example.other 1 && echo yes || echo no) $(sot_window_log_wanted "" 1 && echo yes || echo no) $(sot_window_log_wanted "" "" && echo yes || echo no)"
+check "the identifier is a reverse-domain name" "yes" "$(case "$ours" in (*.*.*) echo yes ;; (*) echo no ;; esac)"
+
+case_start "window_log_leaves_every_other_start_alone"
+d="$WORK/l-pipe"; mk_wrapper "$d" "0" 0 0
+run_as "$d" pipe
+check "into a pipe: the lines arrive on the pipe and no log file is made" \
+    "0 window out 1 window err 1 no" "$WR_RC $(windows "$d/piped") $([ -e "$d/state" ] && echo yes || echo no)"
+d="$WORK/l-files"; mk_wrapper "$d" "0" 0 0
+run_as "$d" files
+check "into files a caller gave: each has its line and no log file is made" \
+    "0 window out 1|window err 1|no" "$WR_RC $(windows "$d/o")|$(windows "$d/err")|$([ -e "$d/state" ] && echo yes || echo no)"
+d="$WORK/l-desc"; mk_wrapper "$d" "0" 0 0
+ICON_ENV="$(sot_bundle_id)" run_as "$d" null
+check "a descendant of the app, which inherits the identifier but has another parent, makes no log file even at /dev/null" \
+    "0 no" "$WR_RC $([ -e "$d/state" ] && echo yes || echo no)"
+d="$WORK/l-desc-pipe"; mk_wrapper "$d" "0" 0 0
+ICON_ENV="$(sot_bundle_id)" run_as "$d" pipe
+check "and its lines arrive on its pipe" "0 window out 1 window err 1 no" "$WR_RC $(windows "$d/piped") $([ -e "$d/state" ] && echo yes || echo no)"
+
+case_start "window_log_once_per_launch"
+d="$WORK/l-once"; mk_wrapper "$d" "0" 0 1 consume-keep; force_log "$d"
+mkdir -p "$d/state"; printf 'old\n' > "$d/state/frontend.log"
+run_as "$d" null
+check "the wrapper re-execs itself after the apply and the launch rotates once (stdout already is the log): the old log is the backup, this launch's lines are the log" \
+    "0 1 1 old|apply-said window out 1 window err 1" \
+    "$WR_RC $(grep -c '^apply$' "$d/log" || true) $(grep -c '^spawn$' "$d/log" || true) $(cat "$d/state/frontend.prev.log")|$(grep -h '^apply-said\|^window' "$d/state/frontend.log" | tr '\n' ' ' | sed 's/ $//')"
+
+case_start "window_log_reaches_the_old_icon_launcher"
+d="$WORK/l-icon"; mk_wrapper "$d" "0" 0 0; force_log "$d"
+printf '#!/usr/bin/env bash\nexec "%s"\n' "$d/home/.local/bin/sot-launch" > "$d/icon"; chmod +x "$d/icon"
+run_as "$d" null "$d/icon"
+check "the two-line icon launcher of an earlier install reaches the wrapper's log: its lines end in the file" \
+    "0 window out 1 window err 1" "$WR_RC $(windows "$d/state/frontend.log")"
+
+case_start "window_log_remote_launcher"
+d="$WORK/l-remote"; mk_wrapper "$d" "0" 0 0; force_log "$d"
+mkdir -p "$d/prefix/repo/current/scripts"
+printf '#!/bin/sh\necho "window out remote"\necho "window err remote" >&2\n' > "$d/prefix/repo/current/scripts/launch-sot.sh"
+chmod +x "$d/prefix/repo/current/scripts/launch-sot.sh"
+( HOME="$d/home" render_remote_launch "$d/prefix" "" "$d/remote" )
+run_as "$d" null "$d/remote"
+check "the launcher that dials the plan: the same file rule" "0 out remote err remote" "$WR_RC $(windows "$d/state/frontend.log" | sed 's/window //g')"
+d="$WORK/l-remote-pipe"; mk_wrapper "$d" "0" 0 0
+mkdir -p "$d/prefix/repo/current/scripts"
+printf '#!/bin/sh\necho "window out remote"\necho "window err remote" >&2\n' > "$d/prefix/repo/current/scripts/launch-sot.sh"
+chmod +x "$d/prefix/repo/current/scripts/launch-sot.sh"
+( HOME="$d/home" render_remote_launch "$d/prefix" "" "$d/remote" )
+ICON_ENV="$(sot_bundle_id)" run_as "$d" pipe "$d/remote"
+check "the launcher that dials the plan: a start that is not an icon launch is left alone, its lines on its pipe" "0 window out remote window err remote no" "$WR_RC $(windows "$d/piped") $([ -e "$d/state" ] && echo yes || echo no)"
 
 # ---------------------------------------------------------------------------
 printf '\n'
