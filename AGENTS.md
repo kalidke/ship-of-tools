@@ -28,8 +28,8 @@ Code sessions follow `CLAUDE.md`; **you follow this**.
 - Codex-specific Ship of Tools skills are installed by `ShipTools.update_comm()`
   under `$CODEX_HOME/skills/` (`~/.codex/skills/` unless a host overrides
   `CODEX_HOME`): use `sot-comm` for messaging, `sot-session-start` for
-  backend Codex bootstrap and `sot-chat-post` to post in the row's Slack channel — one skill for every session, Ship of Tools repo or
-  not.
+  backend Codex bootstrap and `sot-chat-post` to post in the row's Slack channel: one skill for every session, Ship of
+  Tools repo or not.
 - "Update sot" (or "update sot from the repo", "update Ship of Tools") means
   following `docs/UPDATE-AGENT.md` (fetch
   https://raw.githubusercontent.com/kalidke/ship-of-tools/main/docs/UPDATE-AGENT.md):

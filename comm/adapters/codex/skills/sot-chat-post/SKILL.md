@@ -8,9 +8,11 @@ description: "Post a message or a file to this row's own project Slack channel, 
 `sot-fe chat post` posts to the one Slack channel mapped to this row's project, under your session's handle. It has no
 channel argument. Every member of the channel sees the post.
 
-- Post only what the person asked you to post, and nothing with credentials, tokens or private paths in it.
+- Post only what the person asked you to post (an answer to channel mail that `sot-comm` tells you to give counts), and
+  nothing with credentials, tokens or private paths in it.
 - If the person names another channel or means a direct message ("tell someone in Slack"), this is not the route: say so,
-  and do not post it to the project's channel instead. If it is unclear whether they want the whole channel to see it,
+  and do not post it to the project's channel instead. If you cannot tell whether the channel they named is this row's,
+  ask. If it is unclear whether they want the whole channel to see it,
   ask before posting.
 - A Slack connector the person names posts as the person, not under your handle; use one only when they ask. To reach
   another session use `comm-send.sh` (skill `sot-comm`).
@@ -23,16 +25,18 @@ Write the text to a scratch file in the system's temp folder, then:
 ~/.sot-comm/bin/sot-fe chat post --stdin < <file>
 ```
 
-The text goes out whole, newlines included, and must fit 8 KiB. There is no argument form: a leading `/` or `-` is
-safe only through `--stdin`. A longer text is refused once, nothing posted: split it.
+The text goes out whole, newlines included, and must fit about 8 KiB after escaping (`&` counts 5 bytes, `<` and `>` 4
+each). Do not pass the text as an argument: a leading `/` or `-` is mangled or read as a flag; `--stdin` is safe. A
+longer text is refused once, nothing posted: split it.
 
 - Reply in a thread: add `--thread <ts>`, the `thread=` value of the channel mail's second line (the thread's first
-  message), or the `posted <ts>` an earlier post of yours printed. Not the `ts=` of a message that is itself a reply.
+  message), or the `posted <ts>` of an earlier post of yours that began a thread (sent with no `--thread`; for a post sent with
+  `--thread T` the root is still `T`). Not the `ts=` of a message that is itself a reply.
 - Share a file of this project's folder (any regular file, at most 16 MiB; only the file the person named): add
   `--file <path>`; the text, if any, becomes its comment (`--file <path> --stdin < <comment file>`). Run it with a tool
   timeout of at least 150 s: it waits up to 120 s. If your shell cuts it off, treat it as exit 3.
 
-It prints `posted <ts>` (or `posted file <id>` for a file) and exits 0. Tell the person it is posted.
+It prints `posted <ts>` (`posted file <id>` when Slack names no message for a file) and exits 0. Tell the person it is posted.
 
 ## Exit codes
 
@@ -49,12 +53,15 @@ Test the exit code, not the words.
 
 ## A row with no channel
 
-Nothing was posted, and the person must fix it in the window; tell them what the command printed:
+Nothing was posted. Tell the person what the command printed; most of these they fix in the window:
 
 - `refused unmapped this session's project has no channel`: this project has no Slack channel yet. They pick one in the
   Chat drawer (`Ctrl+Shift+k`, `Cmd+Shift+k` on a Mac).
-- `refused invalid the chat's configuration does not map this session's project`: also what a hub that never connected
-  Slack prints. They connect or fix Slack from the Chat drawer.
+- `refused unconfigured <words>`: Slack is not working on the computer that runs your sessions; the words say whether
+  no workspace is connected, Slack refused the tokens, the tokens belong to two apps, or the chat could not start. They
+  connect or fix Slack from the Chat drawer.
+- `refused invalid the chat's configuration does not map this session's project`: the chat's settings file is refused;
+  they fix it or pick the channel again in the Chat drawer.
 - `refused unavailable the chat is not available here`: this computer is not the hub that serves the chat, or the chat
   is stopped.
 

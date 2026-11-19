@@ -208,7 +208,7 @@ names it.
 The agent runs `sot-fe chat post [--thread <ts>] (<text> | --stdin)` in the session. The post goes into the thread named
 by `--thread`, or else is a new message. It is sent once: the command prints `posted <ts>` and exits 0; exits 2 with
 `refused` and a reason, or `limited, wait <n> s`, when nothing was posted; and exits 3 with `unknown` or `no answer`
-when the post may exist, in which case the agent does not post it again and reads the thread first. A reply is public to
+when the post may exist, in which case the agent does not post it again and asks you to look in the channel. A reply is public to
 every member of the channel. A name typed as `@name` goes out as plain text and does not notify that person; the agent
 says so when you ask it to mention someone. The command posts only to the session's own project channel, for everyone
 in it: it cannot post to another channel or send a direct message.

@@ -225,8 +225,10 @@ of each.
 15. **A skill body is a template, so it carries no `$` and a digit.** Claude Code substitutes `$<digit>` and
     `$ARGUMENTS` into the text before the model reads it; a skill file of the layer or of the checkout carries no `$0`,
     `$1` or `${1}`. Limit: the rule keeps a skill from being spoiled by a substitution, not from being wrong, and no
-    test runs a skill's script or Claude Code. Check (a lint over the files, which a skill with `$1` fails):
-    `tests/test-skill-templates.sh`.
+    test runs a skill's script or Claude Code. The same suite lints each skill's frontmatter in all four skill trees (its
+    `name:` is its folder, its `description:` one line, not a `>` or `|` block, of at most 1024 characters, Codex's own
+    limit) and that the install page names every skill and its uninstall line every Codex skill. Check (a lint over the
+    files, which a skill with `$1`, a bad frontmatter or a page missing a skill fails): `tests/test-skill-templates.sh`.
 16. **A caller that stops reading never ends the spawn or the despawn between steps.** Both run `trap '' PIPE` and
     write every line of their success path with `sot_say` (`comm/lib/comm-lib-base.sh`, a reader that leaves), so a
     reader that leaves (`| head -2`) costs only the lines it did not read: the spawn still waits for ready, sends its
@@ -452,5 +454,5 @@ One test per guarantee, named for it; `cargo test -p sot-backend agents::` runs 
 | 12 | `tests/test-crlf-gh-auth.sh` |
 | 13 | `test/install_tests.jl` (the agents testset; "comm-lib.sh and sot-fe install as one file each...") |
 | 14 | `tests/test-temp-files.sh` |
-| 15 | `tests/test-skill-templates.sh` (a lint) |
+| 15 | `tests/test-skill-templates.sh` (lints: `$digit`, frontmatter, the install page's lists) |
 | 16 | `tests/test-spawn-capsule-workspace.sh` (a reader that leaves), `tests/test-despawn-resolve.sh` (D6b) |

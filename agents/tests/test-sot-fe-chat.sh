@@ -258,6 +258,11 @@ case_a_resolve_that_maps_nothing_posts_nothing() {
         { [ "$CH_RC" = 2 ] && [ "$CH_OUT" = "$want" ] && [ "$p" = 0 ]; } || bad="$bad [$payload: rc=$CH_RC post=$p out=$CH_OUT]"
     done <<'EOF'
 {"state":"unmapped"}|refused unmapped this session's project has no channel
+{"state":"unconfigured","reason":"not_connected"}|refused unconfigured no Slack workspace is connected on the computer that runs your sessions
+{"state":"unconfigured","reason":"tokens_refused"}|refused unconfigured Slack refused the connected tokens
+{"state":"unconfigured","reason":"wrong_app"}|refused unconfigured the connected Slack tokens belong to two different apps
+{"state":"unconfigured","reason":"start_failed"}|refused unconfigured the chat could not start
+{"state":"unconfigured"}|refused unconfigured the chat is not set up on the computer that runs your sessions
 {"state":"invalid"}|refused invalid the chat's configuration does not map this session's project
 {"error":"the chat is not available here","code":"unavailable"}|refused unavailable the chat is not available here
 EOF

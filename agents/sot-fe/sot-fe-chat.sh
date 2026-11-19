@@ -72,6 +72,15 @@ _chat_resolve() {
     case "$state" in
         mapped) : ;;
         unmapped) _chat_refused unmapped "this session's project has no channel" ;;
+        unconfigured)
+            # The daemon's reason, in words that say what is wrong (a connect from the window's Chat drawer fixes each).
+            case "$(printf '%s' "$resp" | jq -r '.payload.reason // empty')" in
+                not_connected) _chat_refused unconfigured "no Slack workspace is connected on the computer that runs your sessions" ;;
+                tokens_refused) _chat_refused unconfigured "Slack refused the connected tokens" ;;
+                wrong_app) _chat_refused unconfigured "the connected Slack tokens belong to two different apps" ;;
+                start_failed) _chat_refused unconfigured "the chat could not start" ;;
+                *) _chat_refused unconfigured "the chat is not set up on the computer that runs your sessions" ;;
+            esac ;;
         *) _chat_refused invalid "the chat's configuration does not map this session's project" ;;
     esac
     CHAT_PAIR="$(printf '%s' "$resp" | jq -c '.payload')"
