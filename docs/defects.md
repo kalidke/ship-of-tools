@@ -715,6 +715,15 @@ owned by `docs/CLAUDE.md`.
 
 ## fe-ui
 
+- **FULL-DRAWER-HIDES-ITS-ANSWERS** [note] A drawer at full height (DRAWER-KEY-CYCLES) covers the nav pane, with its
+  status line, and the preview, so the words that answer a person's action in the drawer (a refused chat post's
+  reason, the Connect step's messages) and what `Primary+o` or a click on a chat picture opens in the preview are out
+  of sight, and `Primary+u` posts a previewed file the person cannot see. Found by the review of the cycle's landing
+  by probes, never seen in use. A first fix, which ended full height whenever a key wrote a status word, was not
+  landed: it also shrank the drawer for words that need no covered pane (a copy, the REPL's `Primary+l`). The fix
+  decided: the status line is drawn on the full drawer's own top border, and only an answer that is the preview
+  itself returns the drawer to its height; the manual does not yet say that a preset whose column left of the agent
+  is under 2 cells wide has no full height (the middle press does nothing).
 - **PAGE-RERASTER-PAST-PLUGIN-CAP** [note] `maybe_reraster_page` (`view.rs`) records the zoom that was asked for, not the
   size that was served, so each zoom step past the PDF plugin's 4096 px cap on its bounded axis asks for and ships the
   same capped bitmap again (from the kernel's cache): transfer wasted, nothing broken. Its comment says the plugin caps

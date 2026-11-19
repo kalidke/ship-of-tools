@@ -2940,3 +2940,13 @@ the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the sa
     44589123562); with the fix 99 of 99 (run 44589220459). Scoped gate passed 11:43. Reviewed by reading and by a
     model of the Windows argument split (to 11:59): no blocker, one wording fix taken, eleven notes. No suite runs
     the whole launcher under a profile whose name holds a space, and the person who reported it has not run the fix.
+  - A drawer's key cycles open, full height and closed (DRAWER-KEY-CYCLES), the first of four items the maintainer
+    asked for 0.7.3 at 09:05, sized from the code by a planner that hour (about 50 product lines, one landing). One
+    builder, four rounds, 10:49 to 12:04; one reviewer, three rounds, 11:02 to 12:17. Round one refused the first
+    shape, which rewrote the preset and guarded focus at call sites: focus could rest on a covered pane by keys
+    alone, the agent pane's edge moved at 273 of 361 widths, and presets with the agent column first went wrong.
+    The second shape, a third layout state drawn only while the focus is on a pane it leaves drawn, held under a
+    search of every reachable layout state on 18 presets. Three commits land, 8365ea7c9, 2fb1cf51c and 0210109a0;
+    a fourth, which ended full height whenever a key wrote a status word, was refused in round three and is left
+    out, its problem filed as FULL-DRAWER-HIDES-ITS-ANSWERS. The sizing's 50 lines became about 110 with the layout
+    state. No person has used it.
