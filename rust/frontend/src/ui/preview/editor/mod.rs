@@ -4,3 +4,4 @@ pub(crate) mod buffer;
 pub(in crate::ui) mod keys;
 pub(crate) mod state;
 mod replies;
+mod rows;

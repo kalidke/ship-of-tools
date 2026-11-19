@@ -14,7 +14,11 @@ pub(in crate::ui) fn editor_key(state: &mut State, key: KeyPress<'_>) -> Control
     // cursor doesn't blow past visible context
     // on PgUp/PgDn.
     let page_rows = (state.pane_rects.preview.height as usize / 3).max(1);
-    let Some(outcome) = state.editor.key(key, page_rows) else {
+    let (width, scale) = state.edit_width_and_scale();
+    let canvas = &mut state.canvas;
+    let Some(outcome) = state.editor.key(key, page_rows, |spans| {
+        canvas.shape(|fs| MarkdownPreview::new_plain_spans(fs, spans, width, scale))
+    }) else {
         return Continue(());
     };
     match outcome {
@@ -128,14 +132,18 @@ pub(in crate::ui) fn enter_editor(state: &mut State) {
 }
 
 impl State {
+    /// The width and text scale the edit buffer is shaped at.
+    fn edit_width_and_scale(&self) -> (f32, f32) {
+        (self.concept.rect().w.max(1.0), self.canvas.scale() * self.canvas.text_scale_mult())
+    }
+
     /// Re-shape the edit preview from the active edit buffer. Called
     /// whenever a key mutates the buffer; cheap enough for a
     /// few-KB annotation. Without an edit it clears the shaped
     /// buffer so the next render falls back to the read-only path.
     pub(in crate::ui) fn rebuild_edit_preview(&mut self) {
         if self.editor.is_editing() { self.shaped.clear_selection(); }
-        let width = self.concept.rect().w.max(1.0);
-        let scale = self.canvas.scale() * self.canvas.text_scale_mult();
+        let (width, scale) = self.edit_width_and_scale();
         let canvas = &mut self.canvas;
         self.editor.reshape(&self.bindings, |spans| {
             canvas.shape(|fs| MarkdownPreview::new_plain_spans(fs, spans, width, scale))

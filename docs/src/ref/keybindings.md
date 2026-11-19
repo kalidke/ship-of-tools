@@ -219,12 +219,12 @@ Normal text entry and terminal-application controls retain their own input handl
 | `edit.delete` | `Delete` | Delete next character in the editor. |
 | `edit.left` | `ArrowLeft` / `Shift+ArrowLeft` | Move the editor cursor. Hold Shift to extend the selection. |
 | `edit.right` | `ArrowRight` / `Shift+ArrowRight` | Move the editor cursor. Hold Shift to extend the selection. |
-| `edit.up` | `ArrowUp` / `Shift+ArrowUp` | Move the editor cursor. Hold Shift to extend the selection. |
-| `edit.down` | `ArrowDown` / `Shift+ArrowDown` | Move the editor cursor. Hold Shift to extend the selection. |
+| `edit.up` | `ArrowUp` / `Shift+ArrowUp` | Move the editor cursor up one row as shown on screen, keeping its column across shorter rows. Hold Shift to extend the selection. |
+| `edit.down` | `ArrowDown` / `Shift+ArrowDown` | Move the editor cursor down one row as shown on screen, keeping its column across shorter rows. Hold Shift to extend the selection. |
 | `edit.home` | `Home` / `Shift+Home` | Move the editor cursor. Hold Shift to extend the selection. |
 | `edit.end` | `End` / `Shift+End` | Move the editor cursor. Hold Shift to extend the selection. |
-| `edit.page_up` | `PageUp` / `Shift+PageUp` | Move the editor cursor. Hold Shift to extend the selection. |
-| `edit.page_down` | `PageDown` / `Shift+PageDown` | Move the editor cursor. Hold Shift to extend the selection. |
+| `edit.page_up` | `PageUp` / `Shift+PageUp` | Move the editor cursor up a third of the pane's rows, by rows as shown on screen. Hold Shift to extend the selection. |
+| `edit.page_down` | `PageDown` / `Shift+PageDown` | Move the editor cursor down a third of the pane's rows, by rows as shown on screen. Hold Shift to extend the selection. |
 | `edit.start` | `Ctrl+Home` / `Shift+Ctrl+Home` | Move the editor cursor. Hold Shift to extend the selection. |
 | `edit.finish` | `Ctrl+End` / `Shift+Ctrl+End` | Move the editor cursor. Hold Shift to extend the selection. |
 | `edit.save` | `Ctrl+s` / `Super+s` | Save the current file or concept annotation. |

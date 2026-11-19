@@ -341,7 +341,25 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   `EditorKey`; the discard prompt and the stale banner take only their answers, and a stale file reload arms its
   `file.read` before it is sent. A `file.read` opens an edit only for the armed node. A landed save snaps the baseline;
   a stale refusal raises the banner. A row parks the edit, never the shaped buffer or the armed read; a first visit
-  closes it. State sends, re-shapes (`rebuild_edit_preview`) and repaints.
+  closes it. State sends, re-shapes (`rebuild_edit_preview`) and repaints. Up, Down, PageUp and PageDown move by the row
+  on screen (`preview/editor/rows.rs`): State hands `Editor::key` a shaper, the body is shaped alone at the pane's width
+  with no cursor mark, so a row starts where it will once the cursor stands on it, and the cursor lands on the place
+  of the row above or below nearest the column's x; the x (`goal_x`) is kept across shorter rows and cleared by every
+  other key, an edit and a reload; Shift extends the selection; Up from the first row lands at byte 0 and Down from
+  the last at the end; PageUp and PageDown take the same step by a third of the pane's cell rows. Where the shaped
+  lines are not the body's lines (a lone CR, U+0085, U+2028 or U+2029, which end a line in the shaper, or a
+  separator it turns into a space), or a row involved runs right to left, the step is the file's line as it was; Home
+  and End stay on the file's line. Pinned by `state_tests` (`up_and_down_move_one_row_and_stay_in_a_wrapped_paragraph`,
+  `the_column_is_kept_across_a_shorter_row_until_another_key`, `shift_extends_the_selection_by_rows`,
+  `up_on_the_first_row_goes_to_the_start_and_down_on_the_last_to_the_end`,
+  `text_the_rows_cannot_be_matched_to_steps_by_the_files_lines`, `the_cursor_mark_does_not_move_the_column`,
+  `a_wrapped_paragraph_under_a_header_is_walked_by_rows`, `a_body_ending_in_a_newline_is_walked_by_rows`,
+  `page_keys_take_the_same_step_by_the_pane_rows`, `a_long_texts_shaped_rows_reach_its_last_line`). Limits: the tests
+  press through `edit_buffer_key` because a winit `KeyEvent` cannot be built outside the event loop, so `Editor::key`'s
+  hand-off and the shaper closure in `editor_key` rest on reading; the body is shaped once more for each vertical key;
+  the row below a cursor inside a wrapped line is read from the layout without the cursor's own cell, which the next
+  draw adds, so the mark can reflow the wrap by one character and show a column to the left of the one asked for;
+  no person has used it yet.
 - `ConceptSlot` privately owns the concept slot: the last `concept.read` (`ConceptInfo`, its fields private), its
   shaped body and the rect it is shaped for. A reply installs the read and its shape together; a follow's commit and a
   first visit clear both; a row parks the read alone, and its restore drops the shape until the next read. The layout

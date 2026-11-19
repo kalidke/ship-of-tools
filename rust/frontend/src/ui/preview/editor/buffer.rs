@@ -3,19 +3,21 @@
 //
 // Scope per a 2026-05-15T21:32Z design note:
 //   - Insert / Delete / Backspace, single-char granularity
-//   - Cursor motion: ArrowLeft/Right (char), Up/Down (visual line via
-//     logical-line proxy), Home, End, Ctrl+Home, Ctrl+End, PgUp, PgDn
+//   - Cursor motion: ArrowLeft/Right (char), Up/Down (the row on screen,
+//     see below), Home, End, Ctrl+Home, Ctrl+End, PgUp, PgDn
 //   - Enter inserts a literal `\n`
 //
 // The body is a `String` (UTF-8). Cursor is a byte index aligned to a
 // `char` boundary. All mutating ops uphold that invariant; the helpers
 // here are the single place to look for off-by-one or boundary bugs.
 //
-// "Visual line" up/down uses logical lines (split on `\n`) as a proxy.
-// Annotation files are typically narrow enough that wrap-relevant
-// behaviour matches; once edit mode grows real wrap-aware navigation
-// (phase 2 likely with `$EDITOR` shell-out), this proxy will be
-// retired together.
+// Up, Down, PgUp and PgDn move by the row on screen: `rows::vertical`
+// reads the rows from the body shaped at the pane's width and lands the
+// cursor with `set_cursor`. `move_up`, `move_down` and their `_rows` forms
+// below step by logical lines (split on `\n`) and run only where the shaped
+// rows cannot be matched to the body's lines (a lone CR, U+2028 and the
+// like). Home and End stay on the logical line, so in a wrapped paragraph
+// they go to the paragraph's start and end.
 
 /// One point-in-time buffer state for the undo/redo stacks.
 #[derive(Debug, Clone)]
@@ -336,6 +338,13 @@ impl EditBuffer {
     /// next `\n`, or EOF).
     pub fn move_line_end(&mut self) {
         self.cursor = line_end(&self.body, self.cursor);
+    }
+
+    /// Put the cursor at `at`, a `char` boundary of the body; any other offset leaves it where it is.
+    pub fn set_cursor(&mut self, at: usize) {
+        if self.body.is_char_boundary(at) {
+            self.cursor = at;
+        }
     }
 
     pub fn move_buf_start(&mut self) {

@@ -200,12 +200,12 @@ actions! {
     EditDelete, "edit.delete", ["Delete"], "Delete next character", "Delete next character in the editor.", "Editor", Edit;
     EditLeft, "edit.left", ["ArrowLeft", "Shift+ArrowLeft"], "Move left", "Move the editor cursor. Hold Shift to extend the selection.", "Editor", Edit;
     EditRight, "edit.right", ["ArrowRight", "Shift+ArrowRight"], "Move right", "Move the editor cursor. Hold Shift to extend the selection.", "Editor", Edit;
-    EditUp, "edit.up", ["ArrowUp", "Shift+ArrowUp"], "Move up", "Move the editor cursor. Hold Shift to extend the selection.", "Editor", Edit;
-    EditDown, "edit.down", ["ArrowDown", "Shift+ArrowDown"], "Move down", "Move the editor cursor. Hold Shift to extend the selection.", "Editor", Edit;
+    EditUp, "edit.up", ["ArrowUp", "Shift+ArrowUp"], "Move up", "Move the editor cursor up one row as shown on screen, keeping its column across shorter rows. Hold Shift to extend the selection.", "Editor", Edit;
+    EditDown, "edit.down", ["ArrowDown", "Shift+ArrowDown"], "Move down", "Move the editor cursor down one row as shown on screen, keeping its column across shorter rows. Hold Shift to extend the selection.", "Editor", Edit;
     EditHome, "edit.home", ["Home", "Shift+Home"], "Line start", "Move the editor cursor. Hold Shift to extend the selection.", "Editor", Edit;
     EditEnd, "edit.end", ["End", "Shift+End"], "Line end", "Move the editor cursor. Hold Shift to extend the selection.", "Editor", Edit;
-    EditPageUp, "edit.page_up", ["PageUp", "Shift+PageUp"], "Page up", "Move the editor cursor. Hold Shift to extend the selection.", "Editor", Edit;
-    EditPageDown, "edit.page_down", ["PageDown", "Shift+PageDown"], "Page down", "Move the editor cursor. Hold Shift to extend the selection.", "Editor", Edit;
+    EditPageUp, "edit.page_up", ["PageUp", "Shift+PageUp"], "Page up", "Move the editor cursor up a third of the pane's rows, by rows as shown on screen. Hold Shift to extend the selection.", "Editor", Edit;
+    EditPageDown, "edit.page_down", ["PageDown", "Shift+PageDown"], "Page down", "Move the editor cursor down a third of the pane's rows, by rows as shown on screen. Hold Shift to extend the selection.", "Editor", Edit;
     EditStart, "edit.start", ["Ctrl+Home", "Shift+Ctrl+Home"], "Document start", "Move the editor cursor. Hold Shift to extend the selection.", "Editor", Edit;
     EditFinish, "edit.finish", ["Ctrl+End", "Shift+Ctrl+End"], "Document end", "Move the editor cursor. Hold Shift to extend the selection.", "Editor", Edit;
     EditSave, "edit.save", ["Ctrl+s", "Super+s"], "Save edits", "Save the current file or concept annotation.", "Editor", Edit;

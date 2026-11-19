@@ -175,6 +175,13 @@ annotation (a note about it, written by you or the agent and kept under
 `.concept/`), `e` edits the annotation instead; see
 [The concept layer](guide/concept-layer.md).
 
+In the editor, `ArrowUp` and `ArrowDown` move by the row shown on screen, so in
+a paragraph the pane wraps over several rows they step through those rows, and
+the cursor keeps its column across a shorter row. `PageUp` and `PageDown` move
+a third of the pane's rows the same way. `Home` and `End` go to the start and
+end of the whole line of the file, which for a wrapped paragraph is the
+paragraph. Hold `Shift` with any of these to extend the selection.
+
 A save is written inside the project and never through a link: a file whose
 own name is a link, or one reached through a linked folder, is refused, and
 your edits stay in the editor. When the link leads to a place inside the

@@ -744,12 +744,6 @@ owned by `docs/CLAUDE.md`.
 - **RELEASE-BUILD-SCROLL-FIXTURES** [note] Two native State fixtures, `a_preview_scroll_moves_over_frames_and_comes_to_rest`
   and `a_repl_wheel_tick_rolls_a_row_at_a_time`, failed 4 runs of 4 in a release build on a Linux host at the unchanged
   v0.7.1-rc.9 tree, and pass in the debug builds the gates run. Not chased; their timing may assume a debug build's pace.
-- **EDITOR-UP-DOWN-BY-PARAGRAPH** [person] In the preview's edit mode, Up and Down move the cursor by a whole line of
-  the file (`EditBuffer::move_up` and `move_down` in `preview/editor/buffer.rs`, "one logical line"), so in a wrapped
-  paragraph they leave it for the line before or after, and on the first or last line they go to the file's beginning
-  or end, never to the row above or below on screen. Seen by the maintainer (2026-11-19: "fix edit mode so that movin
-  up/dn in editor moves in the editor lines, not to begin/end of the paragraph"), for 0.7.3. A note from sizing it,
-  not seen: the edit view does not scroll to follow the cursor.
 - **PDF-TEXT-SELECTION** [feature] Text the person selects in a PDF preview is shared with the row's agent, as a text
   preview's selection is (`requirements.md`, "The agent sees what the user selects"). A PDF page is shown as a picture,
   so it needs the words and their positions per page from the PDF plugin, the window's mapping of a drag to them, and
@@ -1291,6 +1285,8 @@ owned by `docs/CLAUDE.md`.
   probe; installer hooks (superseded, check); stop commands that match only what they stop.
 
 ## Closed
+
+- **EDITOR-UP-DOWN-BY-PARAGRAPH** (fe-ui) [person] closed by the landing that fixes it, 2026-11-19, seen by the maintainer ("fix edit mode so that movin up/dn in editor moves in the editor lines, not to begin/end of the paragraph"): in the preview's edit mode Up and Down moved by the file's lines, so in a wrapped paragraph they left it. Up, Down, PageUp and PageDown now move to the row above or below on screen at the nearest place to the column, which is kept across shorter rows (`preview/editor/rows.rs`, read from the body shaped at the pane's width); where the shaped rows cannot be matched to the file's lines they step by the file's lines as before. Built and tested with simulated text only: no person has used it, and the first Down inside a wrapped line can show the cursor one column to the left (the mark's own cell moves the wrap). Open: the edit view does not scroll to follow the cursor (not seen by a person, a note from sizing it), fixed by the landing after this one.
 
 - **SCOPED-GATE-SKIPS-TREE-READING-TESTS** (distribution) [session] closed by the landing that fixes it, 2026-11-19, seen by a session operating the gate (a frontend landing passed its scoped local gate and reached `main` red on a platform test that reads every crate's sources, REPL-COLOR-SCAN-CUTS-AT-A-TEST-ATTRIBUTE): a scoped run selected only the changed crate's tests, and a path a Rust test reads from another folder (a docs page, the comm library, a launcher script) selected only its own shell or Julia piece. A path now also yields `tree <name>` pieces (`gate_tree_pieces` in `lib-gate-scope.sh`), and `rc-gate.sh` runs the tests of `gate_tree_tests` for them (platform's `test_scan`, capsule's guards, and the readers of docs, `comm/`, `agents/`, `julia/repl`, `scripts/` and the logo) whatever crates were selected; a filter that matches no listed test fails. `test-rc-gate-scope.sh` fails on a Rust file that walks the workspace or reads outside `rust/` and is not listed. Limit: the search knows its forms of reader (`scripts/CLAUDE.md` lists them and the manual step for the rest); a reader only a Windows run executes is covered by the hosted Windows run alone.
 

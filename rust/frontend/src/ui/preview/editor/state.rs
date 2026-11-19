@@ -3,6 +3,7 @@
 
 use crate::ui::*;
 use crate::ui::input::keypress::KeyPress;
+use super::rows;
 
 /// Active concept-annotation edit. `None` when the preview pane is in
 /// read-only view mode (the default); `Some` when the user pressed `e`
@@ -54,6 +55,9 @@ pub(in crate::ui) struct EditState {
     /// `file.write`'s `expected_version` for optimistic concurrency. `None`
     /// for concept edits (they gate on `expected_ast_hash`).
     file_version: Option<String>,
+    /// The x on screen that Up and Down keep across rows shorter than the column the cursor was in; `None` until a
+    /// vertical step sets it, and cleared by every other key.
+    goal_x: Option<f32>,
 }
 
 impl EditState {
@@ -67,6 +71,24 @@ impl EditState {
         match &self.header {
             Some(h) => h.clone() + self.buf.body(),
             None => self.buf.body().to_string(),
+        }
+    }
+
+    /// Move the cursor `rows` rows up (negative) or down on screen, the rows read from the body shaped through
+    /// `shape`; by the file's lines where `rows::vertical` cannot match them. Shift extends the selection.
+    fn move_rows(&mut self, rows: isize, extend: bool, shape: impl FnOnce(&[(String, bool)]) -> MarkdownPreview) {
+        self.buf.set_selecting(extend);
+        // The newline ends the body's last line as the footer does on screen; shaping ends no line at the text's end.
+        let shaped = shape(&[(format!("{}\n", self.buf.body()), false)]);
+        match rows::vertical(&shaped.buffer, self.buf.body(), self.buf.cursor(), self.goal_x, rows) {
+            Some(landing) => {
+                self.buf.set_cursor(landing.cursor);
+                self.goal_x = Some(landing.goal_x);
+            }
+            None => {
+                self.goal_x = None;
+                if rows < 0 { self.buf.move_up_rows(rows.unsigned_abs()) } else { self.buf.move_down_rows(rows.unsigned_abs()) }
+            }
         }
     }
 
@@ -219,6 +241,7 @@ impl Editor {
             stale_banner: false,
             file_node_id: None,
             file_version: None,
+            goal_x: None,
         });
     }
 
@@ -247,6 +270,7 @@ impl Editor {
             stale_banner: false,
             file_node_id: Some(node_id.to_string()),
             file_version: Some(version),
+            goal_x: None,
         });
         FileReadOutcome::Opened
     }
@@ -263,6 +287,7 @@ impl Editor {
             };
             edit.original = body.clone();
             edit.buf = EditBuffer::new(body);
+            edit.goal_x = None;
             edit.stale_banner = false;
             edit.confirm_discard = false;
         }
@@ -311,9 +336,12 @@ impl Editor {
     }
 
     /// Edit mode takes every key (`None` without an edit). The discard prompt takes only its answer; the stale
-    /// banner only reload or keep; otherwise cancel, save, or the buffer's own keys. `page_rows` is the paging step.
-    pub(in crate::ui) fn key(&mut self, key: KeyPress<'_>, page_rows: usize) -> Option<EditorKey> {
-        let KeyPress { event, action, .. } = key;
+    /// banner only reload or keep; otherwise cancel, save, or the buffer's own keys. `page_rows` is the paging step;
+    /// `shape` shapes spans at the pane's width, for the rows Up and Down move by.
+    pub(in crate::ui) fn key(
+        &mut self, key: KeyPress<'_>, page_rows: usize, shape: impl FnOnce(&[(String, bool)]) -> MarkdownPreview,
+    ) -> Option<EditorKey> {
+        let KeyPress { event, action, ctrl, alt, shift, super_ } = key;
         let edit = self.edit.as_mut()?;
         // When the discard-confirm modal is up,
         // the key handler is just y/n/Esc. Any
@@ -389,15 +417,33 @@ impl Editor {
                 },
             });
         }
-        edit_buffer_key(edit, key, page_rows);
+        let pressed = Pressed { logical: &event.logical_key, action, ctrl, alt, shift, super_ };
+        edit_buffer_key(edit, pressed, page_rows, shape);
         Some(EditorKey::Edited)
     }
 }
 
-fn edit_buffer_key(edit: &mut EditState, key: KeyPress<'_>, page_rows: usize) -> bool {
-    let KeyPress { event, action, .. } = key;
+/// What the buffer's keys read of a press: the logical key, its action and the modifiers.
+#[derive(Clone, Copy)]
+struct Pressed<'a> {
+    logical: &'a Key,
+    action: Option<Action>,
+    ctrl: bool,
+    alt: bool,
+    shift: bool,
+    super_: bool,
+}
+
+fn edit_buffer_key(
+    edit: &mut EditState, key: Pressed<'_>, page_rows: usize, shape: impl FnOnce(&[(String, bool)]) -> MarkdownPreview,
+) -> bool {
+    let Pressed { logical, action, .. } = key;
+    // Only Up, Down and the page keys keep the column they started in.
+    if !matches!(action, Some(Action::EditUp | Action::EditDown | Action::EditPageUp | Action::EditPageDown)) {
+        edit.goal_x = None;
+    }
     let mut buf_changed = false;
-    match &event.logical_key {
+    match logical {
         _ if action == Some(Action::EditUndo) => {
             if edit.buf.undo() {
                 buf_changed = true;
@@ -474,15 +520,17 @@ fn edit_buffer_key(edit: &mut EditState, key: KeyPress<'_>, page_rows: usize) ->
             edit.buf.delete();
             buf_changed = true;
         }
-        _ => buf_changed = edit_motion_key(edit, key, page_rows),
+        _ => buf_changed = edit_motion_key(edit, key, page_rows, shape),
     }
     buf_changed
 }
 
-fn edit_motion_key(edit: &mut EditState, key: KeyPress<'_>, page_rows: usize) -> bool {
-    let KeyPress { event, action, shift, ctrl, alt, super_ } = key;
+fn edit_motion_key(
+    edit: &mut EditState, key: Pressed<'_>, page_rows: usize, shape: impl FnOnce(&[(String, bool)]) -> MarkdownPreview,
+) -> bool {
+    let Pressed { logical, action, shift, ctrl, alt, super_ } = key;
     let mut buf_changed = false;
-    match &event.logical_key {
+    match logical {
         // Motion keys: `set_selecting(shift)` extends a
         // selection on Shift+motion and drops it on a
         // plain motion. (Shift+Arrow no longer cycles
@@ -496,14 +544,8 @@ fn edit_motion_key(edit: &mut EditState, key: KeyPress<'_>, page_rows: usize) ->
             edit.buf.set_selecting(shift);
             edit.buf.move_right();
         }
-        _ if action == Some(Action::EditUp) => {
-            edit.buf.set_selecting(shift);
-            edit.buf.move_up();
-        }
-        _ if action == Some(Action::EditDown) => {
-            edit.buf.set_selecting(shift);
-            edit.buf.move_down();
-        }
+        _ if action == Some(Action::EditUp) => edit.move_rows(-1, shift, shape),
+        _ if action == Some(Action::EditDown) => edit.move_rows(1, shift, shape),
         _ if action == Some(Action::EditStart) => {
             edit.buf.set_selecting(shift);
             edit.buf.move_buf_start();
@@ -520,14 +562,8 @@ fn edit_motion_key(edit: &mut EditState, key: KeyPress<'_>, page_rows: usize) ->
             edit.buf.set_selecting(shift);
             edit.buf.move_line_end();
         }
-        _ if action == Some(Action::EditPageUp) => {
-            edit.buf.set_selecting(shift);
-            edit.buf.move_up_rows(page_rows);
-        }
-        _ if action == Some(Action::EditPageDown) => {
-            edit.buf.set_selecting(shift);
-            edit.buf.move_down_rows(page_rows);
-        }
+        _ if action == Some(Action::EditPageUp) => edit.move_rows(-(page_rows as isize), shift, shape),
+        _ if action == Some(Action::EditPageDown) => edit.move_rows(page_rows as isize, shift, shape),
         Key::Named(NamedKey::Space) => {
             edit.buf.insert_char(' ');
             buf_changed = true;
@@ -547,3 +583,7 @@ fn edit_motion_key(edit: &mut EditState, key: KeyPress<'_>, page_rows: usize) ->
     }
     buf_changed
 }
+
+#[cfg(test)]
+#[path = "state_tests.rs"]
+mod state_tests;
