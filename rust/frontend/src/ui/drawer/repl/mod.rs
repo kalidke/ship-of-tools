@@ -6,6 +6,7 @@ use crate::ui::{RingRoll, WsKey};
 use log::ReplEntry;
 use std::collections::HashMap;
 
+pub(in crate::ui) mod colors;
 pub(in crate::ui) mod lines;
 pub(in crate::ui) mod log;
 pub(in crate::ui) mod presentation;

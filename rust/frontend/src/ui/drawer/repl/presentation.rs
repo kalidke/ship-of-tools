@@ -1,7 +1,7 @@
 //! Window-wide REPL presentation: image identity, line projection, layout and scroll anchoring.
 
 use crate::ui::*;
-use super::ReplEffects;
+use super::{colors, ReplEffects};
 use crate::ui::render::scissor::scissor_px;
 
 // State supplies a normalized row key; presentation never resolves row identities.
@@ -301,26 +301,20 @@ fn project_lines<I>(
         if let Some(label) = &entry.origin {
             out.push(RtLine::from(vec![Span::styled(
                 format!("⟨{}⟩", cell_row(label)),
-                Style::default()
-                    .fg(Color::LightMagenta)
-                    .add_modifier(Modifier::BOLD),
+                colors::origin(),
             )]));
         } else {
-            let (prompt_text, prompt_color) = if entry.pkg_mode {
-                ("pkg> ", Color::LightBlue)
-            } else {
-                ("julia> ", Color::LightCyan)
-            };
+            let prompt_text = if entry.pkg_mode { "pkg> " } else { "julia> " };
             let cont_pad: String = " ".repeat(prompt_text.len());
             for (i, seg) in entry.code.split('\n').enumerate() {
                 let prefix_span = if i == 0 {
-                    Span::styled(prompt_text.to_string(), Style::default().fg(prompt_color))
+                    Span::styled(prompt_text.to_string(), colors::prompt(entry.pkg_mode, true))
                 } else {
                     Span::raw(cont_pad.clone())
                 };
                 out.push(RtLine::from(vec![
                     prefix_span,
-                    Span::styled(cell_row(seg).into_owned(), Style::default()),
+                    Span::styled(cell_row(seg).into_owned(), colors::plain()),
                 ]));
             }
         }
@@ -333,10 +327,7 @@ fn project_lines<I>(
                 }
                 ReplFrame::Stderr { text } => {
                     for line in stream_lines(text) {
-                        out.push(RtLine::from(vec![Span::styled(
-                            line,
-                            Style::default().fg(Color::Red),
-                        )]));
+                        out.push(RtLine::from(vec![Span::styled(line, colors::plain())]));
                     }
                 }
                 ReplFrame::Value { mime, text } => {
@@ -351,34 +342,32 @@ fn project_lines<I>(
                         } else {
                             line
                         };
-                        out.push(RtLine::from(vec![Span::styled(
-                            s,
-                            Style::default().fg(Color::LightGreen),
-                        )]));
+                        out.push(RtLine::from(vec![Span::styled(s, colors::plain())]));
                     }
                 }
                 ReplFrame::Error {
                     message,
                     stacktrace,
                 } => {
-                    for line in cell_lines(message) {
-                        out.push(RtLine::from(vec![Span::styled(
-                            line,
-                            Style::default().fg(Color::LightRed),
-                        )]));
+                    let mut message_lines = cell_lines(message);
+                    if message_lines.is_empty() {
+                        message_lines.push(String::new());
+                    }
+                    for (i, line) in message_lines.into_iter().enumerate() {
+                        let mut spans = vec![Span::styled(line, colors::plain())];
+                        if i == 0 {
+                            spans.insert(0, Span::styled("ERROR: ", colors::error_label()));
+                        }
+                        out.push(RtLine::from(spans));
                     }
                     for sf in stacktrace {
-                        out.push(RtLine::from(vec![Span::styled(
-                            format!(
-                                "    at {} ({}:{})",
-                                cell_row(&sf.function),
-                                cell_row(&sf.file),
-                                sf.line
-                            ),
-                            Style::default()
-                                .fg(Color::DarkGray)
-                                .add_modifier(Modifier::DIM),
-                        )]));
+                        out.push(RtLine::from(vec![
+                            Span::styled("    at ", colors::trace_gray()),
+                            Span::styled(cell_row(&sf.function).into_owned(), colors::trace_function()),
+                            Span::styled(" (", colors::trace_gray()),
+                            Span::styled(format!("{}:{}", cell_row(&sf.file), sf.line), colors::trace_gray()),
+                            Span::styled(")", colors::trace_gray()),
+                        ]));
                     }
                 }
                 ReplFrame::Done { .. } => {}
@@ -388,7 +377,7 @@ fn project_lines<I>(
                             "↗ interactive figure · {}",
                             cell_row(&crate::browser_open::origin_of(url))
                         ),
-                        Style::default().fg(Color::LightBlue),
+                        colors::browser_link(),
                     )]));
                 }
                 ReplFrame::Started { .. } => {}
@@ -422,9 +411,7 @@ fn project_lines<I>(
                     } else {
                         out.push(RtLine::from(vec![Span::styled(
                             format!("[image · {} · {} bytes]", cell_row(mime), bytes),
-                            Style::default()
-                                .fg(Color::LightMagenta)
-                                .add_modifier(Modifier::DIM),
+                            colors::image_note(),
                         )]));
                     }
                 }
@@ -436,22 +423,18 @@ fn project_lines<I>(
                     "(julia starting — precompiling this workspace's environment; \
                      a first run can take minutes…)"
                         .to_string(),
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::DIM),
+                    colors::starting(),
                 )]));
             } else {
                 out.push(RtLine::from(vec![Span::styled(
                     "(running…)".to_string(),
-                    Style::default().add_modifier(Modifier::DIM),
+                    colors::running(),
                 )]));
             }
         } else if entry.elapsed_ms > 0 {
             out.push(RtLine::from(vec![Span::styled(
                 format!("  ({} ms)", entry.elapsed_ms),
-                Style::default()
-                    .fg(Color::DarkGray)
-                    .add_modifier(Modifier::DIM),
+                colors::elapsed(),
             )]));
         }
     }

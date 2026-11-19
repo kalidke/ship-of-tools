@@ -7,6 +7,23 @@ owns authoritative rows and identity; `session/row_presentation.rs` owns their p
 `session/result_ledger.rs` owns owed results and their attempts; `agent_pane::AgentPane` owns the selected agent pane.
 `drawer/repl::ReplModel` owns REPL row state, submissions, history, routing and lifecycle;
 `drawer/repl/presentation::ReplPresentation` owns window-wide REPL images, layout and scroll anchoring.
+`drawer/repl/colors` owns every color the REPL drawer chooses, and it is Julia's REPL's own (Julia 1.13, read from
+`Base/client.jl`, `REPL/src/REPL.jl` and `REPL/src/LineEdit.jl`, the source of truth, never memory): the prompt's text bold,
+`julia>` `:green` and `pkg>` `:blue`, the typed code, stdout, stderr and a shown value in the terminal's own color, an
+error as `ERROR: ` bold `:light_red` then its message in the terminal's own color, and a stack frame's function bold and
+its `at`, parentheses and `file:line` `:light_black`, none of them dim. Each is a named variant of the 16 terminal colors, which
+`render::cells` maps to RGB as it does for the Terminal drawer and the agent pane, so Julia's green is the one green; a
+use site (`presentation.rs`, the live prompt in `chrome/view.rs`) names no color, and what Julia's REPL has no counterpart
+for (the origin marker, the browser link, the image caption, the starting, running and `(N ms)` notes, and the live
+prompt's unfocused gray) is the table's second part. Limits: the Julia child's output reaches the window as plain
+text (its streams are pipes, so Julia colors nothing in them and the window drops the escapes it is sent), so the logging
+macros' `@info`, `@warn`, `@error` and `@debug` labels, a stack frame's module and argument colors, `help?>` and `shell>`
+(modes the drawer has not), `Status` in pkg mode and the typed code's syntax coloring are not drawn, no cell run
+underlines, and the window does not read the `JULIA_*_COLOR` variables that change Julia's defaults. Tests:
+`presentation::tests::{each_prompt_mode_has_julias_color_and_weight, an_errors_parts_have_julias_colors,
+output_and_values_are_in_the_terminals_own_color, a_color_at_a_use_site_is_not_in_the_drawers_table}` (a source scan of
+the two use sites for a color literal), `colors::tests::{every_table_color_is_the_terminal_drawers_color_for_julias_name,
+the_prompt_is_bold_and_only_the_cursor_is_not}`; the live prompt's colors rest on the second and on that scan.
 `input::FocusPrompts` owns window-wide focus, nav prompts, captured scale focus, stayed notice and quit hint.
 `input::LayoutHelp` owns drawer selection (the shown row's; each row's is parked in its view), maximize/wide flags, Help browsing, return origin and startup requests.
 `preview::requests::PreviewRequests` owns both request clocks, the fired preview target and its page transport, concept

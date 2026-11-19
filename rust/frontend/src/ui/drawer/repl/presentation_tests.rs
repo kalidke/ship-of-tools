@@ -518,7 +518,7 @@ fn repl_text_keeps_cell_rows_before_shaping() {
     let lines = build(&mut owner, &model, &key, 0).0;
     let rows = text(&lines);
     for wanted in ["julia> codeA ⏎ codeB", "       codeC codeD ⏎ codeE", "xyc", "stdoutA stdoutB", "stdoutC",
-        "stderrA", "stderrB", "[mimeA ⏎ mimeB] valueA", "valueB", "errorA", "errorB",
+        "stderrA", "stderrB", "[mimeA ⏎ mimeB] valueA", "valueB", "ERROR: errorA", "errorB",
         "    at fnA ⏎ fnB (fileA fileB:7)", "[image · imageA ⏎ imageB · 0 bytes]",
         "⟨originA ⏎ originB ▸ displayA displayB⟩"] {
         assert!(rows.iter().any(|row| row == wanted), "missing {wanted:?}: {rows:?}");
@@ -537,6 +537,106 @@ fn repl_text_keeps_cell_rows_before_shaping() {
             buffer.shape_until_scroll(&mut fonts, false);
             assert_eq!(buffer.lines.len(), 1);
             assert_eq!(buffer.lines[0].text(), plain_text);
+        }
+    }
+}
+
+/// The first line whose text is `wanted`, as its spans' (text, foreground, bold) triples.
+fn styled(lines: &[RtLine<'static>], wanted: &str) -> Vec<(String, Option<Color>, bool)> {
+    let line = lines.iter().find(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>() == wanted)
+        .unwrap_or_else(|| panic!("no line {wanted:?} in {:?}", text(lines)));
+    line.spans.iter()
+        .map(|s| (s.content.to_string(), s.style.fg, s.style.add_modifier.contains(ratatui::style::Modifier::BOLD)))
+        .collect()
+}
+
+#[test]
+fn each_prompt_mode_has_julias_color_and_weight() {
+    // Julia 1.13: REPL.jl's `LineEditREPL` gives `julia>` :green and `pkg>` :blue, and LineEdit.jl `write_prompt` prints
+    // the prompt text bold and the typed text in the terminal's own color, not bold.
+    let key = row("host", "row");
+    let (mut model, mut owner) = (ReplModel::default(), Owner::default());
+    model.edit_draft(DraftEdit::Replace("1 + 1".into()));
+    let plan = model.begin_eval(target(&key)).unwrap();
+    model.complete_submission(plan.submission, Ok(()));
+    model.edit_draft(DraftEdit::Typed("]"));
+    model.edit_draft(DraftEdit::Replace("status".into()));
+    let plan = model.begin_eval(target(&key)).unwrap();
+    model.complete_submission(plan.submission, Ok(()));
+    let lines = build(&mut owner, &model, &key, 0).0;
+    assert_eq!(styled(&lines, "julia> 1 + 1"),
+        [("julia> ".into(), Some(Color::Green), true), ("1 + 1".into(), None, false)]);
+    assert_eq!(styled(&lines, "pkg> status"),
+        [("pkg> ".into(), Some(Color::Blue), true), ("status".into(), None, false)]);
+}
+
+#[test]
+fn an_errors_parts_have_julias_colors() {
+    // Julia 1.13: `display_error` prints `ERROR: ` bold :light_red (client.jl `default_color_error`) and the message
+    // in the terminal's own color; a stack frame's function is bold and its `@`, location and punctuation :light_black
+    // (ANSI 8), neither dim.
+    let key = row("host", "row");
+    let (mut model, mut owner) = (ReplModel::default(), Owner::default());
+    model.edit_draft(DraftEdit::Replace("f(1)".into()));
+    let plan = model.begin_eval(target(&key)).unwrap();
+    let id = plan.submission.eval_id();
+    model.complete_submission(plan.submission, Ok(()));
+    frame(&mut model, &key, id, ReplFrame::Error {
+        message: "boom\nsecond".into(),
+        stacktrace: vec![serde_json::from_value(serde_json::json!({"fn": "f", "file": "a.jl", "line": 3})).unwrap()],
+    });
+    let lines = build(&mut owner, &model, &key, 0).0;
+    assert_eq!(styled(&lines, "ERROR: boom"),
+        [("ERROR: ".into(), Some(Color::LightRed), true), ("boom".into(), None, false)]);
+    assert_eq!(styled(&lines, "second"), [("second".into(), None, false)]);
+    assert_eq!(styled(&lines, "    at f (a.jl:3)"), [
+        ("    at ".into(), Some(Color::DarkGray), false), ("f".into(), None, true),
+        (" (".into(), Some(Color::DarkGray), false), ("a.jl:3".into(), Some(Color::DarkGray), false),
+        (")".into(), Some(Color::DarkGray), false),
+    ]);
+    assert!(lines.iter().flat_map(|l| &l.spans).filter(|s| s.content.contains("a.jl") || s.content == "    at ")
+        .all(|s| !s.style.add_modifier.contains(ratatui::style::Modifier::DIM)), "a frame is not dim");
+}
+
+#[test]
+fn output_and_values_are_in_the_terminals_own_color() {
+    // Julia prints stdout, stderr and a shown value (`default_color_answer` is :normal) in the terminal's own color; only
+    // a program that colors its own text, as the logging macros do, has another.
+    let key = row("host", "row");
+    let (mut model, mut owner) = (ReplModel::default(), Owner::default());
+    model.edit_draft(DraftEdit::Replace("x".into()));
+    let plan = model.begin_eval(target(&key)).unwrap();
+    let id = plan.submission.eval_id();
+    model.complete_submission(plan.submission, Ok(()));
+    output(&mut model, &key, id, "out");
+    frame(&mut model, &key, id, ReplFrame::Stderr { text: "err".into() });
+    frame(&mut model, &key, id, ReplFrame::Value { mime: "text/plain".into(), text: "42".into() });
+    let lines = build(&mut owner, &model, &key, 0).0;
+    for wanted in ["out", "err", "42"] {
+        assert_eq!(styled(&lines, wanted), [(wanted.into(), None, false)]);
+    }
+}
+
+/// The text of `source` before its test module and, when `from` is given, from the first line holding it.
+fn production_text(source: &str, from: Option<&str>) -> String {
+    let source = source.split("#[cfg(test)]").next().unwrap();
+    match from {
+        Some(marker) => source[source.find(marker).unwrap()..].to_string(),
+        None => source.to_string(),
+    }
+}
+
+#[test]
+fn a_color_at_a_use_site_is_not_in_the_drawers_table() {
+    // The REPL drawer's colors are named once, in `colors.rs`; a literal at a use site (the scrollback, the live prompt
+    // and its cursor) is a second owner.
+    let scrollback = production_text(include_str!("presentation.rs"), None);
+    let live = production_text(include_str!("../../chrome/view.rs"), Some("fn repl_drawer_body"));
+    let live = &live[..live.find("fn render_drawer_widgets").unwrap()];
+    for (name, source) in [("presentation.rs", scrollback.as_str()), ("view.rs repl_drawer_body", live)] {
+        for needle in ["Color::", "Modifier::"] {
+            let hits: Vec<&str> = source.lines().filter(|l| l.contains(needle) && !l.trim_start().starts_with("//")).collect();
+            assert!(hits.is_empty(), "{name} names {needle} at its use site: {hits:?}");
         }
     }
 }

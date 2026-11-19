@@ -2,7 +2,7 @@
 //! paint the panes' titles, the REPL drawer body, the wireframe, the clock, the stamp and the terminals.
 
 use super::*;
-use crate::ui::drawer::repl::presentation::ReplDrawerLayout;
+use crate::ui::drawer::repl::{colors, presentation::ReplDrawerLayout};
 use super::nav_body::NavBody;
 
 // Snapshot per-row chrome strings up-front so the ratatui closure
@@ -384,24 +384,9 @@ impl ChromeView<'_> {
         );
         let (start, end) = repl_split.window;
         let scroll_para = Paragraph::new(repl_lines[start..end].to_vec());
-        // Mode-aware prompt: `julia> ` in cyan vs `pkg> ` in
-        // blue (matches the standard Julia REPL palette). Dim
-        // both when the REPL pane isn't focused — same
-        // attention-direction trick as before.
-        // Match the stdlib `REPL.jl` / VSCode Julia-ext palette:
-        // `julia>` green, `pkg>` blue. Light* variants pop on the
-        // near-black surface fg.
+        // Mode-aware prompt, in Julia's REPL's own colors (`drawer::repl::colors`); dimmed
+        // while the REPL pane isn't focused, as an attention cue.
         let prompt_text = if repl_pkg_mode { "pkg> " } else { "julia> " };
-        let prompt_focus_color = if repl_pkg_mode {
-            Color::LightBlue
-        } else {
-            Color::LightGreen
-        };
-        let prompt_color = if repl_focus {
-            prompt_focus_color
-        } else {
-            Color::DarkGray
-        };
         // Multi-line input: first segment carries the live prompt,
         // continuation segments get a same-width filler so the
         // text column stays aligned under the prompt. Cursor
@@ -416,17 +401,13 @@ impl ChromeView<'_> {
             .map(|(i, seg)| {
                 let mut spans: Vec<Span> = Vec::with_capacity(3);
                 if i == 0 {
-                    spans
-                        .push(Span::styled(prompt_text, Style::default().fg(prompt_color)));
+                    spans.push(Span::styled(prompt_text, colors::prompt(repl_pkg_mode, repl_focus)));
                 } else {
                     spans.push(Span::raw(cont_pad.clone()));
                 }
                 spans.push(Span::raw(cell_row(seg).into_owned()));
                 if repl_focus && i == last_idx {
-                    spans.push(Span::styled(
-                        "\u{2588}",
-                        Style::default().fg(prompt_focus_color),
-                    ));
+                    spans.push(Span::styled("\u{2588}", colors::cursor(repl_pkg_mode)));
                 }
                 RtLine::from(spans)
             })

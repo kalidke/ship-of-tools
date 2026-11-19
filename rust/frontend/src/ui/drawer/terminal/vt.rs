@@ -223,7 +223,7 @@ pub(in crate::ui) fn paint_terminal(
 /// palette goes through the named variants; indexed (256-colour) and
 /// RGB pass through as Color::Indexed / Color::Rgb so the existing
 /// chrome render path can emit them.
-fn vt100_color_to_ratatui(c: vt100::Color) -> Color {
+pub(in crate::ui) fn vt100_color_to_ratatui(c: vt100::Color) -> Color {
     use vt100::Color as V;
     match c {
         V::Default => Color::Reset,
