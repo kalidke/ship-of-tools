@@ -3025,6 +3025,11 @@ the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the sa
     at its first frame; and a discard closes the edit as a clean Escape does, so the preview is fetched again and
     shows the file as last saved, where it showed the render from before the editing began, in the released version
     too.
+  - The editor's slow tests (EDITOR-TESTS-OUTRUN-THE-MAC-SHARD), test-only, by the landing session. The editor's
+    landing put three exhaustive tests on `main` that ran past a minute each on the hosted Macs, and the shard that
+    holds them ended at its step's five minutes with every test passed: `main` was red there for two landings. The
+    local gate runs on Linux, where they took seconds. One commit: one font system per test, and no re-shape where
+    the window makes none.
   - A name after `@` in a post is a Slack mention (CHAT-MENTION-NOT-A-MENTION). One builder, six commits; a fresh
     reviewer, four rounds. The daemon resolves the name at the post against the workspace's members (read under
     the bot's token, paged, bounded, cached ten minutes, bounded in time) and sends a mention token only for an id
@@ -3041,11 +3046,3 @@ the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the sa
     a double quote are removed too, each list says how many people it names, and every report line the documents
     show is asserted from the real function. Unproven: no person has been notified by such a mention; a stand-in
     answered for Slack.
-
-    put in double quotes, and a member who copies another's names is told by the account's handle. Unproven: no person has been notified by such a mention; a stand-in answered for Slack.
-
-  - The editor's slow tests (EDITOR-TESTS-OUTRUN-THE-MAC-SHARD), test-only, by the landing session. The editor's
-    landing put three exhaustive tests on `main` that ran past a minute each on the hosted Macs, and the shard that
-    holds them ended at its step's five minutes with every test passed: `main` was red there for two landings. The
-    local gate runs on Linux, where they took seconds. One commit: one font system per test, and no re-shape where
-    the window makes none.
