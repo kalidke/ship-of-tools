@@ -34,6 +34,6 @@ fn the_prompt_is_bold_and_only_the_cursor_is_not() {
         assert!(!cursor(pkg).add_modifier.contains(Modifier::BOLD));
         // Unfocused: the color is the attention cue's, the weight stays the prompt's.
         let unfocused = prompt(pkg, false);
-        assert_eq!((unfocused.fg, unfocused.add_modifier.contains(Modifier::BOLD)), (Some(UNFOCUSED_PROMPT), true));
+        assert_eq!((unfocused.fg, unfocused.add_modifier.contains(Modifier::BOLD)), (Some(Color::DarkGray), true));
     }
 }

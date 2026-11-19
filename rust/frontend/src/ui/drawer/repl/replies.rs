@@ -91,6 +91,7 @@ impl ReplModel {
             let Some((key, log)) = row else { continue };
             if let Some(entry) = log.iter_mut().find(|e| closed(e)) {
                 entry.in_flight = true;
+                entry.own_frames.push(entry.frames.len());
                 entry.frames.push(ReplFrame::Stderr {
                     text: LINK_BACK.to_string(),
                 });
@@ -219,6 +220,7 @@ impl ReplModel {
             in_flight: true,
             pkg_mode: false,
             origin: Some(format!("{origin} ▸ {display}")),
+            own_frames: Vec::new(),
         });
         self.routes.insert(owner_id, key);
     }

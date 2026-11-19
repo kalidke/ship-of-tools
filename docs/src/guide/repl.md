@@ -18,9 +18,11 @@ earlier inputs, and Ctrl+c interrupts a running evaluation. There is no `?`
 help mode, no `;` shell mode and no Tab completion; use the Terminal drawer
 or the agent pane for shell commands.
 
-The drawer's colors are Julia's own REPL's: the `julia>` prompt is bold green and `pkg>` bold blue, an
-error starts with a bold light-red `ERROR:`, and output and values are in the terminal's color. What
-your code colors itself (the `@info` and `@warn` labels, for one) is not drawn in color.
+The prompts and the error label use the colors of Julia's own REPL: `julia>` is bold green, `pkg>` is bold
+blue, and an error starts with a bold light-red `ERROR:`. Typed code, output and values are in the window's
+normal text color. Text a program writes to stderr is gray, which Julia's own REPL does not do; it keeps stderr
+apart from stdout in the log. Nothing a program or Julia's logger colors is drawn in color yet: the `@info`,
+`@warn` and `@error` labels, a program's own colors and the syntax coloring of typed code show as plain text.
 
 The REPL and the kernel run the `julia` that `SOT_JULIA_BIN` names, else
 juliaup's default channel, else a `julia` on `PATH`. Both start with

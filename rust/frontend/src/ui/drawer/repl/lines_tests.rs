@@ -54,6 +54,7 @@ fn entry(eval_id: u64, code: &str, in_flight: bool) -> ReplEntry {
         in_flight,
         pkg_mode: false,
         origin: None,
+        own_frames: Vec::new(),
     }
 }
 

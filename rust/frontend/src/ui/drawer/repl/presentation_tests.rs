@@ -583,7 +583,8 @@ fn an_errors_parts_have_julias_colors() {
     model.complete_submission(plan.submission, Ok(()));
     frame(&mut model, &key, id, ReplFrame::Error {
         message: "boom\nsecond".into(),
-        stacktrace: vec![serde_json::from_value(serde_json::json!({"fn": "f", "file": "a.jl", "line": 3})).unwrap()],
+        stacktrace: ["f", "top-level scope", ""].iter().map(|name| serde_json::from_value(
+            serde_json::json!({"fn": name, "file": "a.jl", "line": 3})).unwrap()).collect(),
     });
     let lines = build(&mut owner, &model, &key, 0).0;
     assert_eq!(styled(&lines, "ERROR: boom"),
@@ -594,6 +595,11 @@ fn an_errors_parts_have_julias_colors() {
         (" (".into(), Some(Color::DarkGray), false), ("a.jl:3".into(), Some(Color::DarkGray), false),
         (")".into(), Some(Color::DarkGray), false),
     ]);
+    // Julia prints `top-level scope` and an unnamed frame plain and every other function name bold
+    // (`Base/stacktraces.jl` `show_spec_linfo`).
+    let plain = ("top-level scope".to_string(), None, false);
+    assert_eq!(styled(&lines, "    at top-level scope (a.jl:3)")[1], plain);
+    assert_eq!(styled(&lines, "    at  (a.jl:3)")[1], (String::new(), None, false));
     assert!(lines.iter().flat_map(|l| &l.spans).filter(|s| s.content.contains("a.jl") || s.content == "    at ")
         .all(|s| !s.style.add_modifier.contains(ratatui::style::Modifier::DIM)), "a frame is not dim");
 }
@@ -612,9 +618,67 @@ fn output_and_values_are_in_the_terminals_own_color() {
     frame(&mut model, &key, id, ReplFrame::Stderr { text: "err".into() });
     frame(&mut model, &key, id, ReplFrame::Value { mime: "text/plain".into(), text: "42".into() });
     let lines = build(&mut owner, &model, &key, 0).0;
-    for wanted in ["out", "err", "42"] {
+    for wanted in ["out", "42"] {
         assert_eq!(styled(&lines, wanted), [(wanted.into(), None, false)]);
     }
+    // The one deliberate departure: stderr keeps a quiet gray (ANSI 7), told from stdout, an error and a warning.
+    assert_eq!(styled(&lines, "err"), [("err".into(), Some(Color::Gray), false)]);
+}
+
+#[test]
+fn the_windows_link_back_note_is_told_from_program_output() {
+    let key = row("host", "row");
+    let (mut model, mut owner) = (ReplModel::default(), Owner::default());
+    model.edit_draft(DraftEdit::Replace("x".into()));
+    let plan = model.begin_eval(target(&key)).unwrap();
+    let id = plan.submission.eval_id();
+    model.complete_submission(plan.submission, Ok(()));
+    finish(&mut model, &key, id);
+    model.reopen_runs(&"host".into(), &key, vec![id]);
+    frame(&mut model, &key, id, ReplFrame::Stderr { text: "from the program".into() });
+    let lines = build(&mut owner, &model, &key, 0).0;
+    let note = "the connection to the daemon is back, and this eval is still running";
+    assert_eq!(styled(&lines, note), [(note.into(), Some(Color::LightMagenta), false)]);
+    assert_eq!(styled(&lines, "from the program"), [("from the program".into(), Some(Color::Gray), false)]);
+}
+
+#[test]
+fn the_error_label_never_pushes_out_text_that_fit_the_pane() {
+    // The pane clips and never wraps. At 8 px a cell, 400 px is 50 columns: a 45-column first line fits alone, not
+    // after the 7-column label, so the label takes a row of its own; a 40-column one shares its row; a 60-column one
+    // was clipped already.
+    let key = row("host", "row");
+    let (mut model, mut owner) = (ReplModel::default(), Owner::default());
+    owner.commit_layout(rect(400.0, 400.0), (0, 100));
+    model.edit_draft(DraftEdit::Replace("x".into()));
+    let plan = model.begin_eval(target(&key)).unwrap();
+    let id = plan.submission.eval_id();
+    model.complete_submission(plan.submission, Ok(()));
+    for len in [40, 45, 60] {
+        frame(&mut model, &key, id, ReplFrame::Error { message: "m".repeat(len), stacktrace: vec![] });
+    }
+    let rows = text(&build(&mut owner, &model, &key, 0).0);
+    assert_eq!(rows[1..5], [format!("ERROR: {}", "m".repeat(40)), "ERROR: ".to_string(), "m".repeat(45),
+        format!("ERROR: {}", "m".repeat(60))]);
+}
+
+#[test]
+fn the_live_prompt_has_julias_color_and_weight_focused_and_not() {
+    let spans = |input: &str, pkg, focused| -> Vec<(String, Option<Color>, bool)> {
+        let lines = super::input_lines(input, pkg, focused);
+        lines.iter().flat_map(|l| l.spans.iter())
+            .map(|s| (s.content.to_string(), s.style.fg, s.style.add_modifier.contains(ratatui::style::Modifier::BOLD)))
+            .collect()
+    };
+    assert_eq!(spans("1+1", false, true), [
+        ("julia> ".into(), Some(Color::Green), true), ("1+1".into(), None, false),
+        ("\u{2588}".into(), Some(Color::Green), false)]);
+    assert_eq!(spans("", true, true), [
+        ("pkg> ".into(), Some(Color::Blue), true), (String::new(), None, false),
+        ("\u{2588}".into(), Some(Color::Blue), false)]);
+    assert_eq!(spans("a\nb", false, false), [
+        ("julia> ".into(), Some(Color::DarkGray), true), ("a".into(), None, false),
+        ("       ".into(), None, false), ("b".into(), None, false)]);
 }
 
 /// The text of `source` before its test module and, when `from` is given, from the first line holding it.
@@ -639,4 +703,18 @@ fn a_color_at_a_use_site_is_not_in_the_drawers_table() {
             assert!(hits.is_empty(), "{name} names {needle} at its use site: {hits:?}");
         }
     }
+}
+
+#[test]
+fn an_error_with_no_message_still_says_error() {
+    // Julia's `display_error` prints `ERROR: ` and the message after it, however short.
+    let key = row("host", "row");
+    let (mut model, mut owner) = (ReplModel::default(), Owner::default());
+    model.edit_draft(DraftEdit::Replace("x".into()));
+    let plan = model.begin_eval(target(&key)).unwrap();
+    let id = plan.submission.eval_id();
+    model.complete_submission(plan.submission, Ok(()));
+    frame(&mut model, &key, id, ReplFrame::Error { message: String::new(), stacktrace: vec![] });
+    let lines = build(&mut owner, &model, &key, 0).0;
+    assert_eq!(styled(&lines, "ERROR: "), [("ERROR: ".into(), Some(Color::LightRed), true), (String::new(), None, false)]);
 }

@@ -74,6 +74,7 @@ fn untrusted_repl_lines() -> Vec<RtLine<'static>> {
         in_flight: false,
         pkg_mode: false,
         origin: None,
+        own_frames: Vec::new(),
     }];
     let row = ("host".into(), "row".into());
     ReplPresentation::<()>::default().build(&row, &log, false, 8.0, 16.0, 0).0
@@ -121,6 +122,11 @@ struct NavFrame<'a> {
     body: Option<&'a crate::ui::drawer::chat::Body>,
     /// The drawer at full height instead of its own.
     full: bool,
+    /// The REPL drawer has the focus, and is in pkg mode.
+    repl_focused: bool,
+    repl_pkg: bool,
+    /// Where to leave the painted buffer, for a test that reads cell colors.
+    keep: Option<&'a std::cell::RefCell<Option<ratatui::buffer::Buffer>>>,
 }
 
 /// `paint_chrome_chat` from `nav`, and the nav pane's rect, the spill's segments and the nav scroll the frame ends
@@ -156,7 +162,7 @@ fn paint_chrome_nav(
         drawer_full: nav.full,
         maximize_slot: None,
         nav_logo_row: false,
-        focus: PaneFocus::NavTree,
+        focus: if nav.repl_focused { PaneFocus::Repl } else { PaneFocus::NavTree },
         mode: Mode::default(),
         nav_prompt_line: &prompt,
         lease_notice: None,
@@ -180,7 +186,7 @@ fn paint_chrome_nav(
         monitor_host_label: &host,
         repl_input: &repl_input,
         repl_lines: &repl_lines,
-        repl_pkg_mode: false,
+        repl_pkg_mode: nav.repl_pkg,
         help_state: &help_state,
         help_bindings: &bindings,
         help_context: &context,
@@ -219,6 +225,9 @@ fn paint_chrome_nav(
         }).unwrap(),
     };
     let buf = term.backend().buffer();
+    if let Some(keep) = nav.keep {
+        *keep.borrow_mut() = Some(buf.clone());
+    }
     let rows = (0..h)
         .map(|y| (0..w).map(|x| buf[(x, y)].symbol()).collect())
         .collect();
@@ -248,6 +257,30 @@ fn repl_drawer_layout_uses_the_owner_window() {
                 assert!(rows[area.bottom() as usize].contains("julia> aa"), "input starts after scrollback");
             }
         }
+    }
+}
+
+/// The live prompt as the chrome paints it, in the REPL drawer's rows: Julia's color and weight for each mode while
+/// the pane has the focus (the cursor block in the prompt's color), the unfocused gray without it.
+#[test]
+fn the_live_prompt_is_painted_in_julias_color_and_weight() {
+    for (pkg, focused, text, color, cursor) in [
+        (false, true, "julia> xy", Color::Green, Some(Color::Green)),
+        (true, true, "pkg> xy", Color::Blue, Some(Color::Blue)),
+        (false, false, "julia> xy", Color::DarkGray, None),
+        (true, false, "pkg> xy", Color::DarkGray, None),
+    ] {
+        let kept = std::cell::RefCell::new(None);
+        let nav = NavFrame { repl_focused: focused, repl_pkg: pkg, keep: Some(&kept), ..NavFrame::default() };
+        let (rows, ..) = paint_chrome_nav((120, 40), "ready", Vec::new(),
+            ("xy".into(), Vec::new(), 0, DrawerContent::Repl), None, nav);
+        let buf = kept.borrow().clone().unwrap();
+        let y = rows.iter().position(|r| r.contains(text)).unwrap_or_else(|| panic!("no {text:?} row in {rows:?}"));
+        let x = rows[y].find(text).map(|byte| rows[y][..byte].chars().count()).unwrap() as u16;
+        let prompt = &buf[(x, y as u16)];
+        assert_eq!((prompt.fg, prompt.modifier.contains(Modifier::BOLD)), (color, true), "{text} focused={focused}");
+        let block = (0..120u16).find(|&bx| buf[(bx, y as u16)].symbol() == "\u{2588}");
+        assert_eq!(block.map(|bx| buf[(bx, y as u16)].fg), cursor, "{text} focused={focused}: cursor");
     }
 }
 

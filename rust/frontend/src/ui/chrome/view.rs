@@ -2,7 +2,7 @@
 //! paint the panes' titles, the REPL drawer body, the wireframe, the clock, the stamp and the terminals.
 
 use super::*;
-use crate::ui::drawer::repl::{colors, presentation::ReplDrawerLayout};
+use crate::ui::drawer::repl::presentation::ReplDrawerLayout;
 use super::nav_body::NavBody;
 
 // Snapshot per-row chrome strings up-front so the ratatui closure
@@ -384,34 +384,8 @@ impl ChromeView<'_> {
         );
         let (start, end) = repl_split.window;
         let scroll_para = Paragraph::new(repl_lines[start..end].to_vec());
-        // Mode-aware prompt, in Julia's REPL's own colors (`drawer::repl::colors`); dimmed
-        // while the REPL pane isn't focused, as an attention cue.
-        let prompt_text = if repl_pkg_mode { "pkg> " } else { "julia> " };
-        // Multi-line input: first segment carries the live prompt,
-        // continuation segments get a same-width filler so the
-        // text column stays aligned under the prompt. Cursor
-        // block lives at the end of the last segment regardless
-        // of how many lines deep we are.
-        let cont_pad: String = " ".repeat(prompt_text.len());
-        let segments: Vec<&str> = repl_input.split('\n').collect();
-        let last_idx = segments.len().saturating_sub(1);
-        let input_rt_lines: Vec<RtLine> = segments
-            .iter()
-            .enumerate()
-            .map(|(i, seg)| {
-                let mut spans: Vec<Span> = Vec::with_capacity(3);
-                if i == 0 {
-                    spans.push(Span::styled(prompt_text, colors::prompt(repl_pkg_mode, repl_focus)));
-                } else {
-                    spans.push(Span::raw(cont_pad.clone()));
-                }
-                spans.push(Span::raw(cell_row(seg).into_owned()));
-                if repl_focus && i == last_idx {
-                    spans.push(Span::styled("\u{2588}", colors::cursor(repl_pkg_mode)));
-                }
-                RtLine::from(spans)
-            })
-            .collect();
+        // The prompt is in Julia's REPL's own colors (`drawer::repl::colors`), dimmed while the pane lacks focus.
+        let input_rt_lines = crate::ui::drawer::repl::presentation::input_lines(repl_input, repl_pkg_mode, repl_focus);
         let input_para = Paragraph::new(input_rt_lines);
         self.new_repl_scroll = repl_split.scroll;
         self.repl_scrollback_cells = repl_split.scrollback;

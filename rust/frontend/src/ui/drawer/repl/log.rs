@@ -27,6 +27,8 @@ pub(in crate::ui) struct ReplEntry {
     /// (e.g. `⟨session ▸ run foo.jl⟩`) instead of the `julia>` echo, and participates
     /// in Up/Down history once complete (including its empty synthetic code). `None` for a local user eval.
     pub(in crate::ui) origin: Option<String>,
+    /// Indices into `frames` of the frames the window wrote itself (a note, not program output); `frames` only grows.
+    pub(in crate::ui) own_frames: Vec<usize>,
 }
 
 impl ReplModel {
@@ -51,6 +53,7 @@ impl ReplModel {
             in_flight: true,
             pkg_mode,
             origin: None,
+            own_frames: Vec::new(),
         });
         eval_id
     }

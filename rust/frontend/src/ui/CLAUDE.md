@@ -7,23 +7,34 @@ owns authoritative rows and identity; `session/row_presentation.rs` owns their p
 `session/result_ledger.rs` owns owed results and their attempts; `agent_pane::AgentPane` owns the selected agent pane.
 `drawer/repl::ReplModel` owns REPL row state, submissions, history, routing and lifecycle;
 `drawer/repl/presentation::ReplPresentation` owns window-wide REPL images, layout and scroll anchoring.
-`drawer/repl/colors` owns every color the REPL drawer chooses, and it is Julia's REPL's own (Julia 1.13, read from
-`Base/client.jl`, `REPL/src/REPL.jl` and `REPL/src/LineEdit.jl`, the source of truth, never memory): the prompt's text bold,
-`julia>` `:green` and `pkg>` `:blue`, the typed code, stdout, stderr and a shown value in the terminal's own color, an
-error as `ERROR: ` bold `:light_red` then its message in the terminal's own color, and a stack frame's function bold and
-its `at`, parentheses and `file:line` `:light_black`, none of them dim. Each is a named variant of the 16 terminal colors, which
-`render::cells` maps to RGB as it does for the Terminal drawer and the agent pane, so Julia's green is the one green; a
-use site (`presentation.rs`, the live prompt in `chrome/view.rs`) names no color, and what Julia's REPL has no counterpart
-for (the origin marker, the browser link, the image caption, the starting, running and `(N ms)` notes, and the live
-prompt's unfocused gray) is the table's second part. Limits: the Julia child's output reaches the window as plain
-text (its streams are pipes, so Julia colors nothing in them and the window drops the escapes it is sent), so the logging
-macros' `@info`, `@warn`, `@error` and `@debug` labels, a stack frame's module and argument colors, `help?>` and `shell>`
-(modes the drawer has not), `Status` in pkg mode and the typed code's syntax coloring are not drawn, no cell run
-underlines, and the window does not read the `JULIA_*_COLOR` variables that change Julia's defaults. Tests:
+`drawer/repl/colors` owns every color the REPL drawer chooses; where Julia's REPL has a counterpart it is Julia's (Julia 1.13,
+read from `Base/client.jl`, `Base/stacktraces.jl`, `REPL/src/REPL.jl` and `REPL/src/LineEdit.jl`, the source of truth, never
+memory): the prompt's text bold, `julia>` `:green` and `pkg>` `:blue`; stdout, a shown value and an error's message in the
+terminal's own color; an error's `ERROR: ` bold `:light_red`; a stack frame's function bold, except `top-level scope` and an
+unnamed frame, which Julia prints plain, and the frame's `at`, location and the drawer's own punctuation `:light_black`, none of
+them dim. Each is a named variant of the 16 terminal colors, which `render::cells` maps to RGB as it does for the Terminal
+drawer and the agent pane, so Julia's green is the one green. A use site (`presentation.rs`, `input_lines`, the live prompt
+`chrome/view.rs` draws) names no color. The table's second part is what Julia's REPL has no counterpart for: the origin marker,
+the image caption, the starting, running and `(N ms)` notes, the live prompt's unfocused gray and the cursor, the browser link
+(only a frame placed in the log by hand reaches it), the window's own note (light magenta, told from output by the entry's
+`own_frames`, which `reopen_runs` fills), and stderr, the one place the drawer departs from Julia's REPL on purpose: Julia
+prints stderr in the terminal's own color, which leaves a log read back later with no way to tell it from stdout, so the drawer
+keeps stderr gray (ANSI 7, contrast 8.5 on the pane's surface against 12.5 for the default text; Julia's REPL uses it for
+nothing, so it reads as neither an error nor a warning). The pane clips and never wraps, so the `ERROR: ` label takes a row of
+its own when it would push out the end of a first line that fit (from the previous layout's width; on the first frame it stays
+inline). Limits: the Julia child's output reaches the window as plain text (its streams are pipes, so Julia colors nothing in
+them, and the window drops the escapes it is sent), so the logging macros' labels, a program's own colors, a stack frame's
+module and argument colors and underline, `help?>` and `shell>` (modes the drawer has not), `Status` in pkg mode and the typed
+code's syntax coloring are not drawn; a frame Julia prints as `top-level scope` from its code info under another name is bold,
+because the child sends the name alone; the window does not read the `JULIA_*_COLOR` variables. Tests:
 `presentation::tests::{each_prompt_mode_has_julias_color_and_weight, an_errors_parts_have_julias_colors,
-output_and_values_are_in_the_terminals_own_color, a_color_at_a_use_site_is_not_in_the_drawers_table}` (a source scan of
-the two use sites for a color literal), `colors::tests::{every_table_color_is_the_terminal_drawers_color_for_julias_name,
-the_prompt_is_bold_and_only_the_cursor_is_not}`; the live prompt's colors rest on the second and on that scan.
+output_and_values_are_in_the_terminals_own_color, the_windows_link_back_note_is_told_from_program_output,
+the_error_label_never_pushes_out_text_that_fit_the_pane, an_error_with_no_message_still_says_error,
+the_live_prompt_has_julias_color_and_weight_focused_and_not, a_color_at_a_use_site_is_not_in_the_drawers_table}` (the last a
+source scan of the two use sites for a color literal),
+`colors::tests::{every_table_color_is_the_terminal_drawers_color_for_julias_name, the_prompt_is_bold_and_only_the_cursor_is_not}`,
+and `chrome::view::tests::the_live_prompt_is_painted_in_julias_color_and_weight` (the live prompt and its cursor as the chrome
+paints them, per mode, focused and not, so a wrong argument at the call in `chrome/view.rs` fails it).
 `input::FocusPrompts` owns window-wide focus, nav prompts, captured scale focus, stayed notice and quit hint.
 `input::LayoutHelp` owns drawer selection (the shown row's; each row's is parked in its view), maximize/wide flags, Help browsing, return origin and startup requests.
 `preview::requests::PreviewRequests` owns both request clocks, the fired preview target and its page transport, concept

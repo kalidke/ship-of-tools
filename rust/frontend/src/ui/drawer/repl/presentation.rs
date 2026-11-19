@@ -280,6 +280,26 @@ fn stream_lines(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// The live input's rows: the prompt on the first, a same-width pad under it on each later row, and the cursor block
+/// ending the last row while the drawer has focus.
+pub(in crate::ui) fn input_lines(input: &str, pkg_mode: bool, focused: bool) -> Vec<RtLine<'static>> {
+    let prompt_text = if pkg_mode { "pkg> " } else { "julia> " };
+    let segments: Vec<&str> = input.split('\n').collect();
+    let last = segments.len() - 1;
+    segments.iter().enumerate().map(|(i, seg)| {
+        let mut spans = vec![if i == 0 {
+            Span::styled(prompt_text, colors::prompt(pkg_mode, focused))
+        } else {
+            Span::raw(" ".repeat(prompt_text.len()))
+        }];
+        spans.push(Span::raw(cell_row(seg).into_owned()));
+        if focused && i == last {
+            spans.push(Span::styled("\u{2588}", colors::cursor(pkg_mode)));
+        }
+        RtLine::from(spans)
+    }).collect()
+}
+
 /// Project entries into cell-safe rows; decoded figures reserve rows for the later clipped paint.
 /// Entry starts measure tail growth independently of entries trimmed from the front.
 #[allow(clippy::too_many_lines, reason = "builds the REPL scrollback lines, one arm per frame kind; predates the 100-line limit")]
@@ -308,7 +328,7 @@ fn project_lines<I>(
             let cont_pad: String = " ".repeat(prompt_text.len());
             for (i, seg) in entry.code.split('\n').enumerate() {
                 let prefix_span = if i == 0 {
-                    Span::styled(prompt_text.to_string(), colors::prompt(entry.pkg_mode, true))
+                    Span::styled(prompt_text.to_string(), colors::scrollback_prompt(entry.pkg_mode))
                 } else {
                     Span::raw(cont_pad.clone())
                 };
@@ -319,6 +339,12 @@ fn project_lines<I>(
             }
         }
         for (frame_idx, frame) in entry.frames.iter().enumerate() {
+            if let (true, ReplFrame::Stderr { text }) = (entry.own_frames.contains(&frame_idx), frame) {
+                for line in stream_lines(text) {
+                    out.push(RtLine::from(vec![Span::styled(line, colors::notice())]));
+                }
+                continue;
+            }
             match frame {
                 ReplFrame::Stdout { text } => {
                     for line in stream_lines(text) {
@@ -327,7 +353,7 @@ fn project_lines<I>(
                 }
                 ReplFrame::Stderr { text } => {
                     for line in stream_lines(text) {
-                        out.push(RtLine::from(vec![Span::styled(line, colors::plain())]));
+                        out.push(RtLine::from(vec![Span::styled(line, colors::stderr())]));
                     }
                 }
                 ReplFrame::Value { mime, text } => {
@@ -353,17 +379,28 @@ fn project_lines<I>(
                     if message_lines.is_empty() {
                         message_lines.push(String::new());
                     }
+                    // The pane clips and never wraps: the label shares the first row unless that would push out
+                    // text which fit (from the previous layout's width; the first frame's is zero).
+                    let label = Span::styled("ERROR: ", colors::error_label());
+                    let (cols, first_w) = (
+                        if cell_w > 0.0 { (avail_w_px / cell_w) as usize } else { 0 },
+                        unicode_width::UnicodeWidthStr::width(message_lines[0].as_str()),
+                    );
+                    let label_row = cols > 0 && first_w <= cols && first_w + label.width() > cols;
+                    if label_row {
+                        out.push(RtLine::from(vec![label.clone()]));
+                    }
                     for (i, line) in message_lines.into_iter().enumerate() {
                         let mut spans = vec![Span::styled(line, colors::plain())];
-                        if i == 0 {
-                            spans.insert(0, Span::styled("ERROR: ", colors::error_label()));
+                        if i == 0 && !label_row {
+                            spans.insert(0, label.clone());
                         }
                         out.push(RtLine::from(spans));
                     }
                     for sf in stacktrace {
                         out.push(RtLine::from(vec![
                             Span::styled("    at ", colors::trace_gray()),
-                            Span::styled(cell_row(&sf.function).into_owned(), colors::trace_function()),
+                            Span::styled(cell_row(&sf.function).into_owned(), colors::trace_function(&sf.function)),
                             Span::styled(" (", colors::trace_gray()),
                             Span::styled(format!("{}:{}", cell_row(&sf.file), sf.line), colors::trace_gray()),
                             Span::styled(")", colors::trace_gray()),

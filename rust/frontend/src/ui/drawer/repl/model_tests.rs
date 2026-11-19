@@ -372,6 +372,7 @@ fn a_returning_host_reopens_only_its_named_closed_runs() {
     assert!(
         matches!(&m.entries()[0].frames[0], ReplFrame::Stderr { text } if text.contains("is still running"))
     );
+    assert_eq!(m.entries()[0].own_frames, [0], "the note is the window's own frame");
     assert_eq!(m.entries().len(), 2);
     assert_eq!(interrupt(&mut m, &a, true).0, [id]);
     output(&mut m, "one", bid, &a, "back to b");
