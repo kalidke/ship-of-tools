@@ -755,8 +755,8 @@ fn the_previewed_file_posts_once_with_the_draft_as_its_comment() {
 }
 
 /// A post made with `@` names says on the status line whom it mentioned and which names it left as text, each with its
-/// reason and, for several members, the members it could be; a text post with neither says nothing, and a file's share
-/// ends its words with them.
+/// reason and, for several members, the members it could be, every entry printed as the daemon made it (a double quote is
+/// structure) and joined by `, `; a text post with neither says nothing, and a file's share ends its words with them.
 #[test]
 fn a_post_made_names_whom_it_mentioned_and_what_was_not_linked() {
     let r = row("R");
@@ -764,29 +764,37 @@ fn a_post_made_names_whom_it_mentioned_and_what_was_not_linked() {
     let ts: sot_protocol::chat::Ts = serde_json::from_value(serde_json::json!("1700000000.000100")).unwrap();
     let entry = |name: &str, why, candidates: &[&str]| ChatUnlinked { name: name.into(), why, candidates: candidates.iter().map(|c| c.to_string()).collect() };
     let unlinked = vec![
-        entry("Zed", ChatUnlinkedWhy::NoMember, &[]),
-        entry("Ben", ChatUnlinkedWhy::SeveralMembers, &["Ben Smith", "Ben Sample"]),
-        entry("Cy", ChatUnlinkedWhy::SeveralMembers, &["Cy One", "Cy Two", "Cy Three", "Cy Four", ""]),
+        entry(r#""@Zed""#, ChatUnlinkedWhy::NoMember, &[]),
+        entry(r#""@Ben""#, ChatUnlinkedWhy::SeveralMembers, &[r#""Ben" ("Ben Smith")"#, r#""Ben Sample""#]),
+        entry(r#""@Cy""#, ChatUnlinkedWhy::SeveralMembers, &[r#""Cy One""#, r#""Cy Two""#, r#""Cy Three""#, r#""Cy Four""#, ""]),
     ];
-    let mentioned = vec!["Ada (Ann Dee)".to_string(), "Ben Sample".to_string()];
-    d.edit(Some(&r), Edit::Text("hi @Ada, @Ben Sample, @Zed, @Ben and @Cy")).unwrap();
+    // The reviewer's forged pair, as the daemon now sends it: one entry, whatever the names hold.
+    let mentioned = vec![r#""Ada please" ("x), Ada (Ada Lovelace")"#.to_string(), r#""Ben Sample""#.to_string()];
+    d.edit(Some(&r), Edit::Text("hi @Ada please, @Ben Sample, @Zed, @Ben and @Cy")).unwrap();
     let req = posted(d.send(Some(&r), Some("Ada"), at).unwrap());
     reply(&mut d, &req, ChatReply::Done(ChatPostRes::Posted { ts: ts.clone(), unlinked, mentioned }), at);
     assert_eq!(d.draft(), None, "a post made clears its draft");
     assert_eq!(
         d.take_notice().as_deref(),
-        Some("posted; mentioned Ada (Ann Dee), Ben Sample; not linked: @Zed (no member), @Ben (several members: Ben Smith, Ben Sample), @Cy (several members: Cy One, Cy Two, Cy Three, Cy Four, and more)")
+        Some(concat!(
+            r#"posted; mentioned "Ada please" ("x), Ada (Ada Lovelace"), "Ben Sample"; not linked: "@Zed" (no member), "#,
+            r#""@Ben" (several members: "Ben" ("Ben Smith"), "Ben Sample"), "#,
+            r#""@Cy" (several members: "Cy One", "Cy Two", "Cy Three", "Cy Four", and more)"#
+        ))
     );
     d.edit(Some(&r), Edit::Text("hi")).unwrap();
     let req = posted(d.send(Some(&r), Some("Ada"), at).unwrap());
-    reply(&mut d, &req, ChatReply::Done(ChatPostRes::Posted { ts: ts.clone(), unlinked: Vec::new(), mentioned: vec!["Ada Example".into()] }), at);
-    assert_eq!(d.take_notice().as_deref(), Some("posted; mentioned Ada Example"), "a mention made is always told");
+    reply(&mut d, &req, ChatReply::Done(ChatPostRes::Posted { ts: ts.clone(), unlinked: Vec::new(), mentioned: vec![r#""Ada Example""#.into()] }), at);
+    assert_eq!(d.take_notice().as_deref(), Some(r#"posted; mentioned "Ada Example""#), "a mention made is always told");
     d.edit(Some(&r), Edit::Text("the fit @Zed")).unwrap();
     let req = file_posted(d.send_file(Some(&r), Previewed::File("files:figs/fit.png"), at).unwrap());
-    let unlinked = vec![entry("Zed", ChatUnlinkedWhy::MembersUnread, &[]), entry("", ChatUnlinkedWhy::More, &[])];
-    let mentioned = vec!["Ada Example".to_string(), String::new()];
+    let unlinked = vec![entry(r#""@Zed""#, ChatUnlinkedWhy::MembersUnread, &[]), entry("", ChatUnlinkedWhy::More, &[])];
+    let mentioned = vec![r#""Ada Example""#.to_string(), String::new()];
     d.on_evt(&"a".to_string(), ChatEvt::FilePosted { req, reply: ChatReply::Done(ChatPostFileRes::Posted { file: "F0FILE".into(), ts: None, unlinked, mentioned }) }, at);
-    assert_eq!(d.take_notice().as_deref(), Some("shared fit.png to C1; mentioned Ada Example, and more; not linked: @Zed (the member list could not be read), and more"));
+    assert_eq!(
+        d.take_notice().as_deref(),
+        Some(r#"shared fit.png to C1; mentioned "Ada Example", and more; not linked: "@Zed" (the member list could not be read), and more"#)
+    );
 }
 
 /// A picture opened from the chat in the preview is no file of the project: nothing is posted, and the status line says what

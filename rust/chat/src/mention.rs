@@ -14,15 +14,62 @@ use crate::normalize::{clean, valid_id};
 /// The words that notify a whole channel, each with its token: never a member's name.
 const CHANNEL_WIDE: [(&str, &str); 3] = [("channel", "<!channel>"), ("here", "<!here>"), ("everyone", "<!everyone>")];
 
-/// One person of the workspace: their id, the name the drawer shows (`users.info`'s rule), and the names a poster may
-/// type, each marked whole or not: the display name and the real name (whole), and the real name's first word when the
-/// real name has more than one.
+/// One person of the workspace: their id, the name the drawer shows (`users.info`'s rule), the names a poster may type,
+/// each marked whole or not (the display name and the real name whole, and the real name's first word when the real
+/// name has more than one), and what the reply says of them (`told`, set by `Index::new`).
 pub(crate) struct Member {
     id: String,
     shown: String,
-    /// What the reply's `mentioned` says of them: `display (real)` when both exist and differ ignoring case, else `shown`.
+    /// The display name and the real name as the report shows them (`plain`, uncut), and the account's handle.
+    display: Option<String>,
+    real: Option<String>,
+    handle: String,
     told: String,
     keys: Vec<(String, bool)>,
+}
+
+/// The bytes a report's name part keeps, a handle's, and so a whole entry's, `"display" ("real") @handle`, at most
+/// 2 + 55 + 5 + 55 + 2 + 40 = 159, within `MAX_NAME`.
+const PART: usize = 55;
+const HANDLE: usize = 40;
+
+/// A member-chosen name as report data: no control or invisible formatting character (`Cc`, `Cf`), no `"` or `\`,
+/// whitespace runs one space, trimmed, and past `max` bytes cut and ended with `…`. So in a report a double quote is
+/// always structure, never data.
+pub(crate) fn plain(s: &str, max: usize) -> String {
+    let mut out = String::new();
+    for c in s.chars().filter(|c| !(c.is_control() || is_format(*c) || matches!(c, '"' | '\\'))) {
+        if !c.is_whitespace() {
+            out.push(c);
+        } else if !out.ends_with(' ') {
+            out.push(' ');
+        }
+    }
+    let out = out.trim();
+    if out.len() <= max {
+        return out.to_string();
+    }
+    let mut end = max - '…'.len_utf8();
+    while !out.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", out[..end].trim_end())
+}
+
+/// `plain` in double quotes: one entry of a report, or one part of it.
+fn quoted(s: &str, max: usize) -> String {
+    format!("\"{}\"", plain(s, max))
+}
+
+/// An invisible formatting character (Unicode's `Cf`, and the noncharacters beside it): zero-width characters, direction
+/// marks, overrides and isolates, the word joiner, the soft hyphen, tags. The line and paragraph separators are
+/// whitespace, so `plain` makes them one space.
+fn is_format(c: char) -> bool {
+    matches!(c,
+        '\u{ad}' | '\u{600}'..='\u{605}' | '\u{61c}' | '\u{6dd}' | '\u{70f}' | '\u{890}'..='\u{891}' | '\u{8e2}' | '\u{180e}'
+        | '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{206f}' | '\u{feff}' | '\u{fff9}'..='\u{fffb}'
+        | '\u{fffe}'..='\u{ffff}' | '\u{110bd}' | '\u{110cd}' | '\u{13430}'..='\u{1343f}' | '\u{1bca0}'..='\u{1bca3}'
+        | '\u{1d173}'..='\u{1d17a}' | '\u{e0001}' | '\u{e0020}'..='\u{e007f}')
 }
 
 impl Member {
@@ -37,13 +84,30 @@ impl Member {
         };
         let (display, real) = (field(raw.get("profile"), "display_name"), field(raw.get("profile"), "real_name"));
         let shown = display.clone().or_else(|| real.clone()).or_else(|| field(Some(raw), "name"))?;
-        let told = match (&display, &real) {
-            (Some(d), Some(r)) if d.to_lowercase() != r.to_lowercase() => clean(&format!("{d} ({r})"), MAX_NAME).0,
-            _ => shown.clone(),
-        };
+        let handle: String = raw.get("name").and_then(Value::as_str).unwrap_or("").chars().filter(|c| c.is_alphanumeric() || matches!(c, '.' | '_' | '-')).collect();
+        let handle = if handle.is_empty() { id.to_string() } else { plain(&handle, HANDLE) };
+        let report = |n: &Option<String>| n.as_deref().map(|n| plain(n, usize::MAX));
         let first = real.as_deref().and_then(|r| r.split_once(char::is_whitespace)).map(|(f, _)| (f.to_string(), false));
+        let (display_told, real_told) = (report(&display).or_else(|| report(&Some(shown.clone()))), report(&real));
         let whole = [display, real].into_iter().flatten().map(|k| (k, true));
-        Some(Member { id: id.into(), shown, told, keys: whole.chain(first).collect() })
+        let mut member = Member { id: id.into(), shown, display: display_told, real: real_told, handle, told: String::new(), keys: whole.chain(first).collect() };
+        member.told = member.entry(false);
+        Some(member)
+    }
+
+    /// The report's entry: the display name (else the real name) in double quotes, then, when the real name exists and
+    /// differs ignoring case, the real name in double quotes inside parentheses, then, for a member whose display and real
+    /// names another member also has (`twin`), ` @handle`.
+    fn entry(&self, twin: bool) -> String {
+        let first = self.display.as_deref().unwrap_or_default();
+        let mut entry = quoted(first, PART);
+        if let Some(real) = self.real.as_deref().filter(|r| r.to_lowercase() != first.to_lowercase()) {
+            entry += &format!(" ({})", quoted(real, PART));
+        }
+        if twin {
+            entry += &format!(" @{}", self.handle);
+        }
+        entry
     }
 }
 
@@ -61,12 +125,19 @@ pub(crate) struct Index {
 }
 
 impl Index {
-    pub(crate) fn new(members: Vec<Member>) -> Index {
+    pub(crate) fn new(mut members: Vec<Member>) -> Index {
         let mut by_head: HashMap<String, Vec<(usize, usize)>> = HashMap::new();
         for (m, member) in members.iter().enumerate() {
             for (k, (key, _)) in member.keys.iter().enumerate() {
                 by_head.entry(head(key)).or_default().push((m, k));
             }
+        }
+        // Members whose display and real names are another's, ignoring case, are told apart by their handles.
+        let names = |m: &Member| (m.display.as_deref().map(str::to_lowercase), m.real.as_deref().map(str::to_lowercase));
+        let mut seen: HashMap<_, usize> = HashMap::new();
+        members.iter().for_each(|m| *seen.entry(names(m)).or_default() += 1);
+        for m in members.iter_mut().filter(|m| seen[&names(&**m)] > 1) {
+            m.told = m.entry(true);
         }
         Index { members, by_head }
     }
@@ -132,7 +203,7 @@ pub(crate) fn link(text: &str, kind: PostKind, members: Result<&Index, ChatUnlin
                     }
                     Found::Several(len, all) => {
                         let mut entry = unlinked(&rest[..len], ChatUnlinkedWhy::SeveralMembers);
-                        entry.candidates = all.iter().take(MAX_CANDIDATES).map(|m| m.shown.clone()).collect();
+                        entry.candidates = all.iter().take(MAX_CANDIDATES).map(|m| m.told.clone()).collect();
                         entry.candidates.extend((all.len() > MAX_CANDIDATES).then(String::new));
                         l.unlinked.push(entry);
                         continue;
@@ -210,7 +281,7 @@ enum Found<'m> {
 /// The member `rest` (the text after an `@`) names. W is the members one of whose whole names (display or real) is
 /// spelled there, at any length, and F those spelled there only by their first word. If W is not empty only W counts:
 /// the longest run any of W is spelled by links when exactly one member of W is spelled at that length and every other
-/// member of W is spelled only by runs the longest one continues with a space (`Ben` beside `Ben Sample`); anything else
+/// member of W is spelled only by runs the longest one continues with an ordinary space (U+0020) (`Ben` beside `Ben Sample`); anything else
 /// in W is several. Else one member of F links, and more are several.
 fn matched<'m>(rest: &str, index: &'m Index) -> Found<'m> {
     // Per member, in the index's order (a member's names are indexed together): its whole names' lengths, its first word's.
@@ -228,8 +299,9 @@ fn matched<'m>(rest: &str, index: &'m Index) -> Found<'m> {
     let (w, f): (Vec<_>, Vec<_>) = spelled_here.into_iter().partition(|(_, wholes, _)| !wholes.is_empty());
     if let Some(longest) = w.iter().flat_map(|(_, wholes, _)| wholes.iter().copied()).max() {
         let at_longest: Vec<&Member> = w.iter().filter(|(_, wholes, _)| wholes.contains(&longest)).map(|(m, _, _)| *m).collect();
-        // A shorter name the longest one extends after a space (by further words), not by punctuation.
-        let extended = |len: usize| rest[len..longest].starts_with(char::is_whitespace);
+        // A shorter name the longest one continues after an ordinary space (by further words), not by punctuation or
+        // another space character.
+        let extended = |len: usize| rest[len..longest].starts_with(' ');
         let others_extended = w.iter().filter(|(m, _, _)| !std::ptr::eq(*m, at_longest[0])).all(|(_, wholes, _)| wholes.iter().all(|&l| extended(l)));
         return match at_longest.as_slice() {
             [one] if others_extended => Found::One(one, longest),
@@ -283,9 +355,10 @@ fn typed(rest: &str) -> &str {
     rest[..end].trim_end_matches(['.', '_'])
 }
 
-/// A name left as text, within `MAX_NAME`.
+/// A name left as text, as the report shows it: `"@name"` (the `more` entry's name is empty).
 fn unlinked(name: &str, why: ChatUnlinkedWhy) -> ChatUnlinked {
-    ChatUnlinked { name: clean(name, MAX_NAME).0, why, candidates: Vec::new() }
+    let name = if why == ChatUnlinkedWhy::More { String::new() } else { quoted(&format!("@{name}"), MAX_NAME - 2) };
+    ChatUnlinked { name, why, candidates: Vec::new() }
 }
 
 #[cfg(test)]

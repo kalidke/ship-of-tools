@@ -1306,7 +1306,7 @@ fn no_project_word_reaches_a_screen() {
         said.push(post_words(&PostShown::Outdated, true, host).unwrap_or_default());
     }
     said.extend([wait_words(5, false), wait_words(5, true)]);
-    let unlinked = |why| PostShown::Posted(vec!["Ada Example".into(), String::new()], vec![sot_protocol::ops::ChatUnlinked { name: "Zed".into(), why, candidates: vec!["Zed One".into(), String::new()] }]);
+    let unlinked = |why| PostShown::Posted(vec![r#""Ada" ("Ada Example")"#.into(), String::new()], vec![sot_protocol::ops::ChatUnlinked { name: r#""@Zed""#.into(), why, candidates: vec![r#""Zed One""#.into(), String::new()] }]);
     let reasons = [NoMember, SeveralMembers, MembersUnread, TooManyMembers, ChannelWide, TooLong, More, Other].map(unlinked);
     for shown in [PostShown::Posted(Vec::new(), Vec::new()), PostShown::Unknown, PostShown::Limited(3, false)].into_iter().chain(reasons) {
         said.extend(post_words(&shown, false, "a"));

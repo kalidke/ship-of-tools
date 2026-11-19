@@ -87,8 +87,9 @@ _chat_resolve() {
 }
 
 # The one post's reply $1 (empty for none): exits 0 with `posted <ts>` (or `posted file <id>` for a file share Slack
-# named no message of), followed by `; mentioned <names>` for the members the post mentions and `; not linked:
-# @<name> (<why>[: <candidates>])` for each `@` name the daemon left as text (the words are wire's
+# named no message of), followed by `; mentioned <entries>` for the members the post mentions and `; not linked:
+# <name> (<why>[: <candidates>])` for each `@` name the daemon left as text, each entry and name printed as the daemon
+# made it (`"display" ("real")`, `"@name"`: a double quote is structure) and joined by `, ` (the words are wire's
 # `ChatUnlinkedWhy::text`; an empty name is `and more`), 2 when nothing was posted, 3 when the post may exist.
 _chat_posted() {
     local resp="$1" err code
@@ -111,7 +112,7 @@ _chat_posted() {
                 (if .payload.ts then "posted \(.payload.ts)" else "posted file \(.payload.file)" end)
                 + ((.payload.mentioned // []) | if length > 0 then "; mentioned " + names else "" end)
                 + ([.payload.unlinked[]? | if .why == "more" then "and more"
-                    else "@\(.name) (\($why[.why] // "not linked")\(if (.candidates // []) | length > 0 then ": " + (.candidates | names) else "" end))" end]
+                    else "\(.name) (\($why[.why] // "not linked")\(if (.candidates // []) | length > 0 then ": " + (.candidates | names) else "" end))" end]
                    | if length > 0 then "; not linked: " + join(", ") else "" end)'
             ;;
         refused)

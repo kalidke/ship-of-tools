@@ -360,7 +360,7 @@ of each.
   `comm-context.sh` gives (none refused the same way), asks `chat.resolve` for the pair, sends one `chat.post` of kind
   `row` and never a second (it does not use `send_fe_command`'s retry: chat guarantee 12), and waits 50 s for the post: past the daemon's own bounds with a margin, the member list's 10 s for a name to link and the post's 30 s (chat guarantees 35 and 14), so a made post or a refusal is never read as "may exist" (`case_each_wait_is_past_the_daemons_own_bounds` reads sot-chat's constants and the script's waits).
   The text, handle and thread reach `jq` on stdin. Exit 0 with `posted <ts>`, then `; mentioned <names>` for the members the post
-  mentions (the reply's `mentioned`) and `; not linked: @<name> (<reason>[: <candidates>])` for each `@` name the daemon
+  mentions (the reply's `mentioned`, each entry in double quotes as the daemon made it) and `; not linked: "@<name>" (<reason>[: <candidates>])` for each `@` name the daemon
   left as text (the reply's `unlinked`, its reasons in wire's words; an empty name is `and more`); 1 for usage; 2, nothing posted for certain, with
   `refused <code> <words>` or `limited, wait <n> s`; 3, the post may exist, with `unknown: ...` (also a `handler_error`
   reply) or `no answer: ...` (also a hello the daemon refused, which cannot be told apart), each ending "do not send it

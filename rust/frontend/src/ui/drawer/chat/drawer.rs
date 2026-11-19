@@ -185,16 +185,17 @@ pub(super) fn post_words(shown: &PostShown, file: bool, host: &str) -> Option<St
     })
 }
 
-/// What a post's reply told of its `@` names, as the status line ends its words with it: `; mentioned <names>` and `; not
-/// linked: @<name> (<reason>)`, a `several members` entry with the members it could be; nothing when there is nothing.
-/// An empty name ends a list that had more (`and more`).
+/// What a post's reply told of its `@` names, as the status line ends its words with it: `; mentioned <entries>` and `;
+/// not linked: <name> (<reason>)`, a `several members` entry with the members it could be; nothing when there is
+/// nothing. Entries and names are printed as the daemon made them (`"display" ("real")`, `"@name"`: chat guarantee 35,
+/// where a double quote is always structure), joined by `, `; an empty one ends a list that had more (`and more`).
 pub(super) fn told(mentioned: &[String], unlinked: &[ChatUnlinked]) -> String {
     let list = |names: Vec<String>| names.join(", ");
     let shown = |n: &String| if n.is_empty() { ChatUnlinkedWhy::More.text().to_string() } else { n.clone() };
     let entry = |u: &ChatUnlinked| match u.why {
         ChatUnlinkedWhy::More => u.why.text().to_string(),
-        _ if !u.candidates.is_empty() => format!("@{} ({}: {})", u.name, u.why.text(), list(u.candidates.iter().map(shown).collect())),
-        _ => format!("@{} ({})", u.name, u.why.text()),
+        _ if !u.candidates.is_empty() => format!("{} ({}: {})", u.name, u.why.text(), list(u.candidates.iter().map(shown).collect())),
+        _ => format!("{} ({})", u.name, u.why.text()),
     };
     let mut out = String::new();
     if !mentioned.is_empty() {

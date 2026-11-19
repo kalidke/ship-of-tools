@@ -148,8 +148,11 @@ they have none), their full name, or just their first name, in any capitals. For
 picked them in Slack's own list.
 
 After the post, the status line says whom it mentioned, so you can see at once that it reached the right person:
-`posted; mentioned Ada Example`. A member whose display name differs from their full name is shown with both, the full
-name in parentheses: `posted; mentioned Ada (Ann Dee)`.
+`posted; mentioned "Ada Example"`. Each name is in double quotes. A member whose display name differs from their full
+name is shown with both, the full name in parentheses: `posted; mentioned "Ada" ("Ann Dee")`. When two members have
+the same names, each is followed by their Slack handle: `"Ada" ("Ann Dee") @ann.dee`. Names are shown without double
+quotes, backslashes or invisible characters, so whatever a member puts in their name, each quoted name is one
+member's.
 
 A comma, a period, a hyphen or `'s` may follow the name, and `_`, `*` or `~` may surround it (`_@Ada_`). Nothing is
 looked up inside `` `code` ``, a fenced code block, a line that starts with `>`, or an address such as
@@ -162,22 +165,22 @@ When names overlap:
 - A longer name wins when it is the shorter one plus more words. With members `Ben` and `Ben Sample`, `@Ben Sample`
   mentions Ben Sample and `@Ben, hi` mentions Ben.
 - When two members could be meant, nothing is linked and the status line names them:
-  `posted; not linked: @Ada (several members: Ada Example, Ada Other)`. Post again with the name that tells them apart,
+  `posted; not linked: "@Ada" (several members: "Ada Example", "Ada Other")`. Post again with the name that tells them apart,
   usually their full name.
 
 Some mistakes the rule cannot catch, which the `mentioned` names on the status line show you:
 
 - A first name typed for someone who is not in the workspace mentions the member who has that first name:
-  `@Ada Lovelace`, with only Ada Example in the workspace, says `mentioned Ada Example` and leaves `Lovelace` as text.
+  `@Ada Lovelace`, with only Ada Example in the workspace, says `mentioned "Ada Example"` and leaves `Lovelace` as text.
 - A word after the name that completes another member's name mentions that member: `@Ben sample size`, with a member
   `Ben Sample`, mentions Ben Sample.
 - A member shown as just `Ada` takes `@Ada` from a member shown as `Ada Example`; the status line then names the
-  member it reached by both names, for example `mentioned Ada (Ann Dee)`.
+  member it reached by both names, for example `mentioned "Ada" ("Ann Dee")`.
 - Ship of Tools reads the workspace's member list again at most every 10 minutes, so for a few minutes after someone
   joins or changes their name, the old names still apply.
 
 A name that is not linked goes out as you typed it, and the status line names it after the post, for example
-`posted; not linked: @Zed (no member)`. The reasons are:
+`posted; not linked: "@Zed" (no member)`. The reasons are:
 
 - `no member`: no one has that name.
 - `several members`: more than one member could be meant; the members are listed after the reason.
@@ -265,7 +268,7 @@ by `--thread`, or else is a new message. It is sent once: the command prints `po
 `refused` and a reason, or `limited, wait <n> s`, when nothing was posted; and exits 3 with `unknown` or `no answer`
 when the post may exist, in which case the agent does not post it again and asks you to look in the channel. A reply is public to
 every member of the channel. An `@name` in the agent's post or file comment mentions that person, as in yours
-([Mentioning someone](#Mentioning-someone)), and the command adds `; mentioned <names>` and `; not linked: @<name> (<reason>)` after `posted <ts>`
+([Mentioning someone](#Mentioning-someone)), and the command adds `; mentioned <names>` and `; not linked: "@<name>" (<reason>)` after `posted <ts>`
 for each name it left as text. `@here`, `@channel` and `@everyone` are never a mention in an agent's post: they go out
 as text, and the command names them. The command posts only to the session's own project channel, for everyone
 in it: it cannot post to another channel or send a direct message.
@@ -336,7 +339,7 @@ messages to be missed, the top line says `not up to date`.
 |---|---|
 | `posting…` | Wait for the post's answer. |
 | `posted; mentioned <names>` | The post mentioned those members; check they are the people you meant. |
-| `posted; not linked: @<name> (<reason>)` | The post went out with that name as text; see [Mentioning someone](#Mentioning-someone). |
+| `posted; not linked: "@<name>" (<reason>)` | The post went out with that name as text; see [Mentioning someone](#Mentioning-someone). |
 | `nothing to post` | Type a message first. |
 | `not posted: <reason>`, such as `you are not in that channel in Slack; join it there first` | Fix the reason; the message is kept. |
 | `not posted: Slack asked for a pause; wait <n> s` | Wait, then press Enter again. |

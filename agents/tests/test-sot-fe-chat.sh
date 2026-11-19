@@ -237,9 +237,9 @@ case_each_outcome_has_its_words_and_exit_code() {
             || bad="$bad [$payload: rc=$CH_RC out=$CH_OUT]"
     done <<'EOF'
 {"outcome":"posted","ts":"1700000000.000100"}|0|posted 1700000000.000100
-{"outcome":"posted","ts":"1700000000.000100","unlinked":[{"name":"Zed","why":"no_member"},{"name":"channel","why":"channel_wide"},{"name":"cy","why":"later_reason"}]}|0|posted 1700000000.000100; not linked: @Zed (no member), @channel (a session never notifies a whole channel), @cy (not linked)
-{"outcome":"posted","ts":"1700000000.000100","mentioned":["Ada Example","Ben Sample"]}|0|posted 1700000000.000100; mentioned Ada Example, Ben Sample
-{"outcome":"posted","ts":"1700000000.000100","mentioned":["Ada (Ann Dee)"],"unlinked":[{"name":"Zed","why":"no_member"}]}|0|posted 1700000000.000100; mentioned Ada (Ann Dee); not linked: @Zed (no member)
+{"outcome":"posted","ts":"1700000000.000100","unlinked":[{"name":"\"@Zed\"","why":"no_member"},{"name":"\"@channel\"","why":"channel_wide"},{"name":"\"@cy\"","why":"later_reason"}]}|0|posted 1700000000.000100; not linked: "@Zed" (no member), "@channel" (a session never notifies a whole channel), "@cy" (not linked)
+{"outcome":"posted","ts":"1700000000.000100","mentioned":["\"Ada Example\"","\"Ben Sample\""]}|0|posted 1700000000.000100; mentioned "Ada Example", "Ben Sample"
+{"outcome":"posted","ts":"1700000000.000100","mentioned":["\"Ada\" (\"Ann Dee\")"],"unlinked":[{"name":"\"@Zed\"","why":"no_member"}]}|0|posted 1700000000.000100; mentioned "Ada" ("Ann Dee"); not linked: "@Zed" (no member)
 {"outcome":"refused","code":"busy"}|2|refused busy the chat is busy; try again in a moment
 {"outcome":"refused","code":"bad_request"}|2|refused bad_request the request is not valid (empty or over-long text, or a name that is not this session's)
 {"outcome":"limited","retry_after_secs":12,"assumed":false}|2|limited, wait 12 s
@@ -377,9 +377,9 @@ case_each_file_outcome_has_its_words_and_exit_code() {
     done <<'EOF'
 {"outcome":"posted","file":"F0FILE","ts":"1700000800.000100"}|0|posted 1700000800.000100
 {"outcome":"posted","file":"F0FILE"}|0|posted file F0FILE
-{"outcome":"posted","file":"F0FILE","unlinked":[{"name":"Ada","why":"members_unread"}]}|0|posted file F0FILE; not linked: @Ada (the member list could not be read)
-{"outcome":"posted","file":"F0FILE","unlinked":[{"name":"Ada","why":"no_member"},{"name":"","why":"more"}]}|0|posted file F0FILE; not linked: @Ada (no member), and more
-{"outcome":"posted","file":"F0FILE","mentioned":["Ada Example",""],"unlinked":[{"name":"Ben","why":"several_members","candidates":["Ben Smith","Ben Sample",""]}]}|0|posted file F0FILE; mentioned Ada Example, and more; not linked: @Ben (several members: Ben Smith, Ben Sample, and more)
+{"outcome":"posted","file":"F0FILE","unlinked":[{"name":"\"@Ada\"","why":"members_unread"}]}|0|posted file F0FILE; not linked: "@Ada" (the member list could not be read)
+{"outcome":"posted","file":"F0FILE","unlinked":[{"name":"\"@Ada\"","why":"no_member"},{"name":"","why":"more"}]}|0|posted file F0FILE; not linked: "@Ada" (no member), and more
+{"outcome":"posted","file":"F0FILE","mentioned":["\"Ada Example\"",""],"unlinked":[{"name":"\"@Ben\"","why":"several_members","candidates":["\"Ben\" (\"Ben Smith\")","\"Ben Sample\"",""]}]}|0|posted file F0FILE; mentioned "Ada Example", and more; not linked: "@Ben" (several members: "Ben" ("Ben Smith"), "Ben Sample", and more)
 {"outcome":"refused","code":"busy"}|2|refused busy the chat is busy; try again in a moment
 {"outcome":"refused","code":"failed"}|2|refused failed the chat request failed
 {"error":"the file is not a readable file in the project's folder","code":"not_a_file"}|2|refused not_a_file the file is not a readable file in the project's folder
@@ -414,6 +414,20 @@ case_a_file_usage_error_sends_nothing_and_exits_1() {
     [ -z "$bad" ] && [ "$n" = 0 ] || { echo "$bad sent=$n"; return 1; }
 }
 
+# The daemon's report cannot be forged by a member's names (chat guarantee 35): the reviewer's pair, whose real name
+# holds `x), Ada (Ada Lovelace`, prints as one entry, and the printed line splits back on its quotes into exactly the
+# entries sent, a handle after one of them included.
+case_the_mentioned_report_splits_back_into_the_entries_sent() {
+    local forged='"Ada please" ("x), Ada (Ada Lovelace")' twin='"Ada" ("Ada Example") @ada.copy' payload section got
+    payload="$(jq -cn --arg a "$forged" --arg b "$twin" '{outcome:"posted", ts:"1700000000.000100", mentioned:[$a, $b]}')"
+    answered "$payload"
+    stop_stub_daemon
+    section="${CH_OUT#posted 1700000000.000100; mentioned }"
+    got="$(printf '%s' "$section" | grep -oE '"[^"]*"( \("[^"]*"\))?( @[A-Za-z0-9._-]+)?' | paste -sd '|' -)"
+    [ "$CH_RC" = 0 ] && [ "$section" = "$forged, $twin" ] && [ "$got" = "$forged|$twin" ] \
+        || { echo "rc=$CH_RC out=$CH_OUT got=$got"; return 1; }
+}
+
 # Each wait is past the sum of the daemon's own bounds for that post, read from sot-chat's constants, by at least 5 s,
 # so a made post or a refusal always arrives before the verb gives up and says it may exist.
 case_each_wait_is_past_the_daemons_own_bounds() {
@@ -443,6 +457,7 @@ check "a file post is one chat.resolve, then one chat.post_file with node, threa
 check "each file outcome prints its words and exits with its code"                         case_each_file_outcome_has_its_words_and_exit_code
 check "no answer to the file post is one request, never two, and exit 3"                    case_no_answer_to_the_file_post_is_one_request_and_exit_3
 check "a file usage error sends nothing and exits 1"                                       case_a_file_usage_error_sends_nothing_and_exits_1
+check "the mentioned report splits back into exactly the entries sent"                      case_the_mentioned_report_splits_back_into_the_entries_sent
 check "each wait is past the daemon's own bounds for that post, with a margin"             case_each_wait_is_past_the_daemons_own_bounds
 
 echo ""
