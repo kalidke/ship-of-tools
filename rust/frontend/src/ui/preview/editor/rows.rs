@@ -14,6 +14,11 @@ fn pieces(line: &str) -> impl Iterator<Item = (usize, &str)> {
     text.split(SPLITS).map(move |piece| (piece.as_ptr() as usize - line.as_ptr() as usize, piece))
 }
 
+/// The least byte any glyph of the row starts at: the row's first byte, whichever way it runs.
+fn lead(run: &LayoutRun) -> Option<usize> {
+    run.glyphs.iter().map(|g| g.start).min()
+}
+
 /// The edit's shaped buffer read against its body: the header's lines, then each body line as one or more shaped
 /// lines, then the footer's two, so the body's lines are counted back from the footer and the header needs no count.
 struct Rows<'a> {
@@ -65,21 +70,27 @@ impl<'a> Rows<'a> {
     }
 
     /// The row that holds `byte` of shaped line `shaped`, with the x of that place. A row holds the bytes from its
-    /// first glyph to the next row's, so the space a wrap drops belongs to the row it ends, at the row's right end; a
-    /// byte inside a glyph stands at the glyph's left edge; the byte where one row ends and the next begins (a word
-    /// broken between glyphs) belongs to the next. `None` for right-to-left text.
+    /// first glyph (the least start in it, for a row that runs right to left) to the next row's, so the space a wrap
+    /// drops belongs to the row it ends; the byte where one row ends and the next begins (a word broken between
+    /// glyphs) belongs to the next. The bar stands at the leading edge of the glyph that holds the byte (its left
+    /// edge, its right edge for a right-to-left glyph: a byte inside a glyph stands at its edge), and where no glyph
+    /// holds it (the end of the row's text, the dropped space) at the trailing edge of the last glyph before it in
+    /// the text (its right edge, its left edge for a right-to-left glyph). Where a left-to-right and a right-to-left
+    /// glyph meet, the byte stands at the leading edge of the glyph that starts there.
     fn stand(&self, shaped: usize, byte: usize) -> Option<(usize, f32)> {
         let first = self.runs.partition_point(|r| r.line_i < shaped);
         let rows = self.runs[first..].iter().take_while(|r| r.line_i == shaped).count();
-        let row_start = |j: usize| if j == 0 { 0 } else { self.runs[first + j].glyphs.first().map_or(0, |g| g.start) };
+        let row_start = |j: usize| if j == 0 { 0 } else { lead(&self.runs[first + j]).unwrap_or(0) };
         let j = (0..rows).rev().find(|&j| row_start(j) <= byte)?;
         let run = &self.runs[first + j];
-        if run.glyphs.iter().any(|g| g.level.is_rtl()) {
-            return None;
-        }
         let x = match run.glyphs.iter().find(|g| g.start <= byte && byte < g.end) {
+            Some(g) if g.level.is_rtl() => g.x + g.w,
             Some(g) => g.x,
-            None => run.glyphs.last().map_or(0.0, |g| g.x + g.w),
+            None => match run.glyphs.iter().filter(|g| g.end <= byte).max_by_key(|g| g.end) {
+                Some(g) if g.level.is_rtl() => g.x,
+                Some(g) => g.x + g.w,
+                None => run.glyphs.iter().min_by_key(|g| g.start).map_or(0.0, |g| if g.level.is_rtl() { g.x + g.w } else { g.x }),
+            },
         };
         Some((first + j, x))
     }
@@ -93,7 +104,7 @@ impl<'a> Rows<'a> {
         let end = run.glyphs.last().map_or((0.0, 0), |g| (g.x + g.w, g.end));
         match self.runs.get(row + 1).filter(|next| next.line_i == run.line_i) {
             None => stops.push((end.0, run.text.len())),
-            Some(next) if next.glyphs.first().is_some_and(|g| g.start > end.1) => stops.push(end),
+            Some(next) if lead(next).is_some_and(|start| start > end.1) => stops.push(end),
             Some(_) => {}
         }
         stops
@@ -137,7 +148,8 @@ pub(super) fn vertical(buffer: &Buffer, body: &str, cursor: usize, goal: Option<
     let Some(to) = from.checked_add_signed(rows).filter(|to| body_rows.contains(to)) else {
         return Some(Landing { cursor: if rows < 0 { 0 } else { body.len() }, goal });
     };
-    if layout.runs[to].glyphs.iter().any(|g| g.level.is_rtl()) {
+    // A row that runs right to left is not stepped by columns: the step is the file's line.
+    if [from, to].iter().any(|&row| layout.runs[row].glyphs.iter().any(|g| g.level.is_rtl())) {
         return None;
     }
     let (_, at) = layout.stops(to).into_iter().min_by(|a, b| (a.0 / em - goal).abs().total_cmp(&(b.0 / em - goal).abs()))?;

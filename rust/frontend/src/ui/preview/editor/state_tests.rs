@@ -50,6 +50,10 @@ impl Harness {
         self.editor.edit.as_mut().unwrap()
     }
 
+    fn body(&mut self) -> String {
+        self.edit().buf.body().to_string()
+    }
+
     fn cursor(&mut self) -> usize {
         self.edit().buf.cursor()
     }
@@ -667,4 +671,166 @@ fn a_follow_counts_the_distance_a_wheel_scroll_still_owes() {
     let max = crate::ui::preview::pane::preview_max_scroll(line_h, pane.visible, h.editor.shaped().unwrap());
     pane.view.advance(t0 + Duration::from_secs(2), max, pane.visible / line_h, true);
     assert!(pane.shows_cursor(&h), "the wheel's owed lines took the view from the cursor");
+}
+
+/// The shaped lines the window draws are the header's, the body's and the footer's two: a selection cut anywhere
+/// must not add one.
+fn shaped_lines_are_the_bodys(h: &mut Harness, header_lines: usize) {
+    let body_lines = h.edit().buf.body().split('\n').count();
+    let shaped = h.editor.shaped().unwrap().buffer.lines.len();
+    assert_eq!(shaped, header_lines + body_lines + 2, "the drawn text has {shaped} lines for {body_lines} body lines");
+}
+
+#[test]
+fn no_motion_in_a_crlf_file_rests_inside_a_line_end() {
+    let text = "ab\r\ncd\r\n\r\nefgh\r\nx";
+    let mut h = Harness::new(text, 40);
+    let inside = |h: &mut Harness| {
+        let (body, at) = (h.edit().buf.body().to_string(), h.cursor());
+        assert!(!(at > 0 && body.as_bytes().get(at - 1) == Some(&b'\r') && body.as_bytes().get(at) == Some(&b'\n')), "cursor {at} is inside a line end");
+        if let Some((a, b)) = h.edit().buf.selection_range() {
+            for edge in [a, b] {
+                assert!(!(edge > 0 && body.as_bytes().get(edge - 1) == Some(&b'\r') && body.as_bytes().get(edge) == Some(&b'\n')), "selection edge {edge} is inside a line end");
+            }
+        }
+    };
+    let actions = [Action::EditLeft, Action::EditRight, Action::EditUp, Action::EditDown, Action::EditHome, Action::EditEnd,
+        Action::EditPageUp, Action::EditPageDown, Action::EditStart, Action::EditFinish];
+    for start in (0..=text.len()).filter(|&i| !(i > 0 && text.as_bytes()[i - 1] == b'\r' && text.as_bytes().get(i) == Some(&b'\n'))) {
+        for action in actions {
+            for shift in [false, true] {
+                h.put(start);
+                h.edit().buf.clear_selection();
+                h.press(Key::Named(NamedKey::ArrowDown), Some(action), shift, 3);
+                inside(&mut h);
+                shaped_lines_are_the_bodys(&mut h, 0);
+                h.press(Key::Named(NamedKey::ArrowDown), Some(action), shift, 3);
+                inside(&mut h);
+            }
+        }
+    }
+    // Right and Left cross a line end whole; End stops before the CR.
+    h.put(2);
+    h.act(Action::EditRight);
+    assert_eq!(h.cursor(), 4);
+    h.act(Action::EditLeft);
+    assert_eq!(h.cursor(), 2);
+    h.act(Action::EditEnd);
+    assert_eq!(h.cursor(), 2);
+}
+
+#[test]
+fn deleting_a_crlf_takes_both_characters_and_never_leaves_the_cursor_inside_one() {
+    let mut h = Harness::new("ab\r\ncd", 40);
+    h.put(4);
+    h.press(Key::Named(NamedKey::Backspace), Some(Action::EditBackspace), false, 3);
+    assert_eq!((h.body(), h.cursor()), ("abcd".to_string(), 2));
+    let mut h = Harness::new("ab\r\ncd", 40);
+    h.put(2);
+    h.press(Key::Named(NamedKey::Delete), Some(Action::EditDelete), false, 3);
+    assert_eq!((h.body(), h.cursor()), ("abcd".to_string(), 2));
+    // Removing what stood between a CR and an LF brings them together: the cursor is before the pair.
+    let mut h = Harness::new("a\rX\nb", 40);
+    h.put(3);
+    h.press(Key::Named(NamedKey::Backspace), Some(Action::EditBackspace), false, 3);
+    assert_eq!((h.body(), h.cursor()), ("a\r\nb".to_string(), 1));
+}
+
+#[test]
+fn a_selection_that_ends_at_a_crlf_line_end_adds_no_line_to_the_drawn_text() {
+    let text = format!("# Title\r\n\r\n{LOREM}\r\n\r\n{LOREM}\r\n");
+    let second = text.find(LOREM).unwrap() + LOREM.len() + "\r\n\r\n".len();
+    let mut h = Harness::new(&text, 40);
+    h.put(second);
+    h.act(Action::EditEnd);
+    let mut last = h.place();
+    shaped_lines_are_the_bodys_own_after(&mut h);
+    for _ in 0..3 {
+        h.press(Key::Named(NamedKey::ArrowUp), Some(Action::EditUp), true, 3);
+        shaped_lines_are_the_bodys_own_after(&mut h);
+        let now = h.place();
+        assert!(now.top < last.top, "Shift+Up moved the bar up a row: {last:?} -> {now:?}");
+        assert!(((last.top - now.top) / now.height).round() as i32 == 1, "one row: {last:?} -> {now:?}");
+        last = now;
+    }
+    // Shift+End alone, and Shift+Right across lines.
+    let mut h = Harness::new(&text, 40);
+    h.put(second);
+    h.press(Key::Named(NamedKey::End), Some(Action::EditEnd), true, 3);
+    shaped_lines_are_the_bodys_own_after(&mut h);
+    assert!(h.editor.cursor_place().is_some());
+    let mut h = Harness::new("ab\r\ncd\r\nef", 40);
+    for _ in 0..8 {
+        h.press(Key::Named(NamedKey::ArrowRight), Some(Action::EditRight), true, 3);
+        shaped_lines_are_the_bodys_own_after(&mut h);
+        assert!(h.editor.cursor_place().is_some(), "a bar at {}", h.cursor());
+    }
+}
+
+fn shaped_lines_are_the_bodys_own_after(h: &mut Harness) {
+    shaped_lines_are_the_bodys(h, 0);
+    assert!(h.editor.cursor_place().is_some(), "no bar at {}", h.cursor());
+}
+
+#[test]
+fn a_selection_drawn_across_crlf_lines_maps_every_row() {
+    let text = "ab\r\ncd\r\nef\r\ngh";
+    let mut h = Harness::new(text, 40);
+    let mut tops = Vec::new();
+    for _ in 0..3 {
+        h.press(Key::Named(NamedKey::ArrowDown), Some(Action::EditDown), true, 3);
+        shaped_lines_are_the_bodys_own_after(&mut h);
+        tops.push(h.place().top);
+    }
+    assert!(tops.windows(2).all(|w| w[1] > w[0]), "{tops:?}");
+    // The tint is the selected run only: the rows above it keep their text.
+    let lines: Vec<&str> = h.editor.shaped().unwrap().buffer.lines.iter().map(|l| l.text()).collect();
+    assert_eq!(&lines[..4], ["ab", "cd", "ef", "gh"]);
+}
+
+const HEBREW: &str = "שלום עולם";
+const ARABIC: &str = "مرحبا بالعالم";
+
+#[test]
+fn the_bar_is_drawn_on_a_right_to_left_row_at_the_glyphs_leading_edge() {
+    for (name, line) in [("hebrew", HEBREW), ("arabic", ARABIC)] {
+        let mut h = Harness::new(&format!("{line}\nafter"), 40);
+        let mut xs = Vec::new();
+        for at in line.char_indices().map(|(i, _)| i).chain([line.len()]) {
+            h.put(at);
+            let place = h.editor.cursor_place().unwrap_or_else(|| panic!("{name}: no bar at {at}"));
+            xs.push(place.x);
+        }
+        // Reading goes right to left: the start of the line is its right end, the end of it the left.
+        assert!(xs[0] > xs[xs.len() - 1] + 1.0, "{name}: {xs:?}");
+        assert!(xs.windows(2).all(|w| w[1] <= w[0] + 0.01), "{name}: later bytes stand further left: {xs:?}");
+        // The next line's bar is on the next row.
+        h.put(line.len() + 1);
+        assert!(h.editor.cursor_place().unwrap().top > h.place().top - 1.0);
+    }
+}
+
+#[test]
+fn the_bar_is_drawn_on_a_mixed_row_at_every_byte_and_at_both_ends() {
+    let line = format!("abc {HEBREW} def");
+    let mut h = Harness::new(&line, 40);
+    let mut xs = Vec::new();
+    for at in line.char_indices().map(|(i, _)| i).chain([line.len()]) {
+        h.put(at);
+        xs.push(h.editor.cursor_place().unwrap_or_else(|| panic!("no bar at {at}")).x);
+    }
+    assert_eq!(xs[0], 0.0, "the start of the row");
+    let end = xs[xs.len() - 1];
+    assert!(end > xs[xs.len() - 2], "the end of the row is right of its last letter");
+    // Inside the Hebrew word the bar runs right to left.
+    let (from, to) = (line.find('ש').unwrap(), line.find(" def").unwrap());
+    let inside: Vec<f32> = line.char_indices().filter(|(i, _)| (from..to).contains(i)).map(|(i, _)| xs[line[..i].chars().count()]).collect();
+    assert!(inside.windows(2).all(|w| w[1] < w[0] + 0.01), "{inside:?}");
+    // A paragraph that wraps with one Hebrew word keeps a bar at every byte.
+    let para = format!("{} {HEBREW} {}", "word ".repeat(7), "word ".repeat(7));
+    let mut h = Harness::new(&para, 20);
+    for at in para.char_indices().map(|(i, _)| i).chain([para.len()]) {
+        h.put(at);
+        assert!(h.editor.cursor_place().is_some(), "no bar at {at}");
+    }
 }

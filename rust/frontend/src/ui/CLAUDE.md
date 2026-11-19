@@ -345,28 +345,45 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   shaped text (`EditState::spans` is the header, the body and the footer alone): the render pass draws it as a bar in
   the selection's brush at `Editor::cursor_place` (`State::edit_cursor_rect`, in `paint_text_selections`), so it cannot
   move a wrap, and no bar is drawn where the cursor's row is cut by the pane's edge or the shaped buffer is not the
-  body's text (a body changed since the shaping). `rows::place` maps a body byte to the shaped line it is on (the
+  body's text (a body changed since the shaping); every other row has one. `rows::place` maps a body byte to the shaped line it is on (the
   lines are counted back from the footer's two, so the header's are never counted; a body line is split at the
   characters the shaper ends a line at, a lone CR, U+0085, U+2028 and U+2029, and a CR before a line end goes with it,
   so a CRLF is one line end and a line that splits is mapped line by line) and then to the row that holds the byte: the
-  row from its first glyph to the next row's, so the space a wrap drops belongs to the row it ends, at the row's right
-  end, a byte inside a glyph stands at the glyph's left edge, and a byte where one row ends and the next begins (a word
-  broken between glyphs) belongs to the next. Up, Down, PageUp and PageDown move by the row on screen
+  row from its first glyph (the least byte any glyph of it starts at) to the next row's, so the space a wrap drops
+  belongs to the row it ends, and a byte where one row ends and the next begins (a word broken between glyphs)
+  belongs to the next. The bar stands at the leading edge of the glyph that holds the byte (its left edge, its right
+  edge for a right-to-left glyph; a byte inside a glyph stands at that edge), and where no glyph holds it (the end of
+  the row's text, the dropped space) at the trailing edge of the last glyph before it in the text (its right edge, its
+  left edge for a right-to-left glyph); where a left-to-right and a right-to-left glyph meet, the byte stands at the
+  leading edge of the glyph that starts there, so the bar is drawn on every row, whichever way it runs, and the two
+  logical positions either side of a direction change can share a place. A CRLF is one position: the buffer's motions
+  (Left, Right, Home, End, Up, Down, the page keys, a landing from `rows::vertical`, undo and redo) and its removals
+  (Backspace and Delete take both characters; a removal that brings a CR and an LF together leaves the cursor before
+  the pair) never leave the cursor or a selection edge between the `\r` and the `\n`, and End stops before the `\r`; so
+  the spans of the drawn text (header, the body cut at the selection's edges, footer) are never cut inside a line end
+  (the shaper's `normalize_newlines` turns each span's line ends in by itself, and a cut between the two characters
+  would show a line the file does not have), and no guard in `spans` is needed.   broken between glyphs) belongs to the next. Up, Down, PageUp and PageDown move by the row on screen
   (`rows::vertical`, which reads the rows the window draws: the step adds no shaping of its own): the cursor lands on
   the place of the row above or below nearest the column's x, the places of a row being each glyph's left edge, the end
-  of the line on its last row and, on a row a wrap dropped a space from, the end of its last word; the column
+  of the line on its last row and, on a row a wrap dropped a space from, the end of its last word (a row that runs
+  right to left has no such columns: see below); the column
   (`goal`, kept in ems of the shaped text, so a zoom between two steps leaves it) is kept across shorter rows and
   cleared by every other key, an edit and a reload; Shift extends the selection; Up from the first row lands at byte 0
   and Down from the last at the end; PageUp and PageDown take the same step by a third of the pane's cell rows.
-  Where a row involved runs right to left, or the shaped buffer is not the body's text, that one step is the file's
-  line as it was (a Hebrew word on a row sends the steps onto it to the file's next line; the rest of the file is
-  unaffected); Home and End stay on the file's line. A resize or a zoom does not re-shape the edit buffer until the
+  Where a row involved, the one the cursor stands on or the one it would land on, holds right-to-left text, or the
+  shaped buffer is not the body's text, that one step is the file's line as it was (a Hebrew word on a row sends the
+  steps onto and off it to the file's next line; the rest of the file is unaffected; the bar is still drawn there); Home and End stay on the file's line. A resize or a zoom does not re-shape the edit buffer until the
   next key, so a step reads the rows the screen shows. Pinned by `state_tests`: placing
   (`the_cursor_is_drawn_at_the_end_of_a_row_of_the_text_and_on_an_empty_line_and_a_wide_or_joined_character`,
   `the_cursor_at_a_wrap_stands_at_the_end_of_the_row_before_the_dropped_space_and_at_the_start_of_the_next`,
   `a_crlf_line_and_a_lone_cr_have_places_and_the_next_line_is_found_past_them`,
   `the_edit_text_holds_no_cursor_mark_so_its_rows_are_the_bodys_own`,
-  `the_cursors_row_is_found_under_a_header_and_not_in_a_stale_buffer`), the step
+  `the_cursors_row_is_found_under_a_header_and_not_in_a_stale_buffer`,
+  `the_bar_is_drawn_on_a_right_to_left_row_at_the_glyphs_leading_edge`,
+  `the_bar_is_drawn_on_a_mixed_row_at_every_byte_and_at_both_ends`,
+  `no_motion_in_a_crlf_file_rests_inside_a_line_end`, `deleting_a_crlf_takes_both_characters_and_never_leaves_the_cursor_inside_one`,
+  `a_selection_that_ends_at_a_crlf_line_end_adds_no_line_to_the_drawn_text`,
+  `a_selection_drawn_across_crlf_lines_maps_every_row`), the step
   (`up_and_down_move_one_row_and_stay_in_a_wrapped_paragraph`, `right_to_the_end_of_a_wrapped_row_then_down_and_up_stay_in_the_paragraph`,
   `a_step_from_inside_a_joined_character_moves_one_row`, `the_column_is_kept_across_a_shorter_row_until_another_key`,
   `the_kept_column_survives_a_change_of_scale`, `a_reload_ends_the_kept_column`, `shift_extends_the_selection_by_rows`,

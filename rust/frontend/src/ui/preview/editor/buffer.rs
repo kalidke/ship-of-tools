@@ -19,6 +19,9 @@
 // body's text. Home and End stay on the logical line, so in a wrapped
 // paragraph they go to the paragraph's start and end. The cursor is not in
 // the shaped text: the window draws it over the rows (`rows::place`).
+// A CRLF line end is one position: no motion, landing or removal leaves the
+// cursor, and so a selection edge, between the `\r` and the `\n` (`off_crlf`),
+// since the drawn text turns each piece's line ends in by itself.
 
 /// One point-in-time buffer state for the undo/redo stacks.
 #[derive(Debug, Clone)]
@@ -95,7 +98,7 @@ impl EditBuffer {
                     cursor: self.cursor,
                 });
                 self.body = prev.body;
-                self.cursor = prev.cursor.min(self.body.len());
+                self.cursor = off_crlf(&self.body, prev.cursor.min(self.body.len()));
                 self.last_kind = None;
                 self.last_edit_pos = None;
                 self.anchor = None;
@@ -115,7 +118,7 @@ impl EditBuffer {
                     cursor: self.cursor,
                 });
                 self.body = next.body;
-                self.cursor = next.cursor.min(self.body.len());
+                self.cursor = off_crlf(&self.body, next.cursor.min(self.body.len()));
                 self.last_kind = None;
                 self.last_edit_pos = None;
                 self.anchor = None;
@@ -216,7 +219,7 @@ impl EditBuffer {
         }
         self.redo.clear();
         self.body.replace_range(s..e, "");
-        self.cursor = s;
+        self.cursor = off_crlf(&self.body, s);
         self.anchor = None;
         self.last_kind = None;
         self.last_edit_pos = None;
@@ -297,7 +300,7 @@ impl EditBuffer {
         self.checkpoint(EditKind::Delete);
         let prev = self.prev_boundary(self.cursor);
         self.body.replace_range(prev..self.cursor, "");
-        self.cursor = prev;
+        self.cursor = off_crlf(&self.body, prev);
         self.last_edit_pos = Some(self.cursor);
     }
 
@@ -314,6 +317,7 @@ impl EditBuffer {
         self.checkpoint(EditKind::Delete);
         let next = self.next_boundary(self.cursor);
         self.body.replace_range(self.cursor..next, "");
+        self.cursor = off_crlf(&self.body, self.cursor);
         self.last_edit_pos = Some(self.cursor);
     }
 
@@ -336,15 +340,16 @@ impl EditBuffer {
     }
 
     /// Move to the end of the current logical line (the position of the
-    /// next `\n`, or EOF).
+    /// next `\n`, before its `\r` if it has one, or EOF).
     pub fn move_line_end(&mut self) {
-        self.cursor = line_end(&self.body, self.cursor);
+        self.cursor = off_crlf(&self.body, line_end(&self.body, self.cursor));
     }
 
-    /// Put the cursor at `at`, a `char` boundary of the body; any other offset leaves it where it is.
+    /// Put the cursor at `at`, a `char` boundary of the body (before the `\r` of a CRLF if `at` is inside it); any
+    /// other offset leaves it where it is.
     pub fn set_cursor(&mut self, at: usize) {
         if self.body.is_char_boundary(at) {
-            self.cursor = at;
+            self.cursor = off_crlf(&self.body, at);
         }
     }
 
@@ -371,7 +376,7 @@ impl EditBuffer {
         let prev_line_terminator = cur_start - 1; // the `\n`
         let prev_start = line_start(&self.body, prev_line_terminator);
         let prev_text = &self.body[prev_start..prev_line_terminator];
-        self.cursor = prev_start + nth_char_byte(prev_text, col);
+        self.cursor = off_crlf(&self.body, prev_start + nth_char_byte(prev_text, col));
     }
 
     /// Move down one logical line, preserving the column.
@@ -387,7 +392,7 @@ impl EditBuffer {
         let next_start = cur_end + 1; // skip the `\n`
         let next_end = line_end(&self.body, next_start);
         let next_text = &self.body[next_start..next_end];
-        self.cursor = next_start + nth_char_byte(next_text, col);
+        self.cursor = off_crlf(&self.body, next_start + nth_char_byte(next_text, col));
     }
 
     /// Move up `rows` logical lines at once (PageUp). Column is
@@ -414,6 +419,9 @@ impl EditBuffer {
     }
 
     fn prev_boundary(&self, byte: usize) -> usize {
+        if self.body[..byte].ends_with("\r\n") {
+            return byte - 2;
+        }
         self.body[..byte]
             .char_indices()
             .last()
@@ -422,12 +430,21 @@ impl EditBuffer {
     }
 
     fn next_boundary(&self, byte: usize) -> usize {
+        if self.body[byte..].starts_with("\r\n") {
+            return byte + 2;
+        }
         self.body[byte..]
             .chars()
             .next()
             .map(|c| byte + c.len_utf8())
             .unwrap_or(byte)
     }
+}
+
+/// `at`, or the byte before the `\r` when `at` falls between the `\r` and the `\n` of a CRLF: a line end is one
+/// position, so no cursor or selection edge ever stands inside it.
+fn off_crlf(s: &str, at: usize) -> usize {
+    if at > 0 && s.as_bytes().get(at - 1) == Some(&b'\r') && s.as_bytes().get(at) == Some(&b'\n') { at - 1 } else { at }
 }
 
 /// Byte index of the first char on the line containing `byte`. Either
