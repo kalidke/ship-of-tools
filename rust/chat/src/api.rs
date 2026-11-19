@@ -20,7 +20,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::time::Instant;
 
 use crate::http::{Http, HttpError, Request, Response, Secret, MAX_BODY, MAX_SCAN_BODY};
-use crate::mention::{link, Linked, Member, Roster};
+use crate::mention::{link, Index, Linked, Member, Roster};
 use crate::normalize::{clean, normalize, ts_key, valid_id, Context, Normalized, MAX_FILENAME, MAX_MENTIONS, MAX_NAME};
 use crate::service::{End, BOT_TOKEN_REFUSED};
 use crate::watch::MAX_CHANNELS;
@@ -535,6 +535,8 @@ struct Deadlines {
     post: Duration,
     names: Duration,
     transfer: Duration,
+    /// How long a member list serves posts (`MEMBERS_FRESH`).
+    fresh: Duration,
 }
 
 #[derive(Default)]
@@ -661,6 +663,7 @@ impl Api {
                 post: POST_DEADLINE,
                 names: NAMES_DEADLINE,
                 transfer: TRANSFER_DEADLINE,
+                fresh: MEMBERS_FRESH,
             },
             own: Mutex::new(None),
             eligible: Mutex::new(None),
@@ -746,7 +749,13 @@ impl Api {
 
     #[cfg(test)]
     pub(crate) fn with_deadlines(mut self, read: Duration, post: Duration, names: Duration) -> Api {
-        self.deadlines = Deadlines { read, post, names, transfer: self.deadlines.transfer };
+        self.deadlines = Deadlines { read, post, names, ..self.deadlines };
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_members_fresh(mut self, fresh: Duration) -> Api {
+        self.deadlines.fresh = fresh;
         self
     }
 
@@ -1241,12 +1250,12 @@ impl Api {
     async fn roster(&self) -> Result<Arc<Roster>, ()> {
         let walk = async {
             let mut held = self.members.lock().await;
-            if let Some((_, roster)) = held.as_ref().filter(|(at, _)| at.elapsed() < MEMBERS_FRESH) {
+            if let Some((_, roster)) = held.as_ref().filter(|(at, _)| at.elapsed() < self.deadlines.fresh) {
                 return Ok(roster.clone());
             }
             let page = (MEMBER_PAGE, MAX_MEMBER_PAGES, MEMBERS_BODY);
             let (members, more) = self.list("users.list", &[], "members", page, Member::of).await.map_err(|_| ())?;
-            let roster = Arc::new(if more { Roster::TooMany } else { Roster::Read(members) });
+            let roster = Arc::new(if more { Roster::TooMany } else { Roster::Read(Index::new(members)) });
             *held = Some((Instant::now(), roster.clone()));
             Ok(roster)
         };

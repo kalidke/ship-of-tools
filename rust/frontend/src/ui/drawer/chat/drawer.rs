@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use sot_protocol::chat::{Ts, MAX_NAME};
 use sot_protocol::chat::slack_app_name;
-use sot_protocol::ops::{ChatChannel, ChatCode, ChatFileVariant, ChatHistoryReq, ChatPairRes, ChatPostFileReq, ChatPostFileRes, ChatPostKind, ChatPostReq, ChatPostRes, ChatResolveRes, ChatService, ChatTarget, ChatUnconfigured, ChatUnlinked, ChatWorkspaceInfo};
+use sot_protocol::ops::{ChatChannel, ChatCode, ChatFileVariant, ChatHistoryReq, ChatPairRes, ChatPostFileReq, ChatPostFileRes, ChatPostKind, ChatPostReq, ChatPostRes, ChatResolveRes, ChatService, ChatTarget, ChatUnconfigured, ChatUnlinked, ChatUnlinkedWhy, ChatWorkspaceInfo};
 
 use crate::net::dial::HostKey;
 use crate::net::transport::{ChatEvt, ChatReply, OutgoingReq};
@@ -187,7 +187,10 @@ pub(super) fn post_words(shown: &PostShown, file: bool, host: &str) -> Option<St
 
 /// The `@` names a post left as text, as the status line ends its words with them: nothing when there are none.
 pub(super) fn not_linked(unlinked: &[ChatUnlinked]) -> String {
-    let names: Vec<String> = unlinked.iter().map(|u| format!("@{} ({})", u.name, u.why.text())).collect();
+    let names: Vec<String> = unlinked
+        .iter()
+        .map(|u| if u.why == ChatUnlinkedWhy::More { u.why.text().to_string() } else { format!("@{} ({})", u.name, u.why.text()) })
+        .collect();
     if names.is_empty() { String::new() } else { format!("; not linked: {}", names.join(", ")) }
 }
 

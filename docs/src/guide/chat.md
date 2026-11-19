@@ -144,19 +144,32 @@ plain text that pings no one. The one exception is a name after `@`, described n
 
 Type `@` and the person's name as Slack shows it: their display name, their full name, or their first name when no
 other member of the workspace has it, in any capitals (`@Ada`, `@ada example`). Slack shows the name as a mention and
-notifies that person, as if you had picked them in Slack. A comma, a period or `'s` may follow the name. Nothing is
-looked up inside `` `code` ``, a fenced code block, a line that starts with `>`, or an address such as `ada@example.com`.
-Only the members of the project's own workspace are looked up, and Ship of Tools reads the workspace's member list
-again at most every 10 minutes, so a person who joined in the last few minutes may not be found.
+notifies that person, as if you had picked them in Slack. A comma, a period or `'s` may follow the name, and `_`, `*` or
+`~` may surround it (`_@Ada_`). Nothing is looked up inside `` `code` ``, a fenced code block, a line that starts with
+`>`, or an address such as `ada@example.com`. Only the members of the project's own workspace are looked up, and Ship of
+Tools reads the workspace's member list again at most every 10 minutes, so a person who joined or changed their name in
+the last few minutes may not be found by their new name.
+
+A name is linked only when no other member has a name that begins the same way at that point. If you type `@Ben` and the
+workspace has a `Ben` and a `Ben Sample`, or a member whose name is `Ben` followed by more words, nothing is linked and
+the status line says `several members`: type the fuller name (`@Ben Sample`). This also means a full name stays text
+while another member's whole name is its first word (`@Cy Two` beside a `Cy`). A first name links to the one member who
+has it even when you meant someone outside the workspace: `@Ada Lovelace` mentions the workspace's only Ada, whoever
+that is, and leaves `Lovelace` as text.
 
 A name that cannot be linked goes out as you typed it, and the status line names it after the post, for example
 `posted; not linked: @Zed (no member)`. The reasons are `no member` (no one has that name), `several members` (more
-than one person has it: type more of the name), `the member list could not be read` (Slack did not answer within 10
-seconds; the post went out once, without waiting longer), `the member list is too large` (the workspace has more than
-2,000 accounts, people, bots and deactivated ones counted; no name is linked there), and `the post would be too long`.
+than one person has a name that starts that way: type more of the name), `the member list could not be read` (Slack
+refused the read, did not answer within 10 seconds, or asked for a pause, after which names stay unread until the pause
+ends; the post went out once, without waiting longer), `the member list is too large` (the workspace has more than ten
+pages of members, about 2,000 accounts, people, bots and deactivated ones counted; no name is linked there), and `the
+post would be too long` (linking would pass the message's limit, so nothing in it was linked). A message with more names
+left as text than the status line lists ends with `and more`; at most 50 names in one message are looked up.
 
 `@here`, `@channel` and `@everyone` notify the channel, as they do in Slack, when you post them from the Chat panel
-(Slack may still refuse them by the workspace's settings). A session's agent cannot: its `@channel` goes out as text.
+(Slack may still refuse them by the workspace's settings). They win over a member's name that begins with them: a
+member called `Here Now` cannot be mentioned by typing `@Here Now`, which notifies the channel instead. A session's
+agent cannot notify the channel: its `@channel` goes out as text.
 
 If the computer that runs your sessions holds no Slack code that posts as you (it was connected before Ship of Tools
 posted as you, or Slack stopped accepting the code), nothing is posted, and the panel shows the setup page's

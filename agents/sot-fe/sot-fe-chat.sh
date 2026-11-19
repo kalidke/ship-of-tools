@@ -107,7 +107,7 @@ _chat_posted() {
                 members_unread: "the member list could not be read", too_many_members: "the member list is too large",
                 channel_wide: "a session never notifies a whole channel", too_long: "the post would be too long"} as $why
                 | (if .payload.ts then "posted \(.payload.ts)" else "posted file \(.payload.file)" end)
-                + ([.payload.unlinked[]? | "@\(.name) (\($why[.why] // "not linked"))"] | if length > 0 then "; not linked: " + join(", ") else "" end)'
+                + ([.payload.unlinked[]? | if .why == "more" then "and more" else "@\(.name) (\($why[.why] // "not linked"))" end] | if length > 0 then "; not linked: " + join(", ") else "" end)'
             ;;
         refused)
             _chat_refused "$(printf '%s' "$resp" | jq -r '.payload.code // "?"')"
@@ -135,7 +135,9 @@ send_chat_post() {
             | {v:1, id:3, kind:"req", op:"chat.post",
                payload: ({target:{row:$row, workspace:$r.workspace, channel:$r.channel}, kind:"row", name:$name, text:$text}
                          + (if $thread == "" then {} else {thread:$thread} end))}')"
-    export SEND_TIMEOUT="${TIMEOUT:-40}"
+    # Past the daemon's own bounds with a margin, so a made post or a refusal is never read as "may exist": the member
+    # list's 10 s (a name to link), then the post's 30 s (sot-chat's NAMES_DEADLINE and POST_DEADLINE).
+    export SEND_TIMEOUT="${TIMEOUT:-50}"
     _chat_posted "$(_chat_ask chat.post "$req")"
 }
 
@@ -170,7 +172,8 @@ send_chat_post_file() {
                payload: ({target:{row:$row, workspace:$r.workspace, channel:$r.channel}, kind:"row", name:$name, node_id:$node}
                          + (if $thread == "" then {} else {thread:$thread} end)
                          + (if $comment == "" then {} else {comment:$comment} end))}')"
-    # The bytes go up and the share comes back within the daemon's own bounds (60 s for the upload, 30 s for the share).
-    export SEND_TIMEOUT="${TIMEOUT:-120}"
+    # Past the daemon's own bounds with a margin: the member list's 10 s (a name in the comment), the upload URL's read
+    # 15 s, the upload's 60 s and the share's 30 s (sot-chat's NAMES_, READ_, TRANSFER_ and POST_DEADLINE), 115 s.
+    export SEND_TIMEOUT="${TIMEOUT:-130}"
     _chat_posted "$(_chat_ask chat.post_file "$req")"
 }

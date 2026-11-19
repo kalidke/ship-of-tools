@@ -1084,6 +1084,7 @@ owned by `docs/CLAUDE.md`.
 
 ## chat
 
+- **CHAT-MEMBER-WALK-NEVER-COMPLETES** [note] A post's member list walk (`Api::roster`, `rust/chat/src/api.rs`) runs inside the post's 10 s names deadline and is dropped with it, so in a workspace whose ten `users.list` pages take more than 10 s no walk ever completes: every post that names someone waits 10 s, goes out with its names as text (`the member list could not be read` on the status line and in `sot-fe chat post`'s output), and spends up to ten tier-2 reads, a rate limit among which pauses every read of the workspace. From the review of the mentions landing, reading code; never seen. The fix decided: the walk runs to its end as its own task and fills the cache while the post waits for it at most the names deadline; it needs `Api` held in an `Arc` by the task and a rule that the task ends with its workspace's service, so it is its own change.
 - **CHAT-STATUS-NAMES-NO-WORKSPACE** [note] `chat.status` names channels and no workspace, so a connection watching in
   two workspaces is told only by its own workspace's owner, and when one workspace stops it resyncs the channels of that
   workspace alone; a window watches one channel at a time, so it is never misled. From the multi-workspace plan's

@@ -48,6 +48,20 @@ fn a_post_answered_by_a_handler_error_is_unknown_never_refused() {
     }
 }
 
+/// A `posted` reply's `unlinked` is cosmetic: twenty entries, one with an over-long name and one that is no entry, are
+/// read as the first `MAX_MENTIONS` that decode, and the reply is still `posted`, never "may have been posted".
+#[test]
+fn a_posted_reply_with_unlinked_entries_it_cannot_read_is_still_posted() {
+    let mut entries: Vec<serde_json::Value> = (0..20).map(|n| serde_json::json!({ "name": format!("n{n}"), "why": "no_member" })).collect();
+    entries.insert(3, serde_json::json!({ "name": "x".repeat(sot_protocol::chat::MAX_NAME + 1), "why": "no_member" }));
+    entries.insert(5, serde_json::json!(["not", "an", "entry"]));
+    let shown = post_answer(serde_json::json!({ "outcome": "posted", "ts": "1700000000.000100", "unlinked": entries }));
+    let reply = shown.split("reply: ").nth(1).unwrap_or(&shown);
+    assert!(reply.starts_with("Done(Posted"), "{shown}");
+    assert_eq!(reply.matches("ChatUnlinked {").count(), sot_protocol::chat::MAX_MENTIONS, "{shown}");
+    assert!(reply.contains("\"n15\"") && !reply.contains("\"n16\"") && !reply.contains("xxxx"), "{shown}");
+}
+
 /// The other replies carry what their request named, an error reply is its code (`other` when none is known), and an
 /// older daemon's unknown-op answer is `Unsupported`.
 #[test]

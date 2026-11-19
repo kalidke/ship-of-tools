@@ -772,9 +772,9 @@ fn a_post_made_names_what_was_not_linked() {
     assert_eq!(d.take_notice().as_deref(), Some("posted; not linked: @Zed (no member), @cy (several members)"));
     d.edit(Some(&r), Edit::Text("the fit @Zed")).unwrap();
     let req = file_posted(d.send_file(Some(&r), Previewed::File("files:figs/fit.png"), at).unwrap());
-    let unlinked = vec![ChatUnlinked { name: "Zed".into(), why: ChatUnlinkedWhy::MembersUnread }];
+    let unlinked = vec![ChatUnlinked { name: "Zed".into(), why: ChatUnlinkedWhy::MembersUnread }, ChatUnlinked { name: String::new(), why: ChatUnlinkedWhy::More }];
     d.on_evt(&"a".to_string(), ChatEvt::FilePosted { req, reply: ChatReply::Done(ChatPostFileRes::Posted { file: "F0FILE".into(), ts: None, unlinked }) }, at);
-    assert_eq!(d.take_notice().as_deref(), Some("shared fit.png to C1; not linked: @Zed (the member list could not be read)"));
+    assert_eq!(d.take_notice().as_deref(), Some("shared fit.png to C1; not linked: @Zed (the member list could not be read), and more"));
 }
 
 /// A picture opened from the chat in the preview is no file of the project: nothing is posted, and the status line says what

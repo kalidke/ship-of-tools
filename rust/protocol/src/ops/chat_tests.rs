@@ -766,7 +766,7 @@ fn a_file_outcome_or_code_added_later_reads_as_the_safe_one() {
     }
 }
 
-/// A posted reply names the `@` names the daemon left as text, at most `MAX_MENTIONS`, and stays additive: a reply
+/// A posted reply names the `@` names the daemon left as text, read leniently, and stays additive: a reply
 /// without them (an older daemon's) reads as none, a reason added later reads as `other`, and a reply that names them
 /// carries only the field an older window skips.
 #[test]
@@ -782,10 +782,22 @@ fn a_posted_reply_names_the_names_left_as_text_and_stays_additive() {
     );
     let later: ChatPostRes = serde_json::from_value(json!({"outcome": "posted", "ts": "3.000003", "unlinked": [{"name": "a", "why": "new_reason"}]})).unwrap();
     assert!(matches!(later, ChatPostRes::Posted { unlinked, .. } if unlinked[0].why == ChatUnlinkedWhy::Other));
-    let many: Vec<Value> = (0..=crate::chat::MAX_MENTIONS).map(|n| json!({"name": n.to_string(), "why": "no_member"})).collect();
-    assert!(serde_json::from_value::<ChatPostRes>(json!({"outcome": "posted", "ts": "3.000003", "unlinked": many})).is_err());
+    // The field is cosmetic: an entry past its bounds, one that is no entry, one past `MAX_MENTIONS` and a field that is
+    // no list are dropped, and the reply is still `posted` (a made post is never read as not made).
     let long = "n".repeat(crate::chat::MAX_NAME + 1);
-    assert!(serde_json::from_value::<ChatPostRes>(json!({"outcome": "posted", "ts": "3.000003", "unlinked": [{"name": long, "why": "no_member"}]})).is_err());
+    let mut twenty: Vec<Value> = (0..20).map(|n| json!({"name": n.to_string(), "why": "no_member"})).collect();
+    twenty.insert(0, json!({"name": long, "why": "no_member"}));
+    twenty.insert(1, json!(7));
+    for (file, field, kept) in [(false, json!(twenty), crate::chat::MAX_MENTIONS), (true, json!(twenty), crate::chat::MAX_MENTIONS), (false, json!("x"), 0)] {
+        let reply = if file { json!({"outcome": "posted", "file": "F1", "unlinked": field}) } else { json!({"outcome": "posted", "ts": "3.000003", "unlinked": field}) };
+        let unlinked = if file {
+            match serde_json::from_value::<ChatPostFileRes>(reply).unwrap() { ChatPostFileRes::Posted { unlinked, .. } => unlinked, other => panic!("{other:?}") }
+        } else {
+            match serde_json::from_value::<ChatPostRes>(reply).unwrap() { ChatPostRes::Posted { unlinked, .. } => unlinked, other => panic!("{other:?}") }
+        };
+        assert_eq!(unlinked.len(), kept);
+        assert!(unlinked.first().is_none_or(|u| u.name == "0"), "the bad entries are the ones dropped: {unlinked:?}");
+    }
     // What an older window reads: the reply's outcome and ts, the new field skipped.
     #[derive(serde::Deserialize)]
     #[serde(tag = "outcome", rename_all = "snake_case")]

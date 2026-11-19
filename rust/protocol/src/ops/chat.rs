@@ -544,7 +544,7 @@ pub struct ChatUnlinked {
     pub why: ChatUnlinkedWhy,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ChatUnlinkedWhy {
     NoMember,
@@ -555,9 +555,21 @@ pub enum ChatUnlinkedWhy {
     ChannelWide,
     /// Linked, the text would pass `MAX_TEXT`.
     TooLong,
+    /// The last entry when more names were left as text than a reply names (its `name` is empty).
+    More,
     /// A reason added later.
     #[serde(other)]
     Other,
+}
+
+/// `deserialize_with` of a `posted` reply's `unlinked`, which is cosmetic: an entry that does not decode within its bounds,
+/// one past `MAX_MENTIONS`, or a field that is no list is dropped, never a reason to read a made post as not made.
+fn lenient_unlinked<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<ChatUnlinked>, D::Error> {
+    let entries = match serde_json::Value::deserialize(d)? {
+        serde_json::Value::Array(entries) => entries,
+        _ => Vec::new(),
+    };
+    Ok(entries.into_iter().filter_map(|e| serde_json::from_value(e).ok()).take(MAX_MENTIONS).collect())
 }
 
 impl ChatUnlinkedWhy {
@@ -570,6 +582,7 @@ impl ChatUnlinkedWhy {
             ChatUnlinkedWhy::TooManyMembers => "the member list is too large",
             ChatUnlinkedWhy::ChannelWide => "a session never notifies a whole channel",
             ChatUnlinkedWhy::TooLong => "the post would be too long",
+            ChatUnlinkedWhy::More => "and more",
             ChatUnlinkedWhy::Other => "not linked",
         }
     }
@@ -583,7 +596,7 @@ impl ChatUnlinkedWhy {
 pub enum ChatPostRes {
     Posted {
         ts: Ts,
-        #[serde(default, skip_serializing_if = "Vec::is_empty", deserialize_with = "at_most::<_, _, MAX_MENTIONS>")]
+        #[serde(default, skip_serializing_if = "Vec::is_empty", deserialize_with = "lenient_unlinked")]
         unlinked: Vec<ChatUnlinked>,
     },
     Refused { code: ChatCode },
@@ -631,7 +644,7 @@ pub enum ChatPostFileRes {
         file: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         ts: Option<Ts>,
-        #[serde(default, skip_serializing_if = "Vec::is_empty", deserialize_with = "at_most::<_, _, MAX_MENTIONS>")]
+        #[serde(default, skip_serializing_if = "Vec::is_empty", deserialize_with = "lenient_unlinked")]
         unlinked: Vec<ChatUnlinked>,
     },
     Refused { code: ChatCode },

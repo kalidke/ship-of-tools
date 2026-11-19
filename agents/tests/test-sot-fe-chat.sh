@@ -376,6 +376,7 @@ case_each_file_outcome_has_its_words_and_exit_code() {
 {"outcome":"posted","file":"F0FILE","ts":"1700000800.000100"}|0|posted 1700000800.000100
 {"outcome":"posted","file":"F0FILE"}|0|posted file F0FILE
 {"outcome":"posted","file":"F0FILE","unlinked":[{"name":"Ada","why":"members_unread"}]}|0|posted file F0FILE; not linked: @Ada (the member list could not be read)
+{"outcome":"posted","file":"F0FILE","unlinked":[{"name":"Ada","why":"no_member"},{"name":"","why":"more"}]}|0|posted file F0FILE; not linked: @Ada (no member), and more
 {"outcome":"refused","code":"busy"}|2|refused busy the chat is busy; try again in a moment
 {"outcome":"refused","code":"failed"}|2|refused failed the chat request failed
 {"error":"the file is not a readable file in the project's folder","code":"not_a_file"}|2|refused not_a_file the file is not a readable file in the project's folder
@@ -410,6 +411,19 @@ case_a_file_usage_error_sends_nothing_and_exits_1() {
     [ -z "$bad" ] && [ "$n" = 0 ] || { echo "$bad sent=$n"; return 1; }
 }
 
+# Each wait is past the sum of the daemon's own bounds for that post, read from sot-chat's constants, by at least 5 s,
+# so a made post or a refusal always arrives before the verb gives up and says it may exist.
+case_each_wait_is_past_the_daemons_own_bounds() {
+    local api="$SCRIPT_DIR/../../rust/chat/src/api.rs" chat="$SCRIPT_DIR/../sot-fe/sot-fe-chat.sh" read post transfer names text file
+    secs() { sed -n "s/^pub const $1: Duration = Duration::from_secs(\([0-9]*\));.*/\1/p" "$api"; }
+    read="$(secs READ_DEADLINE)"; post="$(secs POST_DEADLINE)"; transfer="$(secs TRANSFER_DEADLINE)"; names="$(secs NAMES_DEADLINE)"
+    text="$(sed -n '/^send_chat_post()/,/^}/s/.*TIMEOUT:-\([0-9]*\)}.*/\1/p' "$chat")"
+    file="$(sed -n '/^send_chat_post_file()/,/^}/s/.*TIMEOUT:-\([0-9]*\)}.*/\1/p' "$chat")"
+    [ -n "$read" ] && [ -n "$post" ] && [ -n "$transfer" ] && [ -n "$names" ] && [ -n "$text" ] && [ -n "$file" ] \
+        && [ "$text" -ge $((names + post + 5)) ] && [ "$file" -ge $((names + read + transfer + post + 5)) ] \
+        || { echo "read=$read post=$post transfer=$transfer names=$names text=$text file=$file"; return 1; }
+}
+
 check "outside a row the verb is refused before an endpoint is found"                       case_outside_a_row_is_refused_before_an_endpoint
 check "a session with no comm handle is refused before an endpoint is found"                case_no_handle_is_refused_before_an_endpoint
 check "one chat.resolve, then one chat.post of kind row with the handle and the thread"     case_one_resolve_then_one_row_post_with_handle_and_thread
@@ -426,6 +440,7 @@ check "a file post is one chat.resolve, then one chat.post_file with node, threa
 check "each file outcome prints its words and exits with its code"                         case_each_file_outcome_has_its_words_and_exit_code
 check "no answer to the file post is one request, never two, and exit 3"                    case_no_answer_to_the_file_post_is_one_request_and_exit_3
 check "a file usage error sends nothing and exits 1"                                       case_a_file_usage_error_sends_nothing_and_exits_1
+check "each wait is past the daemon's own bounds for that post, with a margin"             case_each_wait_is_past_the_daemons_own_bounds
 
 echo ""
 echo "$PASS passed, $FAIL failed, $SKIP skipped"

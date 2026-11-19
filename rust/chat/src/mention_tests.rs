@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 use sot_protocol::chat::{escape_text, MAX_TEXT};
 use sot_protocol::ops::ChatUnlinkedWhy::{self, *};
 
-use super::{link, Linked, Member};
+use super::{link, Index, Linked, Member, MAX_READ};
 use crate::api::{Api, FileOutcome, PostKind, PostOutcome, MAX_MEMBERS};
 use crate::fake_slack::{FakeSlack, Identity, Members, Reply, Seen, Teams, Upload};
 use crate::http::Secret;
@@ -31,8 +31,12 @@ fn people() -> Vec<Value> {
     ]
 }
 
-fn members() -> Vec<Member> {
-    people().iter().filter_map(Member::of).collect()
+fn members() -> Index {
+    index(&people())
+}
+
+fn index(people: &[Value]) -> Index {
+    Index::new(people.iter().filter_map(Member::of).collect())
 }
 
 fn linked(text: &str, kind: PostKind) -> Linked {
@@ -50,7 +54,6 @@ fn a_unique_name_becomes_a_mention_by_any_of_its_names() {
         ("@Ada hi", "<@U0ADA> hi"),
         ("@ben sample", "<@U0BEN>"),
         ("@Ben", "<@U0BEN>"),
-        ("@Cy Two", "<@U0CY2>"),
         ("(@ada)", "(<@U0ADA>)"),
     ] {
         for kind in [PERSON, ROW] {
@@ -60,6 +63,59 @@ fn a_unique_name_becomes_a_mention_by_any_of_its_names() {
         }
     }
     assert_eq!(linked("@Ada", PERSON).linked, [("U0ADA".to_string(), "Ada".to_string())], "the member linked, for the name cache");
+    // Emphasis around a mention: the closing mark ends the name.
+    for (typed, sent) in [("_@Ada_", "_<@U0ADA>_"), ("*@Ada*", "*<@U0ADA>*"), ("~@ada~ ok", "~<@U0ADA>~ ok")] {
+        assert_eq!(linked(typed, ROW).text, sent, "{typed}");
+    }
+}
+
+/// No name a member chooses takes another member's mention: a run is linked only when every member any of whose names is
+/// spelled at that `@`, at any length, is one member; else it stays text as `several_members`, named by the longest run.
+#[test]
+fn a_name_that_extends_another_members_name_never_takes_the_mention() {
+    let people = [
+        Members::person("U0ADA", "Ada", "Ada Lovelace"),
+        Members::person("U0MAL", "Ada please", "Mal Lory"),
+        Members::person("U0COM", "Ada,", "Com Ma"),
+        Members::person("U0DOT", "Ada.", "Dot Ted"),
+        Members::person("U0GT", "Ada>", "Gee Tee"),
+    ];
+    for (typed, longest) in [("@Ada please review", "Ada please"), ("@Ada, thanks", "Ada,"), ("thanks @Ada.", "Ada."), ("@Ada> hi", "Ada>")] {
+        for kind in [PERSON, ROW] {
+            let l = link(typed, kind, Ok(&index(&people)), MAX_TEXT);
+            assert_eq!(l.text, escape_text(typed), "{typed}");
+            assert_eq!(names(&l), [(longest, SeveralMembers)], "{typed}");
+        }
+    }
+    assert_eq!(link("@Ada hi", ROW, Ok(&index(&people)), MAX_TEXT).text, "<@U0ADA> hi", "only Ada's names are spelled here");
+    // With nobody hostile: a following word that completes another member's real name.
+    let bens = [Members::person("U0BEN", "Ben", "Ben Smith"), Members::person("U0BSA", "", "Ben Sample")];
+    let l = link("@Ben sample size is small", ROW, Ok(&index(&bens)), MAX_TEXT);
+    assert_eq!(l.text, "@Ben sample size is small");
+    assert_eq!(names(&l), [("Ben sample", SeveralMembers)]);
+    // The cost, accepted: a full name is ambiguous while another member shares its first word.
+    assert_eq!(names(&linked("@Cy Two", PERSON)), [("Cy Two", SeveralMembers)]);
+    assert_eq!(linked("@Ben Sample", PERSON).text, "<@U0BEN>", "a full name no other member begins links");
+}
+
+/// A combining mark is part of the word it follows: `Ada` and a decomposed accent is not Ada.
+#[test]
+fn a_combining_mark_after_a_name_is_part_of_the_word() {
+    let typed = "@Ada\u{301} hi";
+    let l = linked(typed, PERSON);
+    assert_eq!(l.text, escape_text(typed));
+    assert_eq!(names(&l), [("Ada\u{301}", NoMember)]);
+}
+
+/// An id `users.list` gives that is not an id makes no member, so nothing unchecked is written into `<@...>`.
+#[test]
+fn a_member_whose_id_is_not_an_id_is_no_member() {
+    let long = "U".repeat(65);
+    for id in ["U1><!channel", "", "U 1", "U|1", "U1\n", long.as_str()] {
+        assert!(Member::of(&Members::person(id, "Ada", "Ada Example")).is_none(), "{id:?}");
+    }
+    assert!(Member::of(&json!({"profile": {"display_name": "Ada"}})).is_none(), "no id");
+    assert!(Member::of(&Members::person("U0OK", "Ada", "")).is_some());
 }
 
 #[test]
@@ -116,6 +172,10 @@ fn a_persons_channel_wide_words_notify_and_a_rows_never_do() {
     assert!(!row.wanted, "the member list is not read for channel-wide words");
     // A longer word is no channel-wide word.
     assert_eq!(names(&linked("@channels", PERSON)), [("channels", NoMember)]);
+    // A channel-wide word wins over a member whose name begins with it, as in Slack's own app.
+    assert_eq!(linked("@Here Now hi", PERSON).text, "<!here> Now hi");
+    let row = linked("_@here_", ROW);
+    assert_eq!((row.text.as_str(), names(&row)), ("_@here_", vec![("here", ChannelWide)]));
     // They need no member list, so a person's still notify when it could not be read.
     let unread = link("@here @Ada", PERSON, Err(MembersUnread), MAX_TEXT);
     assert_eq!(unread.text, "<!here> @Ada");
@@ -126,6 +186,7 @@ fn a_persons_channel_wide_words_notify_and_a_rows_never_do() {
 fn inside_code_a_quote_an_address_or_a_word_nothing_is_linked() {
     for typed in [
         "`@Ada` x",
+        "`see @Ada` x",
         "```\n@Ada\n``` x",
         "```@Ada and @Ben```",
         "> @Ada said",
@@ -166,6 +227,29 @@ fn the_names_left_as_text_are_at_most_max_mentions_and_each_once() {
     let l = linked(&typed, ROW);
     assert_eq!(l.unlinked.len(), sot_protocol::chat::MAX_MENTIONS);
     assert_eq!(l.unlinked.iter().filter(|u| u.name == "z0").count(), 1);
+    assert_eq!(names(&l).last(), Some(&("", More)), "the names past the cap are one `more` entry, never silence");
+    // Exactly the cap: every name, no `more`.
+    let typed: String = (0..16).map(|n| format!("@z{n} ")).collect();
+    assert!(names(&linked(&typed, ROW)).iter().all(|(_, why)| *why == NoMember));
+}
+
+/// A post reads at most `MAX_READ` names; the rest stay text, and the reply says there were more.
+#[test]
+fn a_post_reads_at_most_max_read_names() {
+    let typed: String = (0..MAX_READ).map(|_| "@z ".to_string()).collect::<String>() + "@Ada";
+    let l = linked(&typed, PERSON);
+    assert_eq!(l.text, escape_text(&typed), "the name past the bound is not read");
+    assert_eq!(names(&l), [("z", NoMember), ("", More)]);
+}
+
+/// When the links are reverted for the room, that is said first, ahead of the cap.
+#[test]
+fn a_reverted_link_is_named_first_even_past_the_cap() {
+    let typed: String = (0..20).map(|n| format!("@z{n} ")).collect::<String>() + "@Ada";
+    let l = link(&typed, PERSON, Ok(&members()), escape_text(&typed).len());
+    assert_eq!(l.text, escape_text(&typed));
+    let named = names(&l);
+    assert_eq!((named[0], named.last().copied()), (("Ada", TooLong), Some(("", More))));
 }
 
 // Through `Api`, against the fake Slack.
@@ -278,6 +362,25 @@ async fn the_member_list_is_read_only_for_a_name_paged_and_kept() {
     .await
 }
 
+/// A member list past its time is read again by the next post that names someone; a fresh one is not.
+#[tokio::test]
+async fn an_expired_member_list_is_read_again() {
+    bounded(async {
+        let fake = fake_with(people(), None).await;
+        let stale = api(&fake).with_members_fresh(Duration::ZERO);
+        for n in 1..=2 {
+            let (_, unlinked) = stale.post_linked("C0CHAN", None, ROW, "alpha-h", "@Ada").await.unwrap();
+            assert!(unlinked.is_empty(), "{unlinked:?}");
+            assert_eq!(sent(&fake, "/users.list").len(), n);
+        }
+        let fresh = api(&fake);
+        fresh.post_linked("C0CHAN", None, ROW, "alpha-h", "@Ada").await.unwrap();
+        fresh.post_linked("C0CHAN", None, ROW, "alpha-h", "@Ben").await.unwrap();
+        assert_eq!(sent(&fake, "/users.list").len(), 3, "a fresh list is read once");
+    })
+    .await
+}
+
 #[tokio::test]
 async fn a_workspace_over_the_bound_links_no_name_and_says_so() {
     bounded(async {
@@ -343,4 +446,18 @@ async fn a_name_resolves_only_among_its_own_workspaces_members() {
         assert_eq!((teams.calls(A, "xoxb", "/users.list").len(), teams.calls(B, "xoxb", "/users.list").len()), (1, 1), "each list under its own bot");
     })
     .await
+}
+
+/// The cost of one post's names against 2,000 members, printed: run alone and optimized (`--ignored cost_of`). The read
+/// bound (`MAX_READ`) and the index by leading word are what keep it small; this measures, it pins nothing.
+#[test]
+#[ignore = "a cost measurement, run by hand"]
+fn cost_of_a_full_text_against_2000_members() {
+    let many: Vec<Value> = (0..2000).map(|n| Members::person(&format!("U0P{n}"), &format!("p{n}"), &format!("Person {n}"))).collect();
+    let all = index(&many);
+    for text in ["@p ".repeat(MAX_TEXT / 3), "@Person ".repeat(MAX_TEXT / 8)] {
+        let started = std::time::Instant::now();
+        let l = link(&text, ROW, Ok(&all), MAX_TEXT);
+        eprintln!("COST {:?} for {} candidates typed, {} unlinked", started.elapsed(), text.matches('@').count(), l.unlinked.len());
+    }
 }

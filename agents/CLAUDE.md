@@ -358,7 +358,7 @@ of each.
 - `sot-fe chat post [--thread <ts>] (<text> | --stdin)` (`sot-fe/sot-fe-chat.sh`) is a row's reply in its channel. It
   posts only for the row it runs in (`$SOT_WORKSPACE_ID`, none refused before an endpoint is found) under the handle
   `comm-context.sh` gives (none refused the same way), asks `chat.resolve` for the pair, sends one `chat.post` of kind
-  `row` and never a second (it does not use `send_fe_command`'s retry: chat guarantee 12), and waits 40 s for the post.
+  `row` and never a second (it does not use `send_fe_command`'s retry: chat guarantee 12), and waits 50 s for the post: past the daemon's own bounds with a margin, the member list's 10 s for a name to link and the post's 30 s (chat guarantees 35 and 14), so a made post or a refusal is never read as "may exist" (`case_each_wait_is_past_the_daemons_own_bounds` reads sot-chat's constants and the script's waits).
   The text, handle and thread reach `jq` on stdin. Exit 0 with `posted <ts>`, then `; not linked: @<name> (<reason>)` for
   each `@` name the daemon left as text (the reply's `unlinked`, its reasons in wire's words); 1 for usage; 2, nothing posted for certain, with
   `refused <code> <words>` or `limited, wait <n> s`; 3, the post may exist, with `unknown: ...` (also a `handler_error`
@@ -381,7 +381,7 @@ of each.
   of that rule (one spelling of both, so Git Bash's `/c/...` meets a `C:\...` root; a link above the folder resolved,
   one inside it never), and refused (exit 2, before an endpoint) when it is outside the folder, the folder itself, or has
   a `..` part; the rest is the node id `files:<rel>`. It sends one `chat.post_file` of kind `row` with that id, the
-  thread and the comment, waits 120 s, and prints `posted <ts>` or `posted file <id>` (Slack named no message) with the
+  thread and the comment, waits 130 s (past the member list's 10 s, the upload URL's 15 s, the upload's 60 s and the share's 30 s, with a margin; pinned by the same case), and prints `posted <ts>` or `posted file <id>` (Slack named no message) with the
   same exit codes. The daemon reads the file itself and refuses anything not a readable regular file of the folder, and
   the chat's configuration files (chat contract, D13). Unmeasured until a person's first use: that `--thread` shares
   into the thread and that the share reads back as the row's (the figures plan's LP2 and LP4). The suite runs on Linux

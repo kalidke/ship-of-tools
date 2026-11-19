@@ -34,7 +34,7 @@ longer text is refused once, nothing posted: split it.
   `--thread T` the root is still `T`). Not the `ts=` of a message that is itself a reply.
 - Share a file of this project's folder (any regular file, at most 16 MiB; only the file the person named): add
   `--file <path>`; the text, if any, becomes its comment (`--file <path> --stdin < <comment file>`). Run it with a tool
-  timeout of at least 150 s: it waits up to 120 s. If your shell cuts it off, treat it as exit 3.
+  timeout of at least 150 s: it waits up to 130 s. If your shell cuts it off, treat it as exit 3.
 
 It prints `posted <ts>` (`posted file <id>` when Slack names no message for a file), followed by any names left as text
 (see Mentions), and exits 0. Tell the person it is posted.
@@ -77,9 +77,11 @@ with that name, and Slack notifies that person. Nothing inside backquotes or a c
 arrives as literal text.
 
 A name the daemon could not link goes out as typed, and the output says so after the timestamp:
-`posted <ts>; not linked: @Zed (no member)`. The reasons are `no member`, `several members` (more than one person
-has that name), `the member list could not be read`, `the member list is too large` and `the post would be too long`.
-The post itself was made (exit 0): do not post it again. Tell the person which names were not linked and why.
+`posted <ts>; not linked: @Zed (no member)`. The reasons are `no member`, `several members` (another member has a name
+that starts the same way: the full name is needed), `the member list could not be read`, `the member list is too large`
+and `the post would be too long`; `and more` ends a list longer than the output names. The post itself was made (exit
+0): do not post it again. Tell the person which names were not linked and why. Prefer the person's full name when you
+know it.
 
 `@here`, `@channel` and `@everyone` never notify from your post: they go out as text, and the output names them
 (`a session never notifies a whole channel`). If the person wants the whole channel notified, tell them to post it

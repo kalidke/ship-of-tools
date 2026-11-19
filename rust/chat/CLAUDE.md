@@ -155,7 +155,7 @@ bot identity, workspace name, read-pacing instant, name cache, member list (guar
    code that is not transient) or a request that never left (`busy`, `invalid`, `destination`); `Limited` is a 429 or
    `ratelimited`; every other case without a valid acknowledgement (transport error, timeout, 5xx, unparsable or `ok`-less
    body, transient code, `ok` with no `ts`) is `Unknown`. Nothing resends, and a caller that stops waiting does not
-   cancel or repeat the request. Input a post cannot carry (id, name, text over 8 KiB, thread `ts`) is `Err` unsent. Every message text this crate sends (a post's `text`, a share's `initial_comment`) is plain text made Slack's by one private path, `Api::linked` over `mention::link`, after `post_text_fits` (wire's): what was typed is escaped (`escape_text`), and the one exception is a mention token that path built itself, guarantee 35's; the 8 KiB bound is on the sent size. The daemon's hello says the text is plain (`HelloRes.posts_plain_text`).
+   cancel or repeat the request. Input a post cannot carry (id, name, text over 8 KiB, thread `ts`) is `Err` unsent. Every message text this crate sends (a post's `text`, a share's `initial_comment`) is plain text made Slack's after `post_text_fits` (wire's): escaped (`escape_text`), and linked through one private path, `Api::linked` over `mention::link`, when there is typed text (a row's file share with no comment sends its escaped label alone); the one exception to the escaping is a mention token that path built itself, guarantee 35's; the 8 KiB bound is on the sent size. The daemon's hello says the text is plain (`HelloRes.posts_plain_text`).
 13. **A retry header paces reads, never repeats a mutation.** The `Retry-After` header, in any case, in whole seconds
    (capped at one hour), makes every read refuse as `Limited` without a request until it passes; a missing or invalid
    header is an assumed 30 s (`assumed: true`). A post that is limited is returned with its wait and is not gated by the
@@ -936,36 +936,55 @@ bot identity, workspace name, read-pacing instant, name cache, member list (guar
    `Api::post_linked` and `Api::post_file_linked` (a comment; a row's label is escaped and never linked) send the text of
    `mention::link`: each `@` at the text's start or after a space or one of `([{"'*_~`, outside a span between two
    backquotes on one line, a block between two fences, a line that starts with `>` and anything after a line that starts
-   with `>>>`, is read against the member list. The name is the longest run after it that equals, ignoring case
-   (character by character, Unicode lowercase), a member's display name, real name or real name's first word, followed by
-   the end, or a character that is not a letter, a digit, `_` or `-`, or a dot not followed by a letter or digit (so
-   `@Ada,`, `@Ada.` and `@Ada's` name Ada and `@Adam`, `@ada_x` and `@ada.example` do not). A run that one member's names
-   spell becomes `<@id>`, the id `is_id` from the list; several members (a shared first name) or none leave it as text.
-   `@channel`, `@here` and `@everyone` (with a boundary) are never a member's name: a person's post sends `<!channel>`,
-   `<!here>` or `<!everyone>`, since it is their own account as in Slack; a row's never does and leaves the word as text,
-   so an agent never notifies a whole channel. Everything else, a typed `<@U…>`, `<!channel>`, `<https://…|x>`, `&`, and the
-   characters of a matched name (which are replaced by the id, never sent), goes through `escape_text`. When the linked
-   text would pass its room (`MAX_TEXT`, less a row's escaped label in a comment) the text is sent as typed and every
-   link is named `too_long`. Each name left as text is returned, at most `MAX_MENTIONS`, once per name and reason, as
-   wire's `ChatUnlinked` (`no_member`, `several_members`, `members_unread`, `too_many_members`, `channel_wide`,
-   `too_long`), which the daemon puts on the `posted` reply. The member list is `users.list` under the bot's token
-   (`users:read`, already in the manifest), read only when a name needs it, through the walk the picker's list uses
-   (`Api::list`: pages of 200 with Slack's cursor, a repeated or oversized cursor or a page that is not one fails it,
-   `MEMBERS_BODY`, 4 MiB, a page), at most ten pages (`MAX_MEMBERS`, 2,000 accounts: a walk that still has a cursor is
-   `TooMany`, and then no name links, since a match among part of the list may not be unique); bots, deactivated accounts
-   and Slackbot are not members; it is kept per `Api` (so per workspace) for `MEMBERS_FRESH`, 10 minutes, one walk at a
-   time (a tokio lock held across it), and the walk and the wait for another's together end at `NAMES_DEADLINE`, 10 s;
-   a walk that fails or runs out of time is `members_unread`, not remembered, and the post goes out once with the names
-   as text: no path fails or resends a post for its names. A member linked is put in the name cache under `users.info`'s
-   rule (display name, real name, handle), so the post read back shows the name at once. Tests:
-   `mention_tests.rs`, the rule against invented members and, through `Api` against the fake's `Members`, each kind and
-   place, the list's pages, bound, cache, failure and hang, and two workspaces (`Teams`). Limits: a post may wait up to
-   10 s for the list before its own 30 s; a walk that outlives the deadline keeps its `Http` permit to its read deadline;
-   a timed-out walk is asked again by the next post that needs it; a member who joined within the last 10 minutes is
-   `no_member`; a large workspace's walk is ten reads of Slack's tier-2 `users.list` and may be rate limited, which pauses
-   every read (guarantee 13); a name is not matched by the account's handle (`name`); that Slack notifies on
-   `<@U…>` and `<!here>` in a post sent with no `parse` or `link_names`, under a user token and under the bot's, is
-   Slack's documented behavior, not yet seen in this product.
+   with `>>>`, is read against the member list, the first `MAX_READ` (50) of them in a post. A member's name is spelled
+   at an `@` when the text after it equals, ignoring case (character by character, Unicode lowercase), the member's
+   display name, real name or real name's first word, followed by the end, or a character that is not a letter, a
+   digit, a combining mark or `-`, or a `.` or `_` not followed by a letter, digit or mark (so `@Ada,`, `@Ada.`,
+   `@Ada's`, `_@Ada_`, `*@Ada*` and `~@Ada~` name Ada, and `@Adam`, `@ada_x`, `@ada.example` and `@Ada` with a decomposed
+   accent do not). The run is linked, as `<@id>` with the id `is_id` from the list and the longest name spelled, only when
+   every member any of whose names is spelled there, at any length, is the same one member; when two are (a shared first
+   name, or a member whose name is another's and a comma, a period or a word: `Ada` and `Ada,`, `Ben` and `Ben Sample`)
+   it stays text as `several_members`, named by the longest run, so no name a member chooses takes another member's
+   mention: at worst it makes it ambiguous, which the poster is told. The cost: a full name is ambiguous while another
+   member's name is its first word (`@Cy Two` beside a `Cy`). `@channel`, `@here` and `@everyone` (with a boundary) are
+   never a member's name and win over one that begins with them: a person's post sends `<!channel>`, `<!here>` or
+   `<!everyone>`, since it is their own account as in Slack; a row's post never does and leaves the word as text. The
+   kind is the request's, and a person's post is admitted by the connection's own declaration (`may_post` in
+   `rust/backend/src/chat/ops.rs`, not a security boundary), so a program that declares itself a window posts as the
+   person, `@channel` included. Everything else, a typed `<@U…>`, `<!channel>`, `<https://…|x>`, `&`, and the characters
+   of a matched name (which are replaced by the id, never sent), goes through `escape_text`. When the linked text would
+   pass its room (`MAX_TEXT`, less a row's escaped label in a comment) the text is sent as typed and every link is named
+   `too_long`, ahead of the other names. Each name left as text is returned once per name and reason, as wire's
+   `ChatUnlinked` (`no_member`, `several_members`, `members_unread`, `too_many_members`, `channel_wide`, `too_long`), at
+   most `MAX_MENTIONS`: past that, or when a post has more names than `MAX_READ`, the last entry is `more` (its name
+   empty), never silence. The daemon puts them on the `posted` reply. The member list is `users.list` under the bot's
+   token (`users:read`, already in the manifest), read only when a name needs it, through the walk the picker's list
+   uses (`Api::list`: pages of 200 with Slack's cursor, a repeated or oversized cursor or a page that is not one fails
+   it, `MEMBERS_BODY`, 4 MiB, a page), at most ten pages (`MAX_MEMBERS`, about 2,000 accounts: a walk that still has a
+   cursor is `TooMany`, and then no name links, since a match among part of the list may not be unique); bots,
+   deactivated accounts and Slackbot are not members. It is indexed once per walk by each name's lowercased leading
+   letters and digits (`Index`), so a candidate reads only the names that begin as it does; measured optimized against
+   2,000 members whose real names all begin `Person`, a full 8 KiB text of `@Person ` takes about 19 ms
+   (`cost_of_a_full_text_against_2000_members`, run by hand). It is kept per `Api` (so per workspace) for
+   `MEMBERS_FRESH`, 10 minutes, one walk at a time (a tokio lock held across it), and the walk and the wait for another's
+   together end at `NAMES_DEADLINE`, 10 s; a walk that fails (Slack's refusal, a transport error), is rate limited (and
+   then every read waits out the retry, guarantee 13, so later posts' names are unread at once) or runs out of time is
+   `members_unread`, not remembered, and the post goes out once with the names as text: no path fails or resends a post
+   for its names. A member linked is put in the name cache under `users.info`'s rule (display name, real name, handle), so
+   the post read back shows the name at once. The text is escaped, and linked through `Api::linked` when there is typed
+   text; a row's file share with no comment sends its escaped label alone. Tests: `mention_tests.rs`, the rule against
+   invented members and, through `Api` against the fake's `Members`, each kind and place, the list's pages, bound,
+   expiry, cache, failure and hang, and two workspaces (`Teams`). Limits: a post may wait up to 10 s for the list before
+   its own 30 s, so `sot-fe chat post` waits 50 s for a text and 130 s for a file (agents' contract; pinned by
+   `test-sot-fe-chat.sh`, `case_each_wait_is_past_the_daemons_own_bounds`); a walk that outlives the deadline is
+   dropped with its post's wait and keeps its `Http` permit to its read deadline, so in a workspace whose walk takes more
+   than 10 s no walk completes and every post that names someone waits 10 s (CHAT-MEMBER-WALK-NEVER-COMPLETES); a member
+   who joined within the last 10 minutes is `no_member`, and one who renamed within them is matched by the old name; a
+   name typed for someone who is not a member links the one member who has its first word (`@Ada Lovelace` mentions the
+   workspace's only Ada, and the rest stays text), which the poster is not told; a large workspace's walk is ten reads of
+   Slack's tier-2 `users.list`; a name is not matched by the account's handle (`name`); that Slack notifies on `<@U…>`
+   and `<!here>` in a post sent with no `parse` or `link_names`, under a user token and under the bot's, is Slack's
+   documented behavior, not yet seen in this product.
 
 The timestamp rule (exactly `<seconds>.<six digits>`) is wire's `Ts`; this crate builds only `Ts` values, so a record
 never holds another form.
@@ -980,7 +999,7 @@ never holds another form.
 its websocket peer (`ws.rs`), a channel that answers history as measured (`history.rs`, which states what it infers) and
 Slack's three upload steps (`upload.rs`, `Upload`) and one file's `files.info` and URLs (`files.rs`, `Files`), and
 several workspaces in one fake (`teams.rs`, `Teams`), and a workspace's member list (`members.rs`, `Members`).
-`mention.rs`: `link`, `Linked`, `Member`, `Roster` (crate-private), the rule of guarantee 35.
+`mention.rs`: `link`, `Linked`, `Member`, `Index`, `Roster`, `MAX_READ` (crate-private), the rule of guarantee 35.
 
 ## Calls in
 `sot_protocol::chat::{ChatRecord, ChatAuthor, ChatFile, Origin, Ts, is_id, escape_text, post_text_fits, MAX_*}` (and `text_segments`, `TextSegment`; `page_reply::unsafe_char`), `sot_protocol::ops::{MAX_PAGE, MAX_CURSOR, MAX_LISTED, MAX_RETRY_SECS, MAX_WORKSPACES, ChatUnlinked, ChatUnlinkedWhy}` (and, in a test, `MAX_WATCHED`), `serde_json::Value`; reqwest, rustls and
@@ -1078,7 +1097,7 @@ Paths are under `rust/chat/src/`.
 | 34 | no set of tokens told to be two Slack apps' is written: `mixed_apps`, with `replace_app` or without, beside a running chat and on a first connect; nothing written or restarted, no probe socket left open, no token byte in a reply or a log line | `server/chat_setup_tests.rs`: `a_set_of_two_slack_apps_tokens_is_never_written`, `tokens_whose_apps_are_not_both_told_are_asked_about_only_while_a_chat_runs`; `socket_tests.rs`: the probe's two tests (row 28) |
 | 31 (the user token) | the user token's absence, form, refusals, other workspace and transport; nothing written; the done test of a person's post | `server/chat_setup_tests.rs`: `each_answer_of_the_user_tokens_check_has_its_code_and_writes_nothing`, `a_hub_whose_secrets_hold_no_user_token_says_so_and_posts_nothing_for_a_person`, `a_window_connects_three_tokens_and_its_post_goes_out_as_the_person`; `server/chat_ops_tests.rs`: `a_persons_post_slack_refuses_is_not_a_member_or_forgets_the_token`, and the extended `each_api_error_has_its_stated_code`; `config_tests.rs`: `a_secrets_text_holds_the_three_tokens_and_parses_back` |
 | 31 | a window's only; the hub fact at the op; the three tokens checked, nothing written before; only Slack's answers that name the token refuse it, its state and the transport are `failed`; the closed mark read again under the lock; another workspace and a refused `chat.toml` refused and left as they are; the secrets owner-only and whole, a fresh `chat.toml` only when missing; a failed write `not_saved`; the reload; no token byte in a log line of any thread or a reply; the reply after a failed start; `resolve`'s `unconfigured` | `rust/backend/src/server/chat_setup_tests.rs`: the plan's done test `from_nothing_a_window_connects_pairs_and_reads_its_channel` (from no chat file a window connects, `chat.toml` is the fresh one, lists, pairs, watches and gets a socket post as `chat.changed`; the secrets owner-only and the four keys, `chat.toml` loads with the mapping, no token byte in a reply, an event or a log line of any thread), `each_answer_of_the_two_checks_has_its_code_and_writes_nothing` (the forms, the token refusals and Slack's state and the transport on each check), `a_connect_from_a_row_or_on_a_computer_that_is_not_the_hub_writes_nothing`, `a_retirement_that_begins_while_slack_is_asked_writes_nothing`, `a_write_that_fails_is_not_saved`, `a_connect_whose_start_fails_is_saved_and_resolve_says_start_failed`, `resolve_says_why_a_service_ended` (`wrong_app`, `tokens_refused` for each refused token), `a_connect_of_another_workspace_adds_it`, `a_connect_that_would_push_a_served_workspace_past_the_bound_is_refused`, `resolve_says_unconfigured_for_each_reason_a_connect_fixes`, `a_connect_while_running_replaces_the_tokens_and_restarts` (asked about first: its running app is not told), `a_new_slack_app_outside_a_mapped_channel_is_told_not_in_channel_until_it_is_invited` (the workspace's `unread`, with two apps in one workspace), `a_connect_replies_before_its_mapped_channels_are_read`, `the_reads_of_the_channels_an_app_cannot_read_end_at_their_bound`, `the_channels_an_app_cannot_read_are_at_most_max_watched_with_bounded_names`, `what_a_connects_task_found_goes_with_the_service_it_read_through`, `an_older_connects_task_never_replaces_a_newer_connects_list`; `socket_tests.rs`: `an_app_token_check_tells_the_app_by_one_socket_and_refuses_a_foreign_url` (a 503 and `ratelimited` are `unavailable`); `dispatch_place_tests.rs`: `the_lists_are_disjoint_and_reasoned` (the setup ops are jobs) |
-| 35 | an `@` name a mention of one member; nothing typed unescaped; the member list paged, bounded, kept, never waited past its deadline | `mention_tests.rs`: `a_unique_name_becomes_a_mention_by_any_of_its_names`, `case_punctuation_a_possessive_two_mentions_and_both_ends`, `no_member_and_several_members_stay_text_and_are_named`, `nothing_typed_reaches_slack_unescaped`, `a_persons_channel_wide_words_notify_and_a_rows_never_do`, `inside_code_a_quote_an_address_or_a_word_nothing_is_linked`, `a_list_not_read_or_too_large_links_no_name_and_says_why`, `a_text_that_linking_would_push_past_its_room_goes_as_typed`, `the_names_left_as_text_are_at_most_max_mentions_and_each_once`, `a_person_and_a_row_mention_in_a_channel_and_a_thread`, `a_file_comment_mentions_and_a_rows_label_never_does`, `the_member_list_is_read_only_for_a_name_paged_and_kept`, `a_workspace_over_the_bound_links_no_name_and_says_so`, `a_failed_or_slow_member_list_posts_the_text_once_and_says_so`, `a_name_resolves_only_among_its_own_workspaces_members`; the daemon's replies: `rust/backend/src/server/chat_setup_tests.rs`: `two_workspaces_from_nothing_each_project_reads_and_posts_in_its_own` (step 8), `chat_ops_tests.rs`: `row_verbs_target_current_thread_and_submit_once`, `a_row_posts_a_file_of_its_folder_under_its_own_handle_once` |
+| 35 | an `@` name a mention of one member; nothing typed unescaped; the member list paged, bounded, kept, never waited past its deadline | `mention_tests.rs`: `a_unique_name_becomes_a_mention_by_any_of_its_names`, `a_name_that_extends_another_members_name_never_takes_the_mention`, `a_combining_mark_after_a_name_is_part_of_the_word`, `a_member_whose_id_is_not_an_id_is_no_member`, `a_post_reads_at_most_max_read_names`, `a_reverted_link_is_named_first_even_past_the_cap`, `an_expired_member_list_is_read_again`, `case_punctuation_a_possessive_two_mentions_and_both_ends`, `no_member_and_several_members_stay_text_and_are_named`, `nothing_typed_reaches_slack_unescaped`, `a_persons_channel_wide_words_notify_and_a_rows_never_do`, `inside_code_a_quote_an_address_or_a_word_nothing_is_linked`, `a_list_not_read_or_too_large_links_no_name_and_says_why`, `a_text_that_linking_would_push_past_its_room_goes_as_typed`, `the_names_left_as_text_are_at_most_max_mentions_and_each_once`, `a_person_and_a_row_mention_in_a_channel_and_a_thread`, `a_file_comment_mentions_and_a_rows_label_never_does`, `the_member_list_is_read_only_for_a_name_paged_and_kept`, `a_workspace_over_the_bound_links_no_name_and_says_so`, `a_failed_or_slow_member_list_posts_the_text_once_and_says_so`, `a_name_resolves_only_among_its_own_workspaces_members`; the daemon's replies: `rust/backend/src/server/chat_setup_tests.rs`: `two_workspaces_from_nothing_each_project_reads_and_posts_in_its_own` (step 8), `chat_ops_tests.rs`: `row_verbs_target_current_thread_and_submit_once`, `a_row_posts_a_file_of_its_folder_under_its_own_handle_once` |
 | 33 | a picture of the channel, bounded | `api_tests.rs`: `a_fetch_reads_only_a_picture_shared_in_its_channel` (the thumbnail and the original with the bearer, to the file's host; another channel's file, a file shared nowhere, a PDF, an SVG, a direct message's share and an original over the bound each with no GET; a JPEG, a GIF and a WebP; a thumbnail of a large original or with no `size`, an original with no `size` `Malformed`; both membership forms and a private share; `url_private` without a download URL; a file Slack does not know, an `info` for another file, a bad id, a closed client and one closed while `files.info` was answered, which sends no GET; the `Debug` of a result), `a_thumbnail_falls_back_to_a_small_original_and_never_to_a_large_one` (the three keys' order; a small original at exactly `MAX_THUMB`; one byte over `NoThumbnail` with no GET), `an_answer_that_is_not_an_image_is_refused` (HTML, octet-stream, `image/` alone, SVG, icon, `image/jpg` and no type refused; a type in capitals with parameters, JPEG, GIF and WebP accepted; no bytes), `each_variant_is_read_under_its_own_deadline` (a stalled thumbnail times out at a read's deadline and a stalled original at the transfer's), `a_fetch_is_bounded_while_it_streams` (a false `size`; one byte over and exactly the bound, both variants), `a_fetch_redirected_off_slack_sends_nothing_there` (two foreign hosts, no request reaches them; a redirect within Slack keeps the bearer), `a_fetch_shares_the_transfer_permits_and_a_rate_limit_waits_the_next_read` (two stalled originals make a fetch and a post `busy` at once; a dropped one frees its permit; a 429 on the URL), and the token test `a_file_post_shows_no_token_or_private_url_in_any_error` (extended: a fetch's errors) |
 
 ## Files
