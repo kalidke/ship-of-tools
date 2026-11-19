@@ -21,7 +21,9 @@ or the agent pane for shell commands.
 The prompts and the error label use the colors of Julia's own REPL: `julia>` is bold green, `pkg>` is bold
 blue, and an error starts with a bold light-red `ERROR:`. Typed code, output and values are in the window's
 normal text color. Text a program writes to stderr is gray, which Julia's own REPL does not do; it keeps stderr
-apart from stdout in the log. Colors a program or Julia's logger adds are not drawn yet: the `@info`, `@warn` and `@error` labels and a
+apart from stdout in the log. A line longer than the drawer is wide continues on the next row. The drawer cannot yet select or copy text.
+
+Colors a program or Julia's logger adds are not drawn yet: the `@info`, `@warn` and `@error` labels and a
 program's own colors show uncolored (gray, as stderr), and typed code has no syntax coloring.
 
 The REPL and the kernel run the `julia` that `SOT_JULIA_BIN` names, else

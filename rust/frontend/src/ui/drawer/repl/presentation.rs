@@ -1,7 +1,7 @@
 //! Window-wide REPL presentation: image identity, line projection, layout and scroll anchoring.
 
 use crate::ui::*;
-use super::{colors, ReplEffects};
+use super::{colors, wrap::{self, Wrap}, ReplEffects};
 use crate::ui::render::scissor::scissor_px;
 
 // State supplies a normalized row key; presentation never resolves row identities.
@@ -43,6 +43,11 @@ pub(in crate::ui) struct ReplPresentation<I = Quad> {
     scrollback_px: ScreenRect,
     window: (usize, usize),
     build_anchor: Option<(BuildKey, u64, usize)>,
+    /// The wrapped text frames, and the pane width in cells they were wrapped for.
+    wrap: Wrap,
+    /// What the bottom row of a scrolled-up view showed, and the width it was wrapped for: a re-wrap puts it back at
+    /// the bottom, so a resize keeps a reader on the same text.
+    view_anchor: Option<(usize, wrap::Anchor)>,
 }
 
 impl<I> Default for ReplPresentation<I> {
@@ -53,6 +58,8 @@ impl<I> Default for ReplPresentation<I> {
             scrollback_px: ScreenRect { x: 0.0, y: 0.0, w: 0.0, h: 0.0 },
             window: (0, 0),
             build_anchor: None,
+            wrap: Wrap::default(),
+            view_anchor: None,
         }
     }
 }
@@ -113,22 +120,33 @@ impl<I> ReplPresentation<I> {
         mut scroll: u16,
     ) -> (Vec<RtLine<'static>>, u16) {
         // Use the previous completed pixel layout, including the first frame's zero geometry.
-        let (lines, slots, starts) = project_lines(
+        self.wrap.begin();
+        let (lines, slots, starts, marks) = project_lines(
             row, log, &self.images, (self.scrollback_px.w, self.scrollback_px.h),
-            (cell_w, cell_h), starting,
+            (cell_w, cell_h), starting, &mut self.wrap,
         );
+        self.wrap.end();
         self.image_slots = slots;
         let build_key = (
             self.scrollback_px.w.to_bits(), self.scrollback_px.h.to_bits(),
             cell_w.to_bits(), cell_h.to_bits(),
         );
-        if let Some((previous_key, id, span)) = self.build_anchor {
+        let cols = self.wrap.cols;
+        // A new width puts the anchored line back at the bottom; any other change pins the view to the tail's growth.
+        let rewrapped = self.view_anchor.filter(|&(anchored, _)| anchored != cols && scroll > 0);
+        if let Some((_, anchor)) = rewrapped {
+            if let Some(at) = self.wrap.find(row, &marks, anchor).filter(|&at| at < lines.len()) {
+                scroll = (lines.len() - at - 1).min(u16::MAX as usize) as u16;
+            }
+        } else if let Some((previous_key, id, span)) = self.build_anchor {
             if previous_key == build_key {
                 scroll = pinned_repl_scroll(scroll, id, span, lines.len(), &starts);
             }
         }
         self.build_anchor = starts.last()
             .map(|&(id, start)| (build_key, id, lines.len().saturating_sub(start)));
+        let bottom = lines.len().checked_sub(scroll as usize + 1).filter(|_| scroll > 0);
+        self.view_anchor = bottom.and_then(|at| self.wrap.anchor(row, &marks, at)).map(|a| (cols, a));
         (lines, scroll)
     }
 
@@ -151,6 +169,12 @@ impl<I> ReplPresentation<I> {
         let end = total.saturating_sub(scroll as usize);
         let start = end.saturating_sub(scroll_h);
         ReplDrawerLayout { scrollback: split[0], input: split[1], scroll, window: (start, end) }
+    }
+
+    /// The scrollback's width in cells; true when it changed, so the next frame wraps for it. A width of 0 (no drawer
+    /// rect yet) keeps the last known one, and before any the first frame is drawn unwrapped, as before the wrap.
+    pub(in crate::ui) fn set_cols(&mut self, cols: usize) -> bool {
+        cols != 0 && std::mem::replace(&mut self.wrap.cols, cols) != cols
     }
 
     pub(in crate::ui) fn commit_layout(&mut self, scrollback: ScreenRect, window: (usize, usize)) {
@@ -310,82 +334,65 @@ fn project_lines<I>(
     geometry: (f32, f32),
     cells: (f32, f32),
     repl_starting: bool,
-) -> (Vec<RtLine<'static>>, Vec<ReplImageSlot>, Vec<(u64, usize)>) {
+    wrap: &mut Wrap,
+) -> (Vec<RtLine<'static>>, Vec<ReplImageSlot>, Vec<(u64, usize)>, Vec<(usize, u64, usize)>) {
     let (avail_w_px, avail_h_px) = geometry;
     let (cell_w, cell_h) = cells;
     let mut slots: Vec<ReplImageSlot> = Vec::new();
     let mut out: Vec<RtLine<'static>> = Vec::new();
     let mut starts: Vec<(u64, usize)> = Vec::new();
+    // Where each entry (frame `usize::MAX`) and each frame starts, for `Wrap::anchor`.
+    let mut marks: Vec<(usize, u64, usize)> = Vec::new();
     for entry in log {
         starts.push((entry.eval_id, out.len()));
+        marks.push((out.len(), entry.eval_id, usize::MAX));
         if let Some(label) = &entry.origin {
             out.push(RtLine::from(vec![Span::styled(
                 format!("⟨{}⟩", cell_row(label)),
                 colors::origin(),
             )]));
         } else {
-            let prompt_text = if entry.pkg_mode { "pkg> " } else { "julia> " };
-            let cont_pad: String = " ".repeat(prompt_text.len());
-            for (i, seg) in entry.code.split('\n').enumerate() {
-                let prefix_span = if i == 0 {
-                    Span::styled(prompt_text.to_string(), colors::scrollback_prompt(entry.pkg_mode))
-                } else {
-                    Span::raw(cont_pad.clone())
-                };
-                out.push(RtLine::from(vec![
-                    prefix_span,
-                    Span::styled(cell_row(seg).into_owned(), colors::plain()),
-                ]));
-            }
+            out.extend(wrap::code_rows(&entry.code, entry.pkg_mode, wrap.cols));
         }
         for (frame_idx, frame) in entry.frames.iter().enumerate() {
+            marks.push((out.len(), entry.eval_id, frame_idx));
+            let fkey = (row.clone(), entry.eval_id, frame_idx);
             if let (true, ReplFrame::Stderr { text }) = (entry.own_frames.contains(&frame_idx), frame) {
-                for line in stream_lines(text) {
-                    out.push(RtLine::from(vec![Span::styled(line, colors::notice())]));
-                }
+                let rows = wrap.frame(fkey, text.len(), |cols| wrap::rows(&stream_lines(text), colors::notice(), cols, None, 0));
+                out.extend(rows.0.iter().cloned());
                 continue;
             }
             match frame {
                 ReplFrame::Stdout { text } => {
-                    for line in stream_lines(text) {
-                        out.push(RtLine::from(line));
-                    }
+                    let rows = wrap.frame(fkey, text.len(), |cols| wrap::rows(&stream_lines(text), colors::plain(), cols, None, 0));
+                    out.extend(rows.0.iter().cloned());
                 }
                 ReplFrame::Stderr { text } => {
-                    for line in stream_lines(text) {
-                        out.push(RtLine::from(vec![Span::styled(line, colors::stderr())]));
-                    }
+                    let rows = wrap.frame(fkey, text.len(), |cols| wrap::rows(&stream_lines(text), colors::stderr(), cols, None, 0));
+                    out.extend(rows.0.iter().cloned());
                 }
                 ReplFrame::Value { mime, text } => {
-                    let prefix = if mime == "text/plain" {
-                        String::new()
-                    } else {
-                        format!("[{}] ", cell_row(mime))
-                    };
-                    for (i, line) in cell_lines(text).into_iter().enumerate() {
-                        let s = if i == 0 {
-                            format!("{prefix}{line}")
-                        } else {
-                            line
-                        };
-                        out.push(RtLine::from(vec![Span::styled(s, colors::plain())]));
-                    }
+                    let rows = wrap.frame(fkey, mime.len() + text.len(), |cols| {
+                        let mut lines = cell_lines(text);
+                        if let (Some(first), false) = (lines.first_mut(), mime == "text/plain") {
+                            first.insert_str(0, &format!("[{}] ", cell_row(mime)));
+                        }
+                        wrap::rows(&lines, colors::plain(), cols, None, 0)
+                    });
+                    out.extend(rows.0.iter().cloned());
                 }
                 ReplFrame::Error {
                     message,
                     stacktrace,
                 } => {
-                    let mut message_lines = cell_lines(message);
-                    if message_lines.is_empty() {
-                        message_lines.push(String::new());
-                    }
-                    for (i, line) in message_lines.into_iter().enumerate() {
-                        let mut spans = vec![Span::styled(line, colors::plain())];
-                        if i == 0 {
-                            spans.insert(0, Span::styled("ERROR: ", colors::error_label()));
+                    let rows = wrap.frame(fkey, message.len(), |cols| {
+                        let mut lines = cell_lines(message);
+                        if lines.is_empty() {
+                            lines.push(String::new());
                         }
-                        out.push(RtLine::from(spans));
-                    }
+                        wrap::rows(&lines, colors::plain(), cols, Some(Span::styled("ERROR: ", colors::error_label())), 0)
+                    });
+                    out.extend(rows.0.iter().cloned());
                     for sf in stacktrace {
                         out.push(RtLine::from(vec![
                             Span::styled("    at ", colors::trace_gray()),
@@ -464,7 +471,7 @@ fn project_lines<I>(
             )]));
         }
     }
-    (out, slots, starts)
+    (out, slots, starts, marks)
 }
 
 #[cfg(test)]

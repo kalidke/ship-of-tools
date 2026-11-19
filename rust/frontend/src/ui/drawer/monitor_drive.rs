@@ -94,6 +94,10 @@ impl State {
         // text scale or set of marks (`MonitorView::drawn`, `None` once the
         // drawer shows another tenant), mirroring the math-SVG rasterise path.
         self.repl_presentation.commit_layout(cells_to_px(repl_scrollback_cells), repl_window);
+        // The scrollback's wrap follows the width committed here, so a new width needs one more frame.
+        if self.repl_presentation.set_cols(repl_scrollback_cells.width as usize) {
+            self.pacer.mark_dirty();
+        }
         // Scale the chart's text + gutters to match the chrome's
         // effective text size (cell_h is BASE_CELL_H * scale), so the
         // SVG's logical-px labels aren't tiny on a hi-DPI window.

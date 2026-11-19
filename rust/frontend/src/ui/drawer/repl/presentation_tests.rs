@@ -720,3 +720,82 @@ fn an_error_with_no_message_still_says_error() {
     let lines = build(&mut owner, &model, &key, 0).0;
     assert_eq!(styled(&lines, "ERROR: "), [("ERROR: ".into(), Some(Color::LightRed), true), (String::new(), None, false)]);
 }
+
+/// One finished eval whose stdout holds `count` lines, `line NN` and then `pad` x's, in a pane `cols` cells wide.
+fn long_log(cols: usize, count: usize, pad: usize) -> (ReplModel, Owner, WsKey) {
+    let key = row("host", "row");
+    let (mut model, mut owner) = (ReplModel::default(), Owner::default());
+    model.edit_draft(DraftEdit::Replace("x".into()));
+    let plan = model.begin_eval(target(&key)).unwrap();
+    let id = plan.submission.eval_id();
+    model.complete_submission(plan.submission, Ok(()));
+    let out: String = (0..count).map(|i| format!("line {i:02} {}\n", "x".repeat(pad))).collect();
+    output(&mut model, &key, id, &out);
+    finish(&mut model, &key, id);
+    owner.set_cols(cols);
+    (model, owner, key)
+}
+
+/// The number of the `line NN` that row `at` belongs to: its own or the nearest above it that starts one.
+fn line_of(rows: &[String], at: usize) -> usize {
+    let start = (0..=at).rev().find(|&i| rows[i].starts_with("line ")).unwrap();
+    rows[start][5..7].parse().unwrap()
+}
+
+#[test]
+fn a_long_line_shows_whole_over_several_rows() {
+    let key = row("host", "row");
+    let (mut model, mut owner) = (ReplModel::default(), Owner::default());
+    owner.set_cols(20);
+    model.edit_draft(DraftEdit::Replace("let long_name = 1 + 2 + 3 + 4 + 5".into()));
+    let plan = model.begin_eval(target(&key)).unwrap();
+    let id = plan.submission.eval_id();
+    model.complete_submission(plan.submission, Ok(()));
+    output(&mut model, &key, id, &format!("{}\n", "o".repeat(50)));
+    frame(&mut model, &key, id, ReplFrame::Stderr { text: "e".repeat(45) });
+    frame(&mut model, &key, id, ReplFrame::Value { mime: "text/plain".into(), text: "v".repeat(30) });
+    frame(&mut model, &key, id, ReplFrame::Error { message: "m".repeat(50), stacktrace: vec![] });
+    finish(&mut model, &key, id);
+    let rows = text(&build(&mut owner, &model, &key, 0).0);
+    assert!(rows.iter().all(|r| r.chars().count() <= 20), "{rows:?}");
+    // Typed code: the continuation rows sit under the code, not under the prompt.
+    assert_eq!(rows[..3], ["julia> let long_name", "        = 1 + 2 + 3 ", "       + 4 + 5"]);
+    let joined = |c: char| rows.iter().filter(|r| r.starts_with(c)).cloned().collect::<String>();
+    assert_eq!(joined('o'), "o".repeat(50));
+    assert_eq!(rows.iter().filter(|r| r.starts_with('e')).cloned().collect::<String>(), "e".repeat(45));
+    assert_eq!(joined('v'), "v".repeat(30));
+    let at = rows.iter().position(|r| r.starts_with("ERROR: ")).unwrap();
+    assert_eq!(rows[at..at + 3].concat().replacen("ERROR: ", "", 1), "m".repeat(50));
+}
+
+#[test]
+fn a_resize_rewraps_and_a_scrolled_up_reader_stays_on_the_same_text() {
+    let (model, mut owner, key) = long_log(20, 30, 40);
+    let scroll = 31;
+    let rows = text(&build(&mut owner, &model, &key, scroll).0);
+    let bottom = rows.len() - 1 - scroll as usize;
+    let before = line_of(&rows, bottom);
+    for cols in [35, 12, 50, 7] {
+        owner.set_cols(cols);
+        let (lines, now) = build(&mut owner, &model, &key, scroll);
+        let rows = text(&lines);
+        assert_eq!(line_of(&rows, rows.len() - 1 - now as usize), before, "at {cols} columns the bottom row is line {before}");
+        let _ = build(&mut owner, &model, &key, now);
+    }
+}
+
+#[test]
+fn the_width_arriving_does_not_move_a_scrolled_up_reader() {
+    // The first frame has no width and is drawn unwrapped; the width then arrives.
+    let (model, mut owner, key) = long_log(0, 30, 40);
+    let rows = text(&build(&mut owner, &model, &key, 0).0);
+    let scroll = 12;
+    let before = line_of(&rows, rows.len() - 1 - scroll as usize);
+    assert_eq!(text(&build(&mut owner, &model, &key, scroll).0).len(), rows.len(), "unwrapped without a width");
+    assert!(owner.set_cols(20));
+    assert!(!owner.set_cols(0), "a width of 0 keeps the one known");
+    let (lines, now) = build(&mut owner, &model, &key, scroll);
+    let rows = text(&lines);
+    assert!(rows.len() > 60);
+    assert_eq!(line_of(&rows, rows.len() - 1 - now as usize), before);
+}

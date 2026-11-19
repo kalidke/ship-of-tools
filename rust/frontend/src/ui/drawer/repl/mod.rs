@@ -10,6 +10,7 @@ pub(in crate::ui) mod colors;
 pub(in crate::ui) mod lines;
 pub(in crate::ui) mod log;
 pub(in crate::ui) mod presentation;
+mod wrap;
 mod replies;
 
 /// Row-local runtime state. The counter and interrupt memory deliberately do not travel with it.
