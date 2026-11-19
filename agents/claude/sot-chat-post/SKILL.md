@@ -75,16 +75,19 @@ Write `@` and the person's name: the name Slack shows for them, their full name,
 backquotes or a code block, on a line that starts with `>`, or in an address like `ada@example.com` is linked. Never type
 Slack's own markup (`<@U123>`, `<!channel>`): it arrives as literal text.
 
-The output says whom the post mentioned and which names stayed text, each name in double quotes:
-`posted <ts>; mentioned "Ada" ("Ann Dee"); not linked: "@Zed" (no member), "@Ben" (several members: "Ben" ("Ben Smith"), "Ben Sample")`.
-A member is their display name in quotes, then their full name in quotes and parentheses when it differs, then
-`@handle` when two members share both names. Read the `mentioned` entries back to the person every time, quotes
-included, one person per quoted entry, so they can see it reached the people they meant: a first name can reach the only
-member who has it even when the person meant someone else. The reasons a name stays text are `no member`, `several
-members` (the members it could be follow; post again with a name only one of them has, if the person asks), `the member
-list could not be read`, `the member list is too large` and `the post would be too long`; `and more` ends a list longer
-than the output names. The post itself was made (exit 0): do not post it again. Tell the person which names were not
-linked and why.
+The output says how many people the post mentioned and who, and which names stayed text. For `@Ada @Zed @Ben`, with a
+member shown as `Ada` whose full name is `Ann Dee`, and members `Ben Smith` and `Ben Sample`:
+
+`posted <ts>; mentioned 1: "Ada" ("Ann Dee") @ann.dee; not linked: "@Zed" (no member), "@Ben" (several members, 2: "Ben Smith" @ben.smith, "Ben Sample" @ben.sample)`
+
+A member is their name in double quotes, their full name in quotes and parentheses when it differs, and their Slack
+handle. Read the `mentioned` members back to the person every time: as many people as the count says, each with their
+handle, so they can see it reached the people they meant (a first name can reach the only member who has it even when
+the person meant someone else). The reasons a name stays text are `no member`, `several members` (how many and who
+follow; post again with a name only one of them has, if the person asks), `the member list could not be read`, `the
+member list is too large` and `the post would be too long`; a count with `and more` and a last `and more` mean the list
+was longer than the output names. The post itself was made (exit 0): do not post it again. Tell the person which names
+were not linked and why. An exit 3 (`unknown`) says nothing of mentions: tell the person to look in the channel.
 
 `@here`, `@channel` and `@everyone` never notify from your post: they go out as text, and the output names them
 (`a session never notifies a whole channel`). If the person wants the whole channel notified, tell them to post it

@@ -16,29 +16,27 @@ const CHANNEL_WIDE: [(&str, &str); 3] = [("channel", "<!channel>"), ("here", "<!
 
 /// One person of the workspace: their id, the name the drawer shows (`users.info`'s rule), the names a poster may type,
 /// each marked whole or not (the display name and the real name whole, and the real name's first word when the real
-/// name has more than one), and what the reply says of them (`told`, set by `Index::new`).
+/// name has more than one), and what the reply says of them (`told`, `"display" ("real") @handle`).
 pub(crate) struct Member {
     id: String,
     shown: String,
-    /// The display name and the real name as the report shows them (`plain`, uncut), and the account's handle.
-    display: Option<String>,
-    real: Option<String>,
-    handle: String,
     told: String,
     keys: Vec<(String, bool)>,
 }
 
-/// The bytes a report's name part keeps, a handle's, and so a whole entry's, `"display" ("real") @handle`, at most
-/// 2 + 55 + 5 + 55 + 2 + 40 = 159, within `MAX_NAME`.
+/// The bytes a report's name part keeps and a handle's, and so a whole entry's, `"display" ("real") @handle`: at most
+/// `ENTRY` = (1 + 55 + 1) + (3 + 55 + 2) + (2 + 40) = 159, within wire's `MAX_NAME` (160), so every entry is read.
 const PART: usize = 55;
 const HANDLE: usize = 40;
+pub(crate) const ENTRY: usize = 1 + PART + 1 + 3 + PART + 2 + 2 + HANDLE;
+const _: () = assert!(ENTRY <= MAX_NAME);
 
-/// A member-chosen name as report data: no control or invisible formatting character (`Cc`, `Cf`), no `"` or `\`,
-/// whitespace runs one space, trimmed, and past `max` bytes cut and ended with `…`. So in a report a double quote is
-/// always structure, never data.
+/// A member-chosen name as report data: no control or invisible formatting character (`Cc`, `Cf`), no double quote or
+/// mark drawn like one (`is_quote`), no `\`, whitespace runs one space, trimmed, and past `max` bytes cut and ended with
+/// `…`. So in a report a double quote is always structure, never data, and nothing in a name looks like one.
 pub(crate) fn plain(s: &str, max: usize) -> String {
     let mut out = String::new();
-    for c in s.chars().filter(|c| !(c.is_control() || is_format(*c) || matches!(c, '"' | '\\'))) {
+    for c in s.chars().filter(|c| !(c.is_control() || is_format(*c) || is_quote(*c) || *c == '\\')) {
         if !c.is_whitespace() {
             out.push(c);
         } else if !out.ends_with(' ') {
@@ -59,6 +57,17 @@ pub(crate) fn plain(s: &str, max: usize) -> String {
 /// `plain` in double quotes: one entry of a report, or one part of it.
 fn quoted(s: &str, max: usize) -> String {
     format!("\"{}\"", plain(s, max))
+}
+
+/// A double quote or a mark drawn like one: `"`, its full-width and modifier forms, the double quotation marks of
+/// Unicode's initial and final punctuation (`Pi`, `Pf`: guillemets, curly double quotes, the substitution and
+/// transposition marks), the double primes and the CJK quotation marks and ditto mark. Single-quote look-alikes (`'`,
+/// `‘`, `’`, `‹`, `›`) stay: an apostrophe is part of many names.
+fn is_quote(c: char) -> bool {
+    matches!(c,
+        '"' | '\u{ab}' | '\u{bb}' | '\u{2ba}' | '\u{2ee}' | '\u{201c}'..='\u{201f}' | '\u{2033}' | '\u{2036}'
+        | '\u{2e02}'..='\u{2e05}' | '\u{2e09}'..='\u{2e0a}' | '\u{2e0c}'..='\u{2e0d}' | '\u{2e1c}'..='\u{2e1d}'
+        | '\u{2e20}'..='\u{2e21}' | '\u{3003}' | '\u{301d}'..='\u{301f}' | '\u{ff02}')
 }
 
 /// An invisible formatting character (Unicode's `Cf`, and the noncharacters beside it): zero-width characters, direction
@@ -84,30 +93,27 @@ impl Member {
         };
         let (display, real) = (field(raw.get("profile"), "display_name"), field(raw.get("profile"), "real_name"));
         let shown = display.clone().or_else(|| real.clone()).or_else(|| field(Some(raw), "name"))?;
-        let handle: String = raw.get("name").and_then(Value::as_str).unwrap_or("").chars().filter(|c| c.is_alphanumeric() || matches!(c, '.' | '_' | '-')).collect();
-        let handle = if handle.is_empty() { id.to_string() } else { plain(&handle, HANDLE) };
-        let report = |n: &Option<String>| n.as_deref().map(|n| plain(n, usize::MAX));
-        let first = real.as_deref().and_then(|r| r.split_once(char::is_whitespace)).map(|(f, _)| (f.to_string(), false));
-        let (display_told, real_told) = (report(&display).or_else(|| report(&Some(shown.clone()))), report(&real));
+        // The handle Slack keeps unique per workspace, kept to letters, digits, `.`, `_` and `-` (else the id), and cut
+        // to `HANDLE` bytes with no mark, so it is one word the report's structure ends at.
+        let kept: String = raw.get("name").and_then(Value::as_str).unwrap_or("").chars().filter(|c| c.is_alphanumeric() || matches!(c, '.' | '_' | '-')).collect();
+        let mut handle = if kept.is_empty() { id.to_string() } else { kept };
+        let mut end = handle.len().min(HANDLE);
+        while !handle.is_char_boundary(end) {
+            end -= 1;
+        }
+        handle.truncate(end);
+        let first_word = real.as_deref().and_then(|r| r.split_once(char::is_whitespace)).map(|(f, _)| (f.to_string(), false));
+        // The report's entry: the display name (else the shown name) in double quotes, then, when the real name exists
+        // and differs ignoring case, the real name in double quotes inside parentheses, then the handle, always, so no two
+        // entries are alike whatever names a member copies.
+        let first = plain(display.as_deref().unwrap_or(&shown), usize::MAX);
+        let mut told = quoted(&first, PART);
+        if let Some(real) = real.as_deref().map(|r| plain(r, usize::MAX)).filter(|r| r.to_lowercase() != first.to_lowercase()) {
+            told += &format!(" ({})", quoted(&real, PART));
+        }
+        told += &format!(" @{handle}");
         let whole = [display, real].into_iter().flatten().map(|k| (k, true));
-        let mut member = Member { id: id.into(), shown, display: display_told, real: real_told, handle, told: String::new(), keys: whole.chain(first).collect() };
-        member.told = member.entry(false);
-        Some(member)
-    }
-
-    /// The report's entry: the display name (else the real name) in double quotes, then, when the real name exists and
-    /// differs ignoring case, the real name in double quotes inside parentheses, then, for a member whose display and real
-    /// names another member also has (`twin`), ` @handle`.
-    fn entry(&self, twin: bool) -> String {
-        let first = self.display.as_deref().unwrap_or_default();
-        let mut entry = quoted(first, PART);
-        if let Some(real) = self.real.as_deref().filter(|r| r.to_lowercase() != first.to_lowercase()) {
-            entry += &format!(" ({})", quoted(real, PART));
-        }
-        if twin {
-            entry += &format!(" @{}", self.handle);
-        }
-        entry
+        Some(Member { id: id.into(), shown, told, keys: whole.chain(first_word).collect() })
     }
 }
 
@@ -125,19 +131,12 @@ pub(crate) struct Index {
 }
 
 impl Index {
-    pub(crate) fn new(mut members: Vec<Member>) -> Index {
+    pub(crate) fn new(members: Vec<Member>) -> Index {
         let mut by_head: HashMap<String, Vec<(usize, usize)>> = HashMap::new();
         for (m, member) in members.iter().enumerate() {
             for (k, (key, _)) in member.keys.iter().enumerate() {
                 by_head.entry(head(key)).or_default().push((m, k));
             }
-        }
-        // Members whose display and real names are another's, ignoring case, are told apart by their handles.
-        let names = |m: &Member| (m.display.as_deref().map(str::to_lowercase), m.real.as_deref().map(str::to_lowercase));
-        let mut seen: HashMap<_, usize> = HashMap::new();
-        members.iter().for_each(|m| *seen.entry(names(m)).or_default() += 1);
-        for m in members.iter_mut().filter(|m| seen[&names(&**m)] > 1) {
-            m.told = m.entry(true);
         }
         Index { members, by_head }
     }

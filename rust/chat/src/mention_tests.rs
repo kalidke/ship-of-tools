@@ -118,7 +118,7 @@ fn the_rule_whole_names_first_then_a_first_name() {
     let firsts = [Members::person("U0BEA", "Bea", "Ada Example"), Members::person("U0CEE", "Cee", "Ada Other")];
     let l = link("@Ada", ROW, Ok(&index(&firsts)), MAX_TEXT);
     assert_eq!((l.text.as_str(), names(&l)), ("@Ada", vec![("Ada", SeveralMembers)]));
-    assert_eq!(l.unlinked[0].candidates, [r#""Bea" ("Ada Example")"#, r#""Cee" ("Ada Other")"#], "the members it could be");
+    assert_eq!(l.unlinked[0].candidates, [r#""Bea" ("Ada Example") @u0bea"#, r#""Cee" ("Ada Other") @u0cee"#], "the members it could be");
 }
 
 /// No name a member chooses takes a mention typed for another member with punctuation after the name: `Ada,`, `Ada.`,
@@ -172,7 +172,7 @@ fn a_name_that_extends_another_by_punctuation_never_takes_the_mention() {
     assert_eq!(link("@Ada- thanks", ROW, Ok(&index(&ada)), MAX_TEXT).text, "<@U0ADA>- thanks");
     // The stated limit: a name that is another's and a further word takes the mention typed with that word, and says so.
     let l = link("@Ada please review", PERSON, Ok(&index(&people)), MAX_TEXT);
-    assert_eq!((l.text.as_str(), l.mentioned.as_slice()), ("<@U0MAL> review", [r#""Ada please" ("Mal Lory")"#.to_string()].as_slice()));
+    assert_eq!((l.text.as_str(), l.mentioned.as_slice()), ("<@U0MAL> review", [r#""Ada please" ("Mal Lory") @u0mal"#.to_string()].as_slice()));
 }
 
 /// Every text of up to four tokens over a small alphabet of names, joiners and words, for a person and a row: each mention
@@ -241,8 +241,8 @@ fn mentioned_shows_the_real_name_beside_a_display_name_that_differs() {
         Members::person("U0LONG", "Long", &long),
     ];
     let l = link("@Ada @Ben Sample @Cy One @Dee @Long", ROW, Ok(&index(&people)), MAX_TEXT);
-    let cut = format!(r#""Long" ("{}…")"#, &long[..52]);
-    assert_eq!(l.mentioned, [r#""Ada" ("Ann Dee")"#, r#""ben sample""#, r#""Cy One""#, r#""Dee""#, cut.as_str()]);
+    let cut = format!(r#""Long" ("{}…") @u0long"#, &long[..52]);
+    assert_eq!(l.mentioned, [r#""Ada" ("Ann Dee") @u0ada"#, r#""ben sample" @u0ben"#, r#""Cy One" @u0cy"#, r#""Dee" @u0dee"#, cut.as_str()]);
     assert!(l.mentioned.iter().all(|m| m.len() <= sot_protocol::chat::MAX_NAME));
 }
 
@@ -300,43 +300,98 @@ fn no_member_name_can_forge_the_report() {
     assert_eq!(
         l.mentioned,
         [
-            r#""Ada please" ("x), Ada (Ada Lovelace")"#,
-            r#""Zed; not linked: @Ada (no member)" ("Zed Odd")"#,
-            r#""Quote, Ada" ("Q R")"#,
-            r#""Backslash" ("B S")"#,
-            r#""Rlo" ("eciL")"#,
-            r#""Zwj" ("Z J")"#,
-            r#""Ls" ("Ls mentioned Ada")"#,
-            r#""" ("Only Quotes")"#,
-            r#""Gone" ("")"#,
+            r#""Ada please" ("x), Ada (Ada Lovelace") @u0mal"#,
+            r#""Zed; not linked: @Ada (no member)" ("Zed Odd") @u0zed"#,
+            r#""Quote, Ada" ("Q R") @u0q"#,
+            r#""Backslash" ("B S") @u0bs"#,
+            r#""Rlo" ("eciL") @u0rlo"#,
+            r#""Zwj" ("Z J") @u0zwj"#,
+            r#""Ls" ("Ls mentioned Ada") @u0ls"#,
+            r#""" ("Only Quotes") @u0only"#,
+            r#""Gone" ("") @u0gone"#,
         ]
     );
     assert_eq!(entries(&l.mentioned.join(", ")), l.mentioned, "the line splits back into exactly the entries sent");
+    // Marks drawn like a double quote go too, so no name reads as a second entry to an eye; an apostrophe stays.
+    let looks = "x\u{2ba}), \u{201c}Ada\u{201d} (\u{ff02}Ada\u{2033} \u{3003}\u{ab}L\u{bb}\u{2036}\u{301d}\u{301e}\u{2ee}\u{201e}";
+    assert_eq!(super::plain(looks, 160), "x), Ada (Ada L");
+    assert_eq!(super::plain("O\u{2019}Brien \u{2018}Al\u{2019} O'Neil \u{2039}x\u{203a}", 160), "O\u{2019}Brien \u{2018}Al\u{2019} O'Neil \u{2039}x\u{203a}");
     // The typed name a report echoes, and the candidates, are made the same way.
     let twins = [Members::person("U0Q1", "Quo\"te", "A"), Members::person("U0Q2", "Quo\"te", "B")];
     let l = link("@Quo\"te", PERSON, Ok(&index(&twins)), MAX_TEXT);
     assert_eq!(l.unlinked[0].name, r#""@Quote""#);
-    assert_eq!(entries(&l.unlinked[0].candidates.join(", ")), [r#""Quote" ("A")"#, r#""Quote" ("B")"#]);
+    assert_eq!(entries(&l.unlinked[0].candidates.join(", ")), [r#""Quote" ("A") @u0q1"#, r#""Quote" ("B") @u0q2"#]);
 }
 
-/// A member who copies another's display and real names is told apart by the account's handle, both of them, ` @handle`
-/// outside the quotes; a member with no handle by the id.
+/// Every entry ends with the account's handle, so no two entries are alike whatever names a member copies: a member
+/// who copies another's real name under a display name that is the other's first name, one who copies both names, and
+/// one whose display name is another's real name. A handle is kept to letters, digits, `.`, `_` and `-`, else the id is
+/// used, and either is cut to 40 bytes, so an entry at its longest is `ENTRY` (159) bytes, within `MAX_NAME`.
 #[test]
-fn a_member_whose_names_another_copies_is_told_by_the_handle() {
-    let mut copy = Members::person("U0COPY", "ada", "ADA EXAMPLE");
-    copy["name"] = json!("ada.copy");
-    let mut ada = Members::person("U0ADA", "Ada", "Ada Example");
-    ada["name"] = json!("ada");
-    let other = Members::person("U0OTH", "Ada", "Ann Other");
-    let mut no_handle = Members::person("U0NOH", "Bo", "Bo Bo");
-    no_handle["name"] = json!("\u{202e}");
-    let twin_bo = Members::person("U0BO2", "bo", "bo bo");
-    let all = index(&[copy, ada, other, no_handle, twin_bo]);
+fn every_entry_ends_with_the_handle_and_fits_its_bound() {
+    let named = |id: &str, display: &str, real: &str, handle: &str| {
+        let mut p = Members::person(id, display, real);
+        p["name"] = json!(handle);
+        p
+    };
+    let all = index(&[
+        named("U0ADA", "", "Ada Example", "ada"),
+        named("U0COPY", "Ada", "Ada Example", "ada.copy"),
+        named("U0TWIN", "", "ADA EXAMPLE", "ada.twin"),
+        named("U0RTL", "Rtl", "R T", "r\u{202e}t\"l, x"),
+        named("U0NOH", "Bo", "Bo Bo", "\u{202e}"),
+    ]);
     let told: Vec<&str> = all.members.iter().map(|m| m.told.as_str()).collect();
     assert_eq!(
         told,
-        [r#""ada" ("ADA EXAMPLE") @ada.copy"#, r#""Ada" ("Ada Example") @ada"#, r#""Ada" ("Ann Other")"#, r#""Bo" ("Bo Bo") @U0NOH"#, r#""bo" ("bo bo") @u0bo2"#]
+        [r#""Ada Example" @ada"#, r#""Ada" ("Ada Example") @ada.copy"#, r#""ADA EXAMPLE" @ada.twin"#, r#""Rtl" ("R T") @rtlx"#, r#""Bo" ("Bo Bo") @U0NOH"#]
     );
+    let l = link("@Ada hi", PERSON, Ok(&all), MAX_TEXT);
+    assert_eq!(l.mentioned, [r#""Ada" ("Ada Example") @ada.copy"#], "the copy takes `@Ada` (a stated limit), and its handle says so");
+    // At the bound: the longest parts and the longest handle, and the longest id when there is no handle.
+    let (d, r) = ("D".repeat(80), "R".repeat(80));
+    let long_id = format!("U{}", "9".repeat(63));
+    let all = index(&[named("U0LONG", &d, &r, &"h".repeat(70)), named(&long_id, &d, &r, "")]);
+    for m in &all.members {
+        assert_eq!(m.told.len(), super::ENTRY, "{}", m.told);
+        assert!(m.told.len() <= sot_protocol::chat::MAX_NAME);
+        assert_eq!(entries(&m.told), [m.told.clone()]);
+    }
+    assert!(all.members[1].told.ends_with(&format!(" @{}", &long_id[..40])));
+}
+
+/// Every report line the manual, the skill and the contract show is this function's output for the members and the text
+/// beside it (the documents quote these lines exactly; the window prints `posted` and `sot-fe` `posted <ts>` before them).
+#[test]
+fn the_documented_report_lines_are_the_functions_output() {
+    let member = |id: &str, display: &str, real: &str, handle: &str| {
+        let mut p = Members::person(id, display, real);
+        p["name"] = json!(handle);
+        p
+    };
+    let ada_example = member("U0AEX", "", "Ada Example", "ada.example");
+    let ann = member("U0ANN", "Ada", "Ann Dee", "ann.dee");
+    let ada_other = member("U0AOT", "", "Ada Other", "ada.other");
+    let ben = member("U0BEN", "Ben", "", "ben");
+    let ben_sample = member("U0BSA", "", "Ben Sample", "ben.sample");
+    let ben_smith = member("U0BSM", "", "Ben Smith", "ben.smith");
+    let cases: Vec<(Vec<Value>, &str, PostKind, &str, &str)> = vec![
+        (vec![ada_example.clone()], "@ada", PERSON, "posted", r#"posted; mentioned 1: "Ada Example" @ada.example"#),
+        (vec![ann.clone()], "@Ada", PERSON, "posted", r#"posted; mentioned 1: "Ada" ("Ann Dee") @ann.dee"#),
+        (vec![ada_example.clone(), ada_other.clone()], "@Ada", PERSON, "posted",
+            r#"posted; not linked: "@Ada" (several members, 2: "Ada Example" @ada.example, "Ada Other" @ada.other)"#),
+        (vec![ada_example.clone()], "@Ada Lovelace", PERSON, "posted", r#"posted; mentioned 1: "Ada Example" @ada.example"#),
+        (vec![ada_example.clone(), ann.clone()], "@Ada", PERSON, "posted", r#"posted; mentioned 1: "Ada" ("Ann Dee") @ann.dee"#),
+        (vec![ben.clone(), ben_sample.clone()], "@Ben Sample", PERSON, "posted", r#"posted; mentioned 1: "Ben Sample" @ben.sample"#),
+        (vec![ben.clone(), ben_sample.clone()], "@Ben, hi", PERSON, "posted", r#"posted; mentioned 1: "Ben" @ben"#),
+        (vec![ben.clone()], "@Zed", PERSON, "posted", r#"posted; not linked: "@Zed" (no member)"#),
+        (vec![ann.clone(), ben_smith.clone(), ben_sample.clone()], "@Ada @Zed @Ben", ROW, "posted <ts>",
+            r#"posted <ts>; mentioned 1: "Ada" ("Ann Dee") @ann.dee; not linked: "@Zed" (no member), "@Ben" (several members, 2: "Ben Smith" @ben.smith, "Ben Sample" @ben.sample)"#),
+    ];
+    for (people, typed, kind, lead, line) in cases {
+        let l = link(typed, kind, Ok(&index(&people)), MAX_TEXT);
+        assert_eq!(format!("{lead}{}", sot_protocol::ops::told_words(&l.mentioned, &l.unlinked)), line, "{typed}");
+    }
 }
 
 /// A combining mark is part of the word it follows: `Ada` and a decomposed accent is not Ada.
@@ -471,7 +526,7 @@ fn the_names_left_as_text_are_at_most_max_mentions_and_each_once() {
     assert_eq!(names(&l).last(), Some(&("", More)), "the names past the cap are one `more` entry, never silence");
     // Past sixteen mentions, the last name told is empty: and more.
     let l = linked(&"@Ada ".repeat(17), ROW);
-    assert_eq!((l.mentioned.len(), l.mentioned[0].as_str(), l.mentioned[15].as_str()), (16, r#""Ada" ("Ada Example")"#, ""));
+    assert_eq!((l.mentioned.len(), l.mentioned[0].as_str(), l.mentioned[15].as_str()), (16, r#""Ada" ("Ada Example") @u0ada"#, ""));
     // Exactly the cap: every name, no `more`.
     let typed: String = (0..16).map(|n| format!("@z{n} ")).collect();
     assert!(names(&linked(&typed, ROW)).iter().all(|(_, why)| *why == NoMember));
@@ -542,7 +597,7 @@ async fn a_person_and_a_row_mention_in_a_channel_and_a_thread() {
         let fake = fake_with(people(), None).await;
         let api = api(&fake);
         let (outcome, Told { unlinked, mentioned }) = api.post_linked("C0CHAN", None, PERSON, "", "hi @Ada & @Zed").await.unwrap();
-        assert_eq!(mentioned, [r#""Ada" ("Ada Example")"#], "the members mentioned, by the display name and the real name");
+        assert_eq!(mentioned, [r#""Ada" ("Ada Example") @u0ada"#], "the members mentioned, by the display name, the real name and the handle");
         assert!(posted(&outcome), "{outcome:?}");
         assert_eq!(unlinked.iter().map(|u| (bare(&u.name), u.why)).collect::<Vec<_>>(), [("Zed", NoMember)]);
         let (outcome, Told { unlinked, .. }) = api.post_linked("C0CHAN", Some("1700000100.000000"), ROW, "alpha-h", "@Ben Sample see").await.unwrap();

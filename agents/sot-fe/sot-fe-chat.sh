@@ -87,10 +87,10 @@ _chat_resolve() {
 }
 
 # The one post's reply $1 (empty for none): exits 0 with `posted <ts>` (or `posted file <id>` for a file share Slack
-# named no message of), followed by `; mentioned <entries>` for the members the post mentions and `; not linked:
-# <name> (<why>[: <candidates>])` for each `@` name the daemon left as text, each entry and name printed as the daemon
-# made it (`"display" ("real")`, `"@name"`: a double quote is structure) and joined by `, ` (the words are wire's
-# `ChatUnlinkedWhy::text`; an empty name is `and more`), 2 when nothing was posted, 3 when the post may exist.
+# named no message of), followed by the report wire's `told_words` makes (`; mentioned <n>: <entries>`, `; not linked:
+# <name> (<why>[, <n>: <candidates>])`, entries printed as the daemon made them, `"display" ("real") @handle` and
+# `"@name"`, where a double quote is structure; the count is the people a list names, `<n> and more` with `, and more`
+# when an empty last name says there were more), 2 when nothing was posted, 3 when the post may exist.
 _chat_posted() {
     local resp="$1" err code
     if [ -z "$resp" ]; then
@@ -108,11 +108,12 @@ _chat_posted() {
             printf '%s' "$resp" | jq -r '{no_member: "no member", several_members: "several members",
                 members_unread: "the member list could not be read", too_many_members: "the member list is too large",
                 channel_wide: "a session never notifies a whole channel", too_long: "the post would be too long"} as $why
-                | def names: map(if . == "" then "and more" else . end) | join(", ");
+                | def names: (map(select(. != "")) | length) as $n | (if $n < length then " and more" else "" end) as $more
+                    | "\($n)\($more): " + (map(select(. != "")) | join(", ")) + (if $more == "" then "" else ", and more" end);
                 (if .payload.ts then "posted \(.payload.ts)" else "posted file \(.payload.file)" end)
                 + ((.payload.mentioned // []) | if length > 0 then "; mentioned " + names else "" end)
                 + ([.payload.unlinked[]? | if .why == "more" then "and more"
-                    else "\(.name) (\($why[.why] // "not linked")\(if (.candidates // []) | length > 0 then ": " + (.candidates | names) else "" end))" end]
+                    else "\(.name) (\($why[.why] // "not linked")\(if (.candidates // []) | length > 0 then ", " + (.candidates | names) else "" end))" end]
                    | if length > 0 then "; not linked: " + join(", ") else "" end)'
             ;;
         refused)

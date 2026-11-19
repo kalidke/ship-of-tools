@@ -765,11 +765,11 @@ fn a_post_made_names_whom_it_mentioned_and_what_was_not_linked() {
     let entry = |name: &str, why, candidates: &[&str]| ChatUnlinked { name: name.into(), why, candidates: candidates.iter().map(|c| c.to_string()).collect() };
     let unlinked = vec![
         entry(r#""@Zed""#, ChatUnlinkedWhy::NoMember, &[]),
-        entry(r#""@Ben""#, ChatUnlinkedWhy::SeveralMembers, &[r#""Ben" ("Ben Smith")"#, r#""Ben Sample""#]),
-        entry(r#""@Cy""#, ChatUnlinkedWhy::SeveralMembers, &[r#""Cy One""#, r#""Cy Two""#, r#""Cy Three""#, r#""Cy Four""#, ""]),
+        entry(r#""@Ben""#, ChatUnlinkedWhy::SeveralMembers, &[r#""Ben Smith" @ben.smith"#, r#""Ben Sample" @ben.sample"#]),
+        entry(r#""@Cy""#, ChatUnlinkedWhy::SeveralMembers, &[r#""Cy One" @c1"#, r#""Cy Two" @c2"#, r#""Cy Three" @c3"#, r#""Cy Four" @c4"#, ""]),
     ];
     // The reviewer's forged pair, as the daemon now sends it: one entry, whatever the names hold.
-    let mentioned = vec![r#""Ada please" ("x), Ada (Ada Lovelace")"#.to_string(), r#""Ben Sample""#.to_string()];
+    let mentioned = vec![r#""Ada please" ("x), Ada (Ada Lovelace") @mal"#.to_string(), r#""Ben Sample" @ben.sample"#.to_string()];
     d.edit(Some(&r), Edit::Text("hi @Ada please, @Ben Sample, @Zed, @Ben and @Cy")).unwrap();
     let req = posted(d.send(Some(&r), Some("Ada"), at).unwrap());
     reply(&mut d, &req, ChatReply::Done(ChatPostRes::Posted { ts: ts.clone(), unlinked, mentioned }), at);
@@ -777,23 +777,23 @@ fn a_post_made_names_whom_it_mentioned_and_what_was_not_linked() {
     assert_eq!(
         d.take_notice().as_deref(),
         Some(concat!(
-            r#"posted; mentioned "Ada please" ("x), Ada (Ada Lovelace"), "Ben Sample"; not linked: "@Zed" (no member), "#,
-            r#""@Ben" (several members: "Ben" ("Ben Smith"), "Ben Sample"), "#,
-            r#""@Cy" (several members: "Cy One", "Cy Two", "Cy Three", "Cy Four", and more)"#
+            r#"posted; mentioned 2: "Ada please" ("x), Ada (Ada Lovelace") @mal, "Ben Sample" @ben.sample; not linked: "@Zed" (no member), "#,
+            r#""@Ben" (several members, 2: "Ben Smith" @ben.smith, "Ben Sample" @ben.sample), "#,
+            r#""@Cy" (several members, 4 and more: "Cy One" @c1, "Cy Two" @c2, "Cy Three" @c3, "Cy Four" @c4, and more)"#
         ))
     );
     d.edit(Some(&r), Edit::Text("hi")).unwrap();
     let req = posted(d.send(Some(&r), Some("Ada"), at).unwrap());
-    reply(&mut d, &req, ChatReply::Done(ChatPostRes::Posted { ts: ts.clone(), unlinked: Vec::new(), mentioned: vec![r#""Ada Example""#.into()] }), at);
-    assert_eq!(d.take_notice().as_deref(), Some(r#"posted; mentioned "Ada Example""#), "a mention made is always told");
+    reply(&mut d, &req, ChatReply::Done(ChatPostRes::Posted { ts: ts.clone(), unlinked: Vec::new(), mentioned: vec![r#""Ada Example" @ada.example"#.into()] }), at);
+    assert_eq!(d.take_notice().as_deref(), Some(r#"posted; mentioned 1: "Ada Example" @ada.example"#), "a mention made is always told");
     d.edit(Some(&r), Edit::Text("the fit @Zed")).unwrap();
     let req = file_posted(d.send_file(Some(&r), Previewed::File("files:figs/fit.png"), at).unwrap());
     let unlinked = vec![entry(r#""@Zed""#, ChatUnlinkedWhy::MembersUnread, &[]), entry("", ChatUnlinkedWhy::More, &[])];
-    let mentioned = vec![r#""Ada Example""#.to_string(), String::new()];
+    let mentioned = vec![r#""Ada Example" @ada.example"#.to_string(), String::new()];
     d.on_evt(&"a".to_string(), ChatEvt::FilePosted { req, reply: ChatReply::Done(ChatPostFileRes::Posted { file: "F0FILE".into(), ts: None, unlinked, mentioned }) }, at);
     assert_eq!(
         d.take_notice().as_deref(),
-        Some(r#"shared fit.png to C1; mentioned "Ada Example", and more; not linked: "@Zed" (the member list could not be read), and more"#)
+        Some(r#"shared fit.png to C1; mentioned 1 and more: "Ada Example" @ada.example, and more; not linked: "@Zed" (the member list could not be read), and more"#)
     );
 }
 

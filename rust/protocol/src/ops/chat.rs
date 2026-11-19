@@ -599,6 +599,32 @@ fn lenient_unlinked<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<ChatUn
     Ok(entries.into_iter().filter(|e| e.is_object()).filter_map(|e| serde_json::from_value(e).ok()).take(MAX_MENTIONS).collect())
 }
 
+/// What a `posted` reply tells of its `@` names, the one form the window's status line and `sot-fe chat post` end their
+/// words with: `; mentioned <n>: <entries>` and `; not linked: <name> (<reason>)`, a `several_members` entry as `<name>
+/// (several members, <n>: <entries>)`. The count is the number of people a list names, `<n> and more` when an empty
+/// last name says there were more (the list then ends `, and more`); entries are printed as the daemon made them
+/// (chat guarantee 35: a double quote is always structure), joined by `, `. Empty when there is nothing to tell.
+pub fn told_words(mentioned: &[String], unlinked: &[ChatUnlinked]) -> String {
+    let list = |names: &[String]| {
+        let named: Vec<&str> = names.iter().map(String::as_str).filter(|n| !n.is_empty()).collect();
+        let more = if named.len() < names.len() { " and more" } else { "" };
+        format!("{}{more}: {}{}", named.len(), named.join(", "), if more.is_empty() { "" } else { ", and more" })
+    };
+    let entry = |u: &ChatUnlinked| match u.why {
+        ChatUnlinkedWhy::More => u.why.text().to_string(),
+        _ if !u.candidates.is_empty() => format!("{} ({}, {})", u.name, u.why.text(), list(&u.candidates)),
+        _ => format!("{} ({})", u.name, u.why.text()),
+    };
+    let mut out = String::new();
+    if !mentioned.is_empty() {
+        out += &format!("; mentioned {}", list(mentioned));
+    }
+    if !unlinked.is_empty() {
+        out += &format!("; not linked: {}", unlinked.iter().map(entry).collect::<Vec<_>>().join(", "));
+    }
+    out
+}
+
 impl ChatUnlinkedWhy {
     /// The one fixed text of a reason, as the window and `sot-fe chat post` show it.
     pub fn text(self) -> &'static str {

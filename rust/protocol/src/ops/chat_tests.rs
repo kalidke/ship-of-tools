@@ -838,3 +838,20 @@ fn a_posted_reply_names_whom_it_mentioned_and_whom_a_name_could_be() {
     let ChatPostRes::Posted { mentioned, unlinked, .. } = serde_json::from_value::<ChatPostRes>(odd).unwrap() else { panic!("not posted") };
     assert!(mentioned.is_empty() && unlinked[0].candidates.is_empty());
 }
+
+/// `told_words`, the one form of the report: the count before each list (the number of people named, `and more` when an
+/// empty last name says there were more), entries as the daemon made them, nothing when there is nothing.
+#[test]
+fn the_report_counts_the_people_before_each_list() {
+    let s = |v: &[&str]| v.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+    let entry = |name: &str, why, candidates: &[&str]| ChatUnlinked { name: name.into(), why, candidates: s(candidates) };
+    assert_eq!(told_words(&[], &[]), "");
+    assert_eq!(told_words(&s(&[r#""A" @a"#]), &[]), r#"; mentioned 1: "A" @a"#);
+    assert_eq!(told_words(&s(&[r#""A" @a"#, r#""B" @b"#, ""]), &[]), r#"; mentioned 2 and more: "A" @a, "B" @b, and more"#);
+    let unlinked = [
+        entry(r#""@Zed""#, ChatUnlinkedWhy::NoMember, &[]),
+        entry(r#""@Cy""#, ChatUnlinkedWhy::SeveralMembers, &[r#""C1" @c1"#, r#""C2" @c2"#]),
+        entry("", ChatUnlinkedWhy::More, &[]),
+    ];
+    assert_eq!(told_words(&[], &unlinked), r#"; not linked: "@Zed" (no member), "@Cy" (several members, 2: "C1" @c1, "C2" @c2), and more"#);
+}
