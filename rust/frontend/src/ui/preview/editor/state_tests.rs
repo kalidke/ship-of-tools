@@ -20,7 +20,9 @@ impl Harness {
         let mut editor = Editor::default();
         editor.arm_file("files:x".into());
         editor.open_file("files:x", true, content.to_string(), "v".into());
-        Self { fs, width: cell * cells as f32 + 0.5, editor }
+        let mut h = Self { fs, width: cell * cells as f32 + 0.5, editor };
+        h.reshape();
+        h
     }
 
     /// The window's re-shape after a key: the edit's spans shaped at the pane's width.
@@ -35,6 +37,15 @@ impl Harness {
         self.editor.cursor_place().expect("the cursor has a place")
     }
 
+    /// A concept edit: the frontmatter is the read-only header above the body.
+    fn concept(content: &str, cells: usize) -> Self {
+        let mut h = Self::new("", cells);
+        h.editor = Editor::default();
+        h.editor.enter_concept("files/x".into(), None, content);
+        h.reshape();
+        h
+    }
+
     fn edit(&mut self) -> &mut EditState {
         self.editor.edit.as_mut().unwrap()
     }
@@ -46,14 +57,14 @@ impl Harness {
     /// Place the cursor as a click would: no goal column carries over.
     fn put(&mut self, at: usize) {
         self.edit().buf.set_cursor(at);
-        self.edit().goal_x = None;
+        self.edit().goal = None;
     }
 
     fn press(&mut self, logical: Key, action: Option<Action>, shift: bool, page_rows: usize) {
-        let (fs, width) = (&mut self.fs, self.width);
         let pressed = Pressed { logical: &logical, action, ctrl: false, alt: false, shift, super_: false };
         let edit = self.editor.edit.as_mut().unwrap();
-        edit_buffer_key(edit, pressed, page_rows, |spans| MarkdownPreview::new_plain_spans(fs, spans, width, 1.0));
+        edit_buffer_key(edit, pressed, page_rows, self.editor.shaped.as_ref());
+        self.reshape();
     }
 
     fn act(&mut self, action: Action) {
@@ -166,6 +177,7 @@ fn up_on_the_first_row_goes_to_the_start_and_down_on_the_last_to_the_end() {
     let mut editor = Editor::default();
     editor.enter_concept("files/x".into(), None, "---\nkind: note\n---\nbody one\nbody two");
     h.editor = editor;
+    h.reshape();
     h.put(3);
     h.act(Action::EditUp);
     assert_eq!(h.cursor(), 0);
@@ -177,6 +189,7 @@ fn a_wrapped_paragraph_under_a_header_is_walked_by_rows() {
     editor.enter_concept("files/x".into(), None, &format!("---\nkind: note\n---\n{PARAGRAPH}\nnext"));
     let mut h = Harness::new("", 24);
     h.editor = editor;
+    h.reshape();
     assert!(h.rows_of_line(0) >= 4);
     h.act(Action::EditDown);
     let at = h.cursor();
@@ -217,13 +230,16 @@ fn page_keys_take_the_same_step_by_the_pane_rows() {
 }
 
 #[test]
-fn text_the_rows_cannot_be_matched_to_steps_by_the_files_lines() {
+fn a_lone_cr_or_separator_ends_a_shaped_row_and_is_walked_by_rows() {
     for sep in ["\r", "\u{2028}", "\u{85}", "\u{2029}"] {
         let first = format!("aaaa{sep}bbbb");
         let mut h = Harness::new(&format!("{first}\ncccc"), 40);
         h.put(2);
         h.act(Action::EditDown);
-        assert_eq!(h.cursor(), first.len() + 1 + 2, "separator {sep:?}: the file's next line, same column");
+        assert_eq!(h.cursor(), 4 + sep.len() + 2, "separator {sep:?}: the shaper's next row, same column");
+        h.act(Action::EditDown);
+        assert_eq!(h.cursor(), first.len() + 1 + 2, "separator {sep:?}: the file's next line");
+        h.act(Action::EditUp);
         h.act(Action::EditUp);
         assert_eq!(h.cursor(), 2);
     }
@@ -352,13 +368,12 @@ fn the_cursors_row_is_found_under_a_header_and_not_in_a_stale_buffer() {
     editor.enter_concept("files/x".into(), None, "---\nkind: note\n---\none\ntwo\nthree");
     let mut h = Harness::new("", 40);
     h.editor = editor;
+    h.reshape();
     h.edit().buf.set_cursor(5);
-    let (fs, width) = (&mut h.fs, h.width);
-    h.editor.reshape(&KeyBindings::defaults(), |spans| MarkdownPreview::new_plain_spans(fs, spans, width, 1.0));
     let place = h.editor.cursor_place().unwrap();
     assert!(place.top > 0.0 && place.height > 0.0, "below the header's lines: {place:?}");
     // Text typed since the shaping: the buffer is not the edit's, so there is no row to follow.
-    h.type_char("x");
+    h.edit().buf.insert_char('x');
     assert_eq!(h.editor.cursor_place(), None);
 }
 
@@ -458,4 +473,153 @@ fn the_drawn_cursor_moves_one_row_for_each_down_from_every_start_column() {
             }
         }
     }
+}
+
+#[test]
+fn right_to_the_end_of_a_wrapped_row_then_down_and_up_stay_in_the_paragraph() {
+    let content = format!("before\n\n{PARAGRAPH}\n\nafter");
+    let mut h = Harness::new(&content, 24);
+    let start = 8;
+    h.put(start);
+    h.reshape();
+    let rows: Vec<_> = h.editor.shaped().unwrap().buffer.layout_runs().filter(|r| r.line_i == 2)
+        .map(|r| (r.line_top, r.glyphs.first().unwrap().start, r.glyphs.last().unwrap().end)).collect();
+    let (end0, start1) = (start + rows[0].2, start + rows[1].1);
+    assert!(start1 > end0, "a space is dropped where the row wraps");
+    // Right along the row to its end: the byte before the dropped space.
+    while h.cursor() < end0 {
+        h.act(Action::EditRight);
+    }
+    assert_eq!(h.place().top, rows[0].0);
+    h.act(Action::EditDown);
+    let down = h.cursor();
+    assert!(down > start1 && down < start + PARAGRAPH.len(), "Down from the end of a row stays in the paragraph: {down}");
+    assert_eq!(h.place().top, rows[1].0);
+    h.act(Action::EditUp);
+    assert_eq!(h.cursor(), end0, "Up returns to the end of the row");
+    // Left from the next row's start is the same place.
+    h.put(start1);
+    h.act(Action::EditLeft);
+    h.act(Action::EditLeft);
+    h.act(Action::EditRight);
+    assert_eq!(h.cursor(), end0);
+    h.act(Action::EditUp);
+    assert_eq!(h.cursor(), 7, "Up from the first row of the paragraph goes to the blank line above");
+    h.put(end0);
+    h.act(Action::EditUp);
+    assert_eq!(h.cursor(), 7);
+}
+
+#[test]
+fn a_step_from_inside_a_joined_character_moves_one_row() {
+    // `e` and a combining accent are one glyph: the byte between them is inside it.
+    let text = "cafe\u{301} ".repeat(12);
+    let mut h = Harness::new(&text, 20);
+    h.put(4);
+    let first = h.place();
+    h.act(Action::EditDown);
+    assert!(h.cursor() > 4);
+    let after = h.place();
+    assert!(after.top > first.top && after.top < first.top + 1.5 * first.height, "one row: {first:?} -> {after:?}");
+}
+
+const LOREM: &str = "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat.";
+
+/// The texts every walk goes over.
+fn walk_texts() -> Vec<(&'static str, String)> {
+    let md = format!("# Title\n\n{LOREM}\n\n{LOREM} {LOREM}\n\nShort line.\n\n{LOREM}\n");
+    let list = format!("- {LOREM}\n- second item that is short\n  - nested item {LOREM}\n1. numbered {LOREM}\n");
+    let code = "```rust\nfn main() { let x = vec![1, 2, 3]; let y: Vec<_> = x.iter().map(|v| v * 2).filter(|v| *v > 2).collect(); println!(\"{:?}\", y); }\n    // a comment that is quite long and goes past the edge of the pane for sure, yes indeed\n```\n".to_string();
+    let table = "| column one | column two | column three is long |\n|---|---|---|\n| a cell with words in it | another cell with more words | the third cell that wraps past the pane edge |\n".to_string();
+    let nospace = format!("see https://example.org/{}/end\nnext", "abcdefghij".repeat(12));
+    let tabs = "\tone\ttwo\tthree\tfour\tfive\tsix\tseven\teight\tnine\tten\televen\ttwelve\n\t\tdeep\tline\n".to_string();
+    let cjk = "日本語のテキストはスペースなしで折り返されます。これは長い段落で、ペインの幅を超えて何行にも折り返されるはずです。中文也一样，没有空格。\nnext".to_string();
+    let comb = "cafe\u{301} na\u{ef}ve re\u{301}sume\u{301} cre\u{300}me bru\u{302}le\u{301}e ".repeat(6);
+    let emoji = "hello 👋 world 🌍 love ❤️ family 👩‍👩‍👧 flag 🇺🇸 thumbs 👍🏽 done. ".repeat(4);
+    let crlf = format!("# Title\r\n\r\n{LOREM}\r\n\r\n{LOREM}\r\n");
+    let one_crlf = format!("{LOREM}\r\n{LOREM}\n{LOREM}");
+    let lone_cr = format!("{LOREM}\rsecond part\n{LOREM}");
+    vec![
+        ("markdown", md), ("list", list), ("code", code), ("table", table), ("nospace", nospace), ("tabs", tabs),
+        ("cjk", cjk), ("combining", comb), ("emoji", emoji), ("empty", String::new()), ("one_char", "a".into()),
+        ("only_newlines", "\n\n\n\n".into()), ("crlf", crlf), ("one_crlf", one_crlf), ("lone_cr", lone_cr),
+    ]
+}
+
+/// Down from the first byte to the end and Up back: every key moves the drawn cursor exactly one row, never
+/// backward, never into the middle of a character.
+fn walk(h: &mut Harness, what: &str) {
+    for down in [true, false] {
+        let body = h.edit().buf.body().to_string();
+        let (action, end) = if down { (Action::EditDown, body.len()) } else { (Action::EditUp, 0) };
+        h.put(if down { 0 } else { body.len() });
+        for step in 0..10_000 {
+            let (before, at) = (h.place(), h.cursor());
+            h.act(action);
+            let (now, to) = (h.place(), h.cursor());
+            let rows = ((now.top - before.top) / before.height).round() as i32 * if down { 1 } else { -1 };
+            assert!(body.is_char_boundary(to), "{what}: step {step} landed inside a character: {at} -> {to}");
+            assert!(if down { to >= at } else { to <= at }, "{what}: step {step} went the wrong way: {at} -> {to}");
+            assert!(rows == 1 || (to == end && rows == 0), "{what} ({}): step {step} moved the drawn cursor {rows} rows: {at} -> {to}", if down { "down" } else { "up" });
+            if to == at {
+                assert_eq!(to, end, "{what}: stuck at {at}");
+                break;
+            }
+            assert!(step < 9_999, "{what}: no end");
+        }
+    }
+}
+
+#[test]
+fn a_walk_down_and_up_moves_one_row_per_key_in_every_text() {
+    for cells in [40usize, 23] {
+        for (name, text) in walk_texts() {
+            let mut h = Harness::new(&text, cells);
+            walk(&mut h, &format!("{name} at {cells} cells"));
+        }
+        let front = format!("---\ntitle: a note\ntags: [x, y]\n---\n{LOREM}\n\n{LOREM}\n");
+        walk(&mut Harness::concept(&front, cells), &format!("frontmatter at {cells} cells"));
+        let in_file = format!("---\ntitle: a note\n---\n\n{LOREM}\n\n{LOREM}\n");
+        walk(&mut Harness::new(&in_file, cells), &format!("frontmatter in a file at {cells} cells"));
+    }
+}
+
+#[test]
+fn a_row_with_right_to_left_text_is_stepped_by_the_files_lines() {
+    // The second row of the paragraph holds a Hebrew word: its layout runs right to left, so a step onto it is the
+    // file's next line, not a row.
+    let content = format!("{}\nnext", "word ".repeat(7) + "שלום עולם " + &"word ".repeat(4));
+    let mut h = Harness::new(&content, 20);
+    h.put(2);
+    h.act(Action::EditDown);
+    assert!(h.cursor() > content.find('\n').unwrap(), "stepped by the file's lines: {}", h.cursor());
+}
+
+#[test]
+fn a_reload_ends_the_kept_column() {
+    let mut h = Harness::concept("---\nk: v\n---\nabcdefgh\nab\nabcdefgh", 40);
+    h.put(5);
+    h.act(Action::EditDown);
+    assert!(h.edit().goal.is_some());
+    h.editor.reload_concept(true, "---\nk: v\n---\nabcdefgh\nab\nabcdefgh");
+    assert_eq!(h.edit().goal, None);
+}
+
+#[test]
+fn the_kept_column_survives_a_change_of_scale() {
+    let (a, b, c) = ("a".repeat(60), "b".repeat(10), "c".repeat(60));
+    let body = format!("{a}\n{b}\n{c}");
+    let shaped = |fs: &mut FontSystem, scale: f32| {
+        let one = MarkdownPreview::new_plain_spans(fs, &[("m".into(), false)], 1000.0, scale);
+        let width = one.buffer.layout_runs().next().unwrap().glyphs[0].w * 100.5;
+        MarkdownPreview::new_plain_spans(fs, &[(body.clone(), false), ("\n\n-".into(), false)], width, scale)
+    };
+    let mut fs = FontSystem::new();
+    let small = shaped(&mut fs, 1.0);
+    let down = rows::vertical(&small.buffer, &body, 40, None, 1).unwrap();
+    assert_eq!(down.cursor, 61 + 10);
+    // The window zooms before the next Down: the kept column is still column 40.
+    let large = shaped(&mut fs, 1.5);
+    let again = rows::vertical(&large.buffer, &body, down.cursor, Some(down.goal), 1).unwrap();
+    assert_eq!(again.cursor, 72 + 40);
 }

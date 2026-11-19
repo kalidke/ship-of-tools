@@ -14,11 +14,7 @@ pub(in crate::ui) fn editor_key(state: &mut State, key: KeyPress<'_>) -> Control
     // cursor doesn't blow past visible context
     // on PgUp/PgDn.
     let page_rows = (state.pane_rects.preview.height as usize / 3).max(1);
-    let (width, scale) = state.edit_width_and_scale();
-    let canvas = &mut state.canvas;
-    let Some(outcome) = state.editor.key(key, page_rows, |spans| {
-        canvas.shape(|fs| MarkdownPreview::new_plain_spans(fs, spans, width, scale))
-    }) else {
+    let Some(outcome) = state.editor.key(key, page_rows) else {
         return Continue(());
     };
     match outcome {
@@ -85,10 +81,9 @@ pub(in crate::ui) fn editor_key(state: &mut State, key: KeyPress<'_>) -> Control
             }
             state.rebuild_edit_preview();
         }
-        // Cursor moves count as a content change for
-        // the preview because the injected `█` is
-        // part of the rendered string — rebuild
-        // unconditionally (cheap).
+        // Cursor moves rebuild too: the buffer's selection tint and
+        // footer follow the edit, and the next vertical step reads the
+        // rows this shaping gives.
         EditorKey::StaleAnswered => state.rebuild_edit_preview(),
         // The cursor moved or the text changed: the view follows it.
         EditorKey::Edited => {
@@ -137,11 +132,6 @@ pub(in crate::ui) fn enter_editor(state: &mut State) {
 }
 
 impl State {
-    /// The width and text scale the edit buffer is shaped at.
-    fn edit_width_and_scale(&self) -> (f32, f32) {
-        (self.concept.rect().w.max(1.0), self.canvas.scale() * self.canvas.text_scale_mult())
-    }
-
     /// Scroll the edit view just far enough to show the cursor's row (the pane's height as the scroll clamp reads it).
     pub(in crate::ui) fn follow_edit_cursor(&mut self) {
         let (now, length) = self.scroll_ask();
@@ -165,7 +155,8 @@ impl State {
     /// buffer so the next render falls back to the read-only path.
     pub(in crate::ui) fn rebuild_edit_preview(&mut self) {
         if self.editor.is_editing() { self.shaped.clear_selection(); }
-        let (width, scale) = self.edit_width_and_scale();
+        let width = self.concept.rect().w.max(1.0);
+        let scale = self.canvas.scale() * self.canvas.text_scale_mult();
         let canvas = &mut self.canvas;
         self.editor.reshape(&self.bindings, |spans| {
             canvas.shape(|fs| MarkdownPreview::new_plain_spans(fs, spans, width, scale))

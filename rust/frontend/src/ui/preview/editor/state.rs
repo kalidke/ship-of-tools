@@ -57,9 +57,9 @@ pub(in crate::ui) struct EditState {
     /// `file.write`'s `expected_version` for optimistic concurrency. `None`
     /// for concept edits (they gate on `expected_ast_hash`).
     file_version: Option<String>,
-    /// The x on screen that Up and Down keep across rows shorter than the column the cursor was in; `None` until a
-    /// vertical step sets it, and cleared by every other key.
-    goal_x: Option<f32>,
+    /// The column, in ems of the shaped text, that Up and Down keep across rows shorter than the one the cursor was
+    /// in; `None` until a vertical step sets it, and cleared by every other key.
+    goal: Option<f32>,
 }
 
 impl EditState {
@@ -76,19 +76,18 @@ impl EditState {
         }
     }
 
-    /// Move the cursor `rows` rows up (negative) or down on screen, the rows read from the body shaped through
-    /// `shape`; by the file's lines where `rows::vertical` cannot match them. Shift extends the selection.
-    fn move_rows(&mut self, rows: isize, extend: bool, shape: impl FnOnce(&[(String, bool)]) -> MarkdownPreview) {
+    /// Move the cursor `rows` rows up (negative) or down on screen, the rows read from the shaped buffer the window
+    /// draws; by the file's lines where `rows::vertical` finds none. Shift extends the selection.
+    fn move_rows(&mut self, rows: isize, extend: bool, shaped: Option<&MarkdownPreview>) {
         self.buf.set_selecting(extend);
-        // The newline ends the body's last line as the footer does on screen; shaping ends no line at the text's end.
-        let shaped = shape(&[(format!("{}\n", self.buf.body()), false)]);
-        match rows::vertical(&shaped.buffer, self.buf.body(), self.buf.cursor(), self.goal_x, rows) {
+        let landing = shaped.and_then(|s| rows::vertical(&s.buffer, self.buf.body(), self.buf.cursor(), self.goal, rows));
+        match landing {
             Some(landing) => {
                 self.buf.set_cursor(landing.cursor);
-                self.goal_x = Some(landing.goal_x);
+                self.goal = Some(landing.goal);
             }
             None => {
-                self.goal_x = None;
+                self.goal = None;
                 if rows < 0 { self.buf.move_up_rows(rows.unsigned_abs()) } else { self.buf.move_down_rows(rows.unsigned_abs()) }
             }
         }
@@ -229,7 +228,7 @@ impl Editor {
             stale_banner: false,
             file_node_id: None,
             file_version: None,
-            goal_x: None,
+            goal: None,
         });
     }
 
@@ -258,7 +257,7 @@ impl Editor {
             stale_banner: false,
             file_node_id: Some(node_id.to_string()),
             file_version: Some(version),
-            goal_x: None,
+            goal: None,
         });
         FileReadOutcome::Opened
     }
@@ -275,7 +274,7 @@ impl Editor {
             };
             edit.original = body.clone();
             edit.buf = EditBuffer::new(body);
-            edit.goal_x = None;
+            edit.goal = None;
             edit.stale_banner = false;
             edit.confirm_discard = false;
         }
@@ -345,11 +344,8 @@ impl Editor {
     }
 
     /// Edit mode takes every key (`None` without an edit). The discard prompt takes only its answer; the stale
-    /// banner only reload or keep; otherwise cancel, save, or the buffer's own keys. `page_rows` is the paging step;
-    /// `shape` shapes spans at the pane's width, for the rows Up and Down move by.
-    pub(in crate::ui) fn key(
-        &mut self, key: KeyPress<'_>, page_rows: usize, shape: impl FnOnce(&[(String, bool)]) -> MarkdownPreview,
-    ) -> Option<EditorKey> {
+    /// banner only reload or keep; otherwise cancel, save, or the buffer's own keys. `page_rows` is the paging step.
+    pub(in crate::ui) fn key(&mut self, key: KeyPress<'_>, page_rows: usize) -> Option<EditorKey> {
         let KeyPress { event, action, ctrl, alt, shift, super_ } = key;
         let edit = self.edit.as_mut()?;
         // When the discard-confirm modal is up,
@@ -427,7 +423,7 @@ impl Editor {
             });
         }
         let pressed = Pressed { logical: &event.logical_key, action, ctrl, alt, shift, super_ };
-        edit_buffer_key(edit, pressed, page_rows, shape);
+        edit_buffer_key(edit, pressed, page_rows, self.shaped.as_ref());
         Some(EditorKey::Edited)
     }
 }
@@ -443,13 +439,11 @@ struct Pressed<'a> {
     super_: bool,
 }
 
-fn edit_buffer_key(
-    edit: &mut EditState, key: Pressed<'_>, page_rows: usize, shape: impl FnOnce(&[(String, bool)]) -> MarkdownPreview,
-) -> bool {
+fn edit_buffer_key(edit: &mut EditState, key: Pressed<'_>, page_rows: usize, shaped: Option<&MarkdownPreview>) -> bool {
     let Pressed { logical, action, .. } = key;
     // Only Up, Down and the page keys keep the column they started in.
     if !matches!(action, Some(Action::EditUp | Action::EditDown | Action::EditPageUp | Action::EditPageDown)) {
-        edit.goal_x = None;
+        edit.goal = None;
     }
     let mut buf_changed = false;
     match logical {
@@ -529,14 +523,12 @@ fn edit_buffer_key(
             edit.buf.delete();
             buf_changed = true;
         }
-        _ => buf_changed = edit_motion_key(edit, key, page_rows, shape),
+        _ => buf_changed = edit_motion_key(edit, key, page_rows, shaped),
     }
     buf_changed
 }
 
-fn edit_motion_key(
-    edit: &mut EditState, key: Pressed<'_>, page_rows: usize, shape: impl FnOnce(&[(String, bool)]) -> MarkdownPreview,
-) -> bool {
+fn edit_motion_key(edit: &mut EditState, key: Pressed<'_>, page_rows: usize, shaped: Option<&MarkdownPreview>) -> bool {
     let Pressed { logical, action, shift, ctrl, alt, super_ } = key;
     let mut buf_changed = false;
     match logical {
@@ -553,8 +545,8 @@ fn edit_motion_key(
             edit.buf.set_selecting(shift);
             edit.buf.move_right();
         }
-        _ if action == Some(Action::EditUp) => edit.move_rows(-1, shift, shape),
-        _ if action == Some(Action::EditDown) => edit.move_rows(1, shift, shape),
+        _ if action == Some(Action::EditUp) => edit.move_rows(-1, shift, shaped),
+        _ if action == Some(Action::EditDown) => edit.move_rows(1, shift, shaped),
         _ if action == Some(Action::EditStart) => {
             edit.buf.set_selecting(shift);
             edit.buf.move_buf_start();
@@ -571,8 +563,8 @@ fn edit_motion_key(
             edit.buf.set_selecting(shift);
             edit.buf.move_line_end();
         }
-        _ if action == Some(Action::EditPageUp) => edit.move_rows(-(page_rows as isize), shift, shape),
-        _ if action == Some(Action::EditPageDown) => edit.move_rows(page_rows as isize, shift, shape),
+        _ if action == Some(Action::EditPageUp) => edit.move_rows(-(page_rows as isize), shift, shaped),
+        _ if action == Some(Action::EditPageDown) => edit.move_rows(page_rows as isize, shift, shaped),
         Key::Named(NamedKey::Space) => {
             edit.buf.insert_char(' ');
             buf_changed = true;

@@ -341,51 +341,61 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   `EditorKey`; the discard prompt and the stale banner take only their answers, and a stale file reload arms its
   `file.read` before it is sent. A `file.read` opens an edit only for the armed node. A landed save snaps the baseline;
   a stale refusal raises the banner. A row parks the edit, never the shaped buffer or the armed read; a first visit
-  closes it. State sends, re-shapes (`rebuild_edit_preview`) and repaints. Up, Down, PageUp and PageDown move by the row
-  on screen (`preview/editor/rows.rs`): State hands `Editor::key` a shaper, and the body shaped alone at the pane's
-  width is the layout the step reads, which is the layout on screen: the cursor is not a character of the shaped text
-  (`EditState::spans` holds the header, the body and the footer only) but a bar the render pass draws in the selection's
-  brush at `Editor::cursor_place` (`State::edit_cursor_rect`, in `paint_text_selections`), so it cannot move a wrap.
-  The cursor lands on the place of the row above or below nearest the column's x; the x (`goal_x`) is kept across
-  shorter rows and cleared by every other key, an edit and a reload; Shift extends the selection; Up from the first
-  row lands at byte 0 and Down from the last at the end; PageUp and PageDown take the same step by a third of the
-  pane's cell rows. Where the shaped lines are not the body's lines (a lone CR, U+0085, U+2028 or U+2029, which end a
-  line in the shaper, or a separator it turns into a space; a CRLF line also, for the step, which asks every line),
-  or a row involved runs right to left, the step is the file's line as it was; Home
-  and End stay on the file's line. The cursor's place (`rows::place`) maps a body byte to the shaped line it is on
-  (the header's lines are never counted: the lines are counted back from the footer's two), splitting a body line at the
-  characters the shaper ends a line at and taking a CRLF's CR with the line end, then to the row whose first glyph is
-  the last at or before the byte: the space a wrap drops belongs to the row it ends, at the row's right end, a byte
-  inside a glyph stands at the glyph's left edge, and a byte where one row ends and the next begins belongs to the
-  next. Drawn: at the end of a row, the end of the text, an empty line, a wide or joined character, a CRLF line and a
-  lone CR (`the_cursor_is_drawn_at_the_end_of_a_row_of_the_text_and_on_an_empty_line_and_a_wide_or_joined_character`,
+  closes it. State sends, re-shapes (`rebuild_edit_preview`) and repaints. The cursor is not a character of the
+  shaped text (`EditState::spans` is the header, the body and the footer alone): the render pass draws it as a bar in
+  the selection's brush at `Editor::cursor_place` (`State::edit_cursor_rect`, in `paint_text_selections`), so it cannot
+  move a wrap, and no bar is drawn where the cursor's row is cut by the pane's edge or the shaped buffer is not the
+  body's text (a body changed since the shaping). `rows::place` maps a body byte to the shaped line it is on (the
+  lines are counted back from the footer's two, so the header's are never counted; a body line is split at the
+  characters the shaper ends a line at, a lone CR, U+0085, U+2028 and U+2029, and a CR before a line end goes with it,
+  so a CRLF is one line end and a line that splits is mapped line by line) and then to the row that holds the byte: the
+  row from its first glyph to the next row's, so the space a wrap drops belongs to the row it ends, at the row's right
+  end, a byte inside a glyph stands at the glyph's left edge, and a byte where one row ends and the next begins (a word
+  broken between glyphs) belongs to the next. Up, Down, PageUp and PageDown move by the row on screen
+  (`rows::vertical`, which reads the rows the window draws: the step adds no shaping of its own): the cursor lands on
+  the place of the row above or below nearest the column's x, the places of a row being each glyph's left edge, the end
+  of the line on its last row and, on a row a wrap dropped a space from, the end of its last word; the column
+  (`goal`, kept in ems of the shaped text, so a zoom between two steps leaves it) is kept across shorter rows and
+  cleared by every other key, an edit and a reload; Shift extends the selection; Up from the first row lands at byte 0
+  and Down from the last at the end; PageUp and PageDown take the same step by a third of the pane's cell rows.
+  Where a row involved runs right to left, or the shaped buffer is not the body's text, that one step is the file's
+  line as it was (a Hebrew word on a row sends the steps onto it to the file's next line; the rest of the file is
+  unaffected); Home and End stay on the file's line. A resize or a zoom does not re-shape the edit buffer until the
+  next key, so a step reads the rows the screen shows. Pinned by `state_tests`: placing
+  (`the_cursor_is_drawn_at_the_end_of_a_row_of_the_text_and_on_an_empty_line_and_a_wide_or_joined_character`,
   `the_cursor_at_a_wrap_stands_at_the_end_of_the_row_before_the_dropped_space_and_at_the_start_of_the_next`,
-  `a_crlf_line_and_a_lone_cr_have_places_and_the_next_line_is_found_past_them`), not in the text
-  (`the_edit_text_holds_no_cursor_mark_so_its_rows_are_the_bodys_own`) and one row for each Down from every start column
-  (`the_drawn_cursor_moves_one_row_for_each_down_from_every_start_column`). The step is pinned by `state_tests`
-  (`up_and_down_move_one_row_and_stay_in_a_wrapped_paragraph`, `the_column_is_kept_across_a_shorter_row_until_another_key`,
-  `shift_extends_the_selection_by_rows`, `up_on_the_first_row_goes_to_the_start_and_down_on_the_last_to_the_end`,
-  `text_the_rows_cannot_be_matched_to_steps_by_the_files_lines`, `a_word_without_spaces_wraps_by_glyph_and_down_keeps_its_column`,
-  `a_wrapped_paragraph_under_a_header_is_walked_by_rows`, `a_body_ending_in_a_newline_is_walked_by_rows`,
-  `page_keys_take_the_same_step_by_the_pane_rows`, `a_long_texts_shaped_rows_reach_its_last_line`). A key that moved the
-  cursor or changed the text (`EditorKey::Edited`) is followed by `State::follow_edit_cursor`: the view scrolls just far
-  enough, in whole lines of the shown preview (`ShapedPreview::follow`, counting what the easing still owes), to show
-  the cursor's row, and moves nothing for a row already in view; the row is the editor's buffer's (`cursor_place`), so
-  its height and the preview's line height, which differ (19 px against a prose preview's 22), meet only in pixels.
-  The wheel moves the edit view as before and the next motion or edit brings it back; a reload, a save, a restored
-  row, a resize and the mouse follow nothing. A body that is not the shaped text (one changed since the shaping) has no
-  place, so nothing is drawn and the view stays. Pinned by
-  `the_view_scrolls_just_far_enough_to_show_the_cursor_row`, `a_motion_that_keeps_the_cursor_in_view_does_not_scroll`,
-  `the_wheel_scrolls_away_and_the_next_key_brings_the_view_back` and
-  `the_cursors_row_is_found_under_a_header_and_not_in_a_stale_buffer`, and in the window's own layout by the native
+  `a_crlf_line_and_a_lone_cr_have_places_and_the_next_line_is_found_past_them`,
+  `the_edit_text_holds_no_cursor_mark_so_its_rows_are_the_bodys_own`,
+  `the_cursors_row_is_found_under_a_header_and_not_in_a_stale_buffer`), the step
+  (`up_and_down_move_one_row_and_stay_in_a_wrapped_paragraph`, `right_to_the_end_of_a_wrapped_row_then_down_and_up_stay_in_the_paragraph`,
+  `a_step_from_inside_a_joined_character_moves_one_row`, `the_column_is_kept_across_a_shorter_row_until_another_key`,
+  `the_kept_column_survives_a_change_of_scale`, `a_reload_ends_the_kept_column`, `shift_extends_the_selection_by_rows`,
+  `up_on_the_first_row_goes_to_the_start_and_down_on_the_last_to_the_end`, `page_keys_take_the_same_step_by_the_pane_rows`,
+  `a_lone_cr_or_separator_ends_a_shaped_row_and_is_walked_by_rows`, `a_row_with_right_to_left_text_is_stepped_by_the_files_lines`,
+  `a_word_without_spaces_wraps_by_glyph_and_down_keeps_its_column`, `a_wrapped_paragraph_under_a_header_is_walked_by_rows`,
+  `a_body_ending_in_a_newline_is_walked_by_rows`, `the_drawn_cursor_moves_one_row_for_each_down_from_every_start_column`,
+  `a_long_texts_shaped_rows_reach_its_last_line`) and the walk
+  `a_walk_down_and_up_moves_one_row_per_key_in_every_text` (Down from the first byte to the end and Up back, at 40 and
+  23 cells, every key one drawn row, never backward, never inside a character, over long paragraphs, a list, a fenced
+  code block, a table, an unbroken long line, tabs, Japanese and Chinese, combining marks, emoji, an empty file, one
+  character, only newlines, CRLF throughout, one CRLF among LF lines, a lone CR, and frontmatter as a concept header
+  and in a file: no text is excepted). A key that moved the cursor or changed the text (`EditorKey::Edited`) is
+  followed by `State::follow_edit_cursor`: the view scrolls just far enough, in whole lines of the shown preview
+  (`ShapedPreview::follow`, counting what the easing still owes), to show the cursor's row, and moves nothing for a row
+  already in view; the row is the editor's buffer's (`cursor_place`), so its height and the preview's line height,
+  which differ (19 px against a prose preview's 22), meet only in pixels. The wheel moves the edit view as before and
+  the next motion or edit brings it back; a reload, a save, a restored row, a resize and the mouse follow nothing. A
+  body that is not the shaped text has no place, so the view stays. Pinned by
+  `the_view_scrolls_just_far_enough_to_show_the_cursor_row`, `a_motion_that_keeps_the_cursor_in_view_does_not_scroll`
+  and `the_wheel_scrolls_away_and_the_next_key_brings_the_view_back`, and in the window's own layout by the native
   fixture `an_edit_view_follows_its_cursor` (`preview/editor/keys_native_fixture_tests.rs`, in `run_state_fixtures`,
   so only under a display; it puts the cursor and calls the key path's `rebuild_edit_preview` and `follow_edit_cursor`,
-  and is red with `ShapedPreview::follow` made a no-op). Limits: the step is not yet read from the rows on screen: it
-  shapes the body a second time for each vertical key and asks the whole file's lines to match, so one CRLF or lone CR
-  anywhere, a cursor at the end of a wrapped row (the dropped space) or inside a glyph sends the step to the file's
-  lines, which can leave the paragraph; the tests press through `edit_buffer_key` because a winit `KeyEvent` cannot be
-  built outside the event loop, so `Editor::key`'s hand-off, the shaper closure, the `Edited` arm in `editor_key` and
-  the paint of the cursor's bar (the render pass, no pure test reaches it) rest on reading; no person has used it yet.
+  and is red with `ShapedPreview::follow` made a no-op). Limits: the tests press through `edit_buffer_key` because a
+  winit `KeyEvent` cannot be built outside the event loop, so `Editor::key`'s hand-off, the `Edited` arm in
+  `editor_key` and the paint of the cursor's bar (the render pass, no pure test reaches it) rest on reading; each
+  key and each frame builds the buffer's row list once, linear in the file (1.8 ms and 0.6 ms on a 465 KB file, release
+  build), while the re-shape every key already does is the cost that grows with the file (480 ms there, before this
+  change); no person has used it yet.
 - `ConceptSlot` privately owns the concept slot: the last `concept.read` (`ConceptInfo`, its fields private), its
   shaped body and the rect it is shaped for. A reply installs the read and its shape together; a follow's commit and a
   first visit clear both; a row parks the read alone, and its restore drops the shape until the next read. The layout

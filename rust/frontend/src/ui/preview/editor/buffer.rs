@@ -12,13 +12,13 @@
 // here are the single place to look for off-by-one or boundary bugs.
 //
 // Up, Down, PgUp and PgDn move by the row on screen: `rows::vertical`
-// reads the rows from the body shaped at the pane's width and lands the
-// cursor with `set_cursor`. `move_up`, `move_down` and their `_rows` forms
-// below step by logical lines (split on `\n`) and run only where the shaped
-// rows cannot be matched to the body's lines. Home and End stay on the
-// logical line, so in a wrapped paragraph they go to the paragraph's start
-// and end. The cursor is not in the shaped text: the window draws it over
-// the rows (`rows::place`).
+// reads the rows of the buffer the window draws and lands the cursor with
+// `set_cursor`. `move_up`, `move_down` and their `_rows` forms below step by
+// logical lines (split on `\n`) and run only for a step `vertical` cannot
+// make: a row of right-to-left text, or a shaped buffer that is not the
+// body's text. Home and End stay on the logical line, so in a wrapped
+// paragraph they go to the paragraph's start and end. The cursor is not in
+// the shaped text: the window draws it over the rows (`rows::place`).
 
 /// One point-in-time buffer state for the undo/redo stacks.
 #[derive(Debug, Clone)]
