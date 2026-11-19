@@ -18,9 +18,9 @@ impl State {
         self.rebuild_edit_preview();
         self.redraw()?;
         let shown = |s: &State| -> anyhow::Result<bool> {
-            let (top, bottom) = s.editor.cursor_row().ok_or_else(|| anyhow::anyhow!("the cursor's row is not in the layout"))?;
+            let place = s.editor.cursor_place().ok_or_else(|| anyhow::anyhow!("the cursor's row is not in the layout"))?;
             let from = s.shaped.scroll_px();
-            Ok(top >= from && bottom <= from + s.concept.rect().h - EXTRA_TOP_PAD_PX)
+            Ok(place.top >= from && place.top + place.height <= from + s.concept.rect().h - EXTRA_TOP_PAD_PX)
         };
         let mut moved = |s: &mut State, at: usize| -> anyhow::Result<()> {
             s.editor.put_cursor(at);

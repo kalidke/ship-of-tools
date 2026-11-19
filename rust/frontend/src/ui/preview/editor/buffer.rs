@@ -15,9 +15,10 @@
 // reads the rows from the body shaped at the pane's width and lands the
 // cursor with `set_cursor`. `move_up`, `move_down` and their `_rows` forms
 // below step by logical lines (split on `\n`) and run only where the shaped
-// rows cannot be matched to the body's lines (a lone CR, U+2028 and the
-// like). Home and End stay on the logical line, so in a wrapped paragraph
-// they go to the paragraph's start and end.
+// rows cannot be matched to the body's lines. Home and End stay on the
+// logical line, so in a wrapped paragraph they go to the paragraph's start
+// and end. The cursor is not in the shaped text: the window draws it over
+// the rows (`rows::place`).
 
 /// One point-in-time buffer state for the undo/redo stacks.
 #[derive(Debug, Clone)]

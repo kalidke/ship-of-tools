@@ -23,6 +23,18 @@ impl Harness {
         Self { fs, width: cell * cells as f32 + 0.5, editor }
     }
 
+    /// The window's re-shape after a key: the edit's spans shaped at the pane's width.
+    fn reshape(&mut self) {
+        let (fs, width) = (&mut self.fs, self.width);
+        self.editor.reshape(&KeyBindings::defaults(), |spans| MarkdownPreview::new_plain_spans(fs, spans, width, 1.0));
+    }
+
+    /// The cursor's place as the window draws it, from a fresh re-shape.
+    fn place(&mut self) -> rows::Place {
+        self.reshape();
+        self.editor.cursor_place().expect("the cursor has a place")
+    }
+
     fn edit(&mut self) -> &mut EditState {
         self.editor.edit.as_mut().unwrap()
     }
@@ -172,7 +184,7 @@ fn a_wrapped_paragraph_under_a_header_is_walked_by_rows() {
 }
 
 #[test]
-fn the_cursor_mark_does_not_move_the_column() {
+fn a_word_without_spaces_wraps_by_glyph_and_down_keeps_its_column() {
     // One 50-letter word on 20-cell rows: the row below starts at 20, and the cursor's own cell must not shift it.
     let mut h = Harness::new(&"x".repeat(50), 20);
     h.put(3);
@@ -261,9 +273,9 @@ impl Pane {
 
     /// Whether the cursor's row is wholly inside what the pane draws.
     fn shows_cursor(&self, h: &Harness) -> bool {
-        let (top, bottom) = h.editor.cursor_row().expect("the cursor's row is in the layout");
+        let place = h.editor.cursor_place().expect("the cursor's row is in the layout");
         let from = self.view.scroll_px();
-        top >= from && bottom <= from + self.visible
+        place.top >= from && place.top + place.height <= from + self.visible
     }
 }
 
@@ -281,7 +293,8 @@ fn the_view_scrolls_just_far_enough_to_show_the_cursor_row() {
         pane.after_key(&mut h);
         assert!(pane.shows_cursor(&h), "the cursor is out of view at {}", h.cursor());
     }
-    let (_, bottom) = h.editor.cursor_row().unwrap();
+    let place = h.editor.cursor_place().unwrap();
+    let bottom = place.top + place.height;
     let slack = pane.view.scroll_px() + pane.visible - bottom;
     assert!(pane.view.scroll() > 0.0 && slack < pane.view.md().line_height(), "scrolled past what the row needed: {slack}");
     // A jump to the end, then to the start, brings each into view; the start is the top.
@@ -342,9 +355,107 @@ fn the_cursors_row_is_found_under_a_header_and_not_in_a_stale_buffer() {
     h.edit().buf.set_cursor(5);
     let (fs, width) = (&mut h.fs, h.width);
     h.editor.reshape(&KeyBindings::defaults(), |spans| MarkdownPreview::new_plain_spans(fs, spans, width, 1.0));
-    let (top, bottom) = h.editor.cursor_row().unwrap();
-    assert!(top > 0.0 && bottom > top, "below the header's lines: {top}..{bottom}");
+    let place = h.editor.cursor_place().unwrap();
+    assert!(place.top > 0.0 && place.height > 0.0, "below the header's lines: {place:?}");
     // Text typed since the shaping: the buffer is not the edit's, so there is no row to follow.
     h.type_char("x");
-    assert_eq!(h.editor.cursor_row(), None);
+    assert_eq!(h.editor.cursor_place(), None);
+}
+
+#[test]
+fn the_edit_text_holds_no_cursor_mark_so_its_rows_are_the_bodys_own() {
+    let mut h = Harness::new("one\ntwo words here", 40);
+    h.put(5);
+    h.reshape();
+    let shaped = h.editor.shaped().unwrap();
+    let lines: Vec<&str> = shaped.buffer.lines.iter().map(|l| l.text()).collect();
+    assert_eq!(&lines[..2], ["one", "two words here"]);
+    assert!(!lines.iter().any(|l| l.contains('\u{2588}')), "{lines:?}");
+}
+
+#[test]
+fn the_cursor_is_drawn_at_the_end_of_a_row_of_the_text_and_on_an_empty_line_and_a_wide_or_joined_character() {
+    // The end of the text, and a byte inside a joined character's cluster (e and a combining accent).
+    let mut h = Harness::new("ab\ne\u{301}x", 40);
+    let cell = h.place().x; // at 0
+    assert_eq!(cell, 0.0);
+    h.put(2);
+    let (end_of_ab, top_ab) = (h.place().x, h.place().top);
+    assert!(end_of_ab > 0.0);
+    h.put(3); // start of the second line
+    let second = h.place();
+    assert!(second.top > top_ab && second.x == 0.0);
+    h.put(4); // inside the cluster: at its left edge
+    assert_eq!(h.place(), second);
+    h.put(6); // the end of the text
+    assert!(h.place().x > 0.0 && h.place().top == second.top);
+    // An empty line in the middle has a row of its own, and a wide character takes more than one cell.
+    let mut h = Harness::new("a\n\nb\n日本", 40);
+    h.put(2);
+    let empty = h.place();
+    assert_eq!(empty.x, 0.0);
+    h.put(0);
+    assert!(empty.top > h.place().top);
+    h.put(5);
+    let (wide, after) = (h.place(), { h.put(8); h.place() });
+    assert!(after.x > wide.x * 1.5 + 1.0 && after.top == wide.top, "{wide:?} {after:?}");
+}
+
+#[test]
+fn the_cursor_at_a_wrap_stands_at_the_end_of_the_row_before_the_dropped_space_and_at_the_start_of_the_next() {
+    let mut h = Harness::new(PARAGRAPH, 24);
+    h.reshape();
+    let runs: Vec<_> = h.editor.shaped().unwrap().buffer.layout_runs().take(2).map(|r| (r.line_top, r.glyphs.last().map(|g| (g.end, g.x + g.w)), r.glyphs.first().map(|g| g.start))).collect();
+    let (end0, x_end) = runs[0].1.unwrap();
+    let start1 = runs[1].2.unwrap();
+    assert!(start1 > end0, "the wrap drops a space: row one ends at {end0}, row two starts at {start1}");
+    h.put(end0);
+    let at_end = h.place();
+    assert_eq!((at_end.top, at_end.x), (runs[0].0, x_end));
+    h.put(start1);
+    let at_start = h.place();
+    assert_eq!((at_start.top, at_start.x), (runs[1].0, 0.0));
+    h.put(end0 + 1); // the dropped space itself: the cursor after it is the next row's start
+    assert_eq!(h.place(), at_start);
+}
+
+#[test]
+fn a_crlf_line_and_a_lone_cr_have_places_and_the_next_line_is_found_past_them() {
+    let mut h = Harness::new("ab\r\ncd\r\nef", 40);
+    h.put(0);
+    let first = h.place();
+    h.put(2);
+    assert!(h.place().x > 0.0 && h.place().top == first.top, "before the CR is the line's end");
+    h.put(4);
+    let second = h.place();
+    h.put(8);
+    let third = h.place();
+    assert!(second.top > first.top && third.top > second.top && second.x == 0.0);
+    // A lone CR makes the shaper end a line there: the byte after it is on the next shaped row.
+    let mut h = Harness::new("ab\rcd\nef", 40);
+    h.put(0);
+    let first = h.place();
+    h.put(3);
+    assert!(h.place().top > first.top && h.place().x == 0.0);
+    h.put(6);
+    assert!(h.place().top > first.top);
+}
+
+#[test]
+fn the_drawn_cursor_moves_one_row_for_each_down_from_every_start_column() {
+    let para = format!("{PARAGRAPH} {PARAGRAPH} {PARAGRAPH} {PARAGRAPH}");
+    for cells in [40usize, 23] {
+        for col in 0..cells {
+            let mut h = Harness::new(&para, cells);
+            h.put(col);
+            let mut last = h.place();
+            while h.cursor() < para.len() {
+                h.act(Action::EditDown);
+                let now = h.place();
+                let rows = ((now.top - last.top) / last.height).round() as i32;
+                assert!(rows == 1 || h.cursor() == para.len(), "{cells} cells, start {col}: the drawn cursor moved {rows} rows to byte {}", h.cursor());
+                last = now;
+            }
+        }
+    }
 }

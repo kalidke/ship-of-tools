@@ -3,7 +3,7 @@
 
 use crate::ui::*;
 use crate::ui::input::keypress::KeyPress;
-use super::rows::{self, CURSOR};
+use super::rows;
 use crate::ui::preview::shaped::ShapedPreview;
 use std::time::{Duration, Instant};
 
@@ -98,12 +98,11 @@ impl EditState {
     ///   - read-only frontmatter header (if any), prefixed line-by-line
     ///     with `│ ` so the user reads it as a sidebar
     ///   - blank line separator
-    ///   - editable body with `█` injected at the cursor byte
+    ///   - editable body
     ///   - blank line + status footer ("modified" if dirty; modal
     ///     prompt when `confirm_discard` is up)
     fn spans(&self, bindings: &KeyBindings) -> Vec<(String, bool)> {
-        // Compose styled spans: header, body (cursor block + optional
-        // selection tint), footer. Concatenated text is what renders; the
+        // Compose styled spans: header, body (optional selection tint), footer. Concatenated text is what renders; the
         // `bool` flags the selected run so `new_plain_spans` tints it.
         let mut spans: Vec<(String, bool)> = Vec::new();
         if let Some(header) = &self.header {
@@ -117,28 +116,16 @@ impl EditState {
             spans.push((h, false));
         }
         let body = self.buf.body();
-        let cur = self.buf.cursor();
         let has_sel = self.buf.selection_range().is_some();
         match self.buf.selection_range() {
-            // Cursor sits at one end of the range (a = start, b = end). Place
-            // the cursor block on its side; tint the selected run amber.
-            Some((a, b)) if cur <= a => {
-                spans.push((body[..a].to_string(), false));
-                spans.push((CURSOR.to_string(), false));
-                spans.push((body[a..b].to_string(), true));
-                spans.push((body[b..].to_string(), false));
-            }
+            // Tint the selected run amber. The cursor is not in the text: the window draws it over the shaped rows
+            // (`Editor::cursor_place`), so the rows on screen are the body's own.
             Some((a, b)) => {
                 spans.push((body[..a].to_string(), false));
                 spans.push((body[a..b].to_string(), true));
-                spans.push((CURSOR.to_string(), false));
                 spans.push((body[b..].to_string(), false));
             }
-            None => {
-                spans.push((body[..cur].to_string(), false));
-                spans.push((CURSOR.to_string(), false));
-                spans.push((body[cur..].to_string(), false));
-            }
+            None => spans.push((body.to_string(), false)),
         }
         // Footer: blank line + status. Modal overrides everything — when the
         // user is confirming, that's the only thing they should read.
@@ -342,18 +329,18 @@ impl Editor {
         if let Some(edit) = self.edit.as_mut() { edit.buf.set_cursor(at); }
     }
 
-    /// The top and bottom, px in the shaped buffer, of the row the cursor is on; `None` without an edit, or where the
-    /// buffer is not the edit's text.
-    pub(in crate::ui) fn cursor_row(&self) -> Option<(f32, f32)> {
+    /// Where the cursor stands in the shaped buffer, px in its layout; `None` without an edit, or where the buffer is
+    /// not the edit's text (a body changed since it was shaped).
+    pub(in crate::ui) fn cursor_place(&self) -> Option<rows::Place> {
         let (edit, shaped) = (self.edit.as_ref()?, self.shaped.as_ref()?);
-        rows::cursor_row(&shaped.buffer, edit.buf.body(), edit.buf.cursor())
+        rows::place(&shaped.buffer, edit.buf.body(), edit.buf.cursor())
     }
 
     /// Scroll `view` just far enough to show the row the cursor is on, in a pane `visible_px` tall; a cursor already
     /// in view moves nothing, and a row the layout cannot find leaves the view where it is.
     pub(in crate::ui) fn follow_cursor(&self, view: &mut ShapedPreview, visible_px: f32, now: Instant, length: Duration) {
-        if let Some((top, bottom)) = self.cursor_row() {
-            view.follow(top, bottom, visible_px, now, length);
+        if let Some(place) = self.cursor_place() {
+            view.follow(place.top, place.top + place.height, visible_px, now, length);
         }
     }
 

@@ -149,6 +149,16 @@ impl State {
         self.editor.follow_cursor(&mut self.shaped, visible, now, length);
     }
 
+    /// The cursor's bar over the edit view, px on screen, in the pane `pane` scrolled `scroll_px`; none while the
+    /// cursor's row is cut by the pane's edge, as the text's own clip cuts it, or has no place in the layout.
+    pub(in crate::ui) fn edit_cursor_rect(&self, pane: ScreenRect, scroll_px: f32) -> Option<ScreenRect> {
+        let place = self.editor.cursor_place()?;
+        let top = pane.y + crate::ui::render::text::EXTRA_TOP_PAD_PX + place.top - scroll_px;
+        let w = (place.height * 0.12).max(2.0);
+        let fits = top >= pane.y + crate::ui::render::text::EXTRA_TOP_PAD_PX && top + place.height <= pane.y + pane.h;
+        fits.then(|| ScreenRect { x: (pane.x + place.x - w / 2.0).max(pane.x), y: top, w, h: place.height })
+    }
+
     /// Re-shape the edit preview from the active edit buffer. Called
     /// whenever a key mutates the buffer; cheap enough for a
     /// few-KB annotation. Without an edit it clears the shaped
