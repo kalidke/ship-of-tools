@@ -436,7 +436,6 @@ fn a_process_created_after_the_bind_is_refused() {
 
 /// The child side of the child-process tests: connect to the address the parent names, then hold the connection
 /// until the parent closes our stdin. A plain run of this test (no variable) does nothing.
-#[cfg(windows)]
 #[test]
 fn child_client_helper() {
     use std::io::Read;
@@ -495,7 +494,6 @@ async fn a_child_started_during_a_refusal_does_not_hold_the_connection() {
 
 /// This test binary run as a child that connects to `listener` and holds the connection: the child, the accepted
 /// stream and the stdin that ends it.
-#[cfg(windows)]
 fn child_connecting_to(
     listener: &std::net::TcpListener,
 ) -> (std::process::Child, std::net::TcpStream) {
@@ -649,4 +647,35 @@ fn a_connection_from_a_child_process_names_the_child() {
 #[test]
 fn a_connection_from_a_child_process_over_ipv6_names_the_child() {
     a_child_connection_names_the_child("[::1]:0");
+}
+
+/// ADR 0049, User isolation: a connection another process of this account holds is named this account's. The child
+/// is this test binary, so the peer's end is held by a process that is not the one asking.
+#[cfg(unix)]
+#[test]
+fn a_connection_from_another_process_of_this_account_is_mine() {
+    let _no_refused_connection_meanwhile =
+        CHILD_PROCESSES.lock().unwrap_or_else(|p| p.into_inner());
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let (mut child, accepted) = child_connecting_to(&listener);
+    let (local, peer) = (
+        accepted.local_addr().unwrap(),
+        accepted.peer_addr().unwrap(),
+    );
+    let started = std::time::Instant::now();
+    let verdict = tcp_peer_owner(local, peer);
+    let elapsed = started.elapsed();
+    drop(child.stdin.take());
+    let end = std::time::Instant::now() + Duration::from_secs(10);
+    while child.try_wait().unwrap().is_none() && std::time::Instant::now() < end {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let _ = child.kill(); // after its stdin closed it exits by itself; a child that does not is ended here
+    let _ = child.wait();
+    println!("peer_owner: another process's connection judged in {elapsed:?}");
+    assert_eq!(
+        verdict,
+        PeerOwner::Mine,
+        "{local} <- {peer}, held by the child"
+    );
 }
