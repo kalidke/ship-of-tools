@@ -2998,6 +2998,17 @@ the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the sa
     a stack frame's row still clips (REPL-DRAWER-STACK-ROW-CLIPS, open), the drawer has no selection or copy
     (REPL-DRAWER-NO-SELECTION-OR-COPY, open), and eleven files outside the drawer measure with the older width
     table (WIDTH-CRATE-TWO-VERSIONS, open). No person has looked at it.
+  - A name after `@` in a post is a Slack mention (CHAT-MENTION-NOT-A-MENTION). One builder, five commits; a fresh
+    reviewer, three rounds. The daemon resolves the name at the post against the workspace's members (read under
+    the bot's token, paged, bounded, cached ten minutes, bounded in time) and sends a mention token only for an id
+    it resolved itself; everything typed is escaped as before. A whole name as Slack shows it beats a first name; a
+    first name links when one member has it; anything else stays text and the poster is told who could be meant;
+    every mention made is told to the poster by name. Round one found that the longest match gave a mention to
+    another member; round two that a hyphen did the same, and that a first name typed for someone outside the
+    workspace reaches the one member who has it. The reviewer advised that a first name never link alone; the
+    landing session kept first names, because that is how a person types a mention, and made every link visible
+    in the reply. Unproven: no person has been notified by such a mention; a stand-in answered for Slack.
+
   - Up and Down in edit mode move by the row on screen (EDITOR-UP-DOWN-BY-PARAGRAPH, EDIT-DISCARD-PROMPT-NOT-DRAWN).
     One builder, twelve commits; one reviewer, five rounds. The cursor is a bar drawn over the text from an index
     of the shaped rows, so Up and Down step by what is drawn, the view follows the cursor, and a motion re-shapes
