@@ -560,6 +560,8 @@ function Set-LaunchNoticeEnv { }
 function Get-SotLauncherCodeId { 'fixture' }
 '@
     $blocks17 = @($setup17)
+    # The command-line helper the spawns call is sot-hosts.ps1's own.
+    $blocks17 += ". '" + (Join-Path $repo 'scripts\sot-hosts.ps1').Replace("'", "''") + "'"
     foreach ($name17 in @('Rotate-FrontendLogs', 'Write-SupLog', 'Write-FrontendExit')) {
         $definition17 = $launchAst.Find({ param($n) ($n -is [System.Management.Automation.Language.FunctionDefinitionAst]) -and $n.Name -eq $name17 }, $true)
         if ($definition17) { $blocks17 += $definition17.Extent.Text }
@@ -617,6 +619,75 @@ function Get-SotLauncherCodeId { 'fixture' }
     $crashes17 = @(Get-Content -LiteralPath (Join-Path $output17 'supervisor.log') | Where-Object { $_ -like '*exited code=101*' })
     Check '17: -Local also logs the abnormal exit and both output files' (($crashes17.Count -eq 2) -and $crashes17[1].Contains((Join-Path $output17 'frontend.stdout.log')) -and $crashes17[1].Contains((Join-Path $output17 'frontend.stderr.log'))) ($crashes17 -join ' | ')
 } catch { Check '17: section ran' $false $_.Exception.Message }
+try {
+    Write-Host "`n=== 18. SpacedUserName: a pipe and a scripts folder whose names hold a space reach the window and the splash whole ===" -ForegroundColor Cyan
+    # A user name with a space puts one in the daemon's pipe (\\.\pipe\sot-<USERNAME>-local) and in every path under the
+    # profile, the launcher's scripts folder and its status file among them. Case 17's isolated supervisor runs both
+    # spawn paths with such a pipe and a stand-in window that writes the arguments it got; the splash is started from a
+    # scripts folder whose name holds a space, beside a stand-in launch-splash.ps1 that writes the status file it got.
+    $space18 = Join-Path $root 'First Last'
+    $bin18 = Join-Path $root 'bin18'
+    $scripts18 = Join-Path $space18 'scripts'
+    New-Item -ItemType Directory -Force -Path $space18, $bin18, $scripts18 | Out-Null
+    $argvExe18 = Join-Path $bin18 'argv-window.exe'
+    Add-Type -OutputAssembly $argvExe18 -OutputType ConsoleApplication -TypeDefinition @'
+using System;
+using System.IO;
+public static class ArgvWindow {
+    public static int Main(string[] args) {
+        string[] lines = new string[args.Length + 1];
+        lines[0] = args.Length.ToString();
+        Array.Copy(args, 0, lines, 1, args.Length);
+        File.WriteAllLines(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "argv.txt"), lines);
+        return 0;
+    }
+}
+'@
+    # Runs powershell.exe with $Arguments (one command line), its output in files of $space18, within 30 s; its exit code.
+    function Run-Isolated18([string]$Arguments) {
+        $p = Start-Process powershell.exe -ArgumentList $Arguments -WindowStyle Hidden -PassThru `
+            -RedirectStandardOutput (Join-Path $space18 'harness.out') -RedirectStandardError (Join-Path $space18 'harness.err')
+        $null = $p.Handle
+        try {
+            if (-not $p.WaitForExit(30000)) {
+                $p.Kill() # Only the process returned by this test's own spawn.
+                throw 'the isolated harness did not exit within 30 s'
+            }
+            return $p.ExitCode
+        } finally { $p.Dispose() }
+    }
+    $pipe18 = '\\.\pipe\sot-First Last-local'
+    $argv18 = Join-Path $bin18 'argv.txt'
+    foreach ($local18 in @($false, $true)) {
+        Remove-Item -LiteralPath $argv18 -Force -ErrorAction SilentlyContinue
+        $arguments18 = '-NoProfile -ExecutionPolicy Bypass -File "' + $harness17 + '" -FixtureRoot "' + $space18 + '" -WindowExe "' + $argvExe18 + '" -CodesPath "' + $pipe18 + '"'
+        if ($local18) { $arguments18 += ' -LocalOnly' }
+        $code18 = Run-Isolated18 $arguments18
+        $seen18 = @(if (Test-Path -LiteralPath $argv18) { Get-Content -LiteralPath $argv18 })
+        $mode18 = $(if ($local18) { '-Local' } else { 'supervisor' })
+        Check "18: the $mode18 window gets --socket and the whole pipe name" (($seen18.Count -eq 3) -and ($seen18[0] -eq '2') -and ($seen18[1] -ceq '--socket') -and ($seen18[2] -ceq $pipe18)) "harness exit $code18; argv: $($seen18 -join ' | '); stderr: $(Get-Content -Raw -LiteralPath (Join-Path $space18 'harness.err'))"
+    }
+    $saw18 = Join-Path $scripts18 'splash-saw.txt'
+    Set-Content -LiteralPath (Join-Path $scripts18 'launch-splash.ps1') -Encoding ASCII -Value @'
+param([Parameter(Mandatory)][string]$StatusFile)
+[System.IO.File]::WriteAllText((Join-Path $PSScriptRoot 'splash-saw.txt'), $StatusFile)
+'@
+    $splashFn18 = $launchAst.Find({ param($n) ($n -is [System.Management.Automation.Language.FunctionDefinitionAst]) -and $n.Name -eq 'Start-Splash' }, $true)
+    $harness18 = Join-Path $scripts18 'splash-harness.ps1'
+    Set-Content -LiteralPath $harness18 -Encoding ASCII -Value (@(
+        '$ErrorActionPreference = ''Stop''',
+        (". '" + (Join-Path $repo 'scripts\sot-hosts.ps1').Replace("'", "''") + "'"),
+        '$statusFile = Join-Path $PSScriptRoot ''launch-status.txt''',
+        $splashFn18.Extent.Text,
+        'Start-Splash',
+        'if (-not $script:splash) { exit 3 }',
+        'if (-not $script:splash.WaitForExit(30000)) { exit 4 }',
+        'exit 0'
+    ) -join "`r`n")
+    $code18 = Run-Isolated18 ('-NoProfile -ExecutionPolicy Bypass -File "' + $harness18 + '"')
+    $said18 = $(if (Test-Path -LiteralPath $saw18) { Get-Content -Raw -LiteralPath $saw18 } else { '(nothing)' })
+    Check '18: the splash, started from a folder whose name holds a space, gets its whole status file' ($said18 -eq (Join-Path $scripts18 'launch-status.txt')) "harness exit $code18; the splash got: $said18"
+} catch { Check '18: section ran' $false $_.Exception.Message }
 } finally { Complete-LocalDaemonTest }
 
 Write-Host "`n================ $pass passed, $fail failed ================" -ForegroundColor $(if ($fail) { 'Red' } else { 'Green' })
