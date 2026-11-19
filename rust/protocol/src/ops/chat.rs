@@ -542,6 +542,33 @@ pub struct ChatUnlinked {
     #[serde(deserialize_with = "within::<_, MAX_NAME>")]
     pub name: String,
     pub why: ChatUnlinkedWhy,
+    /// For `several_members`, the names Slack shows for the members the name could be, at most `MAX_CANDIDATES`; an
+    /// empty last name means there were more. Read leniently.
+    #[serde(default, skip_serializing_if = "Vec::is_empty", deserialize_with = "lenient_candidates")]
+    pub candidates: Vec<String>,
+}
+
+/// The most candidates a `several_members` entry names, and one more place for the empty "and more" name.
+pub const MAX_CANDIDATES: usize = 4;
+
+/// Names read as a cosmetic list: an entry that is no string or is past `MAX_NAME` is dropped, at most `max` kept, and a
+/// field that is no list is none.
+fn lenient_names<'de, D: serde::Deserializer<'de>>(d: D, max: usize) -> Result<Vec<String>, D::Error> {
+    let entries = match serde_json::Value::deserialize(d)? {
+        serde_json::Value::Array(entries) => entries,
+        _ => Vec::new(),
+    };
+    Ok(entries.into_iter().filter_map(|e| e.as_str().filter(|n| n.len() <= MAX_NAME).map(str::to_string)).take(max).collect())
+}
+
+fn lenient_candidates<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
+    lenient_names(d, MAX_CANDIDATES + 1)
+}
+
+/// `deserialize_with` of a `posted` reply's `mentioned`: the names Slack shows for the members the post mentions, in
+/// the text's order, at most `MAX_MENTIONS` (an empty last name means more), read as `lenient_names` reads.
+fn lenient_mentioned<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
+    lenient_names(d, MAX_MENTIONS)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -562,14 +589,14 @@ pub enum ChatUnlinkedWhy {
     Other,
 }
 
-/// `deserialize_with` of a `posted` reply's `unlinked`, which is cosmetic: an entry that does not decode within its bounds,
+/// `deserialize_with` of a `posted` reply's `unlinked`, which is cosmetic: an entry that is no object or does not decode within its bounds,
 /// one past `MAX_MENTIONS`, or a field that is no list is dropped, never a reason to read a made post as not made.
 fn lenient_unlinked<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<ChatUnlinked>, D::Error> {
     let entries = match serde_json::Value::deserialize(d)? {
         serde_json::Value::Array(entries) => entries,
         _ => Vec::new(),
     };
-    Ok(entries.into_iter().filter_map(|e| serde_json::from_value(e).ok()).take(MAX_MENTIONS).collect())
+    Ok(entries.into_iter().filter(|e| e.is_object()).filter_map(|e| serde_json::from_value(e).ok()).take(MAX_MENTIONS).collect())
 }
 
 impl ChatUnlinkedWhy {
@@ -590,7 +617,7 @@ impl ChatUnlinkedWhy {
 
 /// Reply to `chat.post`, by `outcome`. `refused`: definitely not posted. `limited`: not posted, and `retry_after_secs`
 /// is how long to wait (`assumed` when the wait is a guess). `unknown`: the post may exist, so read history, never resend.
-/// `posted` names the `@` names the daemon left as text.
+/// `posted` names the members the post mentions (`mentioned`) and the `@` names the daemon left as text (`unlinked`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum ChatPostRes {
@@ -598,6 +625,8 @@ pub enum ChatPostRes {
         ts: Ts,
         #[serde(default, skip_serializing_if = "Vec::is_empty", deserialize_with = "lenient_unlinked")]
         unlinked: Vec<ChatUnlinked>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty", deserialize_with = "lenient_mentioned")]
+        mentioned: Vec<String>,
     },
     Refused { code: ChatCode },
     Limited {
@@ -646,6 +675,8 @@ pub enum ChatPostFileRes {
         ts: Option<Ts>,
         #[serde(default, skip_serializing_if = "Vec::is_empty", deserialize_with = "lenient_unlinked")]
         unlinked: Vec<ChatUnlinked>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty", deserialize_with = "lenient_mentioned")]
+        mentioned: Vec<String>,
     },
     Refused { code: ChatCode },
     Limited {

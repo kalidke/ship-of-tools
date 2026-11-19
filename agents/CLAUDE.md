@@ -359,8 +359,9 @@ of each.
   posts only for the row it runs in (`$SOT_WORKSPACE_ID`, none refused before an endpoint is found) under the handle
   `comm-context.sh` gives (none refused the same way), asks `chat.resolve` for the pair, sends one `chat.post` of kind
   `row` and never a second (it does not use `send_fe_command`'s retry: chat guarantee 12), and waits 50 s for the post: past the daemon's own bounds with a margin, the member list's 10 s for a name to link and the post's 30 s (chat guarantees 35 and 14), so a made post or a refusal is never read as "may exist" (`case_each_wait_is_past_the_daemons_own_bounds` reads sot-chat's constants and the script's waits).
-  The text, handle and thread reach `jq` on stdin. Exit 0 with `posted <ts>`, then `; not linked: @<name> (<reason>)` for
-  each `@` name the daemon left as text (the reply's `unlinked`, its reasons in wire's words); 1 for usage; 2, nothing posted for certain, with
+  The text, handle and thread reach `jq` on stdin. Exit 0 with `posted <ts>`, then `; mentioned <names>` for the members the post
+  mentions (the reply's `mentioned`) and `; not linked: @<name> (<reason>[: <candidates>])` for each `@` name the daemon
+  left as text (the reply's `unlinked`, its reasons in wire's words; an empty name is `and more`); 1 for usage; 2, nothing posted for certain, with
   `refused <code> <words>` or `limited, wait <n> s`; 3, the post may exist, with `unknown: ...` (also a `handler_error`
   reply) or `no answer: ...` (also a hello the daemon refused, which cannot be told apart), each ending "do not send it
   again; ask the person to look in the channel". A caller tests the exit code, and never posts again on 3. The daemon refuses a row post under any name but the row's bound handle (chat contract, D13).
@@ -373,8 +374,8 @@ of each.
   folder but is agents'), whose description carries the asks' words; the installer's directory walk installs it, so no
   installer list names it (the manual's install page lists the installed skills and the uninstall line by hand). It says the verb posts only to the row's own channel, publicly, and refuses another channel or a direct message; what the
   exit codes mean; that a row with no channel is told what the command printed; and
-  that an `@name` in a post mentions the one member it names, a name left as text is printed after `posted`, and a
-  row's `@here` or `@channel` never notifies (chat guarantee 35). Unproven: that a session, asked in plain words, loads it.
+  that an `@name` in a post mentions the one member it names, whom it mentioned and the names left as text are printed
+  after `posted` and are read back to the person, and a row's `@here` or `@channel` never notifies (chat guarantee 35). Unproven: that a session, asked in plain words, loads it.
 - `sot-fe chat post [--thread <ts>] --file <path> [<comment> | --stdin]` shares a file of the row's folder (a figure, or
   any regular file of at most 16 MiB) under the same rules: the row and handle refused as above, then the path (a
   relative one joined to `$PWD`) made relative to `$SOT_WORKSPACE_ROOT` by comm-lib's `sot_relative_to`, the one owner

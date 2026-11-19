@@ -547,7 +547,7 @@ fn send(d: &mut ChatDrawer, at: Instant) -> ChatPostReq {
 
 fn made(d: &mut ChatDrawer, req: &ChatPostReq, at: Instant) -> Vec<Out> {
     let ts = serde_json::from_value(serde_json::json!("1900000000.000100")).unwrap();
-    d.on_evt(&host(), ChatEvt::Posted { req: req.clone(), reply: ChatReply::Done(ChatPostRes::Posted { ts, unlinked: Vec::new() }) }, at)
+    d.on_evt(&host(), ChatEvt::Posted { req: req.clone(), reply: ChatReply::Done(ChatPostRes::Posted { ts, unlinked: Vec::new(), mentioned: Vec::new() }) }, at)
 }
 
 /// Three days after the parent `top(1)` (22:13 UTC on the 14th), in UTC, so the compose line's stamp is the same on every day
@@ -811,14 +811,14 @@ fn answer_post(d: &mut ChatDrawer, outs: &[Out], answer: Answer, at: Instant) ->
     let ts: Ts = serde_json::from_value(serde_json::json!("1900000000.000100")).unwrap();
     let evt = match (outs, answer) {
         ([(_, OutgoingReq::ChatPost { req })], a) => ChatEvt::Posted { req: req.clone(), reply: match a {
-            Answer::Posted => ChatReply::Done(ChatPostRes::Posted { ts, unlinked: Vec::new() }),
+            Answer::Posted => ChatReply::Done(ChatPostRes::Posted { ts, unlinked: Vec::new(), mentioned: Vec::new() }),
             Answer::Refused(code) => ChatReply::Done(ChatPostRes::Refused { code }),
             Answer::Limited => ChatReply::Done(ChatPostRes::Limited { retry_after_secs: 30, assumed: false }),
             Answer::Unknown => ChatReply::Done(ChatPostRes::Unknown),
             Answer::Unsupported => ChatReply::Unsupported,
         } },
         ([(_, OutgoingReq::ChatPostFile { req })], a) => ChatEvt::FilePosted { req: req.clone(), reply: match a {
-            Answer::Posted => ChatReply::Done(ChatPostFileRes::Posted { file: "F0FILE".into(), ts: None, unlinked: Vec::new() }),
+            Answer::Posted => ChatReply::Done(ChatPostFileRes::Posted { file: "F0FILE".into(), ts: None, unlinked: Vec::new(), mentioned: Vec::new() }),
             Answer::Refused(code) => ChatReply::Done(ChatPostFileRes::Refused { code }),
             Answer::Limited => ChatReply::Done(ChatPostFileRes::Limited { retry_after_secs: 30, assumed: false }),
             Answer::Unknown => ChatReply::Done(ChatPostFileRes::Unknown),

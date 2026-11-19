@@ -123,7 +123,7 @@ impl Daemon {
             }
             OutgoingReq::ChatPost { req } => {
                 self.seen.posts.push((req.text.clone(), req.thread.as_ref().map(|t| t.as_str().to_string())));
-                let reply = ChatReply::Done(sot_protocol::ops::ChatPostRes::Posted { ts: ts(self.top + 1), unlinked: Vec::new() });
+                let reply = ChatReply::Done(sot_protocol::ops::ChatPostRes::Posted { ts: ts(self.top + 1), unlinked: Vec::new(), mentioned: Vec::new() });
                 Some(ChatEvt::Posted { req, reply })
             }
             OutgoingReq::ChatFile { req } if self.figures => {

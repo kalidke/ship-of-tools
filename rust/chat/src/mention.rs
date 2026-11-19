@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 
 use serde_json::Value;
 use sot_protocol::chat::{escape_text, MAX_MENTIONS, MAX_NAME};
-use sot_protocol::ops::{ChatUnlinked, ChatUnlinkedWhy};
+use sot_protocol::ops::{ChatUnlinked, ChatUnlinkedWhy, MAX_CANDIDATES};
 
 use crate::api::PostKind;
 use crate::normalize::{clean, valid_id};
@@ -15,11 +15,12 @@ use crate::normalize::{clean, valid_id};
 const CHANNEL_WIDE: [(&str, &str); 3] = [("channel", "<!channel>"), ("here", "<!here>"), ("everyone", "<!everyone>")];
 
 /// One person of the workspace: their id, the name the drawer shows (`users.info`'s rule), and the names a poster may
-/// type: the display name, the real name and the real name's first word.
+/// type, each marked whole or not: the display name and the real name (whole), and the real name's first word when the
+/// real name has more than one.
 pub(crate) struct Member {
     id: String,
     shown: String,
-    keys: Vec<String>,
+    keys: Vec<(String, bool)>,
 }
 
 impl Member {
@@ -34,8 +35,9 @@ impl Member {
         };
         let (display, real) = (field(raw.get("profile"), "display_name"), field(raw.get("profile"), "real_name"));
         let shown = display.clone().or_else(|| real.clone()).or_else(|| field(Some(raw), "name"))?;
-        let first = real.as_deref().and_then(|r| r.split_whitespace().next()).map(str::to_string);
-        Some(Member { id: id.into(), shown, keys: [display, real, first].into_iter().flatten().collect() })
+        let first = real.as_deref().and_then(|r| r.split_once(char::is_whitespace)).map(|(f, _)| (f.to_string(), false));
+        let whole = [display, real].into_iter().flatten().map(|k| (k, true));
+        Some(Member { id: id.into(), shown, keys: whole.chain(first).collect() })
     }
 }
 
@@ -56,7 +58,7 @@ impl Index {
     pub(crate) fn new(members: Vec<Member>) -> Index {
         let mut by_head: HashMap<String, Vec<(usize, usize)>> = HashMap::new();
         for (m, member) in members.iter().enumerate() {
-            for (k, key) in member.keys.iter().enumerate() {
+            for (k, (key, _)) in member.keys.iter().enumerate() {
                 by_head.entry(head(key)).or_default().push((m, k));
             }
         }
@@ -71,20 +73,21 @@ pub(crate) const MAX_READ: usize = 50;
 pub(crate) struct Linked {
     pub(crate) text: String,
     pub(crate) unlinked: Vec<ChatUnlinked>,
-    /// Each member linked, as `(id, shown name)`, for the name cache.
+    /// Each member linked, as `(id, shown name)`, in the text's order: the name cache's, and the reply's `mentioned`.
     pub(crate) linked: Vec<(String, String)>,
+    /// The names Slack shows for the members linked, in the text's order, at most `MAX_MENTIONS` (an empty last name: more).
+    pub(crate) mentioned: Vec<String>,
     /// A name reached the member list: `members` mattered.
     pub(crate) wanted: bool,
 }
 
 /// `text` escaped, with each `@` a name may follow (the first `MAX_READ`) made a token: a person's `@channel`, `@here` or
-/// `@everyone` its channel-wide token (a row's stays text), and any other name the member `members` spells there when
-/// every member any of whose names is spelled there, at any length, is that one member. A name that matches no member or
-/// several, or a list that could not be read (`Err`), stays text and is named in `unlinked`; so is every link, first,
-/// when the linked text would pass `room` bytes, and then the text is sent as typed. Past `MAX_MENTIONS` names, the last
-/// entry is `more`.
+/// `@everyone` its channel-wide token (a row's stays text), and any other name the one member `matched` finds there. A
+/// name that matches no member or several, or a list that could not be read (`Err`), stays text and is named in
+/// `unlinked`; so is every link, first, when the linked text would pass `room` bytes, and then the text is sent as
+/// typed. Past `MAX_MENTIONS` names, the last entry is `more`.
 pub(crate) fn link(text: &str, kind: PostKind, members: Result<&Index, ChatUnlinkedWhy>, room: usize) -> Linked {
-    let mut l = Linked { text: String::new(), unlinked: Vec::new(), linked: Vec::new(), wanted: false };
+    let mut l = Linked { text: String::new(), unlinked: Vec::new(), linked: Vec::new(), mentioned: Vec::new(), wanted: false };
     let (mut done, mut made, mut read, mut more) = (0, Vec::new(), 0, false);
     for at in candidates(text) {
         let rest = &text[at + 1..];
@@ -111,18 +114,20 @@ pub(crate) fn link(text: &str, kind: PostKind, members: Result<&Index, ChatUnlin
             }
             (None, Ok(index)) => {
                 l.wanted = true;
-                let (len, found) = matched(rest, index);
-                match found.as_slice() {
-                    [one] => {
+                match matched(rest, index) {
+                    Found::One(one, len) => {
                         l.linked.push((one.id.clone(), one.shown.clone()));
                         (len, format!("<@{}>", one.id))
                     }
-                    [] => {
+                    Found::Nobody => {
                         l.unlinked.push(unlinked(word, ChatUnlinkedWhy::NoMember));
                         continue;
                     }
-                    _ => {
-                        l.unlinked.push(unlinked(&rest[..len], ChatUnlinkedWhy::SeveralMembers));
+                    Found::Several(len, all) => {
+                        let mut entry = unlinked(&rest[..len], ChatUnlinkedWhy::SeveralMembers);
+                        entry.candidates = all.iter().take(MAX_CANDIDATES).map(|m| m.shown.clone()).collect();
+                        entry.candidates.extend((all.len() > MAX_CANDIDATES).then(String::new));
+                        l.unlinked.push(entry);
                         continue;
                     }
                 }
@@ -145,6 +150,10 @@ pub(crate) fn link(text: &str, kind: PostKind, members: Result<&Index, ChatUnlin
     if more || l.unlinked.len() > MAX_MENTIONS {
         l.unlinked.truncate(MAX_MENTIONS - 1);
         l.unlinked.push(unlinked("", ChatUnlinkedWhy::More));
+    }
+    l.mentioned = l.linked.iter().take(MAX_MENTIONS).map(|(_, shown)| shown.clone()).collect();
+    if l.linked.len() > MAX_MENTIONS {
+        l.mentioned[MAX_MENTIONS - 1] = String::new();
     }
     l
 }
@@ -182,22 +191,49 @@ fn candidates(text: &str) -> Vec<usize> {
     out
 }
 
-/// The members `rest` (the text after an `@`) names: every member any of whose names it spells, at any length, and the
-/// longest run spelled, in bytes. Linked only when that is one member, so no name a member chooses (another's name and
-/// a comma, or and a following word) takes another member's mention: it makes the mention ambiguous at worst.
-fn matched<'m>(rest: &str, index: &'m Index) -> (usize, Vec<&'m Member>) {
-    let (mut len, mut found) = (0, Vec::new());
+/// What an `@` names.
+enum Found<'m> {
+    One(&'m Member, usize),
+    /// The longest run spelled there, in bytes, and the members it could be.
+    Several(usize, Vec<&'m Member>),
+    Nobody,
+}
+
+/// The member `rest` (the text after an `@`) names. W is the members one of whose whole names (display or real) is
+/// spelled there, at any length, and F those spelled there only by their first word. If W is not empty only W counts:
+/// the longest run any of W is spelled by links when exactly one member of W is spelled at that length and every other
+/// member of W is spelled only by runs the longest one continues with a space (`Ben` beside `Ben Sample`); anything else
+/// in W is several. Else one member of F links, and more are several.
+fn matched<'m>(rest: &str, index: &'m Index) -> Found<'m> {
+    // Per member, in the index's order (a member's names are indexed together): its whole names' lengths, its first word's.
+    let mut spelled_here: Vec<(&Member, Vec<usize>, Option<usize>)> = Vec::new();
     for &(m, k) in index.by_head.get(&head(rest)).into_iter().flatten() {
         let member = &index.members[m];
-        if let Some(l) = spelled(rest, &member.keys[k]) {
-            len = len.max(l);
-            // A member's names are indexed together, in order, so a repeat is the last one found.
-            if found.last().is_none_or(|f: &&Member| !std::ptr::eq(*f, member)) {
-                found.push(member);
-            }
+        let (key, whole) = &member.keys[k];
+        let Some(len) = spelled(rest, key) else { continue };
+        if !spelled_here.last().is_some_and(|(last, _, _)| std::ptr::eq(*last, member)) {
+            spelled_here.push((member, Vec::new(), None));
         }
+        let (_, wholes, first) = spelled_here.last_mut().expect("pushed above");
+        if *whole { wholes.push(len) } else { *first = Some(len) }
     }
-    (len, found)
+    let (w, f): (Vec<_>, Vec<_>) = spelled_here.into_iter().partition(|(_, wholes, _)| !wholes.is_empty());
+    if let Some(longest) = w.iter().flat_map(|(_, wholes, _)| wholes.iter().copied()).max() {
+        let at_longest: Vec<&Member> = w.iter().filter(|(_, wholes, _)| wholes.contains(&longest)).map(|(m, _, _)| *m).collect();
+        // A shorter name the longest one extends after a space (by further words), not by punctuation.
+        let extended = |len: usize| rest[len..longest].starts_with(char::is_whitespace);
+        let others_extended = w.iter().filter(|(m, _, _)| !std::ptr::eq(*m, at_longest[0])).all(|(_, wholes, _)| wholes.iter().all(|&l| extended(l)));
+        return match at_longest.as_slice() {
+            [one] if others_extended => Found::One(one, longest),
+            _ => Found::Several(longest, w.into_iter().map(|(m, _, _)| m).collect()),
+        };
+    }
+    let longest = f.iter().filter_map(|(_, _, first)| *first).max().unwrap_or(0);
+    match f.as_slice() {
+        [] => Found::Nobody,
+        [(one, _, Some(len))] => Found::One(one, *len),
+        _ => Found::Several(longest, f.into_iter().map(|(m, _, _)| m).collect()),
+    }
 }
 
 /// The lowercased letters and digits a name or a text begins with: the index's key.
@@ -211,8 +247,8 @@ fn is_mark(c: char) -> bool {
 }
 
 /// The bytes of `rest` that spell `name`, ignoring case, when a boundary follows them: the end, or a character that is
-/// not a letter, a digit, a combining mark or `-`, or a `.` or `_` that ends a word (`@Ada.` and `_@Ada_` are Ada,
-/// `@ada.example` and `@ada_x` are no one).
+/// not a letter, a digit or a combining mark, or a `-`, `.` or `_` that ends a word (`@Ada.`, `@Ada-` and `_@Ada_` are
+/// Ada, `@ada.example`, `@Ada-Lee` and `@ada_x` are no one).
 fn spelled(rest: &str, name: &str) -> Option<usize> {
     let mut chars = rest.char_indices();
     let mut end = 0;
@@ -227,8 +263,8 @@ fn spelled(rest: &str, name: &str) -> Option<usize> {
     let mut after = rest[end..].chars();
     let bounded = match after.next() {
         None => true,
-        Some('.' | '_') => !after.next().is_some_and(word),
-        Some(c) => !(word(c) || c == '-'),
+        Some('-' | '.' | '_') => !after.next().is_some_and(word),
+        Some(c) => !word(c),
     };
     bounded.then_some(end)
 }
@@ -241,7 +277,7 @@ fn typed(rest: &str) -> &str {
 
 /// A name left as text, within `MAX_NAME`.
 fn unlinked(name: &str, why: ChatUnlinkedWhy) -> ChatUnlinked {
-    ChatUnlinked { name: clean(name, MAX_NAME).0, why }
+    ChatUnlinked { name: clean(name, MAX_NAME).0, why, candidates: Vec::new() }
 }
 
 #[cfg(test)]

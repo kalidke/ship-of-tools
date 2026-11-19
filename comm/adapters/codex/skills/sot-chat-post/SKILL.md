@@ -36,8 +36,8 @@ longer text is refused once, nothing posted: split it.
   `--file <path>`; the text, if any, becomes its comment (`--file <path> --stdin < <comment file>`). Run it with a tool
   timeout of at least 150 s: it waits up to 130 s. If your shell cuts it off, treat it as exit 3.
 
-It prints `posted <ts>` (`posted file <id>` when Slack names no message for a file), followed by any names left as text
-(see Mentions), and exits 0. Tell the person it is posted.
+It prints `posted <ts>` (`posted file <id>` when Slack names no message for a file), followed by whom it mentioned and
+any names left as text (see Mentions), and exits 0. Tell the person it is posted.
 
 ## Exit codes
 
@@ -70,18 +70,19 @@ Do not look for another way to post.
 
 ## Mentions
 
-Write `@` and the person's name as Slack shows it: their display name, full name, or first name (`@Ada`, `@Ada Example`),
-any capitals, a comma, period or `'s` after it allowed. The daemon links it to the one member of the channel's workspace
-with that name, and Slack notifies that person. Nothing inside backquotes or a code block, on a line that starts with
-`>`, or in an address like `ada@example.com` is linked. Never type Slack's own markup (`<@U123>`, `<!channel>`): it
-arrives as literal text.
+Write `@` and the person's name: the name Slack shows for them, their full name, or their first name, in any capitals
+(`@Ada`, `@Ada Example`). A comma, period or `'s` after it is fine. Prefer the full name when you know it. Nothing inside
+backquotes or a code block, on a line that starts with `>`, or in an address like `ada@example.com` is linked. Never type
+Slack's own markup (`<@U123>`, `<!channel>`): it arrives as literal text.
 
-A name the daemon could not link goes out as typed, and the output says so after the timestamp:
-`posted <ts>; not linked: @Zed (no member)`. The reasons are `no member`, `several members` (another member has a name
-that starts the same way: the full name is needed), `the member list could not be read`, `the member list is too large`
-and `the post would be too long`; `and more` ends a list longer than the output names. The post itself was made (exit
-0): do not post it again. Tell the person which names were not linked and why. Prefer the person's full name when you
-know it.
+The output says whom the post mentioned and which names stayed text:
+`posted <ts>; mentioned Ada Example; not linked: @Zed (no member), @Ben (several members: Ben Smith, Ben Sample)`.
+Read the `mentioned` names back to the person every time, so they can see it reached the people they meant: a first
+name can reach the only member who has it even when the person meant someone else. The reasons a name stays text are
+`no member`, `several members` (the members it could be follow; the full name tells them apart), `the member list could
+not be read`, `the member list is too large` and `the post would be too long`; `and more` ends a list longer than the
+output names. The post itself was made (exit 0): do not post it again. Tell the person which names were not linked and
+why.
 
 `@here`, `@channel` and `@everyone` never notify from your post: they go out as text, and the output names them
 (`a session never notifies a whole channel`). If the person wants the whole channel notified, tell them to post it

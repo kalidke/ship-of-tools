@@ -90,7 +90,7 @@ through the channel types below.
   (`ChatPost` and `ChatPostFile`, whose reply is `ChatEvt::FilePosted`, are not replayable) and its outcome is `Done(Unknown)` unless the reply proves it was not made: an error
   reply whose code is not a refusal `ChatCode` (`handler_error`), an answer that does not parse and a connection that
   ends first are unknown, never refused, so the window never offers to resend (tests
-  `a_post_answered_by_a_handler_error_is_unknown_never_refused`, `a_posted_reply_with_unlinked_entries_it_cannot_read_is_still_posted` (a `posted` reply's cosmetic `unlinked` never makes it unknown: wire reads it leniently), `a_chat_post_without_its_answer_is_unknown_and_never_written_again` (which also pins the dropped watch and read),
+  `a_post_answered_by_a_handler_error_is_unknown_never_refused`, `a_posted_reply_with_unlinked_or_mentioned_entries_it_cannot_read_is_still_posted` (a `posted` reply's cosmetic `unlinked` never makes it unknown: wire reads it leniently), `a_chat_post_without_its_answer_is_unknown_and_never_written_again` (which also pins the dropped watch and read),
   `a_chat_reply_carries_its_request_and_its_refusal`, `chat_events_decode_into_their_typed_events`, which pins `Unreadable`,
   `a_file_post_without_its_answer_is_unknown_and_never_written_again`). A file post passes no `posts_plain_text` gate:
   every daemon that knows `chat.post_file` escapes its comment, and one that does not answers `Unsupported`.

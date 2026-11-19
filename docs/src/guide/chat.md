@@ -142,29 +142,51 @@ plain text that pings no one. The one exception is a name after `@`, described n
 
 ### Mentioning someone
 
-Type `@` and the person's name as Slack shows it: their display name, their full name, or their first name when no
-other member of the workspace has it, in any capitals (`@Ada`, `@ada example`). Slack shows the name as a mention and
-notifies that person, as if you had picked them in Slack. A comma, a period or `'s` may follow the name, and `_`, `*` or
-`~` may surround it (`_@Ada_`). Nothing is looked up inside `` `code` ``, a fenced code block, a line that starts with
-`>`, or an address such as `ada@example.com`. Only the members of the project's own workspace are looked up, and Ship of
-Tools reads the workspace's member list again at most every 10 minutes, so a person who joined or changed their name in
-the last few minutes may not be found by their new name.
+To mention someone, type `@` and their name: the name Slack shows for them (their display name, or their full name when
+they have none), their full name, or just their first name, in any capitals. For a member Slack shows as `Ada Example`,
+`@Ada Example`, `@ada example` and `@ada` all work. Slack shows the mention and notifies that person, as if you had
+picked them in Slack's own list.
 
-A name is linked only when no other member has a name that begins the same way at that point. If you type `@Ben` and the
-workspace has a `Ben` and a `Ben Sample`, or a member whose name is `Ben` followed by more words, nothing is linked and
-the status line says `several members`: type the fuller name (`@Ben Sample`). This also means a full name stays text
-while another member's whole name is its first word (`@Cy Two` beside a `Cy`). A first name links to the one member who
-has it even when you meant someone outside the workspace: `@Ada Lovelace` mentions the workspace's only Ada, whoever
-that is, and leaves `Lovelace` as text.
+After the post, the status line says whom it mentioned, so you can see at once that it reached the right person:
+`posted; mentioned Ada Example`.
 
-A name that cannot be linked goes out as you typed it, and the status line names it after the post, for example
-`posted; not linked: @Zed (no member)`. The reasons are `no member` (no one has that name), `several members` (more
-than one person has a name that starts that way: type more of the name), `the member list could not be read` (Slack
-refused the read, did not answer within 10 seconds, or asked for a pause, after which names stay unread until the pause
-ends; the post went out once, without waiting longer), `the member list is too large` (the workspace has more than ten
-pages of members, about 2,000 accounts, people, bots and deactivated ones counted; no name is linked there), and `the
-post would be too long` (linking would pass the message's limit, so nothing in it was linked). A message with more names
-left as text than the status line lists ends with `and more`; at most 50 names in one message are looked up.
+A comma, a period, a hyphen or `'s` may follow the name, and `_`, `*` or `~` may surround it (`_@Ada_`). Nothing is
+looked up inside `` `code` ``, a fenced code block, a line that starts with `>`, or an address such as
+`ada@example.com`. Only the members of the project's own Slack workspace are looked up.
+
+When names overlap:
+
+- A name Slack shows for someone wins over a first name. If one member is shown as `Ada` and another as `Ada Example`,
+  `@Ada` mentions the one shown as `Ada`; type `@Ada Example` for the other.
+- A longer name wins when it is the shorter one plus more words. With members `Ben` and `Ben Sample`, `@Ben Sample`
+  mentions Ben Sample and `@Ben, hi` mentions Ben.
+- When two members could be meant, nothing is linked and the status line names them:
+  `posted; not linked: @Ada (several members: Ada Example, Ada Other)`. Post again with the name that tells them apart,
+  usually their full name.
+
+Some mistakes the rule cannot catch, which the `mentioned` names on the status line show you:
+
+- A first name typed for someone who is not in the workspace mentions the member who has that first name:
+  `@Ada Lovelace`, with only Ada Example in the workspace, says `mentioned Ada Example` and leaves `Lovelace` as text.
+- A word after the name that completes another member's name mentions that member: `@Ben sample size`, with a member
+  `Ben Sample`, mentions Ben Sample.
+- A member shown as just `Ada` takes `@Ada` from a member shown as `Ada Example`, and the status line then says
+  `mentioned Ada`.
+- Ship of Tools reads the workspace's member list again at most every 10 minutes, so for a few minutes after someone
+  joins or changes their name, the old names still apply.
+
+A name that is not linked goes out as you typed it, and the status line names it after the post, for example
+`posted; not linked: @Zed (no member)`. The reasons are:
+
+- `no member`: no one has that name.
+- `several members`: more than one member could be meant; the members are listed after the reason.
+- `the member list could not be read`: Slack refused the read, did not answer within 10 seconds, or asked for a pause,
+  after which names stay unlinked until the pause ends. The post went out once, without waiting longer.
+- `the member list is too large`: the workspace has more than ten pages of members, about 2,000 accounts, people, bots
+  and deactivated ones counted; no name is linked there.
+- `the post would be too long`: linking would pass the message's limit, so nothing in it was linked.
+
+A list longer than the status line names ends with `and more`; at most 50 names in one message are looked up.
 
 `@here`, `@channel` and `@everyone` notify the channel, as they do in Slack, when you post them from the Chat panel
 (Slack may still refuse them by the workspace's settings). They win over a member's name that begins with them: a
@@ -242,7 +264,7 @@ by `--thread`, or else is a new message. It is sent once: the command prints `po
 `refused` and a reason, or `limited, wait <n> s`, when nothing was posted; and exits 3 with `unknown` or `no answer`
 when the post may exist, in which case the agent does not post it again and asks you to look in the channel. A reply is public to
 every member of the channel. An `@name` in the agent's post or file comment mentions that person, as in yours
-([Mentioning someone](#Mentioning-someone)), and the command adds `; not linked: @<name> (<reason>)` after `posted <ts>`
+([Mentioning someone](#Mentioning-someone)), and the command adds `; mentioned <names>` and `; not linked: @<name> (<reason>)` after `posted <ts>`
 for each name it left as text. `@here`, `@channel` and `@everyone` are never a mention in an agent's post: they go out
 as text, and the command names them. The command posts only to the session's own project channel, for everyone
 in it: it cannot post to another channel or send a direct message.
@@ -312,6 +334,7 @@ messages to be missed, the top line says `not up to date`.
 | The status line says | What to do |
 |---|---|
 | `posting…` | Wait for the post's answer. |
+| `posted; mentioned <names>` | The post mentioned those members; check they are the people you meant. |
 | `posted; not linked: @<name> (<reason>)` | The post went out with that name as text; see [Mentioning someone](#Mentioning-someone). |
 | `nothing to post` | Type a message first. |
 | `not posted: <reason>`, such as `you are not in that channel in Slack; join it there first` | Fix the reason; the message is kept. |

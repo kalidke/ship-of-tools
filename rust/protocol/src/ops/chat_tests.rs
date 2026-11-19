@@ -102,7 +102,7 @@ fn every_request_reply_and_event_keeps_its_shape() {
         ChatPostReq { target: target(), thread: None, kind: ChatPostKind::Row, name: "r".into(), text: "hi".into() },
         json!({"target": target_json(), "thread": null, "kind": "row", "name": "r", "text": "hi"}),
     );
-    pinned(ChatPostRes::Posted { ts: ts("3.000003"), unlinked: Vec::new() }, json!({"outcome": "posted", "ts": "3.000003"}));
+    pinned(ChatPostRes::Posted { ts: ts("3.000003"), unlinked: Vec::new(), mentioned: Vec::new() }, json!({"outcome": "posted", "ts": "3.000003"}));
     pinned(ChatPostRes::Refused { code: ChatCode::StaleRow }, json!({"outcome": "refused", "code": "stale_row"}));
     pinned(
         ChatPostRes::Limited { retry_after_secs: 30, assumed: true },
@@ -678,10 +678,10 @@ fn the_file_pair_keeps_its_shape_and_its_bounds() {
         json!({"target": target_json(), "thread": null, "kind": "person", "name": "p", "node_id": "files:a", "comment": null}),
     );
     pinned(
-        ChatPostFileRes::Posted { file: "F1".into(), ts: Some(ts("3.000003")), unlinked: Vec::new() },
+        ChatPostFileRes::Posted { file: "F1".into(), ts: Some(ts("3.000003")), unlinked: Vec::new(), mentioned: Vec::new() },
         json!({"outcome": "posted", "file": "F1", "ts": "3.000003"}),
     );
-    pinned(ChatPostFileRes::Posted { file: "F1".into(), ts: None, unlinked: Vec::new() }, json!({"outcome": "posted", "file": "F1"}));
+    pinned(ChatPostFileRes::Posted { file: "F1".into(), ts: None, unlinked: Vec::new(), mentioned: Vec::new() }, json!({"outcome": "posted", "file": "F1"}));
     pinned(ChatPostFileRes::Refused { code: ChatCode::NotAFile }, json!({"outcome": "refused", "code": "not_a_file"}));
     pinned(
         ChatPostFileRes::Limited { retry_after_secs: 30, assumed: false },
@@ -771,13 +771,13 @@ fn a_file_outcome_or_code_added_later_reads_as_the_safe_one() {
 /// carries only the field an older window skips.
 #[test]
 fn a_posted_reply_names_the_names_left_as_text_and_stays_additive() {
-    let zed = ChatUnlinked { name: "Zed".into(), why: ChatUnlinkedWhy::NoMember };
+    let zed = ChatUnlinked { name: "Zed".into(), why: ChatUnlinkedWhy::NoMember, candidates: Vec::new() };
     pinned(
-        ChatPostRes::Posted { ts: ts("3.000003"), unlinked: vec![zed.clone()] },
+        ChatPostRes::Posted { ts: ts("3.000003"), unlinked: vec![zed.clone()], mentioned: Vec::new() },
         json!({"outcome": "posted", "ts": "3.000003", "unlinked": [{"name": "Zed", "why": "no_member"}]}),
     );
     pinned(
-        ChatPostFileRes::Posted { file: "F1".into(), ts: None, unlinked: vec![zed] },
+        ChatPostFileRes::Posted { file: "F1".into(), ts: None, unlinked: vec![zed], mentioned: Vec::new() },
         json!({"outcome": "posted", "file": "F1", "unlinked": [{"name": "Zed", "why": "no_member"}]}),
     );
     let later: ChatPostRes = serde_json::from_value(json!({"outcome": "posted", "ts": "3.000003", "unlinked": [{"name": "a", "why": "new_reason"}]})).unwrap();
@@ -806,4 +806,35 @@ fn a_posted_reply_names_the_names_left_as_text_and_stays_additive() {
     }
     let older: Older = serde_json::from_value(json!({"outcome": "posted", "ts": "3.000003", "unlinked": [{"name": "Zed", "why": "no_member"}]})).unwrap();
     assert!(matches!(older, Older::Posted { ts: t } if t == ts("3.000003")));
+}
+
+/// A `posted` reply names the members it mentioned (`mentioned`), and a `several_members` entry the members it could be
+/// (`candidates`): both optional, absent when empty, and read leniently (a name that is no string or is past `MAX_NAME`
+/// dropped, at most `MAX_MENTIONS` and `MAX_CANDIDATES` and one more kept, a field that is no list none), so an older
+/// window skips them, an older daemon's reply reads as none, and a reply is never made unreadable by them.
+#[test]
+fn a_posted_reply_names_whom_it_mentioned_and_whom_a_name_could_be() {
+    let ben = ChatUnlinked { name: "Ben".into(), why: ChatUnlinkedWhy::SeveralMembers, candidates: vec!["Ben Smith".into(), "Ben Sample".into()] };
+    pinned(
+        ChatPostRes::Posted { ts: ts("3.000003"), unlinked: vec![ben.clone()], mentioned: vec!["Ada Example".into()] },
+        json!({"outcome": "posted", "ts": "3.000003", "mentioned": ["Ada Example"],
+               "unlinked": [{"name": "Ben", "why": "several_members", "candidates": ["Ben Smith", "Ben Sample"]}]}),
+    );
+    pinned(
+        ChatPostFileRes::Posted { file: "F1".into(), ts: None, unlinked: vec![ben], mentioned: vec!["Ada Example".into()] },
+        json!({"outcome": "posted", "file": "F1", "mentioned": ["Ada Example"],
+               "unlinked": [{"name": "Ben", "why": "several_members", "candidates": ["Ben Smith", "Ben Sample"]}]}),
+    );
+    let long = "n".repeat(crate::chat::MAX_NAME + 1);
+    let mut twenty: Vec<Value> = (0..20).map(|n| json!(n.to_string())).collect();
+    twenty.insert(0, json!(long));
+    twenty.insert(1, json!(7));
+    let reply = json!({"outcome": "posted", "ts": "3.000003", "mentioned": twenty,
+                       "unlinked": [{"name": "Ben", "why": "several_members", "candidates": twenty}]});
+    let ChatPostRes::Posted { mentioned, unlinked, .. } = serde_json::from_value::<ChatPostRes>(reply).unwrap() else { panic!("not posted") };
+    assert_eq!((mentioned.len(), mentioned[0].as_str()), (crate::chat::MAX_MENTIONS, "0"));
+    assert_eq!(unlinked[0].candidates, ["0", "1", "2", "3", "4"], "MAX_CANDIDATES and the one place for `more`");
+    let odd = json!({"outcome": "posted", "ts": "3.000003", "mentioned": "x", "unlinked": [{"name": "Ben", "why": "no_member", "candidates": 3}]});
+    let ChatPostRes::Posted { mentioned, unlinked, .. } = serde_json::from_value::<ChatPostRes>(odd).unwrap() else { panic!("not posted") };
+    assert!(mentioned.is_empty() && unlinked[0].candidates.is_empty());
 }

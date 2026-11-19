@@ -284,14 +284,14 @@ fn compose_retains_refused_limited_and_unknown_drafts() {
     // A reply for a post that is not waiting changes nothing; the reply that proves the post clears that draft alone.
     let req = posted(d.send(Some(&r), Some("Ada"), at + Duration::from_secs(40)).unwrap());
     let other = ChatPostReq { text: "other".into(), ..req.clone() };
-    reply(&mut d, &other, ChatReply::Done(ChatPostRes::Posted { ts: serde_json::from_value(serde_json::json!("1700000000.000100")).unwrap(), unlinked: Vec::new() }), at);
+    reply(&mut d, &other, ChatReply::Done(ChatPostRes::Posted { ts: serde_json::from_value(serde_json::json!("1700000000.000100")).unwrap(), unlinked: Vec::new(), mentioned: Vec::new() }), at);
     assert_eq!(d.draft(), Some(("a < b", "C1")));
-    reply(&mut d, &req, ChatReply::Done(ChatPostRes::Posted { ts: serde_json::from_value(serde_json::json!("1700000000.000100")).unwrap(), unlinked: Vec::new() }), at);
+    reply(&mut d, &req, ChatReply::Done(ChatPostRes::Posted { ts: serde_json::from_value(serde_json::json!("1700000000.000100")).unwrap(), unlinked: Vec::new(), mentioned: Vec::new() }), at);
     assert_eq!(d.draft(), None);
     assert_eq!(d.take_notice(), None);
     // A second reply to that post, arriving after the person began another draft, clears nothing.
     d.edit(Some(&r), Edit::Text("next")).unwrap();
-    reply(&mut d, &req, ChatReply::Done(ChatPostRes::Posted { ts: serde_json::from_value(serde_json::json!("1700000000.000100")).unwrap(), unlinked: Vec::new() }), at);
+    reply(&mut d, &req, ChatReply::Done(ChatPostRes::Posted { ts: serde_json::from_value(serde_json::json!("1700000000.000100")).unwrap(), unlinked: Vec::new(), mentioned: Vec::new() }), at);
     assert_eq!(d.draft(), Some(("next", "C1")));
 
     // A link that drops while the post waits leaves it unknown, and the status line says so.
@@ -324,7 +324,7 @@ fn a_posted_reply_clears_the_draft_of_the_row_it_proves_and_no_other() {
     // The person moves to row S and types there while R's post waits (S's draft is not R's).
     let at = show(&mut d, "S", at + Duration::from_secs(1));
     d.edit(Some(&row("S")), Edit::Text("from b")).unwrap();
-    reply(&mut d, &req, ChatReply::Done(ChatPostRes::Posted { ts: serde_json::from_value(serde_json::json!("1700000000.000100")).unwrap(), unlinked: Vec::new() }), at);
+    reply(&mut d, &req, ChatReply::Done(ChatPostRes::Posted { ts: serde_json::from_value(serde_json::json!("1700000000.000100")).unwrap(), unlinked: Vec::new(), mentioned: Vec::new() }), at);
     assert_eq!(d.draft(), Some(("from b", "C1")), "the shown row's draft stays");
     show(&mut d, "R", at + Duration::from_secs(1));
     assert_eq!(d.draft(), None, "the row the reply proves is cleared");
@@ -516,7 +516,7 @@ fn post_proved(d: &mut ChatDrawer, at: Instant) {
     let r = row("R");
     d.edit(Some(&r), Edit::Text("hi")).unwrap();
     let req = posted(d.send(Some(&r), Some("Ada"), at).unwrap());
-    reply(d, &req, ChatReply::Done(ChatPostRes::Posted { ts: serde_json::from_value(serde_json::json!("1700000000.000100")).unwrap(), unlinked: Vec::new() }), at);
+    reply(d, &req, ChatReply::Done(ChatPostRes::Posted { ts: serde_json::from_value(serde_json::json!("1700000000.000100")).unwrap(), unlinked: Vec::new(), mentioned: Vec::new() }), at);
     assert_eq!(d.draft(), None, "the proof clears the draft");
 }
 
@@ -550,7 +550,7 @@ fn the_foot_explains_until_the_first_proved_post() {
     let (mut d, at) = watching_as_person();
     d.edit(Some(&r), Edit::Text("the fit")).unwrap();
     let req = file_posted(d.send_file(Some(&r), Previewed::File("files:figs/fit.png"), at).unwrap());
-    d.on_evt(&"a".to_string(), ChatEvt::FilePosted { req, reply: ChatReply::Done(ChatPostFileRes::Posted { file: "F0FILE".into(), ts: None, unlinked: Vec::new() }) }, at);
+    d.on_evt(&"a".to_string(), ChatEvt::FilePosted { req, reply: ChatReply::Done(ChatPostFileRes::Posted { file: "F0FILE".into(), ts: None, unlinked: Vec::new(), mentioned: Vec::new() }) }, at);
     assert_eq!(said(&d), [prompt]);
     assert!(d.take_first_post());
     // Another project's foot is the same: the fact is the computer's.
@@ -605,7 +605,7 @@ fn the_first_post_is_kept_and_a_new_window_reads_it() {
         d.edit(Some(&r), Edit::Text("keep")).unwrap();
         let req = posted(d.send(Some(&r), Some("Ada"), at).unwrap());
         assert_eq!(load_from(&bad).chat_posted, None);
-        reply(&mut d, &req, ChatReply::Done(ChatPostRes::Posted { ts: serde_json::from_value(serde_json::json!("1700000000.000100")).unwrap(), unlinked: Vec::new() }), at);
+        reply(&mut d, &req, ChatReply::Done(ChatPostRes::Posted { ts: serde_json::from_value(serde_json::json!("1700000000.000100")).unwrap(), unlinked: Vec::new(), mentioned: Vec::new() }), at);
         assert_eq!(d.draft(), None);
         assert!(d.take_first_post());
         assert!(record_chat_posted_at(&bad).is_err(), "{bad:?}");
@@ -741,7 +741,7 @@ fn the_previewed_file_posts_once_with_the_draft_as_its_comment() {
 
     // Shared, even with no `ts`: the draft is gone, and the status line says what went where.
     let req = file_posted(d.send_file(Some(&r), Previewed::File("files:figs/fit.png"), at).unwrap());
-    answer(&mut d, &req, ChatReply::Done(ChatPostFileRes::Posted { file: "F0FILE".into(), ts: None, unlinked: Vec::new() }));
+    answer(&mut d, &req, ChatReply::Done(ChatPostFileRes::Posted { file: "F0FILE".into(), ts: None, unlinked: Vec::new(), mentioned: Vec::new() }));
     assert_eq!(d.draft(), None);
     assert_eq!(d.take_notice().as_deref(), Some("shared fit.png to C1"));
     // A file post's `bad_request` is the file's name, never `[chat] name`, which it does not send.
@@ -754,27 +754,39 @@ fn the_previewed_file_posts_once_with_the_draft_as_its_comment() {
     assert_eq!((req.target.channel.as_str(), req.comment), ("C1", None));
 }
 
-/// A post made with `@` names the daemon left as text says so on the status line, each name with its reason; a text post
-/// with none says nothing, and a file's share ends its words with them.
+/// A post made with `@` names says on the status line whom it mentioned and which names it left as text, each with its
+/// reason and, for several members, the members it could be; a text post with neither says nothing, and a file's share
+/// ends its words with them.
 #[test]
-fn a_post_made_names_what_was_not_linked() {
+fn a_post_made_names_whom_it_mentioned_and_what_was_not_linked() {
     let r = row("R");
     let (mut d, at) = watching_as_person();
     let ts: sot_protocol::chat::Ts = serde_json::from_value(serde_json::json!("1700000000.000100")).unwrap();
+    let entry = |name: &str, why, candidates: &[&str]| ChatUnlinked { name: name.into(), why, candidates: candidates.iter().map(|c| c.to_string()).collect() };
     let unlinked = vec![
-        ChatUnlinked { name: "Zed".into(), why: ChatUnlinkedWhy::NoMember },
-        ChatUnlinked { name: "cy".into(), why: ChatUnlinkedWhy::SeveralMembers },
+        entry("Zed", ChatUnlinkedWhy::NoMember, &[]),
+        entry("Ben", ChatUnlinkedWhy::SeveralMembers, &["Ben Smith", "Ben Sample"]),
+        entry("Cy", ChatUnlinkedWhy::SeveralMembers, &["Cy One", "Cy Two", "Cy Three", "Cy Four", ""]),
     ];
-    d.edit(Some(&r), Edit::Text("hi @Zed and @cy")).unwrap();
+    let mentioned = vec!["Ada Example".to_string(), "Ben Sample".to_string()];
+    d.edit(Some(&r), Edit::Text("hi @Ada, @Ben Sample, @Zed, @Ben and @Cy")).unwrap();
     let req = posted(d.send(Some(&r), Some("Ada"), at).unwrap());
-    reply(&mut d, &req, ChatReply::Done(ChatPostRes::Posted { ts: ts.clone(), unlinked }), at);
+    reply(&mut d, &req, ChatReply::Done(ChatPostRes::Posted { ts: ts.clone(), unlinked, mentioned }), at);
     assert_eq!(d.draft(), None, "a post made clears its draft");
-    assert_eq!(d.take_notice().as_deref(), Some("posted; not linked: @Zed (no member), @cy (several members)"));
+    assert_eq!(
+        d.take_notice().as_deref(),
+        Some("posted; mentioned Ada Example, Ben Sample; not linked: @Zed (no member), @Ben (several members: Ben Smith, Ben Sample), @Cy (several members: Cy One, Cy Two, Cy Three, Cy Four, and more)")
+    );
+    d.edit(Some(&r), Edit::Text("hi")).unwrap();
+    let req = posted(d.send(Some(&r), Some("Ada"), at).unwrap());
+    reply(&mut d, &req, ChatReply::Done(ChatPostRes::Posted { ts: ts.clone(), unlinked: Vec::new(), mentioned: vec!["Ada Example".into()] }), at);
+    assert_eq!(d.take_notice().as_deref(), Some("posted; mentioned Ada Example"), "a mention made is always told");
     d.edit(Some(&r), Edit::Text("the fit @Zed")).unwrap();
     let req = file_posted(d.send_file(Some(&r), Previewed::File("files:figs/fit.png"), at).unwrap());
-    let unlinked = vec![ChatUnlinked { name: "Zed".into(), why: ChatUnlinkedWhy::MembersUnread }, ChatUnlinked { name: String::new(), why: ChatUnlinkedWhy::More }];
-    d.on_evt(&"a".to_string(), ChatEvt::FilePosted { req, reply: ChatReply::Done(ChatPostFileRes::Posted { file: "F0FILE".into(), ts: None, unlinked }) }, at);
-    assert_eq!(d.take_notice().as_deref(), Some("shared fit.png to C1; not linked: @Zed (the member list could not be read), and more"));
+    let unlinked = vec![entry("Zed", ChatUnlinkedWhy::MembersUnread, &[]), entry("", ChatUnlinkedWhy::More, &[])];
+    let mentioned = vec!["Ada Example".to_string(), String::new()];
+    d.on_evt(&"a".to_string(), ChatEvt::FilePosted { req, reply: ChatReply::Done(ChatPostFileRes::Posted { file: "F0FILE".into(), ts: None, unlinked, mentioned }) }, at);
+    assert_eq!(d.take_notice().as_deref(), Some("shared fit.png to C1; mentioned Ada Example, and more; not linked: @Zed (the member list could not be read), and more"));
 }
 
 /// A picture opened from the chat in the preview is no file of the project: nothing is posted, and the status line says what

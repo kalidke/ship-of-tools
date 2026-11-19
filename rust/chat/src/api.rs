@@ -420,6 +420,14 @@ pub struct ScanPage {
     pub limited: bool,
 }
 
+/// What a post's reply tells the poster of its `@` names (guarantee 35): the names left as text, and the names Slack shows
+/// for the members it mentions, in the text's order.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Told {
+    pub unlinked: Vec<ChatUnlinked>,
+    pub mentioned: Vec<String>,
+}
+
 /// Whose post this is. The kind is carried in a row's metadata and username suffix, as `normalize` reads them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PostKind {
@@ -952,7 +960,7 @@ impl Api {
         kind: PostKind,
         name: &str,
         text: &str,
-    ) -> Result<(PostOutcome, Vec<ChatUnlinked>), ApiError> {
+    ) -> Result<(PostOutcome, Told), ApiError> {
         if self.is_closed() {
             return Err(ApiError::Closed);
         }
@@ -989,7 +997,7 @@ impl Api {
         if let PostOutcome::Refused(code) = &outcome {
             self.refused(kind, code);
         }
-        Ok((outcome, linked.unlinked))
+        Ok((outcome, Told { unlinked: linked.unlinked, mentioned: linked.mentioned }))
     }
 
     /// One transfer permit, taken at once: `Err(Http(Busy))` while `MAX_TRANSFERS` are held, `Err(Closed)` for a closed
@@ -1039,7 +1047,7 @@ impl Api {
         file_name: &str,
         bytes: Vec<u8>,
         comment: Option<&str>,
-    ) -> Result<(FileOutcome, Vec<ChatUnlinked>), ApiError> {
+    ) -> Result<(FileOutcome, Told), ApiError> {
         if self.is_closed() {
             return Err(ApiError::Closed);
         }
@@ -1061,13 +1069,13 @@ impl Api {
         }
         let share_url = self.url("files.completeUploadExternal", &[])?;
         let token = self.poster(kind)?;
-        let (comment, unlinked) = match (label, comment) {
+        let (comment, told) = match (label, comment) {
             (label, Some(c)) => {
                 let prefix = label.map(|l| escape_text(&format!("{l}: "))).unwrap_or_default();
                 let linked = self.linked(c, kind, MAX_TEXT - prefix.len()).await?;
-                (Some(prefix + &linked.text), linked.unlinked)
+                (Some(prefix + &linked.text), Told { unlinked: linked.unlinked, mentioned: linked.mentioned })
             }
-            (label, None) => (label.map(|l| escape_text(&l)), Vec::new()),
+            (label, None) => (label.map(|l| escape_text(&l)), Told::default()),
         };
         // The share's three steps: any return here is the outcome, with the names left as text.
         let outcome = async {
@@ -1113,7 +1121,7 @@ impl Api {
             outcome
         }
         .await;
-        Ok((outcome, unlinked))
+        Ok((outcome, told))
     }
 
     /// Read one picture of a channel's, under one transfer permit (guarantee 33): `files.info` for the file, which must be

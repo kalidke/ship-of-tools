@@ -87,8 +87,9 @@ _chat_resolve() {
 }
 
 # The one post's reply $1 (empty for none): exits 0 with `posted <ts>` (or `posted file <id>` for a file share Slack
-# named no message of), followed by `; not linked: @<name> (<why>)` for each `@` name the daemon left as text (the
-# words are wire's `ChatUnlinkedWhy::text`), 2 when nothing was posted, 3 when the post may exist.
+# named no message of), followed by `; mentioned <names>` for the members the post mentions and `; not linked:
+# @<name> (<why>[: <candidates>])` for each `@` name the daemon left as text (the words are wire's
+# `ChatUnlinkedWhy::text`; an empty name is `and more`), 2 when nothing was posted, 3 when the post may exist.
 _chat_posted() {
     local resp="$1" err code
     if [ -z "$resp" ]; then
@@ -106,8 +107,12 @@ _chat_posted() {
             printf '%s' "$resp" | jq -r '{no_member: "no member", several_members: "several members",
                 members_unread: "the member list could not be read", too_many_members: "the member list is too large",
                 channel_wide: "a session never notifies a whole channel", too_long: "the post would be too long"} as $why
-                | (if .payload.ts then "posted \(.payload.ts)" else "posted file \(.payload.file)" end)
-                + ([.payload.unlinked[]? | if .why == "more" then "and more" else "@\(.name) (\($why[.why] // "not linked"))" end] | if length > 0 then "; not linked: " + join(", ") else "" end)'
+                | def names: map(if . == "" then "and more" else . end) | join(", ");
+                (if .payload.ts then "posted \(.payload.ts)" else "posted file \(.payload.file)" end)
+                + ((.payload.mentioned // []) | if length > 0 then "; mentioned " + names else "" end)
+                + ([.payload.unlinked[]? | if .why == "more" then "and more"
+                    else "@\(.name) (\($why[.why] // "not linked")\(if (.candidates // []) | length > 0 then ": " + (.candidates | names) else "" end))" end]
+                   | if length > 0 then "; not linked: " + join(", ") else "" end)'
             ;;
         refused)
             _chat_refused "$(printf '%s' "$resp" | jq -r '.payload.code // "?"')"

@@ -225,7 +225,7 @@ pub(crate) async fn post(req_id: u64, payload: serde_json::Value, chat: &Arc<Cha
     let outcome = api.post_linked(req.target.channel.as_str(), req.thread.as_ref().map(|t| t.as_str()), post_kind(req.kind), &req.name, &req.text).await;
     match outcome {
         Err(e) => refused_post(code_of(&e)),
-        Ok((PostOutcome::Posted(ts), unlinked)) => reply(req_id, NAME, &ChatPostRes::Posted { ts, unlinked }),
+        Ok((PostOutcome::Posted(ts), told)) => reply(req_id, NAME, &ChatPostRes::Posted { ts, unlinked: told.unlinked, mentioned: told.mentioned }),
         Ok((PostOutcome::Refused(why), _)) => refused_post(post_refusal_code(post_kind(req.kind), &why)),
         Ok((PostOutcome::Limited { retry_after, assumed }, _)) => {
             reply(req_id, NAME, &ChatPostRes::Limited { retry_after_secs: retry_after.as_secs(), assumed })
@@ -280,7 +280,9 @@ pub(crate) async fn post_file(req_id: u64, payload: serde_json::Value, chat: &Ar
     let outcome = api.post_file_linked(transfer, channel, thread, post_kind(req.kind), &req.name, &file_name, bytes, req.comment.as_deref()).await;
     match outcome {
         Err(e) => refused_post(code_of(&e)),
-        Ok((FileOutcome::Posted { file, ts }, unlinked)) => reply(req_id, NAME, &ChatPostFileRes::Posted { file, ts, unlinked }),
+        Ok((FileOutcome::Posted { file, ts }, told)) => {
+            reply(req_id, NAME, &ChatPostFileRes::Posted { file, ts, unlinked: told.unlinked, mentioned: told.mentioned })
+        }
         Ok((FileOutcome::Refused(why), _)) => refused_post(post_refusal_code(post_kind(req.kind), &why)),
         Ok((FileOutcome::Limited { retry_after, assumed }, _)) => {
             reply(req_id, NAME, &ChatPostFileRes::Limited { retry_after_secs: retry_after.as_secs(), assumed })

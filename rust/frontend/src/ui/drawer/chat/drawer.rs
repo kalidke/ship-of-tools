@@ -173,8 +173,8 @@ pub(super) fn never_written(req: &OutgoingReq) -> Option<ChatEvt> {
 /// (its draft is gone, and a file's share is said by `settle`) unless a name in it was left as text.
 pub(super) fn post_words(shown: &PostShown, file: bool, host: &str) -> Option<String> {
     Some(match shown {
-        PostShown::Posted(unlinked) if file || unlinked.is_empty() => return None,
-        PostShown::Posted(unlinked) => format!("posted{}", not_linked(unlinked)),
+        PostShown::Posted(mentioned, unlinked) if file || (mentioned.is_empty() && unlinked.is_empty()) => return None,
+        PostShown::Posted(mentioned, unlinked) => format!("posted{}", told(mentioned, unlinked)),
         // A file post sends no name: the daemon refuses a file whose name Slack cannot take.
         PostShown::Refused(ChatCode::BadRequest) if file => "not posted: the file's name is not one the chat can send".into(),
         PostShown::Refused(ChatCode::BadRequest) => "not posted: the chat name is not valid; fix the name = line under [chat] in settings.toml (the settings file this window loaded)".into(),
@@ -185,13 +185,25 @@ pub(super) fn post_words(shown: &PostShown, file: bool, host: &str) -> Option<St
     })
 }
 
-/// The `@` names a post left as text, as the status line ends its words with them: nothing when there are none.
-pub(super) fn not_linked(unlinked: &[ChatUnlinked]) -> String {
-    let names: Vec<String> = unlinked
-        .iter()
-        .map(|u| if u.why == ChatUnlinkedWhy::More { u.why.text().to_string() } else { format!("@{} ({})", u.name, u.why.text()) })
-        .collect();
-    if names.is_empty() { String::new() } else { format!("; not linked: {}", names.join(", ")) }
+/// What a post's reply told of its `@` names, as the status line ends its words with it: `; mentioned <names>` and `; not
+/// linked: @<name> (<reason>)`, a `several members` entry with the members it could be; nothing when there is nothing.
+/// An empty name ends a list that had more (`and more`).
+pub(super) fn told(mentioned: &[String], unlinked: &[ChatUnlinked]) -> String {
+    let list = |names: Vec<String>| names.join(", ");
+    let shown = |n: &String| if n.is_empty() { ChatUnlinkedWhy::More.text().to_string() } else { n.clone() };
+    let entry = |u: &ChatUnlinked| match u.why {
+        ChatUnlinkedWhy::More => u.why.text().to_string(),
+        _ if !u.candidates.is_empty() => format!("@{} ({}: {})", u.name, u.why.text(), list(u.candidates.iter().map(shown).collect())),
+        _ => format!("@{} ({})", u.name, u.why.text()),
+    };
+    let mut out = String::new();
+    if !mentioned.is_empty() {
+        out += &format!("; mentioned {}", list(mentioned.iter().map(shown).collect()));
+    }
+    if !unlinked.is_empty() {
+        out += &format!("; not linked: {}", list(unlinked.iter().map(entry).collect()));
+    }
+    out
 }
 
 /// What the preview shows when `chat.post_file` asks for its file.
@@ -695,7 +707,7 @@ impl ChatDrawer {
             outs.push((host.clone(), OutgoingReq::ChatWorkspaces));
         }
         let unlinked = match &reply {
-            PostReply::Posted(unlinked) => not_linked(unlinked),
+            PostReply::Posted(mentioned, unlinked) => told(mentioned, unlinked),
             _ => String::new(),
         };
         let mut made = None;
