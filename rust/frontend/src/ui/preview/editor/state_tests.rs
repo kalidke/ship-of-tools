@@ -25,15 +25,26 @@ impl Harness {
         h
     }
 
+    /// The same harness on another text. A font system is slow to make (it reads the computer's fonts), so a test of
+    /// many texts makes one harness and gives it each text in turn.
+    fn retext(&mut self, content: &str) {
+        self.editor = Editor::default();
+        self.editor.arm_file("files:x".into());
+        self.editor.open_file("files:x", true, content.to_string(), "v".into());
+        self.reshape();
+    }
+
     /// The window's re-shape after a key: the edit's spans shaped at the pane's width.
     fn reshape(&mut self) {
         let (fs, width) = (&mut self.fs, self.width);
         self.editor.reshape(&KeyBindings::defaults(), |spans| MarkdownPreview::new_plain_spans(fs, spans, width, 1.0));
     }
 
-    /// The cursor's place as the window draws it, from a fresh re-shape.
+    /// The cursor's place as the window draws it: re-shaped first only when the window would (a motion owes none).
     fn place(&mut self) -> rows::Place {
-        self.reshape();
+        if self.editor.needs_reshape() {
+            self.reshape();
+        }
         self.editor.cursor_place().expect("the cursor has a place")
     }
 
@@ -595,8 +606,9 @@ fn walk(h: &mut Harness, what: &str) {
 #[test]
 fn a_walk_down_and_up_moves_one_row_per_key_in_every_text() {
     for cells in [40usize, 23] {
+        let mut h = Harness::new("", cells);
         for (name, text) in walk_texts() {
-            let mut h = Harness::new(&text, cells);
+            h.retext(&text);
             walk(&mut h, &format!("{name} at {cells} cells"));
         }
         let front = format!("---\ntitle: a note\ntags: [x, y]\n---\n{LOREM}\n\n{LOREM}\n");
@@ -1072,8 +1084,9 @@ fn texts_up_to(alphabet: &[&str], max: usize) -> Vec<String> {
 
 #[test]
 fn every_short_text_has_one_row_for_each_cursor_position() {
+    let mut h = Harness::new("", 40);
     for text in texts_up_to(&["a", "\r", "\n"], 6) {
-        let mut h = Harness::new(&text, 40);
+        h.retext(&text);
         for at in positions(&text) {
             h.put(at);
             let place = h.editor.cursor_place().unwrap_or_else(|| panic!("{text:?}: no bar at {at}"));
@@ -1083,7 +1096,7 @@ fn every_short_text_has_one_row_for_each_cursor_position() {
     }
     // A wide and a right-to-left letter: every position has a bar on one row of its line.
     for text in texts_up_to(&["あ", "א", "\r", "\n"], 4) {
-        let mut h = Harness::new(&text, 40);
+        h.retext(&text);
         for at in positions(&text) {
             h.put(at);
             let place = h.editor.cursor_place().unwrap_or_else(|| panic!("{text:?}: no bar at {at}"));
@@ -1095,8 +1108,9 @@ fn every_short_text_has_one_row_for_each_cursor_position() {
 
 #[test]
 fn from_every_position_of_a_short_text_up_then_down_and_down_then_up_come_back_to_the_row() {
+    let mut h = Harness::new("", 40);
     for text in texts_up_to(&["a", "\r", "\n"], 5) {
-        let mut h = Harness::new(&text, 40);
+        h.retext(&text);
         for at in positions(&text) {
             for (go, back) in [(Action::EditUp, Action::EditDown), (Action::EditDown, Action::EditUp)] {
                 h.put(at);
