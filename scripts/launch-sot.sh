@@ -82,6 +82,10 @@ unset SOT_OWN_DAEMON SOT_PREFIX SOT_FRONTEND_BIN SOT_NO_UPDATE || true
 . "$(dirname "$0")/lib/sot-hosts.sh"
 # shellcheck source=lib/sot-daemon.sh
 . "$(dirname "$0")/lib/sot-daemon.sh"
+# An icon launch on a Mac (macOS started the wrapper as the app and gave it pipes for its output) keeps the window's log in a
+# file; any other start, a terminal, a pipe, a file, Linux, is left as it is. Here, in the checkout's own launcher, so the
+# wrapper that dials the plan, new or left by an earlier release, reaches it once, in the process that execs the window.
+type sot_window_log >/dev/null 2>&1 && sot_window_log "$sot_prefix/bin/sotd"
 
 # resolve_local_sotd_bin: dev build first, then a release install's staged
 # sotd -- either way, a LOCAL binary this box can run `topology plan`

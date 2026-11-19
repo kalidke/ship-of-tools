@@ -21,10 +21,10 @@ session (X11 or Wayland) and a working Vulkan driver.
 
 ## Where the window's log is
 
-The window writes what it refuses or fails at to its log. Started from a
-terminal with `sot-launch`, it prints that log in that terminal, on every
-system. Started from an icon, there is no terminal, so where it goes depends on
-the system:
+The window writes what it refuses or fails at to its log. On Linux and macOS,
+started from a terminal with `sot-launch`, it prints that log in that terminal.
+Started from an icon, there is no terminal, so where it goes depends on the
+system:
 
 - **macOS**: the file `frontend.log` in the folder that holds the daemon's
   log, `~/.local/state/sot` unless you moved your state folder (`sotd log-path`

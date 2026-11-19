@@ -3,9 +3,12 @@
 # every spawn, the crash-loop rollback, the exit-75 respawn, the service operations by unit ownership, the re-exec after
 # an apply, an armed pointer the installed sotd refuses (no stop, no restart, one sot-apply to drop it), and the window's
 # log file (sot_window_log): the trigger as a truth table, what lands in the file, what it keeps, that it fails open, that
-# a start that is not an icon launch is left alone, and one rotation across the wrapper's re-exec. A wrapper whose parent
-# is process 1 cannot be made here, so the cases that need the log written force the trigger (force_log) and the
-# trigger's end to end proof is the macOS-only test in rust/backend/src/install/unix_tests.rs.
+# a start that is not an icon launch is left alone, one rotation across the wrapper's re-exec, and the wrapper that dials
+# the plan, an earlier release's text included, which reaches the log through the checkout's launch-sot.sh. The mechanics
+# run with the trigger forced (force_log), so they run anywhere. The real trigger, a wrapper whose parent is process 1
+# and whose environment names the app, runs where `unshare -Urpf` is allowed (an unprivileged user and process
+# namespace: its first process is process 1); where the kernel refuses it those cases print SKIP, and the real trigger's
+# end to end proof is the macOS-only test in rust/backend/src/install/unix_tests.rs.
 # Every case runs under its own HOME, and the stand-in sotd names a state folder under the case's own folder, so no run
 # writes into this account's state folder.
 #
@@ -251,6 +254,7 @@ run_as() {
 # force_log <dir>: the case's copy of the library says every launch wants its log, so a case tests the log's mechanics
 # (what it keeps, that it fails open, one rotation) apart from the trigger, which has its own cases.
 force_log() { printf '\nsot_window_log_wanted() { return 0; }\n' >> "$1/prefix/repo/current/scripts/lib/sot-daemon.sh"; }
+modeof() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }   # a file's mode in octal, GNU or BSD stat
 windows() { grep -h '^window' "$1" 2>/dev/null | tr '\n' ' ' | sed 's/ $//'; }   # the stand-in window's lines in a file
 
 case_start "window_log_the_file"
@@ -296,9 +300,15 @@ for variant in "a folder under a file|$WORK/a-file/sot/sotd.log" "a log that is 
 done
 check "a folder that cannot be made leaves nothing behind" "no" "$([ -e "$WORK/a-file/sot" ] && echo yes || echo no)"
 
+case_start "window_log_a_file_or_terminal_is_left_alone_even_when_the_trigger_holds"
+d="$WORK/l-forced-file"; mk_wrapper "$d" "0" 0 0; force_log "$d"
+run_as "$d" files
+check "standard output into a file a caller gave: the trigger holds and the lines still go to the caller; no log file" \
+    "0 window out 1|window err 1|no" "$WR_RC $(windows "$d/o")|$(windows "$d/err")|$([ -e "$d/state" ] && echo yes || echo no)"
+
 case_start "window_log_trigger"
 ours="$(sot_bundle_id)"
-check "the trigger is a truth table of the app identifier and the parent pid: ours and 1, ours and another parent, another app and 1, none" \
+check "the trigger is a truth table of the app identifier and the parent pid: ours and 1, ours and another parent, another app and 1, none and 1, none" \
     "yes no no no no" \
     "$(sot_window_log_wanted "$ours" 1 && echo yes || echo no) $(sot_window_log_wanted "$ours" 4242 && echo yes || echo no) $(sot_window_log_wanted com.example.other 1 && echo yes || echo no) $(sot_window_log_wanted "" 1 && echo yes || echo no) $(sot_window_log_wanted "" "" && echo yes || echo no)"
 check "the identifier is a reverse-domain name" "yes" "$(case "$ours" in (*.*.*) echo yes ;; (*) echo no ;; esac)"
@@ -335,21 +345,128 @@ run_as "$d" null "$d/icon"
 check "the two-line icon launcher of an earlier install reaches the wrapper's log: its lines end in the file" \
     "0 window out 1 window err 1" "$WR_RC $(windows "$d/state/frontend.log")"
 
+# mk_remote <dir> <old|new>: the wrapper that dials the plan over the checkout's own launch-sot.sh and libraries (the
+# real files of this tree, with a stand-in window and sotd). `new` is what render_remote_launch writes now; `old` is the
+# text an earlier release wrote, which an update does not re-render (sot_wrapper_owned knows only the all-in-one form).
+mk_remote() {
+    local d="$1" which="$2" prefix="$1/prefix" scripts="$1/prefix/repo/current/scripts"
+    mkdir -p "$scripts/lib"
+    cp "$LIB" "$scripts/lib/sot-daemon.sh"; cp "$(dirname "$LIB")/sot-hosts.sh" "$scripts/lib/sot-hosts.sh"
+    cp "$(dirname "$LIB")/../launch-sot.sh" "$scripts/launch-sot.sh"; chmod +x "$scripts/launch-sot.sh"
+    if [ "$which" = new ]; then
+        ( HOME="$d/home" render_remote_launch "$prefix" "" "$d/remote" )
+    else
+        cat > "$d/remote" <<OLD
+#!/usr/bin/env bash
+# sot-launch: dials the topology plan (a frontend over SSH to its daemon hosts, ADR 0030 section 5). It applies an armed
+# update first, then runs the pinned checkout's own launch-sot.sh, so the two never drift.
+if [ -x "$prefix/bin/sot-apply" ]; then
+    APPLY_OUT="\$("$prefix/bin/sot-apply" 2>&1)"
+    [ -n "\$APPLY_OUT" ] && printf '%s\n' "\$APPLY_OUT" >&2
+fi
+export SOT_OWN_DAEMON=1
+export SOT_PREFIX="$prefix"
+export SOT_FRONTEND_BIN="$prefix/bin/sot"
+export SOT_NO_UPDATE=1
+exec "$prefix/repo/current/scripts/launch-sot.sh" "\$@"
+OLD
+        chmod +x "$d/remote"
+    fi
+}
+
 case_start "window_log_remote_launcher"
-d="$WORK/l-remote"; mk_wrapper "$d" "0" 0 0; force_log "$d"
-mkdir -p "$d/prefix/repo/current/scripts"
-printf '#!/bin/sh\necho "window out remote"\necho "window err remote" >&2\n' > "$d/prefix/repo/current/scripts/launch-sot.sh"
-chmod +x "$d/prefix/repo/current/scripts/launch-sot.sh"
-( HOME="$d/home" render_remote_launch "$d/prefix" "" "$d/remote" )
-run_as "$d" null "$d/remote"
-check "the launcher that dials the plan: the same file rule" "0 out remote err remote" "$WR_RC $(windows "$d/state/frontend.log" | sed 's/window //g')"
-d="$WORK/l-remote-pipe"; mk_wrapper "$d" "0" 0 0
-mkdir -p "$d/prefix/repo/current/scripts"
-printf '#!/bin/sh\necho "window out remote"\necho "window err remote" >&2\n' > "$d/prefix/repo/current/scripts/launch-sot.sh"
-chmod +x "$d/prefix/repo/current/scripts/launch-sot.sh"
-( HOME="$d/home" render_remote_launch "$d/prefix" "" "$d/remote" )
+d="$WORK/l-remote-text"; mk_wrapper "$d" "0" 0 0; mk_remote "$d" new
+check "the wrapper that dials the plan names no log function: the checkout's launch-sot.sh makes the one call" "0 1" \
+    "$(grep -c sot_window_log "$d/remote" || true) $(grep -c '^type sot_window_log' "$d/prefix/repo/current/scripts/launch-sot.sh" || true)"
+for which in new old; do
+    d="$WORK/l-remote-$which"; mk_wrapper "$d" "0" 0 0; mk_remote "$d" "$which"; force_log "$d"
+    mkdir -p "$d/state"; printf 'old\n' > "$d/state/frontend.log"
+    run_as "$d" null "$d/remote"
+    check "the $which wrapper over this checkout (trigger forced): the window's lines are the log and the old log is the backup, once" \
+        "0 old|window out 1 window err 1" "$WR_RC $(cat "$d/state/frontend.prev.log")|$(windows "$d/state/frontend.log")"
+done
+d="$WORK/l-remote-pipe"; mk_wrapper "$d" "0" 0 0; mk_remote "$d" new
 ICON_ENV="$(sot_bundle_id)" run_as "$d" pipe "$d/remote"
-check "the launcher that dials the plan: a start that is not an icon launch is left alone, its lines on its pipe" "0 window out remote window err remote no" "$WR_RC $(windows "$d/piped") $([ -e "$d/state" ] && echo yes || echo no)"
+check "the wrapper that dials the plan: a start that is not an icon launch is left alone, its lines on its pipe" \
+    "0 window out 1 window err 1 no" "$WR_RC $(windows "$d/piped") $([ -e "$d/state" ] && echo yes || echo no)"
+
+case_start "window_log_the_folder_is_private_as_the_daemons_is"
+# The daemon refuses a state folder that group or others can reach, and the wrapper can be the first to make it.
+d="$WORK/l-mode"; mk_wrapper "$d" "0" 0 0; force_log "$d"
+printf '%s\n' "$d/xdg/state/sot/sotd.log" > "$d/logpath"
+( umask 022; run_as "$d" null )
+check "a folder made under umask 022: the leaf is 0700, a file in it 0600, and no group or other bit is set" "700 600 0" \
+    "$(modeof "$d/xdg/state/sot") $(modeof "$d/xdg/state/sot/frontend.log") $(( 0$(modeof "$d/xdg/state/sot") & 077 ))"
+d="$WORK/l-mode-old"; mk_wrapper "$d" "0" 0 0; force_log "$d"
+mkdir -p "$d/state"; chmod 755 "$d/state"
+( umask 022; run_as "$d" null )
+check "a folder that already exists keeps its mode" "755" "$(modeof "$d/state")"
+
+# ---------------------------------------------------------------------------
+# The real trigger: a wrapper whose parent is process 1 and whose environment names the app, with pipes for its streams as
+# macOS gives them, inside an unprivileged user and process namespace (its first process is process 1).
+have_ns=0
+if [ "$(uname -s)" = Linux ] && command -v unshare >/dev/null 2>&1 && unshare -Urpf true >/dev/null 2>&1; then have_ns=1; fi
+# run_real <dir> [launcher]: starts the launcher as process 1's child (the shell stays process 1, so the namespace outlives
+# the window), standard output and error one pipe captured in $d/piped, umask 022. Sets WR_RC.
+run_real() {
+    local d="$1" l="${2:-$1/home/.local/bin/sot-launch}"
+    rm -f "$d/rc"
+    unshare -Urpf env HOME="$d/home" SOT_COMM_HOME="$d/home/.sot-comm" PATH="$d/stubs:$TOOLS" STUB_LOG="$d/log" \
+        __CFBundleIdentifier="$(sot_bundle_id)" bash -c 'umask 022; "$@"; echo $? > "$0"' "$d/rc" "$l" 2>&1 | cat > "$d/piped" || true
+    WR_RC="$(cat "$d/rc" 2>/dev/null || echo none)"
+}
+# run_detached <dir> <launcher>: what an agent inside the app does, `launcher > caller-file 2>&1 &` from a shell that ends
+# at once, so the launcher is orphaned and process 1 is its parent; waits for the window's last line.
+run_detached() {
+    local d="$1" l="$2"
+    unshare -Urpf env HOME="$d/home" SOT_COMM_HOME="$d/home/.sot-comm" PATH="$d/stubs:$TOOLS" STUB_LOG="$d/log" \
+        __CFBundleIdentifier="$(sot_bundle_id)" bash -c '( "$0" > "$1" 2>&1 & ); n=0
+            while [ "$n" -lt 100 ] && ! grep -q "^window err" "$1" 2>/dev/null; do sleep 0.1; n=$((n + 1)); done; sleep 0.3' \
+        "$l" "$d/caller" >/dev/null 2>&1 || true
+}
+
+case_start "window_log_the_real_trigger"
+if [ "$have_ns" != 1 ]; then
+    printf '    SKIP the real trigger on Linux (this kernel refuses an unprivileged user and process namespace: unshare -Urpf)\n'
+else
+    ours="$(sot_bundle_id)"
+    d="$WORK/r-file"; mk_wrapper "$d" "0" 0 0
+    run_real "$d"
+    check "icon start (identifier, parent 1, pipes): the window's lines are in the file, none on the pipe, the folder 0700 and the file 0600" \
+        "0 window out 1 window err 1||700 600" \
+        "$WR_RC $(windows "$d/state/frontend.log")|$(windows "$d/piped")|$(modeof "$d/state") $(modeof "$d/state/frontend.log")"
+    d="$WORK/r-old"; mk_wrapper "$d" "0" 0 0; mkdir -p "$d/state"; chmod 755 "$d/state"
+    run_real "$d"
+    check "a state folder that exists keeps its mode" "755" "$(modeof "$d/state")"
+    d="$WORK/r-three"; mk_wrapper "$d" "$(printf '0\n0\n0')" 0 0
+    for _ in 1 2 3; do run_real "$d"; done
+    check "three icon starts keep the last two and nothing older" "out 3 err 3|out 2 err 2|frontend.log frontend.prev.log" \
+        "$(windows "$d/state/frontend.log" | sed 's/window //g')|$(windows "$d/state/frontend.prev.log" | sed 's/window //g')|$(ls "$d/state" | tr '\n' ' ' | sed 's/ $//')"
+    d="$WORK/r-once"; mk_wrapper "$d" "0" 0 1 consume-keep
+    mkdir -p "$d/state"; printf 'old\n' > "$d/state/frontend.log"
+    run_real "$d"
+    check "the re-exec after an apply keeps the identifier and parent 1 and rotates nothing twice" \
+        "0 1 1 old|apply-said window out 1 window err 1" \
+        "$WR_RC $(grep -c '^apply$' "$d/log" || true) $(grep -c '^spawn$' "$d/log" || true) $(cat "$d/state/frontend.prev.log")|$(grep -h '^apply-said\|^window' "$d/state/frontend.log" | tr '\n' ' ' | sed 's/ $//')"
+    d="$WORK/r-icon"; mk_wrapper "$d" "0" 0 0
+    printf '#!/usr/bin/env bash\nexec "%s"\n' "$d/home/.local/bin/sot-launch" > "$d/icon"; chmod +x "$d/icon"
+    run_real "$d" "$d/icon"
+    check "the two-line icon launcher of an earlier install reaches the log" "0 window out 1 window err 1|" "$WR_RC $(windows "$d/state/frontend.log")|$(windows "$d/piped")"
+    for which in old new; do
+        d="$WORK/r-remote-$which"; mk_wrapper "$d" "0" 0 0; mk_remote "$d" "$which"
+        mkdir -p "$d/state"; printf 'old\n' > "$d/state/frontend.log"
+        run_real "$d" "$d/remote"
+        check "the $which wrapper that dials the plan, over this checkout: the log is written once (the old log is the backup), nothing on the pipe" \
+            "0 old|window out 1 window err 1|" "$WR_RC $(cat "$d/state/frontend.prev.log")|$(windows "$d/state/frontend.log")|$(windows "$d/piped")"
+    done
+    d="$WORK/r-detached"; mk_wrapper "$d" "0" 0 0
+    mkdir -p "$d/state"; printf 'the running window\n' > "$d/state/frontend.log"
+    run_detached "$d" "$d/home/.local/bin/sot-launch"
+    check "a start detached from inside the app (identifier, parent 1, a file for output) is left alone: the caller's file has the lines and the running window's log is not rotated" \
+        "window out 1 window err 1|the running window|no" \
+        "$(windows "$d/caller")|$(cat "$d/state/frontend.log")|$([ -e "$d/state/frontend.prev.log" ] && echo yes || echo no)"
+fi
 
 # ---------------------------------------------------------------------------
 printf '\n'

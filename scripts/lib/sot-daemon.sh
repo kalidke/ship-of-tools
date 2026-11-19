@@ -126,28 +126,32 @@ sot_bundle_id() {
 # Was this process started by macOS as the Ship of Tools app (an icon launch)? The two facts macOS gives it, passed in so
 # a test can set them: the value of `__CFBundleIdentifier`, which macOS sets to the identifier of the app it starts, and
 # the parent's pid, which is launchd's, 1, for the process macOS starts itself. The variable alone would also match a
-# descendant, which inherits it (a session's shell inside the app) but has an ordinary parent. Measured on macOS 26.7 and
-# 27.0 on 2026-11-19; nothing on Linux sets the variable, so a Linux launch never matches.
+# descendant, which inherits it (a session's shell inside the app) but has an ordinary parent, and the parent alone
+# would match anything orphaned; sot_window_log asks a third fact, the standard output. Measured on macOS 26.7 and 27.0
+# on 2026-11-19; nothing on Linux sets the variable, so a Linux launch never matches.
 sot_window_log_wanted() {  # <__CFBundleIdentifier's value> <parent pid>
-    [ -n "$1" ] && [ "$1" = "$(sot_bundle_id)" ] && [ "$2" = 1 ]
+    [ "$1" = "$(sot_bundle_id)" ] && [ "$2" = 1 ]
 }
 
-# The window's log, for an icon launch (sot_window_log_wanted) that has no terminal: its standard output and error go,
-# appended, to frontend.log in the folder of the daemon's own log (the one `sotd log-path` names), and the launch before
-# it is kept as frontend.prev.log, nothing older; an empty frontend.log leaves the older backup alone. Any other start
-# (a terminal, a pipe, a file a caller gave) is left exactly as it is. A wrapper started again after an apply keeps the
-# variable and its parent, so it asks a fact instead: standard output already is the log file, and nothing is rotated
-# again. Every step fails open: with no folder, no sotd or a file that cannot be opened the window starts with its
-# streams as they were. Both rendered wrappers call it once, at their start, in the shell that goes on to start the
-# window (never in a command substitution, whose standard output is a pipe).
+# The window's log, for an icon launch: sot_window_log_wanted, and a standard output that is neither a terminal nor a
+# regular file (macOS gives the app's program pipes). Its standard output and error go, appended, to frontend.log in the
+# folder of the daemon's own log (the one `sotd log-path` names), and the launch before it is kept as frontend.prev.log,
+# nothing older; an empty frontend.log leaves the older backup alone. Any other start is left exactly as it is: a
+# terminal, a file a caller gave (a detached `sot-launch > file &` from inside the app has the variable and, once its
+# shell ends, parent 1), and a wrapper started again after an apply, whose standard output is now the log file, so
+# nothing is rotated twice. A folder this makes is private, as the daemon makes it (the leaf at 0700, its parents as the
+# caller's umask makes them); one that exists keeps its mode. Every step fails open: with no folder, no sotd or a file that
+# cannot be opened the window starts with its streams as they were. The wrapper that dials the plan reaches this through
+# the checkout's launch-sot.sh and the all-in-one wrapper calls it itself, each once, in the shell that goes on to start
+# the window (never in a command substitution, whose standard output is a pipe).
 sot_window_log() {  # <sotd-bin>
     local dir log
     sot_window_log_wanted "${__CFBundleIdentifier:-}" "$PPID" || return 0
+    if [ -t 1 ] || [ -f /dev/stdout ]; then return 0; fi
     dir="$("$1" log-path 2>/dev/null)" || return 0
     case "$dir" in /*/*) dir="${dir%/*}" ;; *) return 0 ;; esac
     log="$dir/frontend.log"
-    [ /dev/stdout -ef "$log" ] && return 0
-    ( umask 077; mkdir -p "$dir" ) 2>/dev/null || return 0
+    if [ ! -d "$dir" ]; then { mkdir -p "${dir%/*}" && mkdir -m 700 "$dir"; } 2>/dev/null || return 0; fi
     if [ -f "$log" ] && [ -s "$log" ]; then mv -f "$log" "$dir/frontend.prev.log" 2>/dev/null; fi
     ( umask 077; : >> "$log" ) 2>/dev/null || return 0
     exec >> "$log" 2>&1
@@ -275,9 +279,6 @@ render_remote_launch() {  # <prefix> <be-alias, or empty> <dest>
 #!/usr/bin/env bash
 # sot-launch: dials the topology plan (a frontend over SSH to its daemon hosts, ADR 0030 section 5). It applies an armed
 # update first, then runs the pinned checkout's own launch-sot.sh, so the two never drift.
-LIB="$prefix/repo/current/scripts/lib/sot-daemon.sh"
-if [ -r "\$LIB" ]; then . "\$LIB"; fi
-type sot_window_log >/dev/null 2>&1 && sot_window_log "$prefix/bin/sotd"
 if [ -x "$prefix/bin/sot-apply" ]; then
     APPLY_OUT="\$("$prefix/bin/sot-apply" 2>&1)"
     [ -n "\$APPLY_OUT" ] && printf '%s\n' "\$APPLY_OUT" >&2

@@ -499,8 +499,10 @@ fn read(p: &Path) -> String {
 /// program and Info.plist starts the real rendered wrapper from LaunchServices, which gives it the app's identifier
 /// in `__CFBundleIdentifier` and launchd as its parent (`exec` keeps both through the stand-in `sot-launch`), and the
 /// window's output ends in the log file beside the daemon's log. The same wrapper started directly by this test has
-/// no identifier and this process as its parent: it writes no log file and its lines arrive on this test's pipes. `open`
-/// is given the bundle's path, so an app registered under the same identifier elsewhere is not the one started.
+/// no identifier and this process as its parent: it writes no log file and its lines arrive on this test's pipes, and a
+/// start detached from a shell that ends, which has the identifier and parent launchd but a file for its output, is left
+/// alone. `open -n` is given the bundle's path, so an app registered under the same identifier elsewhere is not the one
+/// started.
 /// Runs only on macOS (the hosted macOS 26 and 27 jobs); a later macOS that stopped setting the variable would fail here.
 #[cfg(target_os = "macos")]
 #[test]
@@ -516,7 +518,23 @@ fn an_icon_started_by_macos_leaves_the_windows_output_in_the_log_file() {
     .ok();
     assert_eq!((direct.stdout.as_str(), direct.stderr.as_str()), ("window out\n", "window err\n"), "a direct start leaves its streams alone");
     assert!(!state.join("frontend.log").exists(), "and writes no log file");
-    let opened = sot_platform::test_wait::run_within(Command::new("open").arg("-W").arg(&app), std::time::Duration::from_secs(90));
+    // A start detached from inside the app: the variable, and parent launchd once its shell has ended, but a file for its
+    // output, which is the caller's: the caller's file has the lines and there is no log file.
+    let caller = root.join("caller");
+    sot_platform::test_wait::run_within(
+        Command::new("/bin/sh")
+            .arg("-c")
+            .arg("( \"$0\" > \"$1\" 2>&1 & ); n=0; while [ \"$n\" -lt 300 ] && ! grep -q '^window err' \"$1\" 2>/dev/null; do sleep 0.1; n=$((n + 1)); done")
+            .arg(root.join("sot-launch"))
+            .arg(&caller)
+            .env("__CFBundleIdentifier", lib(&tree(), "sot_bundle_id", &[]).first_line()),
+        std::time::Duration::from_secs(60),
+    )
+    .ok();
+    assert_eq!(read(&caller), "window out\nwindow err\n", "a detached start keeps its output in the caller's file");
+    assert!(!state.join("frontend.log").exists(), "and leaves no log file");
+    // `-n`: a new instance of this bundle, whatever else is registered under its identifier.
+    let opened = sot_platform::test_wait::run_within(Command::new("open").arg("-n").arg("-W").arg(&app), std::time::Duration::from_secs(90));
     opened.ok();
     assert_eq!(read(&state.join("frontend.log")), "window out\nwindow err\n", "an icon start leaves its log beside the daemon's");
 }
