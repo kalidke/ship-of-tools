@@ -1,0 +1,36 @@
+# Cases for the terminal-escape grammar, read by rust/protocol/src/escapes_tests.rs.
+# Columns, tab separated: the text a program printed; what is left of it when its whole sequences are taken out
+# (`strip_escapes`); the tail a stream holds back when the text is the end of a chunk (`open_tail`: the
+# first unfinished sequence at a sequence boundary within the bound, which the next chunk may finish; empty when nothing
+# is held).
+# Escapes in a column: \e is ESC, \a is BEL, \t a tab, \\ a backslash.
+plain	plain	
+	
+\e[31mred\e[39m	red	
+x\e[1;38;5;208my\e[0m	xy	
+a\e[2K\e[1Ab	ab	
+a\e[	a\e[	\e[
+a\e[1;3	a\e[1;3	\e[1;3
+a\e[1;3 	a\e[1;3 	\e[1;3 
+a\e]0;title\a b	a b	
+a\e]8;;http://x\e\\link\e]8;;\e\\	alink	
+a\e]8;;http://x	a\e]8;;http://x	\e]8;;http://x
+a\e]8;;u\e	a\e]8;;u\e	\e]8;;u\e
+a\e]0;t\a	a	
+a\eP1$r\e\\b	ab	
+a\ePabc	a\ePabc	\ePabc
+a\ePabc\a	a\ePabc\a	\ePabc\a
+a\e(Bb	ab	
+a\e(	a\e(	\e(
+a\e7b\e8c	abc	
+a\ecb	ab	
+a\e\\b	ab	
+a\ebc	ac	
+a\e	a\e	\e
+\e\e[31mx	\ex	
+é\e[3	é\e[3	\e[3
+中\e]0;t\a文	中文	
+a\e[3\tb	a\e[3\tb	
+a\e]0;t\eXu\a	a	
+p\eXabc\e[3	p\eXabc\e[3	\eXabc\e[3
+\e]0;t\eXnot a string\aline 1	line 1	

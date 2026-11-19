@@ -250,12 +250,34 @@ name is in this crate's one op table.
     `CANVAS_DIMS` (1600 x 1000) and `INK_RGB` are the canvas raster and the one ink color. Test `ink_tests.rs`:
     `one_raster_for_a_drawing_whatever_order_its_segments_are_painted`, `the_mask_is_the_distance_rule_on_every_pixel` (a brute-force reference), `a_segment_costs_its_own_area_not_its_bounding_box`. Measured on a 32-thread Linux workstation (release build, a 2000 x 2000 raster): a drawing at the wire's point bound takes about 5 s in `mask` as 16 random 1024-point strokes and about 13 s at worst, one 16,384-point stroke of full-diagonal segments, so the daemon paints it off the connection's loop. These were measured at the earlier 1/200 ink width; the 1/300 width visits about a quarter fewer pixels, so they are upper bounds.
 
+15. **Terminal escapes have one grammar, and every scan of it is linear.** `escapes::pieces` splits text into its text and its
+    whole sequences, `escapes::strip_escapes` takes them out. The grammar is ECMA-48's: CSI (ESC `[`, parameter bytes
+    0x30-0x3F, intermediate bytes 0x20-0x2F, one final byte 0x40-0x7E; `Piece::Csi` gives a color's numbers), the strings
+    OSC, DCS, SOS, PM and APC (ESC `]`, `P`, `X`, `^`, `_` up to ST, ESC `\`; an OSC also up to BEL), ESC with intermediate
+    bytes and a final byte 0x30-0x7E (`ESC ( B`) and ESC with one final byte (`ESC 7`, `ESC c`, a stray ST). A sequence is at
+    most `MAX_SEQUENCE` (4096) bytes, ESC through its last; a longer one, a CSI or string the text ends in the middle of, and
+    an ESC before a control or non-ASCII character are data (a string opener's introducer with its ESC), and the scan goes on
+    after that ESC: nothing is read twice, so a megabyte of unfinished openers is read in one pass (a terminator is searched
+    forward once and reused, and "none after here" is kept). `open_tail` gives where a stream cut into chunks must hold
+    back what a chunk ends in the middle of: the first ESC, at a sequence boundary of the one forward pass, that starts a CSI
+    without its final byte, a string without its end or an ESC alone, with fewer than `MAX_SEQUENCE` bytes from it to the
+    end of the text (at the bound a terminator cannot fit and it is data); an opener inside a whole string is the string's
+    and is no tail, and cutting at the tail never changes what the whole text strips to. `julia/repl/test/escape_cases.tsv`
+    (written by hand: a column for the strip, a column for the tail) and `escape_random.tsv` (3,000 cases a fixed seed makes;
+    `SOT_ESCAPE_REGEN=1` rewrites it) are the cases. Tests `escapes_tests.rs`:
+    `the_shared_cases_strip_and_split_as_the_table_says`, `colors_cursor_moves_titles_and_esc_forms_are_removed_whole`,
+    `pieces_name_the_text_and_each_whole_sequence_in_order`, `a_sequence_longer_than_the_bound_is_data_from_its_esc_on`,
+    `the_random_cases_are_what_the_grammar_gives_and_cutting_at_the_held_tail_never_splits_a_sequence`,
+    `what_a_chunk_ends_in_the_middle_of_is_held_only_while_it_could_still_be_finished`,
+    `a_megabyte_of_openers_is_read_in_bounded_time` (seven shapes, wall time under 3 s; the quadratic scan it replaced took
+    minutes on the first).
+
 ## Owns
 The frame, `Kind` and `PROTOCOL_VERSION` (`lib.rs`); the codec (`codec.rs`); child lines (`child_lines.rs`); the op
 names, declared once in `op_table!` (`ops/mod.rs`), which also gives `op::ALL`, so a declared op joins the server's first-frame test with no list to keep; and every op's payload type (`ops/`, its page lists the families; the link family's constants `LINK`, `CHUNK`,
 `WINDOW` and `MAX_CHANNELS` are in `ops/link.rs`); the chat record (`chat.rs`, with `TextSegment`, the Slack app manifest and its address) and the chat family (`ops/chat.rs`); the selection op, its payloads (the drawing too), `selection_digest` and `whole_lines` (`ops/selection.rs`); the drawing's raster (`ink.rs`); the tree and preview payloads and the binary
 preview cap `PREVIEW_BINARY_CAP` (`ir.rs`); the version string and `is_release_build` (`version.rs`, `build.rs`); the
-annotation, physical-scale, page-URL, video-suffix, page-reply and chat text grammars; the daemon's frame writes and byte pipe (`reply.rs`:
+annotation, physical-scale, page-URL, video-suffix, page-reply, terminal-escape and chat text grammars; the daemon's frame writes and byte pipe (`reply.rs`:
 `HandlerOutput`, `write_frame_to`, `write_frame_within`, `reject`; `pipe.rs`: `pipe_bidirectional`), which services take from
 here and never from the server. Owns no runtime state.
 
@@ -266,7 +288,7 @@ serde, serde_json, tokio (the async codec), tracing (the pipe's close log), and 
 `Frame`, `read_frame`, `read_envelope`, `write_frame` and their blocking forms, `ChildLines`, `blocking_child_lines`,
 `PROTOCOL_VERSION`, `op::ALL`, `HelloReq`/`HelloRes` and every op payload (the link family's to topology's `link`),
 `is_release_build`, `version_line`,
-`annotation::{split_frontmatter, synced_against}`, `physical_scale::{PhysicalScale, parse_physical_scale}`,
+`annotation::{split_frontmatter, synced_against}`, `escapes::{pieces, strip_escapes, MAX_SEQUENCE}`, `physical_scale::{PhysicalScale, parse_physical_scale}`,
 `video_path::video_mime`, `loopback_port_from_url`, `with_loopback_port`, `page_reply::{MARK, MAX_TEXT, line, check_line}`, `chat::{TextSegment, text_segments, escape_text, post_text_fits, slack_app_name, slack_app_manifest, slack_app_url}`; the shell twin `sot_hello_frame`
 (`comm/lib/comm-lib-client.sh`) and `scripts/sot-lease.ps1` follow the lease and hello shapes and are owned by them.
 
@@ -293,12 +315,14 @@ Same on all three; the blocking codec is the one the ssh bridge and shell wrappe
 | 12 | the chat family | `ops/chat_tests.rs` (the list under guarantee 12); `chat_tests.rs::the_manifest_has_socket_mode_on_rotation_off_and_its_url_decodes_to_it`, `the_manifest_asks_to_post_and_share_files_as_the_installer`, `the_apps_name_carries_the_login_cut_to_slacks_limit` |
 | 13 | the selection op | `ops/selection_tests.rs` (the list under guarantee 13) |
 | 14 | the drawing's raster | `ink_tests.rs` (the three tests under guarantee 14) |
+| 15 | terminal escapes | `escapes_tests.rs` (the five tests under guarantee 15) |
 
 ## Files
 - `Cargo.toml`: the crate manifest (feature `test-support`, dev only); depends on platform alone of ours
 - `build.rs`: stamps the git-derived build inputs of the product version
 - `src/annotation.rs`: split_frontmatter and synced_against, the shared annotation header grammar and its fixtures.
 - `src/chat.rs`: `ChatRecord`, `ChatAuthor`, `ChatFile`, `Origin` and `Ts`, the one normalized chat record and its validated timestamp.
+- `src/escapes.rs`: `pieces`, `strip_escapes` and `MAX_SEQUENCE`, the one grammar for reading and removing terminal escape sequences (guarantee 15).
 - `src/child_lines.rs`: `ChildLines` and `blocking_child_lines`, a child's output line by line, decoded lossily.
 - `src/codec.rs`: the async and blocking frame readers and writers, and the envelope cap
 - `src/ink.rs`: the drawing's one raster (guarantee 14): `raster_dims`, `ink_radius`, `paint_segment`, `segments`, `mask`.

@@ -55,7 +55,9 @@ fn cell_text_table() {
         ("tail\r", &["tail"], "tail"),
         ("a\tb\u{1b}[31mc", &["a bc"], "a bc"),
         ("\u{1b}[1;31mERROR\u{1b}[0m x", &["ERROR x"], "ERROR x"),
-        ("a\u{1b}b", &["a b"], "a b"),
+        ("a\u{1b}b", &["a"], "a"),
+        ("a\u{1b}\u{1}b", &["a  b"], "a  b"),
+        ("a\u{1b}]0;title\u{7}b\u{1b}]8;;u\u{1b}\\c\u{1b}(Bd", &["abcd"], "abcd"),
         ("a\u{1b}[", &["a ["], "a ["),
         ("a\u{85}b\u{2028}c\u{2029}d", &["a", "b", "c", "d"], "a ⏎ b ⏎ c ⏎ d"),
         ("tail\u{2029}", &["tail"], "tail"),
@@ -300,4 +302,13 @@ fn version_label_unknown_backend_is_not_skew() {
     let (s, skew) = version_label("0.5.8", None);
     assert_eq!(s, " fe 0.5.8 · be ? ");
     assert!(!skew);
+}
+
+/// Outside text with many unfinished openers does not stall the window: 256 KiB of `ESC ]` took the quadratic scan seconds.
+#[test]
+fn a_flood_of_escape_openers_is_cut_in_bounded_time() {
+    let start = std::time::Instant::now();
+    let rows = cell_lines(&"\u{1b}]".repeat(128 * 1024));
+    assert!(start.elapsed() < std::time::Duration::from_secs(3), "{:?}", start.elapsed());
+    assert_eq!(rows.len(), 1);
 }

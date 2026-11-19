@@ -6,11 +6,11 @@ use super::*;
 /// Text from outside the window (a daemon's reply, an agent's words, a file's name, a paste) as the rows a cell run
 /// may draw. ratatui drops a `\n` inside a span and gives a `\r` or a `\t` a cell of its own, which the glyph layer
 /// then draws as a line break or a tab stop, and cosmic-text panics on a second bidi paragraph in one line, so no
-/// control character or separator may reach a cell: an ANSI CSI sequence (a colour code) is removed whole; `\r\n`,
+/// control character or separator may reach a cell: an escape sequence (sot-protocol's `escapes`: a colour code, a cursor move, a title, a link) is removed whole; `\r\n`,
 /// `\n`, a lone `\r`, U+0085, U+2028 and U+2029 each end a row (a final one starts none, as in `str::lines`); and any
 /// other control character is a space.
 pub(in crate::ui) fn cell_lines(text: &str) -> Vec<String> {
-    strip_csi(text)
+    sot_protocol::escapes::strip_escapes(text)
         .replace("\r\n", "\n")
         .replace(|c| matches!(c, '\r' | '\u{85}' | '\u{2028}' | '\u{2029}'), "\n")
         .lines()
@@ -26,29 +26,6 @@ pub(in crate::ui) fn cell_row(text: &str) -> std::borrow::Cow<'_, str> {
     } else {
         std::borrow::Cow::Borrowed(text)
     }
-}
-
-/// `text` without its ANSI CSI sequences: ESC `[`, parameter bytes 0x30-0x3F, intermediate bytes 0x20-0x2F and one
-/// final byte 0x40-0x7E. Any other ESC stays, for `cell_lines` to make a space.
-fn strip_csi(text: &str) -> std::borrow::Cow<'_, str> {
-    if !text.contains("\u{1b}[") {
-        return std::borrow::Cow::Borrowed(text);
-    }
-    let (mut out, mut rest) = (String::with_capacity(text.len()), text);
-    while let Some(i) = rest.find("\u{1b}[") {
-        out.push_str(&rest[..i]);
-        let seq = &rest[i + 2..];
-        let params = seq.find(|c| !matches!(c, '\u{30}'..='\u{3f}')).unwrap_or(seq.len());
-        let end = seq[params..].find(|c| !matches!(c, '\u{20}'..='\u{2f}')).map_or(seq.len(), |k| params + k);
-        if matches!(seq[end..].chars().next(), Some('\u{40}'..='\u{7e}')) {
-            rest = &seq[end + 1..];
-        } else {
-            out.push('\u{1b}');
-            rest = &rest[i + 1..];
-        }
-    }
-    out.push_str(rest);
-    std::borrow::Cow::Owned(out)
 }
 
 /// Wrap a status text into lines of display cells: the first line has
