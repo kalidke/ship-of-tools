@@ -2889,3 +2889,10 @@ the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the sa
     change merged in (run 44462416438): all 56 jobs green. Scoped gate passed 22:36; landed 22:37 as 828ea7d40, after
     the lookup's change so that no commit of `main` carries a leg known red. The release gate's workflow still runs
     macOS 26 alone.
+  - macOS 27 in the release gate's hosted run, 2026-11-19, on the maintainer's word in the session's pane ("add 27 to
+    the tests", 06:53, a workflow change, with his word to make 0.7.2 if the tests pass): `release-gate.yml` runs each
+    of its macOS jobs again on the `xcode-27` image, the two `gate-*` shards through the plan step as `rust.yml` does
+    and the six macOS-only jobs (the native minimized window and its mutation leg, the window close, the pane timing,
+    the daemon lifetime premises, the scripts under bash 3.2) through a two-system matrix, eight more jobs in all. An
+    edit by the session of one workflow file, with the contract's sentence. No run of it on macOS 27 exists at this
+    commit; its first is the run before 0.7.2's cut, recorded with that cut.

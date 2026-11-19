@@ -115,7 +115,9 @@ Guarantees, each with the mechanism it rests on:
   lifetime harness, the hermetic comm and agents suites, the gate's own parity tests, Windows' slow installer publish
   proofs (`inst` plus fresh/repair orchestration), the launcher's suites on Windows, the Windows ignored-containment
   and ConPTY runs, and the shell suites under bash 3.2
-  (Linux and macOS; they leave with the shell twins under D1). No cut reads either.
+  (Linux and macOS; they leave with the shell twins under D1). Its macOS jobs, the `gate-*` shards and the six
+  macOS-only jobs, run on macOS 26 and again on macOS 27 (the `xcode-27` image, a preview), as rust.yml's do. No cut
+  reads either.
 - One exception: the `window_minimized` target's State fixtures also run per landing, on Linux, in the rest-0 build+test
   job (`child fixtures` under `xvfb-run`, on Mesa's software Vulkan driver, llvmpipe, which the install step's log names);
   its workload phase and the other native proofs stay in the gate. Read a red: a red install step, or a run step with no

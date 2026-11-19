@@ -32,10 +32,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - id: plan
-        run: echo "gate=$(python3 scripts/tests/shards.py plan gate)" >> "$GITHUB_OUTPUT"
+        # The plan names each system once. Every job it gives macOS (macos-latest, macOS 26) runs again on macOS 27, under
+        # the `xcode-27` label (GitHub's hosted image of macOS 27, a public preview), as rust.yml's landing plan does.
+        run: |
+          plan=$(python3 scripts/tests/shards.py plan gate)
+          echo "gate=$(jq -c '. + [.[] | select(.os == "macos-latest") | .os = "xcode-27"]' <<< "$plan")" >> "$GITHUB_OUTPUT"
 
   tests-gate:
-    name: build+test, release gate (${{ matrix.os }}, ${{ matrix.shard }})
+    name: build+test, release gate (${{ matrix.os == 'xcode-27' && 'macos-27, xcode-27' || matrix.os }}, ${{ matrix.shard }})
     needs: plan
     runs-on: ${{ matrix.os }}
     # Windows inst needs up to 45 minutes of units and 75 of fresh/repair orchestration (run 40189400665: units 31, fresh and
@@ -171,8 +175,12 @@ jobs:
         run: cargo test -p sot-frontend --test window_minimized --features test-window-progress --locked
 
   window-minimized-macos:
-    name: native minimized window (macOS)
-    runs-on: macos-latest
+    name: native minimized window (macOS${{ matrix.os == 'xcode-27' && ' 27, xcode-27' || '' }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, xcode-27]
     # Worst case: build up to 300 s, the fixtures child up to 120 s, the workload up to 780 s, about 1200 s in all.
     timeout-minutes: 25
     defaults:
@@ -190,8 +198,12 @@ jobs:
         run: cargo test -p sot-frontend --test window_minimized --features test-window-progress --locked
 
   window-minimized-macos-mutation:
-    name: native minimized window, MAC-REDRAW mutation leg, expected red (macOS)
-    runs-on: macos-latest
+    name: native minimized window, MAC-REDRAW mutation leg, expected red (macOS${{ matrix.os == 'xcode-27' && ' 27, xcode-27' || '' }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, xcode-27]
     # Its worst case is the same target's: build up to 300 s, the fixtures child up to 120 s, the workload child up to
     # its own 780 s bound if it hangs before the visible verdict, about 1200 s in all. 25 minutes lets the parent print
     # its verdict rather than the job be cancelled.
@@ -244,8 +256,12 @@ jobs:
         run: cargo test -p sot-frontend --test window_close --features test-window-close --locked
 
   window-close-macos:
-    name: native window close (macOS)
-    runs-on: macos-latest
+    name: native window close (macOS${{ matrix.os == 'xcode-27' && ' 27, xcode-27' || '' }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, xcode-27]
     # As window-close-windows: every case runs, so up to 11 overruns of about 62 s each.
     timeout-minutes: 25
     defaults:
@@ -285,8 +301,12 @@ jobs:
         run: cargo test -p sot-frontend --test pane_timing --features test-pane-timing --locked -- stand-in
 
   pane-timing-macos:
-    name: native pane timing, stand-in route (macOS)
-    runs-on: macos-latest
+    name: native pane timing, stand-in route (macOS${{ matrix.os == 'xcode-27' && ' 27, xcode-27' || '' }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, xcode-27]
     timeout-minutes: 30
     defaults:
       run:
@@ -358,8 +378,12 @@ jobs:
         run: cargo test -p sot-backend --locked --features daemon-lifetime-faults --test daemon_lifetime -- --include-ignored --test-threads=1
 
   daemon-lifetime-macos:
-    name: daemon lifetime premises (macOS)
-    runs-on: macos-latest
+    name: daemon lifetime premises (macOS${{ matrix.os == 'xcode-27' && ' 27, xcode-27' || '' }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, xcode-27]
     timeout-minutes: 45
     defaults:
       run:
@@ -505,8 +529,12 @@ jobs:
   # /bin/bash first on PATH as `bash`, so every script they start gets 3.2. The suites' own code needs bash 4 or later,
   # and the image's only bash is /bin/bash: Homebrew's runs them (under-bash.sh refuses an older one).
   under-bash-macos:
-    name: scripts under bash 3.2 (macos-latest)
-    runs-on: macos-latest
+    name: scripts under bash 3.2 (${{ matrix.os == 'xcode-27' && 'macos-27, xcode-27' || matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, xcode-27]
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
