@@ -397,15 +397,18 @@ impl ChromeView<'_> {
         repl_focus: bool,
     ) -> (ReplDrawerLayout, Paragraph<'static>, Paragraph<'static>) {
         let ChromeView { repl_input, repl_lines, repl_pkg_mode, new_repl_scroll, .. } = *self;
-        let input_line_count = (repl_input.matches('\n').count() + 1) as u16;
+        // The input wraps at the drawer's width and takes the rows it needs, up to the cap the layout sets; past the cap
+        // its last rows show, so the cursor stays in view.
+        let mut input_rt_lines = crate::ui::drawer::repl::presentation::input_lines(
+            repl_input, repl_pkg_mode, repl_focus, repl_rect.width as usize,
+        );
         let repl_split = ReplPresentation::<Quad>::drawer_layout(
-            repl_rect, input_line_count, repl_lines.len(), new_repl_scroll,
+            repl_rect, input_rt_lines.len().min(u16::MAX as usize) as u16, repl_lines.len(), new_repl_scroll,
         );
         let (start, end) = repl_split.window;
         let scroll_para = Paragraph::new(repl_lines[start..end].to_vec());
-        // The prompt is in Julia's REPL's own colors (`drawer::repl::colors`), dimmed while the pane lacks focus.
-        let input_rt_lines = crate::ui::drawer::repl::presentation::input_lines(repl_input, repl_pkg_mode, repl_focus);
-        let input_para = Paragraph::new(input_rt_lines);
+        let hidden = input_rt_lines.len().saturating_sub(repl_split.input.height as usize);
+        let input_para = Paragraph::new(input_rt_lines.split_off(hidden));
         self.new_repl_scroll = repl_split.scroll;
         self.repl_scrollback_cells = repl_split.scrollback;
         self.repl_window = repl_split.window;

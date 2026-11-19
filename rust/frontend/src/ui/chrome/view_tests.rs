@@ -286,6 +286,72 @@ fn the_live_prompt_is_painted_in_julias_color_and_weight() {
     }
 }
 
+/// The input rows, the cursor cell and the scrollback's height of the REPL drawer for `draft`, painted at `size`.
+fn row_at(rows: &[String], cells: ratatui::layout::Rect, y: usize) -> String {
+    rows[y].chars().skip(cells.x as usize).collect()
+}
+
+fn paint_input(size: (u16, u16), draft: &str) -> (Vec<String>, ratatui::layout::Rect, ratatui::layout::Rect, Option<(u16, u16)>) {
+    let kept = std::cell::RefCell::new(None);
+    let nav = NavFrame { repl_focused: true, keep: Some(&kept), ..NavFrame::default() };
+    let (rows, _, scrollback, _, cells, ..) =
+        paint_chrome_nav(size, "ready", Vec::new(), (draft.into(), Vec::new(), 0, DrawerContent::Repl), None, nav);
+    let buf = kept.borrow().clone().unwrap();
+    let cursor = (0..size.1).flat_map(|y| (0..size.0).map(move |x| (x, y))).find(|&(x, y)| buf[(x, y)].symbol() == "\u{2588}");
+    (rows, scrollback, cells, cursor)
+}
+
+/// A long draft wraps at the drawer's width with its rows under the code, the cursor on the last of them, and the
+/// scrollback gives up the rows the input takes.
+#[test]
+fn the_live_input_wraps_at_the_drawers_width_and_keeps_its_cursor_in_view() {
+    let draft = "x".repeat(200);
+    for size in [(100, 40), (140, 40), (200, 40)] {
+        let (rows, scrollback, cells, cursor) = paint_input(size, &draft);
+        let (cols, per) = (cells.width as usize, cells.width as usize - 7);
+        let n = 200_usize.div_ceil(per);
+        assert!(n >= 1 && (cols < 207) == (n > 1), "{size:?}: {cols} columns, {n} rows");
+        let top = cells.bottom() as usize - n;
+        assert!(row_at(&rows, cells, top).starts_with(&format!("julia> {}", "x".repeat(per.min(200)))), "{size:?}: {:?}", row_at(&rows, cells, top));
+        for r in 1..n {
+            let want = format!("{}{}", " ".repeat(7), "x".repeat(per.min(200 - r * per)));
+            assert!(row_at(&rows, cells, top + r).starts_with(&want), "{size:?} row {r}: {:?}", row_at(&rows, cells, top + r));
+        }
+        let last = 200 - per * (n - 1);
+        assert_eq!(cursor, Some((cells.x + 7 + last as u16, cells.bottom() - 1)), "{size:?}: the cursor ends the last row");
+        assert_eq!(scrollback.height, cells.height - n as u16, "{size:?}: the scrollback gives up the input's rows");
+    }
+}
+
+/// A last row that is full leaves no cell for the cursor, which takes a row of its own under the code.
+#[test]
+fn the_cursor_takes_its_own_row_when_the_last_row_is_full() {
+    let (_, _, cells, _) = paint_input((100, 40), "");
+    let per = cells.width as usize - 7;
+    let (rows, scrollback, cells, cursor) = paint_input((100, 40), &"y".repeat(per * 2));
+    assert_eq!(cursor, Some((cells.x + 7, cells.bottom() - 1)));
+    assert!(row_at(&rows, cells, cells.bottom() as usize - 3).starts_with(&format!("julia> {}", "y".repeat(per))));
+    assert_eq!(scrollback.height, cells.height - 3);
+}
+
+/// Explicit newlines and a long line count each its rows, the input's height is capped at the drawer's height less
+/// one row of scrollback, and past the cap the last rows show, the cursor with them.
+#[test]
+fn the_inputs_rows_count_wrapped_rows_and_are_capped() {
+    let (_, _, cells, _) = paint_input((100, 40), "");
+    let per = cells.width as usize - 7;
+    let draft = format!("a\n{}\nb", "x".repeat(per + 5));
+    let (rows, scrollback, cells, cursor) = paint_input((100, 40), &draft);
+    assert_eq!(scrollback.height, cells.height - 4, "one row, a two-row line and one row");
+    assert!(row_at(&rows, cells, cells.bottom() as usize - 4).starts_with("julia> a"));
+    assert!(row_at(&rows, cells, cells.bottom() as usize - 3).starts_with(&format!("{}{}", " ".repeat(7), "x".repeat(per))));
+    assert!(row_at(&rows, cells, cells.bottom() as usize - 1).starts_with(&format!("{}b", " ".repeat(7))));
+    assert_eq!(cursor, Some((cells.x + 8, cells.bottom() - 1)));
+    let (rows, scrollback, cells, cursor) = paint_input((100, 40), &"z".repeat(per * 100));
+    assert_eq!((scrollback.height, cursor.is_some()), (1, true), "the cap leaves the scrollback one row and the cursor in view");
+    assert!(row_at(&rows, cells, cells.y as usize + 1).starts_with(&format!("{}z", " ".repeat(7))), "the last rows show, not the first");
+}
+
 /// Text from outside the window (a daemon's error, an agent's summary, a file name, a paste) that holds a line
 /// break or another control character keeps its pieces apart wherever the chrome draws it: no cell holds a
 /// control character, and each `AAnn` is followed by its `BBnn` on the next row, or on the same row after the

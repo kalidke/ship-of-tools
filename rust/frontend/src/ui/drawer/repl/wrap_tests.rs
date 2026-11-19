@@ -64,3 +64,28 @@ fn a_frame_changing_nothing_is_not_wrapped_again() {
     wrap.end();
     assert!(wrap.frames.is_empty(), "a frame no longer in the log is dropped");
 }
+
+#[test]
+fn a_cluster_is_never_cut_and_no_row_overfills_the_pane_as_it_is_drawn() {
+    // A heart with its emoji selector (0.1 counts 1 cell, the buffer draws 2), a family and a flag joined by ZWJ and
+    // regional indicators, a keycap: measured and segmented as ratatui's buffer draws them.
+    let samples = ["ab\u{2764}\u{FE0F}cd", "x\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}y", "a\u{1F1FA}\u{1F1F8}b", "1\u{FE0F}\u{20E3}2", "e\u{301}e\u{301}"];
+    let clusters = |s: &str| Span::raw(s.to_string()).styled_graphemes(Style::default()).count();
+    for sample in samples {
+        for cols in 2..=12 {
+            let rows = plain(&rows_of(&[sample], cols));
+            assert_eq!(rows.concat(), sample, "{sample:?} at {cols}: nothing lost");
+            assert_eq!(rows.iter().map(|r| clusters(r)).sum::<usize>(), clusters(sample), "{sample:?} at {cols}: no cluster cut: {rows:?}");
+            for row in &rows {
+                assert!(Span::raw(row.clone()).width() <= cols || clusters(row) == 1, "{sample:?} at {cols}: {row:?} overfills");
+            }
+        }
+    }
+    // The heart takes the two cells the buffer gives it: it does not fit beside `ab` in 3 cells.
+    assert_eq!(plain(&rows_of(&["ab\u{2764}\u{FE0F}cd"], 3)), ["ab", "\u{2764}\u{FE0F}c", "d"]);
+    assert_eq!(plain(&rows_of(&["a\u{1F1FA}\u{1F1F8}b"], 2)), ["a", "\u{1F1FA}\u{1F1F8}", "b"]);
+}
+
+fn rows_of(text: &[&str], cols: usize) -> Rows {
+    rows(&lines(text), Style::default(), cols, None, 0)
+}

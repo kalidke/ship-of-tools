@@ -177,9 +177,12 @@ impl<I> ReplPresentation<I> {
         cols != 0 && std::mem::replace(&mut self.wrap.cols, cols) != cols
     }
 
-    pub(in crate::ui) fn commit_layout(&mut self, scrollback: ScreenRect, window: (usize, usize)) {
+    /// The layout the frame ended on: the scrollback's pixels, the rows in view and its width in cells (`set_cols`: true
+    /// when it changed, so the caller asks for the frame that wraps for it).
+    pub(in crate::ui) fn commit_layout(&mut self, scrollback: ScreenRect, window: (usize, usize), cols: usize) -> bool {
         self.scrollback_px = scrollback;
         self.window = window;
+        self.set_cols(cols)
     }
 
     pub(in crate::ui) fn apply_effects(&mut self, effects: &ReplEffects) {
@@ -198,6 +201,7 @@ impl<I> ReplPresentation<I> {
 
     fn reset_anchor(&mut self) {
         self.build_anchor = None;
+        self.view_anchor = None;
     }
 
     pub(in crate::ui) fn paint(
@@ -304,24 +308,19 @@ fn stream_lines(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// The live input's rows: the prompt on the first, a same-width pad under it on each later row, and the cursor block
-/// ending the last row while the drawer has focus.
-pub(in crate::ui) fn input_lines(input: &str, pkg_mode: bool, focused: bool) -> Vec<RtLine<'static>> {
-    let prompt_text = if pkg_mode { "pkg> " } else { "julia> " };
-    let segments: Vec<&str> = input.split('\n').collect();
-    let last = segments.len() - 1;
-    segments.iter().enumerate().map(|(i, seg)| {
-        let mut spans = vec![if i == 0 {
-            Span::styled(prompt_text, colors::prompt(pkg_mode, focused))
-        } else {
-            Span::raw(" ".repeat(prompt_text.len()))
-        }];
-        spans.push(Span::raw(cell_row(seg).into_owned()));
-        if focused && i == last {
-            spans.push(Span::styled("\u{2588}", colors::cursor(pkg_mode)));
+/// The live input's rows for a pane `cols` cells wide: the prompt first, the code under it at the same column, long lines
+/// wrapped as the log's echo of code is, and, while the drawer has focus, the cursor block at the end of the last row, on a
+/// row of its own when that row is full. The draft is edited at its end only, so the cursor is always there.
+pub(in crate::ui) fn input_lines(input: &str, pkg_mode: bool, focused: bool, cols: usize) -> Vec<RtLine<'static>> {
+    let mut rows = wrap::code_rows(input, pkg_mode, cols, colors::prompt(pkg_mode, focused));
+    if focused {
+        let cursor = Span::styled("\u{2588}", colors::cursor(pkg_mode));
+        match rows.last_mut() {
+            Some(last) if cols == 0 || last.width() < cols => last.spans.push(cursor),
+            _ => rows.push(RtLine::from(vec![Span::raw(" ".repeat(if pkg_mode { 5 } else { 7 })), cursor])),
         }
-        RtLine::from(spans)
-    }).collect()
+    }
+    rows
 }
 
 /// Project entries into cell-safe rows; decoded figures reserve rows for the later clipped paint.
@@ -352,7 +351,7 @@ fn project_lines<I>(
                 colors::origin(),
             )]));
         } else {
-            out.extend(wrap::code_rows(&entry.code, entry.pkg_mode, wrap.cols));
+            out.extend(wrap::code_rows(&entry.code, entry.pkg_mode, wrap.cols, colors::scrollback_prompt(entry.pkg_mode)));
         }
         for (frame_idx, frame) in entry.frames.iter().enumerate() {
             marks.push((out.len(), entry.eval_id, frame_idx));

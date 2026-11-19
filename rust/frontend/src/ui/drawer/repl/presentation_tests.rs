@@ -121,7 +121,7 @@ fn text(lines: &[RtLine<'static>]) -> Vec<String> {
 fn images_follow_the_row_eval_and_frame_that_produced_them() {
     let (a, b, c) = (row("host-a", "row"), row("host-b", "row"), row("host-a", "other"));
     let (mut model, mut owner, mut upload) = (ReplModel::default(), Owner::default(), Upload::default());
-    owner.commit_layout(rect(400.0, 400.0), (0, 100));
+    owner.commit_layout(rect(400.0, 400.0), (0, 100), 0);
     start(&mut model, &a, 7);
     frame(&mut model, &a, 7, image(32, 16, 1));
     frame(&mut model, &a, 7, image(16, 32, 2));
@@ -198,7 +198,7 @@ fn image_cache_reuses_successes_and_retries_failures() {
 fn image_cache_retains_frames_of_a_surviving_eval_after_restore() {
     let key = row("host", "row");
     let (mut model, mut owner, mut upload) = (ReplModel::default(), Owner::default(), Upload::default());
-    owner.commit_layout(rect(400.0, 400.0), (0, 100));
+    owner.commit_layout(rect(400.0, 400.0), (0, 100), 0);
     start(&mut model, &key, 7);
     model.capture_row(key.clone()); // The surviving eval has no image in this shorter snapshot.
     frame(&mut model, &key, 7, image(32, 16, 1));
@@ -255,7 +255,7 @@ fn image_slots_are_rebuilt_and_fit_both_dimensions() {
     owner.refresh_images(&key, model.entries(), &mut upload);
     for (w, h, dw, dh, rows) in [(400.0, 400.0, 200.0, 100.0, 7),
         (96.0, 400.0, 80.0, 40.0, 3), (400.0, 80.0, 64.0, 32.0, 2)] {
-        owner.commit_layout(rect(w, h), (0, 100));
+        owner.commit_layout(rect(w, h), (0, 100), 0);
         let (lines, _) = build(&mut owner, &model, &key, 0);
         assert_eq!(pictures(&paint(&owner)), [(1, 28.0, 62.0, dw, dh)]);
         let displayed = text(&lines);
@@ -263,14 +263,14 @@ fn image_slots_are_rebuilt_and_fit_both_dimensions() {
         assert!(displayed[2..2 + rows].iter().all(String::is_empty));
         assert_eq!(displayed[2 + rows], "after");
     }
-    owner.commit_layout(rect(32.0, 80.0), (0, 100));
+    owner.commit_layout(rect(32.0, 80.0), (0, 100), 0);
     assert!(text(&build(&mut owner, &model, &key, 0).0)[2].starts_with("[image · image/png"));
     assert!(paint(&owner).is_empty(), "degenerate width rebuild replaces the slots");
     // A build can see image data before refresh; first-frame zero geometry uses a caption too.
     let mut first = Owner::default();
     first.refresh_images(&key, model.entries(), &mut upload);
     assert!(text(&build(&mut first, &model, &key, 0).0)[2].starts_with("[image ·"));
-    owner.commit_layout(rect(400.0, 400.0), (0, 100));
+    owner.commit_layout(rect(400.0, 400.0), (0, 100), 0);
     build(&mut owner, &model, &key, 0);
     assert!(!paint(&owner).is_empty());
     let empty = row("host", "empty");
@@ -284,7 +284,7 @@ fn image_slots_are_rebuilt_and_fit_both_dimensions() {
 fn pixel_geometry_survives_row_restore_until_the_next_layout() {
     let (a, b) = (row("host", "a"), row("host", "b"));
     let (mut model, mut owner, mut upload) = (ReplModel::default(), Owner::default(), Upload::default());
-    owner.commit_layout(rect(96.0, 400.0), (0, 100));
+    owner.commit_layout(rect(96.0, 400.0), (0, 100), 0);
     start(&mut model, &a, 1);
     finish(&mut model, &a, 1);
     model.capture_row(a);
@@ -295,7 +295,7 @@ fn pixel_geometry_survives_row_restore_until_the_next_layout() {
     owner.refresh_images(&b, model.entries(), &mut upload);
     assert_eq!(build(&mut owner, &model, &b, 0).0.len(), 5);
     assert_eq!(pictures(&paint(&owner)), [(1, 28.0, 46.0, 80.0, 40.0)]);
-    owner.commit_layout(rect(400.0, 80.0), (0, 100));
+    owner.commit_layout(rect(400.0, 80.0), (0, 100), 0);
     assert_eq!(build(&mut owner, &model, &b, 0).0.len(), 4);
     assert_eq!(pictures(&paint(&owner)), [(1, 28.0, 46.0, 64.0, 32.0)]);
 }
@@ -380,19 +380,19 @@ fn geometry_changes_reseed_the_anchor() {
         start(&mut model, &key, 1);
         frame(&mut model, &key, 1, image(400, 400, 1));
         owner.refresh_images(&key, model.entries(), &mut upload);
-        owner.commit_layout(rect(400.0, 400.0), (0, 100));
+        owner.commit_layout(rect(400.0, 400.0), (0, 100), 0);
         build(&mut owner, &model, &key, 10);
-        owner.commit_layout(rect(w, h), (0, 100));
+        owner.commit_layout(rect(w, h), (0, 100), 0);
         assert_eq!(owner.build(&key, model.entries(), false, cw, ch, 10).1, 10);
         output(&mut model, &key, 1, "new\n");
         assert_eq!(owner.build(&key, model.entries(), false, cw, ch, 10).1, 11);
     }
     let (mut model, mut owner) = (ReplModel::default(), Owner::default());
     start(&mut model, &key, 1);
-    owner.commit_layout(rect(400.0, 400.0), (0, 100));
+    owner.commit_layout(rect(400.0, 400.0), (0, 100), 0);
     build(&mut owner, &model, &key, 10);
     output(&mut model, &key, 1, "new\n");
-    owner.commit_layout(ScreenRect { x: 200.0, y: 300.0, ..rect(400.0, 400.0) }, (0, 100));
+    owner.commit_layout(ScreenRect { x: 200.0, y: 300.0, ..rect(400.0, 400.0) }, (0, 100), 0);
     assert_eq!(build(&mut owner, &model, &key, 10).1, 11, "position is excluded from the key");
     finish(&mut model, &key, 1);
     let effects = model.clear_scrollback();
@@ -402,10 +402,10 @@ fn geometry_changes_reseed_the_anchor() {
     assert_eq!(build(&mut owner, &model, &key, 10).1, 10, "empty build removes its anchor");
     let (mut model, mut owner) = (ReplModel::default(), Owner::default());
     start(&mut model, &key, 1);
-    owner.commit_layout(rect(400.0, 0.0), (0, 100));
+    owner.commit_layout(rect(400.0, 0.0), (0, 100), 0);
     build(&mut owner, &model, &key, 7);
     output(&mut model, &key, 1, "new\n");
-    owner.commit_layout(rect(400.0, -0.0), (0, 100));
+    owner.commit_layout(rect(400.0, -0.0), (0, 100), 0);
     assert_eq!(build(&mut owner, &model, &key, 7).1, 7, "raw geometry bits distinguish signed zero");
 }
 
@@ -415,7 +415,7 @@ fn clear_fresh_run_and_restore_keep_their_presentation_rules() {
     let (mut model, mut owner, mut upload) = (ReplModel::default(), Owner::default(), Upload::default());
     start(&mut model, &key, 9);
     frame(&mut model, &key, 9, image(32, 32, 1));
-    owner.commit_layout(rect(200.0, 200.0), (0, 100));
+    owner.commit_layout(rect(200.0, 200.0), (0, 100), 0);
     owner.refresh_images(&key, model.entries(), &mut upload);
     build(&mut owner, &model, &key, 10);
     model.capture_row(key.clone());
@@ -468,23 +468,23 @@ fn painting_uses_the_visible_window_and_restores_the_scissor() {
     frame(&mut model, &key, 1, image(32, 48, 1)); // slot [1,4)
     frame(&mut model, &key, 1, image(16, 16, 2)); // slot [4,5)
     owner.refresh_images(&key, model.entries(), &mut upload);
-    owner.commit_layout(rect(200.0, 200.0), (0, 100));
+    owner.commit_layout(rect(200.0, 200.0), (0, 100), 0);
     build(&mut owner, &model, &key, 0);
-    owner.commit_layout(rect(200.0, 32.0), (2, 4));
+    owner.commit_layout(rect(200.0, 32.0), (2, 4), 0);
     assert_eq!(paint(&owner), [Paint::Scissor(20, 30, 200, 32),
         Paint::Image(1, (28.0, 14.0, 32.0, 48.0), (1000, 800)), Paint::Scissor(0, 0, 1000, 800)]);
-    owner.commit_layout(rect(200.0, 32.0), (4, 5));
+    owner.commit_layout(rect(200.0, 32.0), (4, 5), 0);
     assert_eq!(pictures(&paint(&owner)), [(2, 28.0, 30.0, 16.0, 16.0)]);
-    owner.commit_layout(rect(200.0, 200.0), (0, 6));
+    owner.commit_layout(rect(200.0, 200.0), (0, 6), 0);
     assert_eq!(pictures(&paint(&owner)), [(1, 28.0, 46.0, 32.0, 48.0), (2, 28.0, 94.0, 16.0, 16.0)]);
     let mut painter = Painter::default();
     owner.paint(false, 8.0, 16.0, (1000, 800), &mut painter).unwrap();
     assert!(painter.events.is_empty());
     for (w, h) in [(0.0, 20.0), (20.0, 0.0)] {
-        owner.commit_layout(rect(w, h), (0, 6));
+        owner.commit_layout(rect(w, h), (0, 6), 0);
         assert!(paint(&owner).is_empty());
     }
-    owner.commit_layout(ScreenRect { x: -10.0, y: 790.0, ..rect(200.0, 200.0) }, (0, 6));
+    owner.commit_layout(ScreenRect { x: -10.0, y: 790.0, ..rect(200.0, 200.0) }, (0, 6), 0);
     // The area runs from -10 to 190: the scissor is the part of it on the surface, not its width from the surface's edge.
     assert_eq!(paint(&owner)[0], Paint::Scissor(0, 790, 190, 10));
     let mut painter = Painter { fail: true, ..Default::default() };
@@ -649,7 +649,7 @@ fn the_error_label_is_inline_at_every_pane_width() {
     let key = row("host", "row");
     for width in [0.0, 100.0, 400.0, 2000.0] {
         let (mut model, mut owner) = (ReplModel::default(), Owner::default());
-        owner.commit_layout(rect(width, 400.0), (0, 100));
+        owner.commit_layout(rect(width, 400.0), (0, 100), 0);
         model.edit_draft(DraftEdit::Replace("x".into()));
         let plan = model.begin_eval(target(&key)).unwrap();
         let id = plan.submission.eval_id();
@@ -666,7 +666,7 @@ fn the_error_label_is_inline_at_every_pane_width() {
 #[test]
 fn the_live_prompt_has_julias_color_and_weight_focused_and_not() {
     let spans = |input: &str, pkg, focused| -> Vec<(String, Option<Color>, bool)> {
-        let lines = super::input_lines(input, pkg, focused);
+        let lines = super::input_lines(input, pkg, focused, 0);
         lines.iter().flat_map(|l| l.spans.iter())
             .map(|s| (s.content.to_string(), s.style.fg, s.style.add_modifier.contains(ratatui::style::Modifier::BOLD)))
             .collect()
@@ -798,4 +798,70 @@ fn the_width_arriving_does_not_move_a_scrolled_up_reader() {
     let rows = text(&lines);
     assert!(rows.len() > 60);
     assert_eq!(line_of(&rows, rows.len() - 1 - now as usize), before);
+}
+
+#[test]
+fn a_rows_wrapped_frames_are_not_another_rows_with_the_same_ids() {
+    // Two rows whose logs hold the same eval id and frame index, with text of the same length: each row draws its own.
+    let (a, b) = (row("host", "a"), row("host", "b"));
+    let mut owner = Owner::default();
+    owner.set_cols(30);
+    let log = |ch: char| vec![ReplEntry {
+        eval_id: 7, code: "x".into(), frames: vec![ReplFrame::Stdout { text: ch.to_string().repeat(40) }],
+        elapsed_ms: 1, in_flight: false, pkg_mode: false, origin: None, own_frames: Vec::new(),
+    }];
+    let rows_a = text(&owner.build(&a, &log('a'), false, 8.0, 16.0, 0).0);
+    let rows_b = text(&owner.build(&b, &log('b'), false, 8.0, 16.0, 0).0);
+    assert!(rows_a.iter().any(|r| r.starts_with('a')) && !rows_a.iter().any(|r| r.starts_with('b')), "{rows_a:?}");
+    assert!(rows_b.iter().any(|r| r.starts_with('b')) && !rows_b.iter().any(|r| r.starts_with('a')), "{rows_b:?}");
+}
+
+#[test]
+fn a_resize_keeps_the_reader_in_the_frame_they_were_reading() {
+    // One eval whose output arrives as three frames of numbered lines: the reader is in the first, and a resize,
+    // which finds the anchor's line among the frames, does not take them to the same line number in another frame.
+    let key = row("host", "row");
+    let (mut model, mut owner) = (ReplModel::default(), Owner::default());
+    owner.set_cols(20);
+    model.edit_draft(DraftEdit::Replace("x".into()));
+    let plan = model.begin_eval(target(&key)).unwrap();
+    let id = plan.submission.eval_id();
+    model.complete_submission(plan.submission, Ok(()));
+    for f in 0..3 {
+        let out: String = (0..20).map(|i| format!("f{f} line {i:02} {}\n", "x".repeat(20))).collect();
+        output(&mut model, &key, id, &out);
+    }
+    finish(&mut model, &key, id);
+    let scroll = 100;
+    let rows = text(&build(&mut owner, &model, &key, scroll).0);
+    // The logical line the bottom row belongs to: the nearest row at or above it that starts one.
+    let bottom = |rows: &[String], s: u16| {
+        let at = rows.len() - 1 - s as usize;
+        rows[..=at].iter().rev().find(|r| r.starts_with('f')).unwrap()[..10].to_string()
+    };
+    let before = bottom(&rows, scroll);
+    assert!(before.starts_with("f0"), "the reader is in the first frame: {before:?}");
+    owner.set_cols(35);
+    let (lines, now) = build(&mut owner, &model, &key, scroll);
+    assert_eq!(bottom(&text(&lines), now), before, "the same line of the same frame");
+}
+
+#[test]
+fn the_layout_commit_carries_the_width_the_next_build_wraps_for() {
+    // `commit_layout` is the one call that gives the presentation its width: with it the next build wraps and the
+    // caller is told to ask for that frame; the same width again asks for nothing.
+    let (model, mut owner, key) = long_log(0, 3, 40);
+    assert_eq!(text(&build(&mut owner, &model, &key, 0).0).len(), 4, "no width yet: one row a line, and the prompt");
+    assert!(owner.commit_layout(rect(400.0, 400.0), (0, 5), 20));
+    assert!(!owner.commit_layout(rect(400.0, 400.0), (0, 5), 20));
+    assert!(text(&build(&mut owner, &model, &key, 0).0).len() > 4);
+}
+
+#[test]
+fn a_row_switch_forgets_the_view_anchor_of_the_row_left() {
+    let (model, mut owner, key) = long_log(20, 30, 40);
+    build(&mut owner, &model, &key, 20);
+    assert!(owner.view_anchor.is_some());
+    owner.apply_effects(&super::super::ReplEffects { reset_build_anchor: true, ..Default::default() });
+    assert!(owner.view_anchor.is_none());
 }

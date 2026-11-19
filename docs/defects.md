@@ -710,16 +710,19 @@ owned by `docs/CLAUDE.md`.
 
 ## fe-ui
 
-- **REPL-DRAWER-NO-SELECTION-OR-COPY** [note] A person cannot select or copy text out of the REPL drawer: its mouse and
-  keys only scroll, and no path reads its rows back. Found while building the drawer's wrap
-  (REPL-DRAWER-CLIPS-LONG-LINES); never reported by a person. A copy would have to give a wrapped line whole, without the
-  breaks the wrap added, as the agent pane's does since 0.7.1.
+- **REPL-DRAWER-NO-SELECTION-OR-COPY** [note] A person cannot select or copy text out of the REPL drawer: its mouse only
+  focuses and scrolls, its keys type, submit and recall history, and no path reads its rows back. Found while building the
+  drawer's wrap (REPL-DRAWER-CLIPS-LONG-LINES); never reported by a person. A copy would have to give a wrapped line whole,
+  without the breaks the wrap added, as the agent pane's does since 0.7.1.
+- **REPL-DRAWER-STACK-ROW-CLIPS** [note] A stack frame's `at fn (file:line)` row in the REPL drawer is not wrapped: the pane
+  cuts a long file path at its edge. Left by REPL-DRAWER-CLIPS-LONG-LINES (the row has five styled spans, and the wrap cuts a
+  plain string); never reported by a person. Fix: cut by styled run, which REPL-DRAWER-PROGRAM-COLORS-DROPPED's reader needs
+  too.
 - **REPL-DRAWER-PROGRAM-COLORS-DROPPED** [note] The labels of `@info`, `@warn`, `@error` and `@debug`, and any color a
   program prints, show uncolored in the REPL drawer (gray, as stderr), where Julia's REPL colors them: the row's Julia
   runs with its streams on pipes and no color, and the window strips terminal escapes from what arrives
   (`strip_csi`). Part of what the maintainer asked for on 2026-11-19 ("make the color sheme in julia repl match
-  cononical colors") and not built by REPL-DRAWER-COLORS-NOT-JULIAS. Its landing also wraps a stack frame's row, which
-  REPL-DRAWER-CLIPS-LONG-LINES left clipped. Fix decided: the REPL child prints with color and
+  cononical colors") and not built by REPL-DRAWER-COLORS-NOT-JULIAS. Fix decided: the REPL child prints with color and
   the drawer reads the color escapes into cell colors through the map the Terminal drawer uses.
 - **REPL-DRAWER-NO-SYNTAX-COLORS** [feature] Julia 1.12 and later color typed code in the REPL by its syntax; the REPL
   drawer shows typed code in one color. Put to the maintainer on 2026-11-19 as a choice; no go-ahead yet.
@@ -1282,7 +1285,7 @@ owned by `docs/CLAUDE.md`.
 
 ## Closed
 
-- **REPL-DRAWER-CLIPS-LONG-LINES** (fe-ui) [note] closed by the landing that fixes it, 2026-11-19, found by the review of REPL-DRAWER-COLORS-NOT-JULIAS, never reported by a person: the REPL drawer cut a line longer than the pane at its edge, so the end of a long error, a value or a line of output could not be read in the drawer. A line now continues on the next row at the pane's width in whole cells (`drawer/repl/wrap.rs`; lossless by cell width, typed code's continuation rows under the code); a scrolled-up reader stays on the same text through a resize, anchored by the source of the view's bottom row. The drawer also rebuilt every row of the whole log on every redraw (15 ms for 10,000 lines of 200 characters in a release build); the wrapped rows of each text frame are now cached, so a redraw that changes nothing takes 1.7 ms and a new width re-wraps the log once (17 ms). Limits: a stack frame's `at fn (file:line)` row is still clipped (REPL-DRAWER-PROGRAM-COLORS-DROPPED's landing wraps it); the drawer has no selection or copy (REPL-DRAWER-NO-SELECTION-OR-COPY); built and measured on simulated logs, not seen by a person.
+- **REPL-DRAWER-CLIPS-LONG-LINES** (fe-ui) [note] closed by the landing that fixes it, 2026-11-19, found by the review of REPL-DRAWER-COLORS-NOT-JULIAS, never reported by a person: the REPL drawer cut a line longer than the pane at its edge, so the end of a long error, a value, a line of output or the line being typed could not be read in the drawer. A line now continues on the next row at the pane's width in whole cells (`drawer/repl/wrap.rs`), cut by cell and by grapheme cluster as ratatui's buffer draws them, never in the middle of a flag or a family emoji; typed code's continuation rows, in the log and in the live input, sit under the code, the cursor on the last row (on a row of its own when that row is full), the input's height counting its wrapped rows up to the drawer's cap, and the scrollback gives up what the input takes. A scrolled-up reader stays on the same text through a resize, anchored by the source of the view's bottom row. The drawer also rebuilt every row of the whole log on every redraw (12.7 to 14.7 ms for 10,000 lines of 200 characters in a release build); the wrapped rows of each text frame are now cached (a second copy of the text, about three times its size), so a redraw that changes nothing takes 1.7 to 3.5 ms and a new width re-wraps the log once (17 to 26 ms, on loaded machines). Limits: a stack frame's `at fn (file:line)` row still clips (REPL-DRAWER-STACK-ROW-CLIPS); the drawer has no selection or copy (REPL-DRAWER-NO-SELECTION-OR-COPY); a pane no wider than its prompt does not wrap that prompt's line; built and measured on simulated logs, not seen by a person.
 
 - **SOT-FE-CHAT-WORDS** (agents) [note] closed by the landing that fixes it, 2026-11-19, by reading and confirmed on the stub daemon of `agents/tests/test-sot-fe-chat.sh`: `_chat_resolve` in `agents/sot-fe/sot-fe-chat.sh` had no arm for the daemon's `unconfigured` state, so a hub where no Slack workspace was ever connected printed `refused invalid the chat's configuration does not map this session's project`. It now prints `refused unconfigured <words>` by the daemon's reason (`not_connected`, `tokens_refused`, `wrong_app`, `start_failed`, any other); the exit code (2) and every other word are unchanged (test: `case_a_resolve_that_maps_nothing_posts_nothing`). The exit-3 words, which ended "read the thread first" (no verb reads a channel), now end "ask the person to look in the channel", in the script, its suite, `agents/CLAUDE.md` and both `sot-comm` skills.
 

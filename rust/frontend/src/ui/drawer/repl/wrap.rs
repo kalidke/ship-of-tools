@@ -3,7 +3,6 @@
 
 use super::colors;
 use crate::ui::*;
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// A row's source: the eval, the frame (`usize::MAX` for the entry's own rows) and the logical line within the frame.
 pub(super) type Anchor = (u64, usize, usize);
@@ -11,21 +10,32 @@ pub(super) type Anchor = (u64, usize, usize);
 /// Rows for one frame's logical lines, and the row (within them) each logical line starts at.
 pub(super) type Rows = (Vec<RtLine<'static>>, Vec<usize>);
 
-/// `text` cut into pieces of at most `first` cells, then `rest` cells: nothing dropped, no space eaten, a wide glyph
-/// that does not fit starts the next piece, and a glyph wider than a piece still takes one so the loop advances.
-/// A width of 0 (no layout yet) returns the text whole.
+/// `text` cut into pieces of at most `first` cells, then `rest` cells: nothing dropped, no space eaten, a grapheme
+/// cluster (a flag, a family emoji, a letter with its marks) never split, a cluster that does not fit starts the next
+/// piece, and one wider than a piece still takes one so the loop advances. Clusters and cells are measured as ratatui's
+/// buffer draws them (its segmentation and its `unicode-width`, through `Span`), so a piece fills the pane exactly as far
+/// as it is drawn. A width of 0 (no layout yet) returns the text whole. A line with no space is cut at the edge, in
+/// the middle of a word.
 fn cut(text: &str, first: usize, rest: usize) -> Vec<&str> {
     if first == 0 || rest == 0 {
         return vec![text];
     }
-    let (mut out, mut start, mut used, mut limit) = (Vec::new(), 0, 0, first);
-    for (i, c) in text.char_indices() {
-        let w = c.width().unwrap_or(0);
-        if used + w > limit && i > start {
-            out.push(&text[start..i]);
-            (start, used, limit) = (i, 0, rest);
+    let (mut out, mut start, mut limit) = (Vec::new(), 0, first);
+    if text.is_ascii() {
+        while text.len() - start > limit {
+            out.push(&text[start..start + limit]);
+            (start, limit) = (start + limit, rest);
         }
-        used += w;
+    } else {
+        let (span, mut at, mut used) = (Span::raw(text), 0, 0);
+        for g in span.styled_graphemes(Style::default()) {
+            let w = Span::raw(g.symbol).width();
+            if used + w > limit && at > start {
+                out.push(&text[start..at]);
+                (start, used, limit) = (at, 0, rest);
+            }
+            (at, used) = (at + g.symbol.len(), used + w);
+        }
     }
     out.push(&text[start..]);
     out
@@ -38,7 +48,7 @@ pub(super) fn rows(lines: &[String], style: Style, cols: usize, prefix: Option<S
     for (i, line) in lines.iter().enumerate() {
         starts.push(out.len());
         let head = if i == 0 { prefix.clone() } else { None };
-        let head_w = head.as_ref().map_or(hang, |h| h.content.width());
+        let head_w = head.as_ref().map_or(hang, Span::width);
         let (first, rest) = (cols.saturating_sub(head_w), cols.saturating_sub(hang));
         for (j, piece) in cut(line, first, rest).into_iter().enumerate() {
             let lead = match (j, &head) {
@@ -52,11 +62,11 @@ pub(super) fn rows(lines: &[String], style: Style, cols: usize, prefix: Option<S
     (out, starts)
 }
 
-/// The prompt's rows of typed code: the prompt first, the code under it at the same column.
-pub(super) fn code_rows(code: &str, pkg_mode: bool, cols: usize) -> Vec<RtLine<'static>> {
+/// The prompt's rows of typed code: the prompt (in `prompt_style`) first, the code under it at the same column.
+pub(super) fn code_rows(code: &str, pkg_mode: bool, cols: usize, prompt_style: Style) -> Vec<RtLine<'static>> {
     let prompt = if pkg_mode { "pkg> " } else { "julia> " };
     let lines: Vec<String> = code.split('\n').map(|seg| cell_row(seg).into_owned()).collect();
-    rows(&lines, colors::plain(), cols, Some(Span::styled(prompt, colors::scrollback_prompt(pkg_mode))), prompt.len()).0
+    rows(&lines, colors::plain(), cols, Some(Span::styled(prompt, prompt_style)), prompt.len()).0
 }
 
 /// What the window wrapped for a frame, kept while the frame's text and the pane's width stay what they were.

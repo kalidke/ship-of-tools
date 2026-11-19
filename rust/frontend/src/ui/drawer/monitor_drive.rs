@@ -93,9 +93,9 @@ impl State {
         // (the pane's dirty mark) or the chart on screen was drawn for another size,
         // text scale or set of marks (`MonitorView::drawn`, `None` once the
         // drawer shows another tenant), mirroring the math-SVG rasterise path.
-        self.repl_presentation.commit_layout(cells_to_px(repl_scrollback_cells), repl_window);
         // The scrollback's wrap follows the width committed here, so a new width needs one more frame.
-        if self.repl_presentation.set_cols(repl_scrollback_cells.width as usize) {
+        let cols = repl_scrollback_cells.width as usize;
+        if self.repl_presentation.commit_layout(cells_to_px(repl_scrollback_cells), repl_window, cols) {
             self.pacer.mark_dirty();
         }
         // Scale the chart's text + gutters to match the chrome's
