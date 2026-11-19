@@ -2998,6 +2998,16 @@ the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the sa
     a stack frame's row still clips (REPL-DRAWER-STACK-ROW-CLIPS, open), the drawer has no selection or copy
     (REPL-DRAWER-NO-SELECTION-OR-COPY, open), and eleven files outside the drawer measure with the older width
     table (WIDTH-CRATE-TWO-VERSIONS, open). No person has looked at it.
+  - Up and Down in edit mode move by the row on screen (EDITOR-UP-DOWN-BY-PARAGRAPH, EDIT-DISCARD-PROMPT-NOT-DRAWN).
+    One builder, twelve commits; one reviewer, five rounds. The cursor is a bar drawn over the text from an index
+    of the shaped rows, so Up and Down step by what is drawn, the view follows the cursor, and a motion re-shapes
+    nothing (a held Down on a 5,000-line file: about 500 ms a key before, 0.02 ms after; a width change lays the
+    shaped text out again, 20 ms against 500). One function says where lines end, for the buffer, the index and the
+    drawn text. Round one refused a cursor character inserted into the text; round two found a CRLF could be cut in
+    two and no cursor on right-to-left rows; round three a final lone CR with no cursor at all, and a re-shape on
+    every frame of a resize; round four that Escape on an edited buffer never drew its question, in the released
+    version too. Left open: an edit key and a selection step still re-shape the whole file
+    (EDIT-KEY-RESHAPES-WHOLE-FILE). No person has used it.
   - The scoped gate's missing tests (SCOPED-GATE-SKIPS-TREE-READING-TESTS). One builder, two commits. A scoped run
     now also runs the Rust tests whose verdict depends on files outside their own crate: the three that read every
     crate's sources or manifests on any Rust change, and thirteen that read a named file elsewhere (a manual page, a
