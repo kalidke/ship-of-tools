@@ -62,7 +62,24 @@ pub(in crate::ui) struct EditState {
     goal: Option<f32>,
 }
 
+/// Everything the shaped text is made of besides the body's text: the selection's tint cuts the body's spans and
+/// the footer's words follow the selection, the unsaved edits and the banners. A key that leaves all of it as it
+/// was, a motion with no selection before or after, leaves the shaped text as it is, and the bar moves over it.
+#[derive(Clone, Copy, PartialEq)]
+struct Drawn {
+    rev: u64,
+    selection: Option<(usize, usize)>,
+    dirty: bool,
+    stale: bool,
+    confirm: bool,
+}
+
 impl EditState {
+    fn drawn(&self) -> Drawn {
+        Drawn { rev: self.buf.rev(), selection: self.buf.selection_range(), dirty: self.is_dirty(), stale: self.stale_banner,
+            confirm: self.confirm_discard }
+    }
+
     fn is_dirty(&self) -> bool {
         self.buf.body() != self.original
     }
@@ -169,6 +186,8 @@ pub(in crate::ui) struct Editor {
     shaped: Option<MarkdownPreview>,
     /// The rows of `shaped`, built with it; out of date for any text but the one it was shaped from.
     index: Option<rows::Index>,
+    /// What `shaped` was shaped from, besides the width and scale.
+    drawn: Option<Drawn>,
 }
 
 /// The shaped buffer the window draws with the index of its rows, as a key reads them.
@@ -192,6 +211,14 @@ pub(in crate::ui) enum EditorKey {
     SaveConcept { target: String, content: String, expected_ast_hash: Option<String> },
     /// The buffer or its cursor took the key.
     Edited,
+}
+
+/// How the shaped buffer fits the pane.
+#[derive(Debug, PartialEq)]
+pub(in crate::ui) enum Fit {
+    Fits,
+    Width,
+    Scale,
 }
 
 /// What a `file.read` reply meant to the editor.
@@ -314,6 +341,7 @@ impl Editor {
         self.edit = None;
         self.shaped = None;
         self.index = None;
+        self.drawn = None;
     }
 
     /// The edit a row parks with.
@@ -330,6 +358,25 @@ impl Editor {
         self.shaped = self.edit.as_ref().map(|edit| shape(&edit.spans(bindings)));
         self.index = self.edit.as_ref().zip(self.shaped.as_ref())
             .and_then(|(edit, shaped)| rows::Index::new(&shaped.buffer, edit.buf.body(), edit.buf.rev()));
+        self.drawn = self.edit.as_ref().map(EditState::drawn);
+    }
+
+    /// Whether the shaped text is no longer what the edit draws (its text, selection, footer or banners changed):
+    /// the key's re-shape is owed. A motion that changes none of those owes none.
+    pub(in crate::ui) fn needs_reshape(&self) -> bool {
+        self.edit.as_ref().map(EditState::drawn) != self.drawn
+    }
+
+    /// Lay the shaped buffer out again for a new pane width, from `font_system`, and rebuild the index from it: the
+    /// text is unchanged, so only the rows are. `false` (and nothing done) where the text is not what was shaped.
+    pub(in crate::ui) fn relayout(&mut self, width: f32, font_system: &mut cosmic_text::FontSystem) -> bool {
+        if self.needs_reshape() {
+            return false;
+        }
+        let (Some(edit), Some(shaped)) = (self.edit.as_ref(), self.shaped.as_mut()) else { return false };
+        shaped.resize(font_system, width, 0.0);
+        self.index = rows::Index::new(&shaped.buffer, edit.buf.body(), edit.buf.rev());
+        true
     }
 
     /// Put the cursor at `at`, as a native fixture's stand-in for the keys it cannot press.
@@ -338,13 +385,19 @@ impl Editor {
         if let Some(edit) = self.edit.as_mut() { edit.buf.set_cursor(at); }
     }
 
-    /// Whether the shaped buffer is of this width and text scale (or there is none, or the pane has no width, as
-    /// under a full-height drawer: shaping to a pixel would cost a second for nothing the screen shows): the width
-    /// and scale it was shaped for are the buffer's own.
-    pub(in crate::ui) fn shaped_for(&self, width: f32, scale: f32) -> bool {
-        width < 1.0 || self.shaped.as_ref().is_none_or(|s| {
-            s.buffer.size().0 == Some(width.max(1.0)) && s.body_em() == crate::ui::preview::markdown::BODY_SIZE * scale
-        })
+    /// How the shaped buffer fits a pane of `width` px at text `scale`: it is shaped for another scale (the text
+    /// is shaped again), or for another width (it is laid out again), or fits; one that is not there, or a pane with
+    /// no width (a full-height drawer leaves the preview none: shaping to a pixel costs a second for nothing the
+    /// screen shows), fits.
+    pub(in crate::ui) fn fit(&self, width: f32, scale: f32) -> Fit {
+        let Some(shaped) = self.shaped.as_ref().filter(|_| width >= 1.0) else { return Fit::Fits };
+        if shaped.body_em() != crate::ui::preview::markdown::BODY_SIZE * scale {
+            Fit::Scale
+        } else if shaped.buffer.size().0 != Some(width) {
+            Fit::Width
+        } else {
+            Fit::Fits
+        }
     }
 
     /// The shaped buffer with its rows, when there are both.

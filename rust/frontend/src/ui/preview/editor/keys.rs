@@ -3,7 +3,7 @@
 use crate::ui::*;
 use std::ops::ControlFlow::{self, Break, Continue};
 use crate::ui::input::keypress::KeyPress;
-use super::state::EditorKey;
+use super::state::{EditorKey, Fit};
 
 pub(in crate::ui) fn editor_key(state: &mut State, key: KeyPress<'_>) -> ControlFlow<()> {
     // Edit mode hijacks all keys — typing into the
@@ -87,7 +87,10 @@ pub(in crate::ui) fn editor_key(state: &mut State, key: KeyPress<'_>) -> Control
         EditorKey::StaleAnswered => state.rebuild_edit_preview(),
         // The cursor moved or the text changed: the view follows it.
         EditorKey::Edited => {
-            state.rebuild_edit_preview();
+            // A motion that changes no text, selection or footer leaves the shaped text as it is: the bar moves.
+            if state.editor.needs_reshape() {
+                state.rebuild_edit_preview();
+            }
             state.follow_edit_cursor();
         }
     }
@@ -147,13 +150,20 @@ impl State {
         super::rows::bar(self.editor.cursor_place()?, pane, scroll_px, clip_bottom)
     }
 
-    /// Re-shape the edit buffer when the pane's width or the text scale is no longer the one it was shaped for (a
+    /// Fit the edit buffer to the pane when its width or the text scale is no longer the one it was shaped for (a
     /// window resize, a drawer opening, a zoom): the frame calls it after the pane is laid out and before the text is
-    /// drawn, so the screen and the next key's rows are of the pane's own width.
+    /// drawn, so the screen and the next key's rows are of the pane's own width. A new width lays the same buffer
+    /// out again (`Buffer::set_size`, as the preview's text does on a resize) and rebuilds the row index; only a new
+    /// scale, or a text not yet shaped, shapes it again.
     pub(in crate::ui) fn reshape_edit_to_pane(&mut self) {
         let width = self.concept.rect().w;
         let scale = self.canvas.scale() * self.canvas.text_scale_mult();
-        if !self.editor.shaped_for(width, scale) {
+        let fit = self.editor.fit(width, scale);
+        if fit == Fit::Fits {
+            return;
+        }
+        let editor = &mut self.editor;
+        if fit == Fit::Scale || !self.canvas.shape(|fs| editor.relayout(width.max(1.0), fs)) {
             self.rebuild_edit_preview();
         }
     }

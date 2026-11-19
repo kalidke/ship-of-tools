@@ -68,7 +68,10 @@ impl Harness {
         let pressed = Pressed { logical: &logical, action, ctrl: false, alt: false, shift, super_: false };
         let edit = self.editor.edit.as_mut().unwrap();
         edit_buffer_key(edit, pressed, page_rows, self.editor.shaped.as_ref().zip(self.editor.index.as_ref()));
-        self.reshape();
+        // The window re-shapes after a key only when the shaped text is no longer what the edit draws.
+        if self.editor.needs_reshape() {
+            self.reshape();
+        }
     }
 
     fn act(&mut self, action: Action) {
@@ -931,14 +934,69 @@ fn a_text_changed_to_one_of_the_same_length_since_the_shaping_has_no_place_and_n
 }
 
 #[test]
-fn the_edit_buffer_is_shaped_again_for_a_pane_of_another_width_or_scale() {
+fn the_edit_buffer_fits_a_pane_by_width_by_scale_or_not_at_all() {
     let mut h = Harness::new("some text to shape", 40);
     let (w, scale) = (h.width, 1.0);
-    assert!(h.editor.shaped_for(w, scale));
-    assert!(h.editor.shaped_for(w + 0.2, scale) == false, "a resized pane");
-    assert!(h.editor.shaped_for(w, 1.5) == false, "a zoom");
-    assert!(Editor::default().shaped_for(w, scale), "no shaping, nothing to redo");
-    assert!(h.editor.shaped_for(0.0, scale), "a hidden pane is not shaped for");
+    assert_eq!(h.editor.fit(w, scale), Fit::Fits);
+    assert_eq!(h.editor.fit(w + 0.2, scale), Fit::Width, "a resized pane is laid out again");
+    assert_eq!(h.editor.fit(w, 1.5), Fit::Scale, "a zoom shapes again");
+    assert_eq!(h.editor.fit(w + 0.2, 1.5), Fit::Scale);
+    assert_eq!(Editor::default().fit(w, scale), Fit::Fits, "no shaping, nothing to redo");
+    assert_eq!(h.editor.fit(0.0, scale), Fit::Fits, "a hidden pane is not fitted");
+}
+
+#[test]
+fn a_new_pane_width_lays_the_buffer_out_again_and_the_rows_are_those_of_a_fresh_shaping() {
+    let text = format!("{PARAGRAPH}\n\n{PARAGRAPH}\r\nshort\n{}", "x".repeat(70));
+    let mut h = Harness::new(&text, 40);
+    let mut fresh = Harness::new(&text, 23);
+    let width = fresh.width;
+    let builds = rows::BUILDS.with(|b| b.get());
+    assert!(h.editor.relayout(width, &mut h.fs), "the text is what was shaped");
+    assert_eq!(rows::BUILDS.with(|b| b.get()) - builds, 1, "one index, no second shaping");
+    assert_eq!(h.editor.shaped().unwrap().buffer.size().0, Some(width));
+    for at in positions(&text) {
+        h.put(at);
+        fresh.put(at);
+        assert_eq!(h.editor.cursor_place(), fresh.editor.cursor_place(), "at {at}");
+    }
+    // The steps agree too.
+    h.put(5);
+    fresh.put(5);
+    for _ in 0..12 {
+        h.act(Action::EditDown);
+        fresh.act(Action::EditDown);
+        assert_eq!(h.cursor(), fresh.cursor());
+    }
+    // A text changed since it was shaped is not laid out: it is shaped again.
+    h.edit().buf.insert_char('Z');
+    assert!(!h.editor.relayout(width + 5.0, &mut h.fs));
+}
+
+#[test]
+fn a_motion_with_no_selection_owes_no_reshape_and_a_selection_or_an_edit_does() {
+    let mut h = Harness::new(&long_text(), 40);
+    let built = || rows::BUILDS.with(|b| b.get());
+    let before = built();
+    for action in [Action::EditDown, Action::EditDown, Action::EditRight, Action::EditUp, Action::EditEnd, Action::EditHome,
+        Action::EditPageDown, Action::EditPageUp, Action::EditFinish, Action::EditStart] {
+        h.act(action);
+        assert!(!h.editor.needs_reshape(), "{action:?}");
+    }
+    for _ in 0..40 {
+        h.act(Action::EditDown);
+    }
+    assert_eq!(built() - before, 0, "40 held Downs and ten other motions shaped nothing");
+    assert!(h.cursor() > 0 && h.editor.cursor_place().is_some());
+    // A selection tints the text and changes the footer; an edit changes the text.
+    h.press(Key::Named(NamedKey::ArrowDown), Some(Action::EditDown), true, 3);
+    assert_eq!(built() - before, 1);
+    h.press(Key::Named(NamedKey::ArrowDown), Some(Action::EditDown), true, 3);
+    assert_eq!(built() - before, 2, "a selection that grows is drawn from the text's spans");
+    h.act(Action::EditRight);
+    assert_eq!(built() - before, 3, "dropping it re-shapes once");
+    h.type_char("x");
+    assert_eq!(built() - before, 4);
 }
 
 /// Every cursor position the buffer allows in `body`: a char boundary that is not inside a CRLF.

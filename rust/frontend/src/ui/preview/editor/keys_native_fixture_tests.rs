@@ -25,7 +25,10 @@ impl State {
         };
         let mut moved = |s: &mut State, at: usize| -> anyhow::Result<()> {
             s.editor.put_cursor(at);
-            s.rebuild_edit_preview();
+            // As the key path does: the shaped text is made again only when it is owed.
+            if s.editor.needs_reshape() {
+                s.rebuild_edit_preview();
+            }
             s.follow_edit_cursor();
             s.redraw()
         };
