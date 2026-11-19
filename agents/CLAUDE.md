@@ -341,7 +341,7 @@ of each.
   `the_rendering_is_the_hook_output_both_agents_accept_within_the_caps`.
 - The layer: `<comm home>/claude-layer/` (written by the installer from `agents/claude/` and `comm/adapters/claude/`,
   read by the recipe) and the table of hooks in `layer.rs`.
-- The non-messaging Claude skills (the four onboarding ones global, the rest the layer's; `julia-repl`, `project-log`, `reauth`, `show-result`, `sitrep`, `sot-gh-auth`,
+- The non-messaging Claude skills (the four onboarding ones global, the rest the layer's; `julia-repl`, `project-log`, `reauth`, `show-result`, `sitrep`, `sot-chat-post`, `sot-gh-auth`,
   `sot-install`, `sot-setup`, `sot-status`, `sot-statusline-setup`, `worktree`) and the Claude launcher `ccb` with its
   `PATH` wrappers (`show-result`, `sot-fe`, `sot-gh-auth`): `claude/`. The Codex launcher `ccx`: `codex/`.
 - The row CLIs `spawn/`, the /worktree scripts `worktree/`, the frontend CLI and nav broadcast `sot-fe/`,
@@ -364,7 +364,12 @@ of each.
   `tests/test-sot-fe-chat.sh` runs it against a stub daemon: outside a row and with no handle refused before an
   endpoint, one resolve then one post with the handle and thread, each outcome's words and code, no answer as one
   request, and `--stdin` text with newlines, quotes and a leading `/` whole. The skills tell an agent to reply with it
-  (messaging's `sot-comm`); a Codex row is not woken for channel mail.
+  (messaging's `sot-comm`); a Codex row is not woken for channel mail. A person's plain ask to post in the row's Slack
+  channel finds the verb through `sot-chat-post` (`claude/sot-chat-post/`, and `comm/adapters/codex/skills/sot-chat-post/`
+  for a Codex row, the two files byte-identical), whose description carries the asks' words; the installer's directory
+  walk installs it, so no list names it. It says what the exit codes mean, that a row with no channel is told so, and
+  that an `@name` in a post is literal text, not a mention (the daemon escapes `<`, `>` and `&` and sets no
+  `link_names`: CHAT-MENTION-NOT-A-MENTION in `docs/defects.md`). Unproven: that a session, asked in plain words, loads it.
 - `sot-fe chat post [--thread <ts>] --file <path> [<comment> | --stdin]` shares a file of the row's folder (a figure, or
   any regular file of at most 16 MiB) under the same rules: the row and handle refused as above, then the path (a
   relative one joined to `$PWD`) made relative to `$SOT_WORKSPACE_ROOT` by comm-lib's `sot_relative_to`, the one owner

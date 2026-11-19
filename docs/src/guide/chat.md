@@ -198,7 +198,7 @@ read again. Any other markup shows as typed, in blue.
 ## The agent in the channel
 
 A session's agent can post to its project's channel with the command `sot-fe chat post`, which Ship of Tools installs
-for agents to run. Its posts appear as `<handle> (row via Ship of Tools)`, where the handle is the session's name as
+for agents to run. A plain ask ("post this in your Slack channel") is enough: the agent finds the command through a skill Ship of Tools installs. Its posts appear as `<handle> (row via Ship of Tools)`, where the handle is the session's name as
 Sessions mode shows it, the name it also signs its messages to other sessions with
 ([Agents messaging each other](messaging.md)). In the commands below, `<ts>` is a message's Slack timestamp, which
 names it.
@@ -209,7 +209,8 @@ The agent runs `sot-fe chat post [--thread <ts>] (<text> | --stdin)` in the sess
 by `--thread`, or else is a new message. It is sent once: the command prints `posted <ts>` and exits 0; exits 2 with
 `refused` and a reason, or `limited, wait <n> s`, when nothing was posted; and exits 3 with `unknown` or `no answer`
 when the post may exist, in which case the agent does not post it again and reads the thread first. A reply is public to
-every member of the channel.
+every member of the channel. A name typed as `@name` goes out as plain text and does not notify that person; the agent
+says so when you ask it to mention someone.
 
 ### A figure from the agent
 
