@@ -3048,3 +3048,6 @@ the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the sa
     removed, with the records saying what the count guarantees rather than how a name looks, and pinned `sot-fe`'s
     copy of the report's words to the wire's with one file of replies and lines both suites read. Unproven: no person has been notified by such a mention; a stand-in
     answered for Slack.
+  - Records: the package page said `main` held 0.7.2 and nothing more through a day of landings; it now says what
+    `main` holds. Filed open: AGENT-PANE-CURSOR-AHEAD-OF-TEXT (seen by a person, not reproduced),
+    VT-AUTOWRAP-OFF-IGNORED, WIN-INSTALL-LISTS-WHOLE-PROCESS-TABLE and GATE-SCOPE-SHELL-READER-OF-RUST-FILE.

@@ -408,6 +408,7 @@ owned by `docs/CLAUDE.md`.
   only.
 - **SCREEN-WRITER-SPAN** [note] The screen file's writer is waited for at most 2 s at a run's end, and a writer that timed
   out can still publish a stale snapshot over a later run's file.
+- **VT-AUTOWRAP-OFF-IGNORED** [note] From reading code, never seen in use: the vt100 fork has no arm for autowrap off (`CSI ? 7 l` in `decset`/`decrst`, `rust/vt100/src/screen.rs`), which Claude Code sets around a character that may not fit at the right edge. A program that relies on it can show a wrapped character where a terminal would overwrite the last cell.
 
 ## messaging
 
@@ -886,6 +887,7 @@ owned by `docs/CLAUDE.md`.
   its own `unsupported` set, which is per op. Left because the change runs through the owner's and the row channel's
   tests, past the 30 lines it was allowed.
 - **EDIT-KEY-RESHAPES-WHOLE-FILE** [note] In the preview's edit mode a key that changes the text, or the selection's range or the footer's words, shapes the whole file again (`State::rebuild_edit_preview`, `Editor::reshape`): about 500 ms per key on a 5,000-line, 465 KB file and 50 ms on a 500-line, 46 KB one, in a release build (measured by a review, 2026-11-19, under load; not seen in use by a person), so typing and a growing selection lag in a large file. Fixed with the landing of Up and Down by the row: a motion with no selection shapes nothing (the cursor is a bar drawn over the shaped rows, `Editor::needs_reshape`), and a new pane width lays the same buffer out again (about 20 ms on that file) instead of shaping it. What remains: an edit key, and a motion that begins, grows or ends a selection (the tint cuts the text's spans and the footer says so). A fix shapes only the lines that changed (the buffer's `set_rich_text` replaces every line, so it takes `BufferLine` edits and the index patched from them) and draws the selection over the rows from the index.
+- **AGENT-PANE-CURSOR-AHEAD-OF-TEXT** [person] Seen in use by a person on a Linux window, 2026-11-19 (the maintainer: "If i switch to a session and start typing the cursor moves faster to righ than text giving increasing gap. if i backspace it all away and type again it works."; the sessions were also open in a window on another computer). Not reproduced. The window draws the pane's text and the row's terminal cursor from one grid at one cell width (`paint_terminal`, `render/cells.rs`), and a test of that path found every glyph on its cell and the cursor after the text at three scales, after a switch's checkpoint, restore and resize. Two windows on one row can disagree on the terminal's size until this window's first key takes the pen (capsule `attach.rs`; the contract does not say that a redial takes the pen), but by test that moves rows and clips the right edge, not a gap that grows a cell per key. Open guesses, in order: Claude Code's own cursor running ahead when typing begins over the dim suggested prompt an idle row shows (then it is not the window's to fix); the size disagreement; fonts on that computer. What would tell them apart: whether the cursor is whole cells past the text on the same row, less than that, or on another row.
 
 ## distribution
 
@@ -1081,6 +1083,8 @@ owned by `docs/CLAUDE.md`.
   a 120 second bound; on 2026-11-10 the mirror served one 17.5 MB package too slowly, the step timed out (exit 124)
   before any build or test, and a re-run of the job passed; the same stall ended a second run that morning. A cached
   package set, or the bound widened only for the download, would keep a mirror stall from reading as a red run.
+- **WIN-INSTALL-LISTS-WHOLE-PROCESS-TABLE** [note] From reading code, never seen in use: the installer's process listing on Windows (`rust/backend/src/install/procs.rs`) asks for the whole process table through CIM, the query that ran past 30 s twice in a hosted test (WIN-CIM-LISTING-30S, closed for the test alone). An install on a loaded Windows computer could wait as long.
+- **GATE-SCOPE-SHELL-READER-OF-RUST-FILE** [note] From reading code: `agents/tests/test-sot-fe-chat.sh` reads `rust/protocol/src/ops/told_words_cases.tsv`, and a scoped gate run of a change to that file alone selects the protocol crate and not the agents shell suite, so `sot-fe`'s words could drift from the file unseen until a whole run. The gate's stated limit (a shell test that reads another folder is added by hand); the fix is a row for it.
 
 ## chat
 
