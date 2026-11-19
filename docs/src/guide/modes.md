@@ -147,7 +147,7 @@ Mode switches share the keymap with pane focus and layout. The relevant chords:
 | `Shift+ArrowLeft` / `Shift+ArrowRight` | cycle the active workspace |
 | `Ctrl+ArrowLeft/Right/Up/Down` | move pane focus (4-way, spatial) |
 | `Alt+=` | maximize the focused pane; `Escape` restores |
-| `Ctrl+j` / `Ctrl+t` / `Ctrl+m` | toggle the REPL / Terminal / Monitor drawers |
+| `Ctrl+j` / `Ctrl+t` / `Ctrl+m` | show the REPL / Terminal / Monitor drawer, again for full height, again to hide it |
 | `Ctrl+?` | show pane actions briefly; press again for the Help drawer |
 | `F1` | open or close the Help drawer |
 

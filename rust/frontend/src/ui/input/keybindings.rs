@@ -100,10 +100,10 @@ actions! {
     ToggleWidePreview, "layout.wide_preview", ["Alt++"], "Wide preview", "Hide or show the agent column to give the preview more room.", "Window", Global;
     Selfie, "view.selfie", ["Primary+Shift+s"], "Screenshot", "Save a PNG of the whole frontend window.", "Window", Global;
     StripCycleOrder, "strip.cycle_order", ["Primary+Shift+o"], "Session order", "Cycle the session strip's order: by state, alphabetical, by recent activity.", "Window", Global;
-    ToggleReplDrawer, "drawer.repl", ["Primary+j"], "Julia drawer", "Show or hide the Julia REPL. Changing drawer views keeps Julia running.", "Drawers", Global;
-    ToggleTerminalDrawer, "drawer.terminal", ["Primary+t"], "Terminal drawer", "Show or hide the frontend-local terminal.", "Drawers", Global;
-    ToggleMonitorDrawer, "drawer.monitor", ["Primary+m"], "Monitor drawer", "Show or hide host resource charts.", "Drawers", Global;
-    ToggleChatDrawer, "drawer.chat", ["Primary+k"], "Chat drawer", "Show or hide the project chat.", "Drawers", Global;
+    ToggleReplDrawer, "drawer.repl", ["Primary+j"], "Julia drawer", "Show the Julia REPL, again for full height, again to hide it. Changing drawer views keeps Julia running.", "Drawers", Global;
+    ToggleTerminalDrawer, "drawer.terminal", ["Primary+t"], "Terminal drawer", "Show the frontend-local terminal, again for full height, again to hide it.", "Drawers", Global;
+    ToggleMonitorDrawer, "drawer.monitor", ["Primary+m"], "Monitor drawer", "Show host resource charts, again for full height, again to hide them.", "Drawers", Global;
+    ToggleChatDrawer, "drawer.chat", ["Primary+k"], "Chat drawer", "Show the project chat, again for full height, again to hide it.", "Drawers", Global;
     ScrollLineUp, "view.scroll_line_up", ["Alt+ArrowUp"], "Scroll up one line", "Scroll without moving the input cursor.", "Scroll", Scroll;
     ScrollLineDown, "view.scroll_line_down", ["Alt+ArrowDown"], "Scroll down one line", "Scroll without moving the input cursor.", "Scroll", Scroll;
     TableLeft, "preview.table_left", ["h", "ArrowLeft"], "Scroll left", "Move horizontally through a wide text table.", "Text", Text;

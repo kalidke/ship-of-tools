@@ -31,6 +31,9 @@ impl Harness {
     fn toggle(&mut self, tenant: DrawerContent) {
         let e = self.layout.toggle_drawer(tenant, self.focus.focus()); e.apply(self, Some("bound".into()));
     }
+    fn cycle(&mut self, tenant: DrawerContent) {
+        let e = self.layout.cycle_drawer(tenant, self.focus.focus()); e.apply(self, Some("bound".into()));
+    }
     fn action(&mut self, action: Action) -> bool { self.gated(action, LayoutGates::default()) }
     fn gated(&mut self, action: Action, gates: LayoutGates) -> bool {
         let mut context = self.context.clone();
@@ -55,7 +58,11 @@ impl Harness {
     fn peek(&mut self) { self.layout.start_peek(self.context.clone(), self.now); }
 }
 impl LayoutPort for Harness {
-    fn layout_focus(&mut self, focus: PaneFocus) { self.events.push(format!("focus:{focus:?}")); self.focus.set_focus(focus); }
+    fn layout_focus(&mut self, focus: PaneFocus) {
+        self.events.push(format!("focus:{focus:?}"));
+        self.layout.focus_landed(focus); // State::set_focus does the same
+        self.focus.set_focus(focus);
+    }
     fn layout_monitor_sync(&mut self) { self.events.push("monitor".into()); }
     fn layout_label(&mut self, label: String) { self.events.push(format!("label:{label}")); }
     fn layout_redraw(&mut self) { tracing::debug!("recorder redraw"); self.events.push("redraw".into()); }
@@ -504,4 +511,121 @@ fn a_switch_while_help_shows_returns_the_focus_help_took_and_never_moves_it_into
     h.open();
     let e = h.layout.enter_row_drawer(DrawerContent::Closed, PaneFocus::Repl); e.apply(&mut h, None);
     assert_eq!(h.focus.focus(), PaneFocus::NavTree);
+}
+
+/// A key on the drawer cycle, for each tenant: closed, open, full height, closed.
+#[test]
+fn a_drawers_own_key_cycles_closed_open_full_closed() {
+    let base = LayoutPreset::default_laptop();
+    for tenant in TENANTS {
+        let mut h = Harness::new(DrawerContent::Closed, PaneFocus::NavTree, false);
+        h.cycle(tenant);
+        assert_eq!((h.layout.drawer(), h.layout.full(), h.focus.focus()), (tenant, false, PaneFocus::Repl), "{tenant:?} opens");
+        assert_eq!(h.layout.effective_preset(&base).drawer, base.drawer, "open is the drawer's own height");
+        h.cycle(tenant);
+        assert_eq!((h.layout.drawer(), h.layout.full(), h.focus.focus()), (tenant, true, PaneFocus::Repl), "{tenant:?} full");
+        let full = h.layout.effective_preset(&base);
+        assert_eq!(full.drawer, None);
+        assert_eq!(full.columns.iter().map(|c| c.slot).collect::<Vec<_>>(), [Slot::Repl, Slot::Llm]);
+        assert!((full.columns.iter().map(|c| c.width).sum::<f32>() - 1.0).abs() < 0.001);
+        h.cycle(tenant);
+        assert_eq!((h.layout.drawer(), h.layout.full(), h.focus.focus()), (DrawerContent::Closed, false, PaneFocus::NavTree), "{tenant:?} closes");
+        h.cycle(tenant);
+        assert_eq!((h.layout.drawer(), h.layout.full()), (tenant, false), "the next open is at the normal height");
+    }
+}
+/// The full height is the columns the drawer spans, the agent pane beside it kept; without an agent column, all.
+#[test]
+fn a_full_drawer_stands_the_height_of_the_columns_it_spans() {
+    use crate::ui::chrome::layout::compute;
+    let area = ratatui::layout::Rect { x: 0, y: 0, width: 120, height: 40 };
+    let base = LayoutPreset::default_laptop();
+    let open = compute(area, &base, true, None);
+    let full = compute(area, &base.full_drawer(), true, None);
+    let (open_repl, full_repl) = (open.repl.unwrap(), full.repl.unwrap());
+    assert!(open_repl.height < 20 && full_repl.height == 38 && full_repl.y == 1, "{open_repl:?} {full_repl:?}");
+    assert!(full_repl.width.abs_diff(open_repl.width) <= 1, "the divider may move one cell: the nav's and preview's rounding");
+    assert_eq!((full.nav, full.preview), (None, None));
+    let (open_llm, full_llm) = (open.llm.unwrap(), full.llm.unwrap());
+    assert_eq!((full_llm.y, full_llm.height), (open_llm.y, open_llm.height), "the agent pane stays beside it, as tall");
+    assert!(full_llm.width.abs_diff(open_llm.width) <= 1);
+    let portrait = LayoutPreset::default_portrait();
+    let all = compute(area, &portrait.full_drawer(), true, None).repl.unwrap();
+    assert_eq!((all.height, all.width), (38, 118));
+    let mut none = base.clone(); none.drawer = None;
+    assert_eq!(none.full_drawer().columns, none.columns);
+}
+/// Another tenant's key swaps the drawer and keeps the height it was at.
+#[test]
+fn another_drawers_key_swaps_and_keeps_the_height() {
+    for first in TENANTS { for second in TENANTS.into_iter().filter(|t| *t != first) {
+        for full in [false, true] {
+            let mut h = Harness::new(DrawerContent::Closed, PaneFocus::NavTree, false);
+            h.cycle(first); if full { h.cycle(first); }
+            h.cycle(second);
+            assert_eq!((h.layout.drawer(), h.layout.full()), (second, full), "{first:?} then {second:?}");
+        }
+    } }
+}
+/// A close by any path clears the full height, and `toggle_drawer`, which the Connect step and the fixtures use,
+/// still closes a drawer in one step. A row's parked view holds the drawer, not its height: the height is the
+/// window's, so a row with a drawer open meets the full height and a row with none does not.
+#[test]
+fn every_close_clears_the_full_height_and_a_toggle_closes_in_one_step() {
+    let full = |tenant| { let mut h = Harness::new(DrawerContent::Closed, PaneFocus::NavTree, false); h.cycle(tenant); h.cycle(tenant); h };
+    for tenant in TENANTS {
+        let mut h = full(tenant); h.toggle(tenant);
+        assert_eq!((h.layout.drawer(), h.layout.full()), (DrawerContent::Closed, false), "toggle closes a full {tenant:?}");
+        h.cycle(tenant); assert!(!h.layout.full());
+        let mut h = full(tenant); h.layout.terminal_spawn_failed();
+        assert_eq!((h.layout.drawer(), h.layout.full()), (DrawerContent::Closed, false), "spawn failure");
+        let mut h = full(tenant);
+        let e = h.layout.enter_row_drawer(DrawerContent::Closed, PaneFocus::Repl); e.apply(&mut h, None);
+        assert_eq!((h.layout.full(), h.layout.row_drawer()), (false, DrawerContent::Closed), "a row with no drawer");
+        h.cycle(tenant); assert!(!h.layout.full(), "and it opens at the normal height");
+        let mut h = full(tenant);
+        let e = h.layout.enter_row_drawer(DrawerContent::Terminal, PaneFocus::Repl); e.apply(&mut h, None);
+        assert_eq!((h.layout.drawer(), h.layout.full()), (DrawerContent::Terminal, true), "a row with a drawer open");
+        assert_eq!(h.layout.row_drawer(), DrawerContent::Terminal, "the parked view holds the tenant alone");
+    }
+}
+/// Focus never rests on a pane the full drawer hides: any move onto the nav or preview first returns the height.
+#[test]
+fn focus_on_a_hidden_pane_returns_the_drawer_to_its_height() {
+    for to in FOCI {
+        let mut h = Harness::new(DrawerContent::Closed, PaneFocus::NavTree, false);
+        h.cycle(DrawerContent::Repl); h.cycle(DrawerContent::Repl);
+        h.layout_focus(to);
+        assert_eq!(h.layout.full(), !matches!(to, PaneFocus::NavTree | PaneFocus::Preview), "{to:?}");
+        assert_eq!(h.layout.drawer(), DrawerContent::Repl, "the drawer stays open");
+    }
+    // The wide-preview key sends focus from the agent pane to the preview.
+    let mut h = Harness::new(DrawerContent::Closed, PaneFocus::NavTree, false);
+    h.cycle(DrawerContent::Chat); h.cycle(DrawerContent::Chat);
+    h.focus.set_focus(PaneFocus::Llm);
+    h.action(Action::ToggleWidePreview);
+    assert_eq!((h.focus.focus(), h.layout.full()), (PaneFocus::Preview, false));
+}
+/// Help is at the drawer's height over a full drawer and the full height returns with the drawer under it; the
+/// maximized window shows the full drawer alone and restores to it.
+#[test]
+fn help_and_maximize_over_a_full_drawer() {
+    use crate::ui::chrome::layout::compute;
+    let base = LayoutPreset::default_laptop();
+    let mut h = Harness::new(DrawerContent::Closed, PaneFocus::NavTree, false);
+    h.cycle(DrawerContent::Terminal); h.cycle(DrawerContent::Terminal);
+    h.open();
+    assert_eq!(h.layout.drawer(), DrawerContent::Help);
+    assert_eq!(h.layout.effective_preset(&base).drawer, base.drawer, "Help is at the drawer's height");
+    assert_eq!(h.layout.effective_preset(&base).columns.len(), 3);
+    h.close();
+    assert_eq!((h.layout.drawer(), h.layout.full()), (DrawerContent::Terminal, true));
+    assert_eq!(h.layout.effective_preset(&base).drawer, None);
+    assert!(h.action(Action::MaximizePane));
+    let area = ratatui::layout::Rect { x: 0, y: 0, width: 120, height: 40 };
+    let slot = h.layout.maximize_slot(h.focus.focus(), false);
+    assert_eq!(slot, Some(Slot::Repl));
+    assert_eq!(compute(area, &h.layout.effective_preset(&base), true, slot).repl.unwrap().height, 38);
+    assert!(h.action(Action::RestoreLayout));
+    assert_eq!((h.layout.maximized(), h.layout.full(), h.layout.drawer()), (false, true, DrawerContent::Terminal));
 }

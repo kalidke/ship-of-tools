@@ -15,6 +15,14 @@ Monitor, Chat and Help into the drawer. Column order, widths and the drawer heig
 [layout preset](../ref/config.md#layout); the portrait preset drops the agent
 column.
 
+A drawer's own key steps it through three states: pressed with the drawer closed, it opens at the preset's height;
+pressed again, the drawer grows to the full height of the columns it spans, so the navigation tree and the preview
+(or, with no agent column, everything) are covered while the agent pane stays beside it; pressed a third time, it
+closes, and the next open is at the preset's height again. Another drawer's key swaps that drawer in and keeps the
+height. Help is always at the preset's height, over a full drawer too, and the full drawer is there when Help closes.
+Moving focus to the navigation tree or the preview, which a full drawer hides, brings the drawer back to the preset's
+height first.
+
 This page walks each pane in turn — what it is, what fills it, and the keys
 that drive it — and links out to the guide behind it. For a first-session
 walkthrough, see [Your first session](../start/tour.md).
@@ -46,7 +54,7 @@ than stacking:
 | [Help](#Help-drawer) | `F1`, or `Ctrl+?` twice | the focused pane's actions and their bindings, searchable |
 | [Chat](chat.md) | `Ctrl+k` | the held messages of the selected row's Slack channel, newest at the bottom; no key typed there reaches the REPL |
 
-Each session keeps its own drawer: whether it is open and which content it shows come back as you left them when you switch back to the session. A session you have not visited yet starts with the drawer closed; the session the window opened on keeps the drawer the window opened with. The Terminal is one shell for the window, so two sessions that show it show the same shell. The drawer's height, maximize and the wide preview belong to the window, not to a session, and a switch closes the Help drawer. The sessions' drawers are not kept across a window restart.
+Each session keeps its own drawer: whether it is open and which content it shows come back as you left them when you switch back to the session. A session you have not visited yet starts with the drawer closed; the session the window opened on keeps the drawer the window opened with. The Terminal is one shell for the window, so two sessions that show it show the same shell. The drawer's height (including full height), maximize and the wide preview belong to the window, not to a session, and a switch closes the Help drawer. The sessions' drawers are not kept across a window restart.
 
 Drawer toggles are **global** — they fire even when another pane holds focus. The drawer keys take their chords from the panes: while one is held, `Ctrl+k` (like `Ctrl+j`, `Ctrl+t` and `Ctrl+m`) opens its drawer and does not reach the agent pane, the REPL or the Terminal.
 
@@ -330,15 +338,15 @@ degraded terminal-graphics protocol.
 machine**. Its canonical use is SSHing outward to backend hosts, and because it is
 local — **not** proxied through the daemon — it works even when the backend is
 unreachable. It shares the bottom drawer slot with the [REPL](#The-REPL-Pane) (`Ctrl+j`)
-and the [Monitor](#The-Monitor-Drawer) (`Ctrl+m`): each key toggles its own content, and
-pressing another swaps it in place.
+and the [Monitor](#The-Monitor-Drawer) (`Ctrl+m`): each key steps its own content from open to full
+height to closed, and pressing another swaps it in place.
 
 `Ctrl+t` opens the Terminal drawer, a shell in the project root.
 
-| Key | Drawer closed | Showing this content | Showing other content |
-|-----|---------------|----------------------|-----------------------|
-| `Ctrl+t` | → Terminal | → closed | → Terminal |
-| `Ctrl+j` | → REPL | → closed | → REPL |
+| Key | Drawer closed | Showing this content | Showing this content, full height | Showing other content |
+|-----|---------------|----------------------|-----------------------------------|-----------------------|
+| `Ctrl+t` | → Terminal | → full height | → closed | → Terminal, at the same height |
+| `Ctrl+j` | → REPL | → full height | → closed | → REPL, at the same height |
 
 ### Scrollback
 
@@ -363,8 +371,8 @@ A scroll down that reaches the live tail ends on it, whatever the shell printed 
 *Bottom drawer — `Ctrl+m`.* The Monitor shows **CPU / GPU / RAM history across all
 your hosts at once** — small-multiples, one compact panel per host (a multi-GPU
 box shows each GPU as its own trace). It shares the bottom drawer slot with the
-[REPL](#The-REPL-Pane) (`Ctrl+j`) and the [Terminal](#The-Terminal-Drawer) (`Ctrl+t`); the toggle
-is global, so it opens even when another pane has focus.
+[REPL](#The-REPL-Pane) (`Ctrl+j`) and the [Terminal](#The-Terminal-Drawer) (`Ctrl+t`); its key is
+global, so it works even when another pane has focus.
 
 
 ### How it gets the data

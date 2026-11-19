@@ -130,7 +130,7 @@ Run `sot-launch` (or the desktop entry). Then:
 |---|---|
 | `s`, then `[+ create new]` | Start a session in a project directory ([Quickstart](https://kalidke.github.io/ship-of-tools/stable/start/quickstart)) |
 | `f` / `m` | Files mode / Modules mode in the navigation pane; the preview follows the cursor |
-| `Ctrl+j` | Show or hide the Julia REPL |
+| `Ctrl+j` | Show the Julia REPL, again for full height, again to hide it |
 | `Ctrl+?` / `F1` | The focused pane's actions / the searchable Help drawer |
 
 The full walkthrough is [Your first session](https://kalidke.github.io/ship-of-tools/stable/start/tour); every key is in [Keybindings](https://kalidke.github.io/ship-of-tools/stable/ref/keybindings).

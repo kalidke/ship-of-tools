@@ -151,6 +151,7 @@ pub(in crate::ui) struct PaneRects {
 impl State {
     /// Delegate ordinary moves without changing prompts or notices.
     pub(in crate::ui) fn set_focus(&mut self, to: PaneFocus) {
+        self.layout_help.focus_landed(to);
         self.focus_prompts.set_focus(to);
     }
 

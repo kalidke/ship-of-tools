@@ -118,8 +118,8 @@ For file dispatch and the display protocol, see
 
 Press `Ctrl+t` for a local **Terminal** — an OS shell on the frontend machine,
 typically used to SSH out to backend hosts. The REPL and Terminal share one
-physical drawer slot: `Ctrl+j` and `Ctrl+t` each toggle their own pane, and
-pressing the other key swaps the content. See
+physical drawer slot: `Ctrl+j` and `Ctrl+t` each open their own pane, then
+enlarge it to full height, then close it, and pressing the other key swaps the content. See
 [The interface](../guide/interface.md#The-Terminal-Drawer).
 
 ## The Monitor drawer — `Ctrl+m`

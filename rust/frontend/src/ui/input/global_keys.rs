@@ -346,7 +346,7 @@ pub(in crate::ui) fn drawer_chords(state: &mut State, key: KeyPress<'_>, label: 
         None
     };
     if let Some(slot) = drawer_key {
-        let effect = state.layout_help.toggle_drawer(slot, state.focus_prompts.focus());
+        let effect = state.layout_help.cycle_drawer(slot, state.focus_prompts.focus());
         effect.apply(state, Some(label));
         return Break(());
     }

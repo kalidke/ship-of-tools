@@ -9,7 +9,7 @@ your interactive Julia session â€” the same bindings, the same loaded packages â
 but its output is structured, and the figures it produces render inline in the
 native window rather than as text.
 
-The REPL drawer toggles with `Ctrl+j`.
+`Ctrl+j` opens the REPL drawer, a second press makes it full height, and a third closes it.
 
 The drawer is Ship of Tools' own input line, not Julia's REPL: `]` at the
 start of an empty line enters pkg mode (`pkg>`, run through

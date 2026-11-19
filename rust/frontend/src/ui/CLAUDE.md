@@ -893,6 +893,25 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   `entering_a_row_shows_its_drawer_and_moves_only_drawer_focus_off_a_closed_one` and
   `a_switch_while_help_shows_closes_help_and_keeps_the_layout_it_hid` and
   `a_switch_while_help_shows_returns_the_focus_help_took_and_never_moves_it_into_the_entered_drawer`.
+- A drawer's own key cycles it (`LayoutHelp::cycle_drawer`, called by `drawer_chords` alone): closed opens it at the
+  preset's height, an open one goes to full height, a full one closes; another tenant's key swaps and keeps the height.
+  `toggle_drawer` stays one step (open, swap or close) for every other caller (the Chat Connect step, the native fixtures),
+  so a toggle closes a full drawer at once. Full height is `LayoutPreset::full_drawer`, applied by `effective_preset`:
+  the columns the drawer spans (those left of the agent column, else all) become one column of the drawer's slot and the
+  preset has no drawer, so the agent pane stays beside it and every tenant draws into the rect it is given. The flag is
+  window-wide like the height, never in a parked view (a row with a drawer open meets a full one; a row with none is
+  never full), and `set_drawer` clears it whenever the drawer closes, by any path. Help is drawn at the preset's height
+  over a full drawer and the full height returns with the drawer under it. `State::set_focus` calls `focus_landed`, so
+  focus on the nav or preview, which a full drawer hides, first returns the drawer to its height (a focus set through
+  `FocusPrompts` alone, the spatial move and the scale prompt, cannot land there while the panes are hidden). Maximize
+  over a full drawer shows the drawer alone and restores to the full height. Limits: the rounding of the nav and preview
+  widths can move the agent pane's edge one cell between the heights; a preset that already lists a `repl` column shows
+  no change at full height; no person has used it; the Terminal's and REPL's resize at full height rest on the drawer
+  rect being read each frame (`term_size_observed`), the Monitor chart's on `plan` from `repl_cells`. Pinned by
+  `a_drawers_own_key_cycles_closed_open_full_closed`, `a_full_drawer_stands_the_height_of_the_columns_it_spans`,
+  `another_drawers_key_swaps_and_keeps_the_height`, `every_close_clears_the_full_height_and_a_toggle_closes_in_one_step`,
+  `focus_on_a_hidden_pane_returns_the_drawer_to_its_height`, `help_and_maximize_over_a_full_drawer` and
+  `chrome::view::tests::every_tenant_fills_the_rect_a_full_height_drawer_stands_in`.
 - Maximize follows focus, yields to a leave line without clearing, and leaves spatial navigation on the preset.
   Context-admitted restore peels maximize before gated wide restoration. Wide enable bounces only Llm; admitted
   agent reveal clears wide before focus/paste without dismissing prompts. Help resets browsing, saves only the first

@@ -119,6 +119,8 @@ struct NavFrame<'a> {
     alone: Option<u16>,
     /// What the Chat drawer shows in its body instead of records.
     body: Option<&'a crate::ui::drawer::chat::Body>,
+    /// The drawer at full height (`LayoutPreset::full_drawer`) instead of its own.
+    full: bool,
 }
 
 /// `paint_chrome_chat` from `nav`, and the nav pane's rect, the spill's segments and the nav scroll the frame ends
@@ -132,7 +134,8 @@ fn paint_chrome_nav(
     nav: NavFrame<'_>,
 ) -> (Vec<String>, u16, ratatui::layout::Rect, (usize, usize), ratatui::layout::Rect, u16, ratatui::layout::Rect, Vec<NavSpillSeg>, u16) {
     let (repl_input, repl_lines, scroll, drawer) = repl;
-    let preset = crate::ui::persist::settings::LayoutPreset::default_laptop();
+    let mut preset = crate::ui::persist::settings::LayoutPreset::default_laptop();
+    if nav.full { preset = preset.full_drawer(); }
     let status = status.to_string();
     let prompt = nav.alone.is_none().then(|| ("delete AA05\rBB05? [y/N]".to_string(), String::new()));
     let none: Option<String> = None;
@@ -369,6 +372,41 @@ fn the_chat_drawer_draws_its_compose_rows_at_its_foot_and_no_other_drawer_does()
         let (rows, _, foot) = drawn(other, 0);
         assert_eq!(foot, 0, "{other:?}");
         assert!(!rows.iter().any(|r| r.contains("> hello")), "{other:?}");
+    }
+}
+
+/// Each tenant draws into the rect it is given, so a full-height drawer is drawn as the rect it stands in: the
+/// Terminal's size is read from that rect on every frame (`term_size_observed`), the Chat's foot sits at its bottom,
+/// the REPL's input follows its scrollback, and the Monitor's chart is planned from it.
+#[test]
+fn every_tenant_fills_the_rect_a_full_height_drawer_stands_in() {
+    use crate::ui::drawer::chat::ComposeText;
+    let text = ComposeText::Draft { lines: vec!["hello".into()], to: Some("to C1".into()) };
+    let lines: Vec<RtLine<'static>> = (0..100).map(|i| RtLine::from(format!("log{i:02}"))).collect();
+    for drawer in [DrawerContent::Repl, DrawerContent::Terminal, DrawerContent::Monitor, DrawerContent::Chat] {
+        let mut heights = Vec::new();
+        for full in [false, true] {
+            let frame = NavFrame { full, ..NavFrame::default() };
+            let compose = (drawer == DrawerContent::Chat).then_some(&text);
+            let (rows, _, _, window, cells, foot, ..) = paint_chrome_nav((200, 60), "ready", Vec::new(),
+                ("aa".into(), lines.clone(), 0, drawer), compose, frame);
+            heights.push(cells.height);
+            if !full { continue; }
+            assert_eq!((cells.y, cells.height, cells.x), (1, 58, 1), "{drawer:?}: the columns' whole height");
+            let last = cells.bottom() as usize;
+            match drawer {
+                DrawerContent::Repl => {
+                    assert_eq!(window.1 - window.0, 57, "the scrollback fills the taller rect");
+                    assert!(rows[last - 1].contains("julia> aa"), "{:?}", rows[last - 1]);
+                }
+                DrawerContent::Chat => {
+                    assert_eq!(foot, 2);
+                    assert!(rows[last - 2].contains("> hello") && rows[last - 1].contains("to C1"));
+                }
+                _ => {}
+            }
+        }
+        assert!(heights[1] > heights[0] * 2, "{drawer:?}: {heights:?}");
     }
 }
 

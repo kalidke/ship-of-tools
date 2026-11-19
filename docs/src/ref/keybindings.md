@@ -119,10 +119,10 @@ Normal text entry and terminal-application controls retain their own input handl
 | `layout.wide_preview` | `Alt++` | Hide or show the agent column to give the preview more room. |
 | `view.selfie` | `Primary+Shift+s` | Save a PNG of the whole frontend window. |
 | `strip.cycle_order` | `Primary+Shift+o` | Cycle the session strip's order: by state, alphabetical, by recent activity. |
-| `drawer.repl` | `Primary+j` | Show or hide the Julia REPL. Changing drawer views keeps Julia running. |
-| `drawer.terminal` | `Primary+t` | Show or hide the frontend-local terminal. |
-| `drawer.monitor` | `Primary+m` | Show or hide host resource charts. |
-| `drawer.chat` | `Primary+k` | Show or hide the project chat. |
+| `drawer.repl` | `Primary+j` | Show the Julia REPL, again for full height, again to hide it. Changing drawer views keeps Julia running. |
+| `drawer.terminal` | `Primary+t` | Show the frontend-local terminal, again for full height, again to hide it. |
+| `drawer.monitor` | `Primary+m` | Show host resource charts, again for full height, again to hide them. |
+| `drawer.chat` | `Primary+k` | Show the project chat, again for full height, again to hide it. |
 | `view.scroll_line_up` | `Alt+ArrowUp` | Scroll without moving the input cursor. |
 | `view.scroll_line_down` | `Alt+ArrowDown` | Scroll without moving the input cursor. |
 | `preview.table_left` | `h` / `ArrowLeft` | Move horizontally through a wide text table. |

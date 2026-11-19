@@ -72,6 +72,9 @@ struct HelpOrigin { focus: PaneFocus, drawer: DrawerContent, maximized: bool }
 
 pub(in crate::ui) struct LayoutHelp {
     drawer: DrawerContent,
+    /// The open drawer stands the height of the columns it spans. Window-wide like the drawer's height, never parked
+    /// with a row, and only ever true while the drawer is open (`set_drawer`, `focus_landed`).
+    full: bool,
     maximized: bool,
     wide_preview: bool,
     help: Help,
@@ -113,10 +116,21 @@ pub(in crate::ui) struct PeekOverlay { pub lines: Vec<String>, pub opacity: f32 
 
 impl LayoutHelp {
     pub(in crate::ui) fn new(drawer: DrawerContent, maximized: bool, start_help: bool, start_peek: bool) -> Self {
-        Self { drawer, maximized, wide_preview: false, help: Help::default(), help_origin: None,
+        Self { drawer, full: false, maximized, wide_preview: false, help: Help::default(), help_origin: None,
             help_start_pending: start_help, help_peek_start_pending: start_peek }
     }
     pub(in crate::ui) fn drawer(&self) -> DrawerContent { self.drawer }
+    #[cfg(test)]
+    pub(in crate::ui) fn full(&self) -> bool { self.full }
+    /// Every change of the drawer goes through here, so a drawer that closes leaves no full height behind.
+    fn set_drawer(&mut self, drawer: DrawerContent) {
+        self.drawer = drawer;
+        if !drawer.is_open() { self.full = false; }
+    }
+    /// A focus that lands on the nav or preview pane, which a full drawer hides, returns the drawer to its height.
+    pub(in crate::ui) fn focus_landed(&mut self, focus: PaneFocus) {
+        if matches!(focus, PaneFocus::NavTree | PaneFocus::Preview) { self.full = false; }
+    }
     /// Whether the chat is shown: the drawer is Chat, or Help whose saved origin is Chat. The origin survives the REPL
     /// opening over Help, but then the drawer is the REPL and the chat is not shown.
     pub(in crate::ui) fn chat_shown(&self) -> bool {
@@ -142,7 +156,7 @@ impl LayoutHelp {
             self.help.peek = None;
         }
         self.help_origin = None;
-        self.drawer = row;
+        self.set_drawer(row);
         if to == PaneFocus::Repl && !row.is_open() { to = PaneFocus::NavTree; }
         LayoutEffect { focus: (to != focus).then_some(to), monitor_sync: true, redraw: true }
     }
@@ -154,10 +168,17 @@ impl LayoutHelp {
     pub(in crate::ui) fn toggle_drawer(&mut self, tenant: DrawerContent, focus: PaneFocus) -> LayoutEffect {
         assert!(matches!(tenant, DrawerContent::Repl | DrawerContent::Terminal | DrawerContent::Monitor | DrawerContent::Chat));
         self.help_origin = None;
-        self.drawer = self.drawer.toggle(tenant);
+        self.set_drawer(self.drawer.toggle(tenant));
         LayoutEffect { focus: if self.drawer.is_open() { Some(PaneFocus::Repl) }
             else if focus == PaneFocus::Repl { Some(PaneFocus::NavTree) } else { None },
             monitor_sync: true, redraw: true }
+    }
+    /// A drawer's own key: closed opens it, open goes to full height, full closes it. Another tenant's key swaps and
+    /// keeps the height. Callers that only close a drawer use `toggle_drawer`, one step whatever the height.
+    pub(in crate::ui) fn cycle_drawer(&mut self, tenant: DrawerContent, focus: PaneFocus) -> LayoutEffect {
+        if self.drawer != tenant || self.full { return self.toggle_drawer(tenant, focus); }
+        self.full = true;
+        LayoutEffect { focus: Some(PaneFocus::Repl), redraw: true, ..Default::default() }
     }
     pub(in crate::ui) fn show_repl_automatically(&mut self, enabled: bool, base_has_drawer: bool) {
         if enabled && base_has_drawer && self.drawer != DrawerContent::Repl { self.drawer = DrawerContent::Repl; }
@@ -166,7 +187,7 @@ impl LayoutHelp {
         self.drawer = DrawerContent::Repl;
     }
     pub(in crate::ui) fn terminal_spawn_failed(&mut self) {
-        self.drawer = DrawerContent::Closed;
+        self.set_drawer(DrawerContent::Closed);
     }
     pub(in crate::ui) fn restore_available(&self, focus: PaneFocus, gates: LayoutGates) -> bool {
         self.maximized() || self.wide_preview() && gates.reading(focus)
@@ -196,6 +217,8 @@ impl LayoutHelp {
     }
     pub(in crate::ui) fn effective_preset(&self, base: &LayoutPreset) -> LayoutPreset {
         let mut preset = if self.wide_preview() { base.wide_preview() } else { base.clone() };
+        // Help is always at the drawer's height; the full height comes back with the drawer Help covered.
+        if self.full && self.drawer != DrawerContent::Help { preset = preset.full_drawer(); }
         if self.drawer == DrawerContent::Help && preset.drawer.is_none() { preset.drawer = Some(Slot::Repl); }
         preset
     }
@@ -217,7 +240,7 @@ impl LayoutHelp {
             self.drawer = origin.drawer;
             self.maximized = origin.maximized;
             origin.focus
-        } else { self.drawer = DrawerContent::Closed; PaneFocus::NavTree };
+        } else { self.set_drawer(DrawerContent::Closed); PaneFocus::NavTree };
         self.help.peek = None;
         LayoutEffect { focus: Some(focus), redraw: true, ..Default::default() }
     }

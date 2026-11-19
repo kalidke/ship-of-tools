@@ -726,11 +726,6 @@ owned by `docs/CLAUDE.md`.
 - **RELEASE-BUILD-SCROLL-FIXTURES** [note] Two native State fixtures, `a_preview_scroll_moves_over_frames_and_comes_to_rest`
   and `a_repl_wheel_tick_rolls_a_row_at_a_time`, failed 4 runs of 4 in a release build on a Linux host at the unchanged
   v0.7.1-rc.9 tree, and pass in the debug builds the gates run. Not chased; their timing may assume a debug build's pace.
-- **DRAWER-KEY-CYCLES** [feature] A drawer's key pressed again cycles the drawer: open, full height, closed. Asked
-  for by the maintainer for 0.7.3 (2026-11-19: "drawer cycles through open, full hiehgt, close on repeated eg
-  cntr-k"), which is the go-ahead. Today the key opens or closes (`LayoutHelp::toggle_drawer`), the height is one
-  setting for the window, and only `pane.maximize` enlarges a drawer. Not decided: whether full height fills the
-  drawer's own columns beside the agent pane or the whole window, and which drawers cycle.
 - **EDITOR-UP-DOWN-BY-PARAGRAPH** [person] In the preview's edit mode, Up and Down move the cursor by a whole line of
   the file (`EditBuffer::move_up` and `move_down` in `preview/editor/buffer.rs`, "one logical line"), so in a wrapped
   paragraph they leave it for the line before or after, and on the first or last line they go to the file's beginning
@@ -1277,6 +1272,8 @@ owned by `docs/CLAUDE.md`.
   probe; installer hooks (superseded, check); stop commands that match only what they stop.
 
 ## Closed
+
+- **DRAWER-KEY-CYCLES** (fe-ui) [feature] closed by the landing that fixes it, 2026-11-19, asked for by the maintainer for 0.7.3: a drawer's key (`Primary+k`, `t`, `j`, `m`) opens it at its own height, a second press makes it as tall as the columns it spans (`LayoutPreset::full_drawer`, the agent pane kept beside it), a third closes it; another drawer's key swaps and keeps the height; Help stays at the drawer's height. Built and pinned by unit tests; no person has used it, and the Monitor chart's and the Terminal's resize at full height rest on reading (`every_tenant_fills_the_rect_a_full_height_drawer_stands_in` pins the rect each tenant is given).
 
 - **WIN-LAUNCHER-SPACE-ARGV** (distribution) [person] closed by the landing that fixes it, 2026-11-19, seen in use by a person (the Windows launcher did not work for a user name with a space; what was seen and on which release was not recorded): Windows PowerShell 5.1's `Start-Process` joins an `-ArgumentList` array with spaces and quotes nothing, so `launch-sot.ps1` started the window with the pipe name of `--socket \\.\pipe\sot-First Last-local` as two arguments (`\\.\pipe\sot-First` and `Last-local`) and the window dialed `\\.\pipe\sot-First`, which nothing serves (this computer's daemon never reached; by reading, a relaunch's or a converge's handed-over lease never taken up, so the daemon ends its sessions at the handover bound), and started the splash with `-File C:\Users\First`, so no splash showed. Both now go through `Join-SotCommandLine` (`sot-hosts.ps1`, the quoting `Invoke-SotWithin` already used); test `scripts/tests/test-launcher-leases.ps1` case 18.
 
