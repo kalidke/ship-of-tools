@@ -2861,3 +2861,31 @@ the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the sa
     passed; landed 12:12 as c1012808a. The branch was created at that commit; the push started no run (a new branch
     at a commit `main` holds shows no changed path), so the run was dispatched by hand, 6 minutes to the deploy, and
     the live site served the 0.7.1 manual under `/stable/` at 12:20, with `/dev/` deployed from `main` beside it.
+  - The macOS 27 owner lookup, the same evening (PAGE-REDIRECT-UNREACHABLE-ON-A-MAC): a person on a Mac on macOS 27
+    with 0.7.1 could open no address from the window; Safari showed the redirect's `127.0.0.1` address and "the server
+    unexpectedly dropped the connection", while `open` typed in a session there opened the same site. Reported about
+    20:05. A probe test on a branch that is not kept (the window's real redirect, the runner's own Safari, a landing
+    page) showed the redirect working on hosted macOS 26.7 (20:56), and, once the person's macOS version was known
+    (21:07), failing on the hosted macOS 27.0.1 preview image through a throwaway workflow on that branch: there
+    `net.inet.tcp.pcblist_n` gave another program two headers and no connection record, while a held Safari
+    connection was named by a libproc walk on both systems (21:25). Design by a planner (21:27 to 21:49: the walk on
+    every macOS version, the table reader deleted, the rule the holder's effective uid), with three premises measured
+    on both systems before the build was trusted (Safari loads a loopback page that nothing refuses; the walk names
+    headless Chrome's and Firefox's network processes; no process of the account answers EPERM). Built in two commits
+    (21:50 to 21:58), reviewed adversarially with no blocker and seven fixes (to 22:22), fixed in a third commit
+    (22:27). Hosted proof on the three commits, runs 44462164289, 44462280629 and 44465364998: the child-process test
+    red on 27 and green on 26 before the change; after it, on 27.0.1 and 26.7.2, the 17 `peer_owner` tests green,
+    another account's client refused with a real other account, one lookup 0.18 to 0.25 ms, Safari through the
+    window's redirect in 2.2 s and 1.6 s. Scoped gate passed 22:30; landed 22:32 as 8a498478c, 43acf9224 and
+    b2d9d333b. About two and a half hours from the report, of which the first hour went to finding which Macs fail:
+    the hosted macOS tests ran on macOS 26 alone, and the person's version was asked for an hour in. A change that
+    opened the Slack setup's page without the redirect was built and reviewed in that hour and dropped on the
+    maintainer's word (the setup was not at fault). Unproven: a person's Mac on macOS 27.
+  - macOS 27 in the hosted tests, the same evening, on the maintainer's word in the session's pane ("yes add mac 27",
+    a workflow change): `rust.yml` runs every macOS job again on the `xcode-27` image (macOS 27, a preview), nine
+    build+test jobs and three publish-guard jobs, with the macOS-only steps keyed on the system and not on a label.
+    Run from a branch on 0.7.1's code (run 44459315829): three of the twelve macOS 27 jobs red, about thirty tests,
+    every one read a page served to another process through `serve_own`, and nothing else; with the owner lookup's
+    change merged in (run 44462416438): all 56 jobs green. Scoped gate passed 22:36; landed 22:37 as 828ea7d40, after
+    the lookup's change so that no commit of `main` carries a leg known red. The release gate's workflow still runs
+    macOS 26 alone.

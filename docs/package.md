@@ -233,7 +233,11 @@ attach client that keeps reading with input around an attach never sent blind or
 unit no longer restarting forever against another daemon; two parts no test reproduced stay open
 (RELAY-SOCKET-HANG's long wait, KEYS-DROPPED-WHILE-A-ROW-ATTACHES's window warning). rc.4 (2026-11-11) carried the
 preview that follows its row, the pane's copy and the chat drawer's look (rc.3 the drawer; rc.1 and rc.2 selection and
-drawing). `main` carries 0.7.2-dev: 0.7.1 and the two test corrections. rc.14 holds what a person's use of rc.13
+drawing). `main` carries 0.7.2-dev: 0.7.1, the two test corrections,
+and the macOS owner lookup by a walk of the account's processes (2026-11-18): on macOS 27 the kernel's TCP table shows
+a process no other process's connection, so 0.7.1 refuses every browser there and opens no page (seen by a person on a
+Mac; platform's guarantee 6 has the rule and its limits), and the hosted Rust tests now run on macOS 27 beside macOS
+26. No release carries that change yet, and no person's Mac has run it. rc.14 holds what a person's use of rc.13
 found (2026-11-17 and 18), each seen by him unless marked: the Chat drawer's foot explains how a post appears only until
 this computer's first post; a key's letter is written lowercase everywhere in the window; the refusal to draw shows in
 the preview's box only; words that follow a person's action stay on the status line 10 s against background writes (the
