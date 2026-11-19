@@ -682,12 +682,13 @@ fn the_live_prompt_has_julias_color_and_weight_focused_and_not() {
         ("       ".into(), None, false), ("b".into(), None, false)]);
 }
 
-/// The text of `source` before its test module and, when `from` is given, from the first line holding it.
+/// The text of `source` without its test modules and comment lines and, when `from` is given, from the first line
+/// holding it.
 fn production_text(source: &str, from: Option<&str>) -> String {
-    let source = source.split("#[cfg(test)]").next().unwrap();
+    let source = sot_platform::test_scan::without_test_modules(source);
     match from {
         Some(marker) => source[source.find(marker).unwrap()..].to_string(),
-        None => source.to_string(),
+        None => source,
     }
 }
 

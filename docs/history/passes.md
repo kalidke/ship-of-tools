@@ -2969,3 +2969,8 @@ the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the sa
     taken up next: in a layout with no preview column the post key no longer posts at all, where it posted the
     nav's selected file before; a picture opened there still shrinks the drawer to no purpose; and with the focus
     on the agent pane the border's words are not shown below about 120 columns on the laptop layout.
+  - The colors' source scan (REPL-COLOR-SCAN-CUTS-AT-A-TEST-ATTRIBUTE), a test-only fix by the landing session, 13:15
+    to 13:30. The colors' landing put a scan on `main` that the platform's scan check refuses, and `main` was red on
+    it for two landings: the scoped local gate runs a changed crate's own tests, and the platform's check reads every
+    crate's sources, so a frontend change was never run against it. Found in a hosted run of another branch. One
+    commit. Since then a landing that changes any Rust source also runs the platform's `test_scan` tests locally.
