@@ -222,7 +222,9 @@ impl ChromeView<'_> {
             );
         }
 
-        let border_status = (nav_frame_rect.width == 0).then(|| self.border_status(area, repl_rect)).flatten();
+        // What the border already says, left of the status: the drawer's title, or the focus hint's lead when it has the focus.
+        let lead = if repl_focus { format!(" {} · ", self.help_context.title()) } else { repl_title.clone() };
+        let border_status = (nav_frame_rect.width == 0).then(|| self.border_status(area, repl_rect, &lead)).flatten();
         self.paint_focus_hint(buf, nav_frame_rect, preview_rect, llm_rect, repl_rect, border_status.as_ref().map(|s| s.0), border_style, focus_title_style);
         if let Some((x, text)) = border_status {
             write_title(buf, x, repl_rect.y.saturating_sub(1), &text, repl_rect.x + repl_rect.width - x, Style::default().fg(Color::LightGreen));
@@ -462,20 +464,25 @@ impl ChromeView<'_> {
     }
 
     /// The status line on the drawer's top border, while the nav pane that carries it is not laid out (a full-height or
-    /// maximized drawer): where it starts and its text, in the half of the border nearest the clock. It is the first
+    /// maximized drawer): where it starts and its text, from the end of the drawer's title to the next pane's border. It is the first
     /// row of `status_spans` (the owner of how the words are wrapped), `…` after it when more rows follow, so a longer
-    /// word is cut here and shows whole at the drawer's height.
-    fn border_status(&self, area: ratatui::layout::Rect, repl_rect: ratatui::layout::Rect) -> Option<(u16, String)> {
+    /// word is cut here.
+    fn border_status(&self, area: ratatui::layout::Rect, repl_rect: ratatui::layout::Rect, lead: &str) -> Option<(u16, String)> {
         let ChromeView { status, clock_now, battery, .. } = *self;
         if status.is_empty() || repl_rect.width < 12 { return None; }
         let reserved = clock_label(clock_now, area.width).chars().count() as u16 + 2 + battery.as_deref().map_or(0, |b| b.chars().count() as u16 + 2);
         let end = (repl_rect.x + repl_rect.width).min((area.x + area.width).saturating_sub(reserved + 1));
-        let room = ((repl_rect.width - 2) / 2).min(end.saturating_sub(repl_rect.x + 1)) as usize;
-        let rows = status_spans(status, room.saturating_sub(2), 1);
-        let first: String = rows.first()?.spans.iter().map(|s| s.content.as_ref()).collect();
-        let text = format!(" {first}{} ", if rows.len() > 1 { " …" } else { "" });
-        let cells = unicode_width::UnicodeWidthStr::width(text.as_str()).min(room) as u16;
-        Some((end.saturating_sub(cells), text))
+        let lead_cells = unicode_width::UnicodeWidthStr::width(lead) as u16;
+        let room = end.saturating_sub(repl_rect.x + 1 + lead_cells + 1) as usize;
+        // The words only, with no `status: ` label, which is the nav's: the row is wrapped to leave the two cells of ` …` and
+        // the padding either side, so the marker always fits, and a room with no word to show shows nothing.
+        let label = unicode_width::UnicodeWidthStr::width("status: ");
+        let rows = status_spans(status, (room + label).saturating_sub(4), 1);
+        let words = rows.first().and_then(|r| r.spans.get(1))?.content.as_ref();
+        if words.is_empty() { return None; }
+        let text = format!(" {words}{} ", if rows.len() > 1 { " …" } else { "" });
+        let cells = unicode_width::UnicodeWidthStr::width(text.as_str());
+        (cells <= room).then(|| (end - cells as u16, text))
     }
 
     fn paint_clock(&self, buf: &mut ratatui::buffer::Buffer, area: ratatui::layout::Rect, idle_title_style: Style) {

@@ -45,7 +45,7 @@ changed; see [Keybindings](../ref/keybindings.md).
 | typing, `Ctrl+v` | Write the message at the panel's foot; a paste is added whole. |
 | `Shift+Enter` | Start a new line in the message. |
 | `Enter` | Post the message. With nothing typed in a project that has no channel, open the channel list. |
-| `Ctrl+u` | Post the file the preview pane shows, with the message as its comment. Where a full-height panel covers the preview, the first press shows it and posts nothing. |
+| `Ctrl+u` | Post the file the preview pane shows, with the message as its comment. Where the panel covers the preview (full height or maximized), the first press shows it and posts nothing. |
 | `ArrowUp`, `ArrowDown` | Mark a message (a highlight that the keys below act on): the first `ArrowUp` marks the newest, then each press marks the next older or newer one. |
 | `ArrowRight` | Open the marked message's thread. |
 | `ArrowLeft` | Close the open thread, while nothing is typed. |

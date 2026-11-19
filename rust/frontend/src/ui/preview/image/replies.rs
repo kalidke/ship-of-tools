@@ -105,7 +105,7 @@ impl State {
         match outcome {
             Outcome::Picture { w, h, png } if is_png_of(&png, (w, h)) => {
                 self.install_chat_picture("image/png".into(), png);
-                self.status.set("picture shown in the preview");
+                self.status.set(if self.preview_possible() { "picture shown in the preview" } else { "picture opened, but this layout has no preview pane to show it" });
             }
             // A PNG that is not of its named size; pixels, which the runner never takes for a picture ask (`Ask::accepts`).
             Outcome::Picture { .. } | Outcome::Drawn { .. } => self.status.set("picture not opened: the drawing's reply was not what was asked"),

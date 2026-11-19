@@ -26,11 +26,14 @@ press changes nothing, and the third closes the drawer. Another drawer's key swa
 the height. Help is always at the preset's height, over a full drawer too, and the full drawer is there when Help
 closes. A full drawer is drawn only while the keys are in the drawer or in a pane it leaves visible: moving to a pane it
 hides (Escape gives the navigation tree the keys) shows the drawer at the preset's height, and the next press of its
-key makes it full again. A full drawer covers the navigation pane, so the status line, which lives there, is shown on
-the drawer's top border instead; a long message is cut there with `…` and shows whole when the drawer is back at its
-height. Only something that appears in the preview brings the panes back: opening a picture from the chat (at the
-press or click, and again when the picture arrives), and `Ctrl+u`, whose first press in a full Chat shows the preview
-it would post and posts nothing. Copying, a refused post and other messages leave the drawer full.
+key makes it full again. A full drawer, and a maximized one, cover the navigation pane, so the status line, which lives there, is shown on the
+drawer's top border instead, after its title; a message too long for it is cut with `…`, and its end is lost once the
+message's ten seconds are over (until then the drawer at its own height shows it whole). Only something that appears in
+the preview brings the panes back, full height and maximize alike: opening a picture from the chat (at the press or
+click, and again when the picture arrives), and `Ctrl+u`, whose first press in a covered Chat shows the preview it would
+post and posts nothing. Copying, a refused post and other messages leave the drawer as it is. A layout with no preview
+pane at all has nowhere to show either: `Ctrl+u` then posts nothing and says so, and an opened picture says it has no
+pane to show it.
 
 This page walks each pane in turn — what it is, what fills it, and the keys
 that drive it — and links out to the guide behind it. For a first-session

@@ -945,21 +945,29 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   keeps it for the drawer Help covers, which is drawn at the normal height meanwhile. Maximize over a full drawer shows
   the drawer alone and restores to the full height; the wide-preview key over one hides the agent column, so the
   covered columns are all of them and the drawer fills the window. A full drawer covers the nav pane, which carries the
-  status line, so while the nav is not laid out (full height, maximize) the status line is drawn on the drawer's own top
-  border (`ChromeView::border_status`): the same words, in the one place that owns their holding and rewriting
-  (`StatusLine`), the first row of `status_spans` in the half of the border left of the next pane's, `…` after it when
-  more rows follow, so a long word is cut there and shows whole at the drawer's height; the focus hint gives it the
-  room. No word ends full height (a refused post's reason, a copy, the REPL's `Primary+l`, a notify). Only an answer
-  that is the preview does, decided by what the last frame drew (`State::reveal_preview`: `pane_rects.preview` empty),
-  not by the layout state: a chat picture's original asked for (`Primary+o`, a tile's release; `with_chat` sees the
-  request go out) and its arrival (`install_chat_picture`, so a drawer made full again before it came is
-  undone), through `LayoutHelp::end_full`, the same clear as any other return; and `Primary+u`, which at full height
-  with the preview covered shows it, says so and posts nothing, and posts at once where the preview is drawn (a layout
-  whose full height leaves it in view, or a dead step). A search of the key and click paths found no other that puts
-  something in the preview while the nav, which would move its cursor, is covered; what the daemon or an agent sends
-  (`show-result`, a preview command, a changed file) is nobody at this window asking and leaves the height. Limits: the
-  status line's words are cut on the border when long; the nav's prompt line and the leave and lease lines are not
-  drawn while the nav is covered; no person has used it; the Terminal's pty is
+  status line, so while the nav is not laid out (a full-height or a maximized drawer; a maximized agent pane or preview
+  still shows it nowhere) the status line is drawn on the drawer's own top border (`ChromeView::border_status`): the
+  same words, in the one place that owns their holding and rewriting (`StatusLine`), without the nav's `status: `
+  label, as the first row of `status_spans` from the end of the drawer's title (or the focus hint's lead) to the next
+  pane's border, the key hint giving way; the row is wrapped to leave ` …` room, which follows it when more rows do,
+  and a room with no word to show shows nothing. A message longer than that is cut there for good once its 10-second
+  hold ends and the connection line replaces it; before that, the drawer at its own height shows it whole in the nav.
+  No word ends full height (a refused post's reason, a copy, the REPL's `Primary+l`, a notify). Only an answer that is
+  the preview does, decided by what the last frame drew (`State::reveal_preview`: no preview pane drawn, while some
+  other pane is), not by the layout state: it ends whatever covers the preview, full height and maximize together
+  (`LayoutHelp::uncover_preview`; the next full height comes from the drawer's key). The callers: a chat picture's
+  original asked for (`Primary+o`, a tile's release; `with_chat` sees the request go out) and its arrival
+  (`install_chat_picture`, so a drawer made full or maximized again before it came is undone); and `Primary+u`, which
+  with the preview covered, at full height or maximized or both, shows it, says so and posts nothing, and posts at once
+  where the preview is drawn (a layout whose full height leaves it in view, a dead step). Where the layout has no
+  preview column at all (`State::preview_possible`) nothing can show it: `Primary+u` posts nothing and says there is
+  no preview pane, and an opened picture says it has nowhere to show (`settle_chat_picture`). While Help is over the
+  drawer the Chat's keys are not live, so none of this is reached. A search of the key and click paths found no other
+  that puts something in the preview while the nav, which would move its cursor, is covered; what the daemon or an
+  agent sends (`show-result`, a preview command, a changed file) is nobody at this window asking and leaves the height.
+  Limits: a preview column too narrow to lay out (about 1 percent) still gets "it shows now" and nothing shows, and
+  two keys within one frame read the layout of the frame before; the nav's prompt line and the leave and lease lines
+  are not drawn while the nav is covered; no person has used it; the Terminal's pty is
   told the rows once each way (its width is unchanged), the REPL and Chat lay out from the rect each frame and the
   Monitor chart is planned from it, which the view test pins for the rect and reading covers for the rest. Pinned by
   `a_drawers_own_key_cycles_closed_open_full_closed`,
@@ -970,12 +978,14 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   `the_drawers_key_meets_the_height_that_is_shown_not_a_stale_flag`, `full_height_waits_for_a_column_left_of_the_agent_wide_enough_to_lay_out`,
   `no_key_path_rests_the_focus_on_a_pane_that_is_not_drawn` (Help then a spatial move then a row switch or a run,
   a reveal of the agent, the wide-preview key), `help_and_maximize_over_a_full_drawer`,
-  `an_ended_full_height_is_at_the_drawers_height_and_its_key_goes_full_again`,
+  `an_uncovered_preview_ends_the_full_height_and_maximize_and_the_key_goes_full_again`,
   `chrome::view::tests::{every_tenant_fills_the_rect_a_full_height_drawer_stands_in,
-  the_status_line_is_on_the_full_drawers_border_and_in_the_nav_otherwise, a_long_status_is_cut_on_the_border_and_whole_in_the_nav}`
-  and the native State fixture `a_full_height_drawer_shrinks_only_for_an_answer_that_is_the_preview` (a refused post, a
-  copy, a notify and the REPL's `Primary+l` leave it; `Primary+o`, the picture's arrival after the drawer went full
-  again, and `Primary+u` end it; a drawn preview is not said covered).
+  the_status_line_is_on_the_full_drawers_border_and_in_the_nav_otherwise, a_long_status_is_cut_on_the_border_and_whole_in_the_nav,
+  the_borders_words_fill_their_room_and_keep_their_marker}` (widths 46 to 200) and the native State fixture
+  `a_full_height_drawer_shrinks_only_for_an_answer_that_is_the_preview` (a refused post, a copy, a notify and the REPL's
+  `Primary+l` leave the height; `Primary+o`, the picture's arrival after the drawer went full again, and `Primary+u`
+  end it, in a full and in a maximized drawer; a drawn preview is not said covered; a layout with no preview pane says
+  so).
 - Maximize follows focus, yields to a leave line without clearing, and leaves spatial navigation on the preset.
   Context-admitted restore peels maximize before gated wide restoration. Wide enable bounces only Llm; admitted
   agent reveal clears wide before focus/paste without dismissing prompts. Help resets browsing, saves only the first

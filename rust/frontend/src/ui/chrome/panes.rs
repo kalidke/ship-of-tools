@@ -155,16 +155,26 @@ impl State {
         self.focus_prompts.set_focus(to);
     }
 
-    /// Whether the last frame drew no preview pane (a full-height drawer, or maximize, covers it).
+    /// Whether the last frame drew no preview pane (a full-height drawer, or maximize, covers it). Before a frame has
+    /// drawn any pane nothing is known, and nothing is covered.
     pub(in crate::ui) fn preview_covered(&self) -> bool {
-        self.pane_rects.preview.width == 0 || self.pane_rects.preview.height == 0
+        let drawn = |r: ratatui::layout::Rect| r.width > 0 && r.height > 0;
+        let p = self.pane_rects;
+        !drawn(p.preview) && [p.nav, p.llm, p.repl].into_iter().any(drawn)
     }
 
     /// Something is about to be shown in the preview because a person asked: a full-height drawer that covers it
-    /// returns to its height. Decided by what is drawn, not by the layout state, so a layout whose full height leaves
+    /// returns to its height or leaves maximize. Decided by what is drawn, not by the layout state, so a layout whose full height leaves
     /// the preview in view keeps it. Words never come here: the status line is on the drawer's border.
     pub(in crate::ui) fn reveal_preview(&mut self) {
-        if self.preview_covered() { self.layout_help.end_full(); }
+        if self.preview_covered() { self.layout_help.uncover_preview(); }
+    }
+
+    /// Whether the layout has a preview pane to show: a preset with no preview column (the portrait preset has one)
+    /// can show nothing there, whatever ends covering it.
+    pub(in crate::ui) fn preview_possible(&self) -> bool {
+        let base = self.settings.resolve_preset(self.monitor_aspect);
+        self.layout_help.effective_preset(base).columns.iter().any(|c| c.slot == crate::ui::persist::settings::Slot::Preview)
     }
 
     pub(in crate::ui) fn apply_prompt_effect(&mut self, effect: PromptEffect) {

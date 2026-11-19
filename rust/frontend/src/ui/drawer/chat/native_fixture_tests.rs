@@ -596,6 +596,33 @@ impl State {
         Ok(())
     }
 
+    /// `Primary+o`, then the window's loop until the chat's tick sends the original's request, which is held back: the
+    /// thumbnails asked meanwhile are answered, so the host has room for it.
+    fn witness_open(&mut self, host: &HostKey, events: &Sender<(HostKey, IncomingEvt)>, sent: &mut Requests, daemon: &mut Daemon) -> Result<OutgoingReq> {
+        self.witness_primary("o", Some(Action::ChatOpenImage))?;
+        for _ in 0..100 {
+            self.drain_events();
+            while let Ok(req) = sent.try_recv() {
+                if matches!(&req, OutgoingReq::ChatFile { req } if req.variant == sot_protocol::ops::ChatFileVariant::Original) {
+                    return Ok(req);
+                } else if let Some(evt) = daemon.answer(req) {
+                    events.send((host.clone(), IncomingEvt::Chat(evt))).map_err(|_| anyhow::anyhow!("the fixture's event channel closed"))?;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        anyhow::bail!("the picture's original was never asked for: {:?}", self.status.text())
+    }
+
+    /// The window maximized on the focused pane, as `Alt+=` does, and a frame drawing it.
+    fn witness_maximize(&mut self, frames: &mut Vec<f64>, newest: &Ts) -> Result<()> {
+        let (context, gates) = (self.help_context(), self.layout_gates());
+        self.layout_help.layout_action(Some(Action::MaximizePane), &context, self.focus_prompts.focus(), gates);
+        self.witness_frame(frames, newest, "maximized")?;
+        anyhow::ensure!(self.layout_help.maximized() && self.preview_covered(), "the window is not maximized on the drawer");
+        Ok(())
+    }
+
     fn full_drawer_shown(&self) -> bool {
         self.layout_help.full_shown(self.settings.resolve_preset(self.monitor_aspect), self.focus_prompts.focus())
     }
@@ -637,22 +664,7 @@ impl State {
         self.witness_frame(&mut frames, &newest, "marked")?;
         // The thumbnails the frames asked for are answered, so the host has room for the original.
         self.witness_pump(events, sent, &mut daemon)?;
-        self.witness_primary("o", Some(Action::ChatOpenImage))?;
-        // The chat's tick sends the original's request, as the next turns of the window's loop do.
-        let mut original = None;
-        for _ in 0..100 {
-            self.drain_events();
-            while let Ok(req) = sent.try_recv() {
-                if matches!(&req, OutgoingReq::ChatFile { req } if req.variant == sot_protocol::ops::ChatFileVariant::Original) {
-                    original = Some(req);
-                } else if let Some(evt) = daemon.answer(req) {
-                    events.send((host.clone(), IncomingEvt::Chat(evt))).map_err(|_| anyhow::anyhow!("the fixture's event channel closed"))?;
-                }
-            }
-            if original.is_some() { break; }
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
-        let original = original.ok_or_else(|| anyhow::anyhow!("the picture's original was never asked for: {:?}", self.status.text()))?;
+        let original = self.witness_open(host, events, sent, &mut daemon)?;
         anyhow::ensure!(!self.full_drawer_shown(), "a picture's request left the chat at full height");
         // The drawer goes full again before the picture arrives: its arrival ends the full height, and the picture is drawn.
         self.witness_full(DrawerContent::Chat, &mut frames, &newest)?;
@@ -670,6 +682,7 @@ impl State {
         let posts = |sent: &mut Requests| std::iter::from_fn(|| sent.try_recv().ok()).filter(|r| matches!(r, OutgoingReq::ChatPostFile { .. })).count();
         anyhow::ensure!(posts(sent) == 0 && !self.full_drawer_shown() && self.status.text().contains("covered"),
             "Primary+u at full height said {:?} (full: {})", self.status.text(), self.full_drawer_shown());
+        self.witness_frame(&mut frames, &newest, "shown")?;
         self.witness_primary("u", Some(Action::ChatPostFile))?;
         anyhow::ensure!(self.status.text().contains("a picture opened from the chat"), "the second press said {:?}", self.status.text());
         // Where the preview is drawn beside the full drawer, the first press does what the key does.
@@ -677,6 +690,47 @@ impl State {
         self.pane_rects.preview = ratatui::layout::Rect::new(1, 1, 10, 10);
         self.witness_primary("u", Some(Action::ChatPostFile))?;
         anyhow::ensure!(!self.status.text().contains("covered") && self.full_drawer_shown(), "a drawn preview was said covered: {:?}", self.status.text());
+        // A maximized drawer covers the preview too, at full height or at its own: `Primary+u` shows it (the window whole
+        // again), says so, and posts nothing; the next press goes on as it does; a picture asked for ends the maximize.
+        let posts = |sent: &mut Requests| std::iter::from_fn(|| sent.try_recv().ok()).filter(|r| matches!(r, OutgoingReq::ChatPostFile { .. })).count();
+        for full in [true, false] {
+            if full { self.witness_full(DrawerContent::Chat, &mut frames, &newest)?; } else { self.layout_help.uncover_preview(); }
+            self.witness_maximize(&mut frames, &newest)?;
+            while sent.try_recv().is_ok() {}
+            self.witness_primary("u", Some(Action::ChatPostFile))?;
+            self.witness_frame(&mut frames, &newest, "shown")?;
+            anyhow::ensure!(posts(sent) == 0 && !self.layout_help.maximized() && !self.full_drawer_shown() && !self.preview_covered() && self.status.text().contains("covered"),
+                "Primary+u in the maximized chat (full {full}) said {:?}, maximized {}, covered {}", self.status.text(), self.layout_help.maximized(), self.preview_covered());
+        }
+        self.witness_full(DrawerContent::Chat, &mut frames, &newest)?;
+        self.witness_maximize(&mut frames, &newest)?;
+        let again = self.witness_open(host, events, sent, &mut daemon)?;
+        anyhow::ensure!(!self.layout_help.maximized() && !self.full_drawer_shown(), "a picture's request left the chat maximized");
+        if let Some(evt) = daemon.answer(again) {
+            events.send((host.clone(), IncomingEvt::Chat(evt))).map_err(|_| anyhow::anyhow!("the fixture's event channel closed"))?;
+        }
+        self.witness_pump(events, sent, &mut daemon)?;
+        self.witness_settle(&mut frames, &newest, "the second picture")?;
+        // A layout with no preview pane shows nothing, whatever ends covering it: `Primary+u` posts nothing and says so, and
+        // a picture opened says it has nowhere to show.
+        let saved = (self.settings.ultrawide.clone(), self.settings.laptop.clone(), self.settings.portrait.clone());
+        for preset in [&mut self.settings.ultrawide, &mut self.settings.laptop, &mut self.settings.portrait] {
+            preset.columns.retain(|c| c.slot != crate::ui::persist::settings::Slot::Preview);
+        }
+        self.witness_frame(&mut frames, &newest, "no preview column")?;
+        anyhow::ensure!(self.preview_covered() && !self.preview_possible(), "the preset still has a preview pane");
+        while sent.try_recv().is_ok() {}
+        self.witness_primary("u", Some(Action::ChatPostFile))?;
+        anyhow::ensure!(posts(sent) == 0 && self.status.text().starts_with("not posted: this layout has no preview pane"), "with no preview pane: {:?}", self.status.text());
+        let png = {
+            let mut bytes = std::io::Cursor::new(Vec::new());
+            image::RgbaImage::from_pixel(8, 6, image::Rgba([1, 2, 3, 255])).write_to(&mut bytes, image::ImageFormat::Png)?;
+            bytes.into_inner()
+        };
+        self.settle_chat_picture(crate::ui::preview::image::svg_run::Outcome::Picture { w: 8, h: 6, png });
+        anyhow::ensure!(self.status.text().contains("no preview pane to show it"), "a picture opened with no preview pane: {:?}", self.status.text());
+        (self.settings.ultrawide, self.settings.laptop, self.settings.portrait) = saved;
+        self.witness_frame(&mut frames, &newest, "preview column back")?;
         // The REPL's `Primary+l`, the drawer swapped to the REPL keeping its height.
         self.witness_full(DrawerContent::Repl, &mut frames, &newest)?;
         let effects = self.repl_model.clear_scrollback();

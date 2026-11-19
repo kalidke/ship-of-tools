@@ -122,6 +122,8 @@ struct NavFrame<'a> {
     body: Option<&'a crate::ui::drawer::chat::Body>,
     /// The drawer at full height instead of its own.
     full: bool,
+    /// The pane that has the focus; the nav's by default.
+    focus: Option<PaneFocus>,
     /// The REPL drawer has the focus, and is in pkg mode.
     repl_focused: bool,
     repl_pkg: bool,
@@ -453,10 +455,10 @@ fn the_status_line_is_on_the_full_drawers_border_and_in_the_nav_otherwise() {
             let (rows, _, _, _, cells, ..) = paint_chrome_nav((200, 60), "not posted: the post was refused", Vec::new(),
                 (String::new(), Vec::new(), 0, drawer), None, frame);
             let border = &rows[cells.y as usize - 1];
-            assert_eq!(border.contains("status: not posted: the post was refused"), full, "{drawer:?} full={full}: {border:?}");
-            assert!(rows.iter().any(|r| r.contains("status: not posted")), "{drawer:?} full={full}: the words are on screen");
+            assert_eq!(border.contains("not posted: the post was refused"), full, "{drawer:?} full={full}: {border:?}");
+            assert!(full || rows.iter().any(|r| r.contains("status: not posted")), "{drawer:?}: the words are in the nav at the drawer's height");
             if full {
-                let (at, end) = (border.find("status:").unwrap(), border.find('┬').unwrap());
+                let (at, end) = (border.find("not posted").unwrap(), border.find('┬').unwrap());
                 assert!(border[..at].contains(" ─") && at < end, "the words are right of the drawer's title and inside its border: {border:?}");
             }
         }
@@ -474,12 +476,42 @@ fn a_long_status_is_cut_on_the_border_and_whole_in_the_nav() {
         (rows[cells.y as usize - 1].clone(), rows)
     };
     let (border, _) = paint(true);
-    let at = border.find("status:").unwrap();
+    let at = border.find("not posted").unwrap();
     let shown: String = border[at..].chars().take_while(|c| *c != '┬').collect();
-    assert!(shown.contains('…') && shown.chars().count() <= 60, "{shown:?}");
+    assert!(shown.contains('…') && shown.chars().count() <= 100, "{shown:?}");
     assert!(!border.contains("many words the channel refused this post for a reason with many words the channel"), "{border:?}");
     let (_, rows) = paint(false);
     assert!(rows.iter().filter(|r| r.contains("many words")).count() >= 2, "the nav wraps them whole");
+}
+
+/// The border gives the words the room from the end of the drawer's title to the next pane's border, and the marker always
+/// fits: a cut message ends in ` …` (never mid-word with none), a room with no word to show shows nothing, and at 200
+/// columns a chat refusal fits whole.
+#[test]
+fn the_borders_words_fill_their_room_and_keep_their_marker() {
+    let refusal = "not posted: you are not in that channel in Slack; join it there first";
+    let border = |width: u16, words: &str, focus: PaneFocus| {
+        let frame = NavFrame { full: true, focus: Some(focus), ..NavFrame::default() };
+        let (rows, _, _, _, cells, ..) = paint_chrome_nav((width, 60), words, Vec::new(), (String::new(), Vec::new(), 0, DrawerContent::Chat), None, frame);
+        rows[cells.y as usize - 1].clone()
+    };
+    for focus in [PaneFocus::Repl, PaneFocus::NavTree] {
+        assert!(border(200, refusal, focus).contains(refusal), "200 columns, {focus:?}: {}", border(200, refusal, focus));
+        for width in [46, 60, 80, 100, 120, 200] {
+            for (words, start) in [("copied chat text", "copi"), (refusal, "not p")] {
+                let b = border(width, words, focus);
+                let b = b.split('┬').next().unwrap().to_string();
+                if b.contains(start) {
+                    assert!(b.contains(words) || b.trim_end().ends_with('…'), "{width} columns, {focus:?}: cut with no marker: {b}");
+                }
+            }
+        }
+    }
+    for width in [46, 60] {
+        let b = border(width, "copied chat text", PaneFocus::Repl);
+        assert!(!b.contains("copi") || b.contains("copied chat text") || b.contains('…'), "{width} columns: {b}");
+    }
+    assert!(!border(46, "copied chat text", PaneFocus::Repl).contains("copi"), "46 columns: no room for a word: {}", border(46, "copied chat text", PaneFocus::Repl));
 }
 
 #[test]
