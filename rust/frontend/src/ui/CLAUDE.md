@@ -944,7 +944,22 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   full drawer never comes back without its key; `set_drawer` drops it when the drawer closes, by any path, and Help
   keeps it for the drawer Help covers, which is drawn at the normal height meanwhile. Maximize over a full drawer shows
   the drawer alone and restores to the full height; the wide-preview key over one hides the agent column, so the
-  covered columns are all of them and the drawer fills the window. Limits: no person has used it; the Terminal's pty is
+  covered columns are all of them and the drawer fills the window. A full drawer covers the nav pane, which carries the
+  status line, so while the nav is not laid out (full height, maximize) the status line is drawn on the drawer's own top
+  border (`ChromeView::border_status`): the same words, in the one place that owns their holding and rewriting
+  (`StatusLine`), the first row of `status_spans` in the half of the border left of the next pane's, `…` after it when
+  more rows follow, so a long word is cut there and shows whole at the drawer's height; the focus hint gives it the
+  room. No word ends full height (a refused post's reason, a copy, the REPL's `Primary+l`, a notify). Only an answer
+  that is the preview does, decided by what the last frame drew (`State::reveal_preview`: `pane_rects.preview` empty),
+  not by the layout state: a chat picture's original asked for (`Primary+o`, a tile's release; `with_chat` sees the
+  request go out) and its arrival (`install_chat_picture`, so a drawer made full again before it came is
+  undone), through `LayoutHelp::end_full`, the same clear as any other return; and `Primary+u`, which at full height
+  with the preview covered shows it, says so and posts nothing, and posts at once where the preview is drawn (a layout
+  whose full height leaves it in view, or a dead step). A search of the key and click paths found no other that puts
+  something in the preview while the nav, which would move its cursor, is covered; what the daemon or an agent sends
+  (`show-result`, a preview command, a changed file) is nobody at this window asking and leaves the height. Limits: the
+  status line's words are cut on the border when long; the nav's prompt line and the leave and lease lines are not
+  drawn while the nav is covered; no person has used it; the Terminal's pty is
   told the rows once each way (its width is unchanged), the REPL and Chat lay out from the rect each frame and the
   Monitor chart is planned from it, which the view test pins for the rect and reading covers for the rest. Pinned by
   `a_drawers_own_key_cycles_closed_open_full_closed`,
@@ -954,8 +969,13 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   `every_close_ends_the_full_height_and_a_toggle_closes_in_one_step`, `full_height_is_shown_only_while_the_focus_is_drawn`,
   `the_drawers_key_meets_the_height_that_is_shown_not_a_stale_flag`, `full_height_waits_for_a_column_left_of_the_agent_wide_enough_to_lay_out`,
   `no_key_path_rests_the_focus_on_a_pane_that_is_not_drawn` (Help then a spatial move then a row switch or a run,
-  a reveal of the agent, the wide-preview key), `help_and_maximize_over_a_full_drawer` and
-  `chrome::view::tests::every_tenant_fills_the_rect_a_full_height_drawer_stands_in`.
+  a reveal of the agent, the wide-preview key), `help_and_maximize_over_a_full_drawer`,
+  `an_ended_full_height_is_at_the_drawers_height_and_its_key_goes_full_again`,
+  `chrome::view::tests::{every_tenant_fills_the_rect_a_full_height_drawer_stands_in,
+  the_status_line_is_on_the_full_drawers_border_and_in_the_nav_otherwise, a_long_status_is_cut_on_the_border_and_whole_in_the_nav}`
+  and the native State fixture `a_full_height_drawer_shrinks_only_for_an_answer_that_is_the_preview` (a refused post, a
+  copy, a notify and the REPL's `Primary+l` leave it; `Primary+o`, the picture's arrival after the drawer went full
+  again, and `Primary+u` end it; a drawn preview is not said covered).
 - Maximize follows focus, yields to a leave line without clearing, and leaves spatial navigation on the preset.
   Context-admitted restore peels maximize before gated wide restoration. Wide enable bounces only Llm; admitted
   agent reveal clears wide before focus/paste without dismissing prompts. Help resets browsing, saves only the first

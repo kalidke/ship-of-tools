@@ -60,6 +60,10 @@ impl State {
     pub(in crate::ui) fn with_chat(&mut self, f: impl FnOnce(&mut ChatDrawer, Instant) -> Vec<Out>) {
         for (host, req) in f(&mut self.chat, Instant::now()) {
             let unsent = drawer::never_written(&req);
+            // A picture's original asked for: it will be shown in the preview, which a full-height drawer covers.
+            if matches!(&req, OutgoingReq::ChatFile { req } if req.variant == sot_protocol::ops::ChatFileVariant::Original) {
+                self.reveal_preview();
+            }
             if let Err(e) = self.send_to(&host, req) {
                 tracing::warn!(error = %e, %host, "drop chat request — channel closed");
                 // A request the channel refused was never written: its owner reads it as refused, not as waiting for a reply.
@@ -130,6 +134,15 @@ impl State {
     /// `chat.post_file`: posts the file the preview shows, the row the chat shows being the preview's (both follow the selected
     /// row), with the draft as its comment; a refusal goes to the status line.
     pub(in crate::ui) fn send_chat_file(&mut self) {
+        // The file posted is the previewed one: where a full-height drawer covers it, this press shows it and posts nothing.
+        let full = self.layout_help.full_shown(self.settings.resolve_preset(self.monitor_aspect), self.focus_prompts.focus());
+        if full && self.preview_covered() {
+            let key = self.bindings.first_label(Action::ChatPostFile);
+            self.status.set(format!("the preview was covered: it shows now; press {key} again to post the file it shows"));
+            self.reveal_preview();
+            self.window.request_redraw();
+            return;
+        }
         let row = wanted_row(self.layout_help.chat_shown(), || self.active_result_workspace());
         let node = self.preview_source.node_id().map(str::to_owned);
         let key = self.bindings.first_label(Action::ChatPostFile);

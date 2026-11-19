@@ -20,11 +20,17 @@ pressed again, the drawer grows to the full height of the columns above it and h
 changes size: with the default layouts the navigation tree and the preview are hidden and the agent pane stays beside
 the drawer, and with a layout that has no agent column everything is hidden. A layout that puts the agent column first
 has no full height (it would cover the agent pane), and there the key goes from open to closed. Pressed a third time, the
-drawer closes, and the next open is at the preset's height again. Another drawer's key swaps that drawer in and keeps
+drawer closes, and the next open is at the preset's height again. A layout whose column just left of the agent is
+under 2 cells wide (a very narrow window, or a column set to about 1 percent) has no full height either: the second
+press changes nothing, and the third closes the drawer. Another drawer's key swaps that drawer in and keeps
 the height. Help is always at the preset's height, over a full drawer too, and the full drawer is there when Help
 closes. A full drawer is drawn only while the keys are in the drawer or in a pane it leaves visible: moving to a pane it
 hides (Escape gives the navigation tree the keys) shows the drawer at the preset's height, and the next press of its
-key makes it full again.
+key makes it full again. A full drawer covers the navigation pane, so the status line, which lives there, is shown on
+the drawer's top border instead; a long message is cut there with `…` and shows whole when the drawer is back at its
+height. Only something that appears in the preview brings the panes back: opening a picture from the chat (at the
+press or click, and again when the picture arrives), and `Ctrl+u`, whose first press in a full Chat shows the preview
+it would post and posts nothing. Copying, a refused post and other messages leave the drawer full.
 
 This page walks each pane in turn — what it is, what fills it, and the keys
 that drive it — and links out to the guide behind it. For a first-session

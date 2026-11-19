@@ -222,7 +222,11 @@ impl ChromeView<'_> {
             );
         }
 
-        self.paint_focus_hint(buf, nav_frame_rect, preview_rect, llm_rect, repl_rect, border_style, focus_title_style);
+        let border_status = (nav_frame_rect.width == 0).then(|| self.border_status(area, repl_rect)).flatten();
+        self.paint_focus_hint(buf, nav_frame_rect, preview_rect, llm_rect, repl_rect, border_status.as_ref().map(|s| s.0), border_style, focus_title_style);
+        if let Some((x, text)) = border_status {
+            write_title(buf, x, repl_rect.y.saturating_sub(1), &text, repl_rect.x + repl_rect.width - x, Style::default().fg(Color::LightGreen));
+        }
 
         self.paint_clock(buf, area, idle_title_style);
 
@@ -431,6 +435,7 @@ impl ChromeView<'_> {
         preview_rect: ratatui::layout::Rect,
         llm_rect: ratatui::layout::Rect,
         repl_rect: ratatui::layout::Rect,
+        status_x: Option<u16>,
         border_style: Style,
         focus_title_style: Style,
     ) {
@@ -440,7 +445,9 @@ impl ChromeView<'_> {
             PaneFocus::Llm => llm_rect, PaneFocus::Repl => repl_rect,
         };
         if focused_rect.width > 2 {
-            let width = focused_rect.width.saturating_sub(2) as usize;
+            // The drawer's status line, when it carries one, takes the right of the border from the hint.
+            let taken = status_x.filter(|_| focus == PaneFocus::Repl).map_or(0, |x| (focused_rect.x + focused_rect.width).saturating_sub(x));
+            let width = focused_rect.width.saturating_sub(2).saturating_sub(taken) as usize;
             let title = format!(" {} · ", help_context.title());
             let title_width = unicode_width::UnicodeWidthStr::width(title.as_str());
             let hint = help::border(&help_context, help_bindings, width.saturating_sub(title_width));
@@ -452,6 +459,23 @@ impl ChromeView<'_> {
             write_title(buf, focused_rect.x + 1, focused_rect.y.saturating_sub(1),
                 &title, width as u16, focus_title_style);
         }
+    }
+
+    /// The status line on the drawer's top border, while the nav pane that carries it is not laid out (a full-height or
+    /// maximized drawer): where it starts and its text, in the half of the border nearest the clock. It is the first
+    /// row of `status_spans` (the owner of how the words are wrapped), `…` after it when more rows follow, so a longer
+    /// word is cut here and shows whole at the drawer's height.
+    fn border_status(&self, area: ratatui::layout::Rect, repl_rect: ratatui::layout::Rect) -> Option<(u16, String)> {
+        let ChromeView { status, clock_now, battery, .. } = *self;
+        if status.is_empty() || repl_rect.width < 12 { return None; }
+        let reserved = clock_label(clock_now, area.width).chars().count() as u16 + 2 + battery.as_deref().map_or(0, |b| b.chars().count() as u16 + 2);
+        let end = (repl_rect.x + repl_rect.width).min((area.x + area.width).saturating_sub(reserved + 1));
+        let room = ((repl_rect.width - 2) / 2).min(end.saturating_sub(repl_rect.x + 1)) as usize;
+        let rows = status_spans(status, room.saturating_sub(2), 1);
+        let first: String = rows.first()?.spans.iter().map(|s| s.content.as_ref()).collect();
+        let text = format!(" {first}{} ", if rows.len() > 1 { " …" } else { "" });
+        let cells = unicode_width::UnicodeWidthStr::width(text.as_str()).min(room) as u16;
+        Some((end.saturating_sub(cells), text))
     }
 
     fn paint_clock(&self, buf: &mut ratatui::buffer::Buffer, area: ratatui::layout::Rect, idle_title_style: Style) {

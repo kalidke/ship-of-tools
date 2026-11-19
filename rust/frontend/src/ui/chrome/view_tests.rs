@@ -443,6 +443,45 @@ fn every_tenant_fills_the_rect_a_full_height_drawer_stands_in() {
     }
 }
 
+/// The nav pane carries the status line; where the drawer covers the nav (full height) the same words are on the drawer's
+/// top border, right of its title, and at the drawer's own height they are in the nav alone.
+#[test]
+fn the_status_line_is_on_the_full_drawers_border_and_in_the_nav_otherwise() {
+    for drawer in [DrawerContent::Repl, DrawerContent::Terminal, DrawerContent::Monitor, DrawerContent::Chat] {
+        for full in [false, true] {
+            let frame = NavFrame { full, ..NavFrame::default() };
+            let (rows, _, _, _, cells, ..) = paint_chrome_nav((200, 60), "not posted: the post was refused", Vec::new(),
+                (String::new(), Vec::new(), 0, drawer), None, frame);
+            let border = &rows[cells.y as usize - 1];
+            assert_eq!(border.contains("status: not posted: the post was refused"), full, "{drawer:?} full={full}: {border:?}");
+            assert!(rows.iter().any(|r| r.contains("status: not posted")), "{drawer:?} full={full}: the words are on screen");
+            if full {
+                let (at, end) = (border.find("status:").unwrap(), border.find('┬').unwrap());
+                assert!(border[..at].contains(" ─") && at < end, "the words are right of the drawer's title and inside its border: {border:?}");
+            }
+        }
+    }
+}
+
+/// Words longer than the border's half are cut after the first row of the status line's own wrapping, with `…`, and
+/// never run into the next pane's border; the nav shows them whole at the drawer's height.
+#[test]
+fn a_long_status_is_cut_on_the_border_and_whole_in_the_nav() {
+    let words = "not posted: ".to_string() + &"the channel refused this post for a reason with many words ".repeat(4);
+    let paint = |full| {
+        let frame = NavFrame { full, ..NavFrame::default() };
+        let (rows, _, _, _, cells, ..) = paint_chrome_nav((200, 60), &words, Vec::new(), (String::new(), Vec::new(), 0, DrawerContent::Chat), None, frame);
+        (rows[cells.y as usize - 1].clone(), rows)
+    };
+    let (border, _) = paint(true);
+    let at = border.find("status:").unwrap();
+    let shown: String = border[at..].chars().take_while(|c| *c != '┬').collect();
+    assert!(shown.contains('…') && shown.chars().count() <= 60, "{shown:?}");
+    assert!(!border.contains("many words the channel refused this post for a reason with many words the channel"), "{border:?}");
+    let (_, rows) = paint(false);
+    assert!(rows.iter().filter(|r| r.contains("many words")).count() >= 2, "the nav wraps them whole");
+}
+
 #[test]
 fn the_chat_drawer_title_is_the_one_it_is_given_and_no_other_drawer_shows_it() {
     let titled = |drawer| {

@@ -715,6 +715,7 @@ owned by `docs/CLAUDE.md`.
 
 ## fe-ui
 
+
 - **REPL-DRAWER-CLIPS-LONG-LINES** [note] The REPL drawer cuts a line longer than the pane at the pane's edge and does
   not wrap it: typed code, output, a value and an error's message alike, so the end of a long error cannot be read in
   the drawer. Found by the review of REPL-DRAWER-COLORS-NOT-JULIAS, whose `ERROR: ` label takes 7 more cells from an
@@ -728,15 +729,6 @@ owned by `docs/CLAUDE.md`.
   the drawer reads the color escapes into cell colors through the map the Terminal drawer uses.
 - **REPL-DRAWER-NO-SYNTAX-COLORS** [feature] Julia 1.12 and later color typed code in the REPL by its syntax; the REPL
   drawer shows typed code in one color. Put to the maintainer on 2026-11-19 as a choice; no go-ahead yet.
-- **FULL-DRAWER-HIDES-ITS-ANSWERS** [note] A drawer at full height (DRAWER-KEY-CYCLES) covers the nav pane, with its
-  status line, and the preview, so the words that answer a person's action in the drawer (a refused chat post's
-  reason, the Connect step's messages) and what `Primary+o` or a click on a chat picture opens in the preview are out
-  of sight, and `Primary+u` posts a previewed file the person cannot see. Found by the review of the cycle's landing
-  by probes, never seen in use. A first fix, which ended full height whenever a key wrote a status word, was not
-  landed: it also shrank the drawer for words that need no covered pane (a copy, the REPL's `Primary+l`). The fix
-  decided: the status line is drawn on the full drawer's own top border, and only an answer that is the preview
-  itself returns the drawer to its height; the manual does not yet say that a preset whose column left of the agent
-  is under 2 cells wide has no full height (the middle press does nothing).
 - **PAGE-RERASTER-PAST-PLUGIN-CAP** [note] `maybe_reraster_page` (`view.rs`) records the zoom that was asked for, not the
   size that was served, so each zoom step past the PDF plugin's 4096 px cap on its bounded axis asks for and ships the
   same capped bitmap again (from the kernel's cache): transfer wasted, nothing broken. Its comment says the plugin caps
@@ -1294,6 +1286,8 @@ owned by `docs/CLAUDE.md`.
   probe; installer hooks (superseded, check); stop commands that match only what they stop.
 
 ## Closed
+
+- **FULL-DRAWER-HIDES-ITS-ANSWERS** (fe-ui) [note] closed by the landing that fixes it, 2026-11-19, found by the review of the cycle's landing by probes, never seen in use: a full-height drawer now shows the status line on its own top border (`ChromeView::border_status`; a long message is cut there with `…`), and only an answer that is the preview returns it to its height, decided by what was drawn (`State::reveal_preview`): a chat picture's original asked for and its arrival, and `Primary+u`, which shows the covered preview and posts nothing on that press. A first fix that ended full height at any word a key wrote was not landed. Built and pinned by view tests and the native fixture `a_full_height_drawer_shrinks_only_for_an_answer_that_is_the_preview`; no person has used it; the manual now says a layout with the column left of the agent under 2 cells wide has no full height.
 
 - **REPL-DRAWER-COLORS-NOT-JULIAS** (fe-ui) [person] closed by the landing that fixes it, 2026-11-19, seen in use by a person on Linux (the maintainer: "fix- make the color sheme in julia repl match cononical colors."): the REPL drawer drew `julia> ` light cyan and not bold, a value light green, stderr red, an error's message light red with no `ERROR:` and a stack frame dim gray, none of them Julia's. Every color the drawer chooses is now in one table (`drawer/repl/colors.rs`), from Julia 1.13's own source: `julia>` bold green and `pkg>` bold blue (the live prompt, its cursor and the scrollback), typed code, stdout and a value in the terminal's own color, an error as bold light-red `ERROR: ` and its message in the terminal's color, and a stack frame's function bold (except `top-level scope`) with the rest light black, not dim; the named colors map to RGB as the Terminal drawer's do (ui/CLAUDE.md, `presentation::tests`, `colors::tests`). One departure on purpose, not the maintainer's word: Julia's REPL prints stderr in the terminal's own color, so a log read back later cannot tell it from stdout, and the drawer keeps stderr gray (ANSI 7), a color Julia's REPL uses for nothing; the window's own "connection is back" note is light magenta. Built and not seen: no person has looked at it. The manual's still of the drawer (`docs/src/assets/media/repl-figure.png`, shown in `guide/interface.md`, `guide/figures.md` and `start/tour.md`, and cropped for the readme by `docs/src/assets/readme/make-crops.sh`) shows the old palette until its media is redone. Julia's coloring the drawer still lacks: the logging macros' labels (`@info` cyan, `@warn` yellow, `@error` light red, `@debug` blue) and every color a program prints itself, because the REPL child's streams are pipes that Julia does not color and the window drops the escapes it is sent (keeping them takes the child coloring its streams, `julia/repl/src/frames.jl`, and a window-side reader of SGR sequences; not sized); a stack frame's module and argument colors and its underlined location (the child sends only function, file and line, and no cell run underlines), and a frame Julia prints as `top-level scope` from its code info under another name (the child sends the name alone); the syntax coloring of typed code; `help?>` and `shell>`, which the drawer has no modes for; the `JULIA_*_COLOR` variables; and wrapping: the drawer clips a long line and does not wrap it, so a long error's first line loses 7 more cells to the `ERROR: ` label, which stays inline as Julia prints it.
 

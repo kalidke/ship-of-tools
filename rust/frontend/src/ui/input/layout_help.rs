@@ -135,6 +135,9 @@ impl LayoutHelp {
         let preset = self.effective_preset(base);
         preset.full_span().is_some_and(|n| focus == PaneFocus::Repl || preset.columns[n..].iter().any(|c| c.slot == focus.slot()))
     }
+    /// An answer that is the preview shows where the drawer covers it: the full height ends, as any return to the
+    /// drawer's height does, and the next full height comes from the drawer's key.
+    pub(in crate::ui) fn end_full(&mut self) { self.full = false; }
     /// What a frame lays out: the full height that is not shown is over first (the next one comes from the drawer's
     /// key), then the preset and whether the drawer is drawn full. The frame's only way to its layout.
     pub(in crate::ui) fn frame_layout(&mut self, base: &LayoutPreset, focus: PaneFocus) -> (LayoutPreset, bool) {

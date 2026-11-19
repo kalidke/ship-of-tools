@@ -119,7 +119,7 @@ impl ApplicationHandler for FixturesDriver {
 }
 
 fn run_state_fixtures(state: &mut State) -> Result<()> {
-    let fixtures: [(&str, fn(&mut State) -> Result<()>); 32] = [
+    let fixtures: [(&str, fn(&mut State) -> Result<()>); 33] = [
         // First: the window's start-up picture is still the preview's.
         (
             "primary_u_over_the_start_picture_says_the_preview_shows_no_file",
@@ -190,6 +190,10 @@ fn run_state_fixtures(state: &mut State) -> Result<()> {
         (
             "a_chats_pictures_show_and_one_opens_in_the_preview",
             State::a_chats_pictures_show_and_one_opens_in_the_preview,
+        ),
+        (
+            "a_full_height_drawer_shrinks_only_for_an_answer_that_is_the_preview",
+            State::a_full_height_drawer_shrinks_only_for_an_answer_that_is_the_preview,
         ),
         (
             "a_paste_in_the_connect_step_is_a_token_and_never_the_draft",

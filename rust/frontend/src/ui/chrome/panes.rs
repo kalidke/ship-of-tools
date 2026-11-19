@@ -155,6 +155,18 @@ impl State {
         self.focus_prompts.set_focus(to);
     }
 
+    /// Whether the last frame drew no preview pane (a full-height drawer, or maximize, covers it).
+    pub(in crate::ui) fn preview_covered(&self) -> bool {
+        self.pane_rects.preview.width == 0 || self.pane_rects.preview.height == 0
+    }
+
+    /// Something is about to be shown in the preview because a person asked: a full-height drawer that covers it
+    /// returns to its height. Decided by what is drawn, not by the layout state, so a layout whose full height leaves
+    /// the preview in view keeps it. Words never come here: the status line is on the drawer's border.
+    pub(in crate::ui) fn reveal_preview(&mut self) {
+        if self.preview_covered() { self.layout_help.end_full(); }
+    }
+
     pub(in crate::ui) fn apply_prompt_effect(&mut self, effect: PromptEffect) {
         if let Some(status) = effect.status { self.status.set(status); }
         if effect.redraw { self.window.request_redraw(); }

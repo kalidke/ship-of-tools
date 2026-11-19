@@ -538,6 +538,8 @@ impl State {
         // The newest message's picture, opened from the drawer: the preview shows it, with no file under it.
         self.witness_key(Key::Named(NamedKey::ArrowUp), (false, false), Some(Action::ChatMarkOlder))?;
         self.witness_frame(&mut frames, &newest, "marked")?;
+        // The thumbnails the frames asked for are answered, so the host has room for the original.
+        self.witness_pump(events, sent, &mut daemon)?;
         self.witness_primary("o", Some(Action::ChatOpenImage))?;
         self.witness_pump(events, sent, &mut daemon)?;
         self.witness_settle(&mut frames, &newest, "the picture")?;
@@ -569,6 +571,117 @@ impl State {
         // The hold's end brings the connection line back.
         anyhow::ensure!(self.expire_status_hold(Instant::now() + crate::ui::chrome::NOTIFY_STICKY), "the key's words held nothing");
         anyhow::ensure!(self.status.text().starts_with("connected · "), "after the hold the status line says {:?}", self.status.text());
+        Ok(())
+    }
+
+    /// The chat at full height covers the nav pane and the preview. Its words are drawn on the drawer's own border, so none
+    /// of them (a refused post's, a copy's, the REPL's `Primary+l`) changes the height; only an answer that is the preview
+    /// does: `Primary+o` at its request and the picture at its arrival, even after the drawer went full again in between,
+    /// and `Primary+u`, which at full height shows the preview and posts nothing, but posts at once where the preview is
+    /// drawn beside the drawer.
+    #[allow(dead_code, reason = "runs only inside a native State, from the window_minimized fixtures child")]
+    pub(in crate::ui) fn a_full_height_drawer_shrinks_only_for_an_answer_that_is_the_preview(&mut self) -> Result<()> {
+        self.witness_with(Self::full_height_run)
+    }
+
+    /// The drawer at full height, after a frame has drawn it (what the covered preview is read from).
+    fn witness_full(&mut self, tenant: DrawerContent, frames: &mut Vec<f64>, newest: &Ts) -> Result<()> {
+        let base = self.settings.resolve_preset(self.monitor_aspect);
+        for _ in 0..2 {
+            if self.layout_help.drawer() == tenant && self.full_drawer_shown() { break; }
+            self.layout_help.cycle_drawer(tenant, PaneFocus::Repl, base);
+        }
+        self.witness_frame(frames, newest, "full")?;
+        anyhow::ensure!(self.full_drawer_shown() && self.preview_covered(), "the {tenant:?} drawer is not full ({}), or the preview is drawn ({:?}); {:?}", self.full_drawer_shown(), self.pane_rects.preview, self.status.text());
+        Ok(())
+    }
+
+    fn full_drawer_shown(&self) -> bool {
+        self.layout_help.full_shown(self.settings.resolve_preset(self.monitor_aspect), self.focus_prompts.focus())
+    }
+
+    fn full_height_run(&mut self, host: &HostKey, events: &Sender<(HostKey, IncomingEvt)>, sent: &mut Requests) -> Result<()> {
+        let mut daemon = Daemon { host: host.clone(), top: 6, seen: Seen::default(), unconfigured: false, figures: true };
+        let (mut frames, newest) = (Vec::new(), ts(6));
+        self.witness_show(host, events)?;
+        self.witness_pump(events, sent, &mut daemon)?;
+        self.witness_frame(&mut frames, &newest, "first frame")?;
+        // A post the hub refuses: its reason is on the line, and the drawer stays full.
+        self.witness_key(Key::Character("a".into()), (false, false), None)?;
+        self.witness_full(DrawerContent::Chat, &mut frames, &newest)?;
+        self.witness_key(Key::Named(NamedKey::Enter), (false, false), Some(Action::ChatSend))?;
+        let mut post = None;
+        for r in std::iter::from_fn(|| sent.try_recv().ok()).collect::<Vec<_>>() {
+            match r {
+                OutgoingReq::ChatPost { req } => post = Some(req),
+                other => if let Some(evt) = daemon.answer(other) {
+                    events.send((host.clone(), IncomingEvt::Chat(evt))).map_err(|_| anyhow::anyhow!("the fixture's event channel closed"))?;
+                },
+            }
+        }
+        let req = post.ok_or_else(|| anyhow::anyhow!("no post was sent"))?;
+        let refused = ChatEvt::Posted { req, reply: ChatReply::Done(sot_protocol::ops::ChatPostRes::Refused { code: sot_protocol::ops::ChatCode::NotAMember }) };
+        events.send((host.clone(), IncomingEvt::Chat(refused))).map_err(|_| anyhow::anyhow!("the fixture's event channel closed"))?;
+        self.drain_events();
+        anyhow::ensure!(self.status.text().starts_with("not posted:") && self.full_drawer_shown(), "a refused post: {:?}, full {}", self.status.text(), self.full_drawer_shown());
+        // The Chat's copy, a word nobody asked for, and the REPL's `Primary+l` (the drawer swapped to the REPL keeps the height).
+        self.status.set(super::copy_status(self.chat.copy_text(), |_| Ok(())));
+        anyhow::ensure!(self.full_drawer_shown(), "the Chat's copy ended the full height");
+        self.status.set("a notify from an agent");
+        anyhow::ensure!(self.full_drawer_shown(), "a notify ended the full height");
+        // Primary+o on a marked message: the full height ends at the request, the preview in view.
+        self.witness_full(DrawerContent::Chat, &mut frames, &newest)?;
+        self.witness_key(Key::Named(NamedKey::Backspace), (false, false), None)?;
+        self.witness_frame(&mut frames, &newest, "draft cleared")?;
+        self.witness_key(Key::Named(NamedKey::ArrowUp), (false, false), Some(Action::ChatMarkOlder))?;
+        self.witness_frame(&mut frames, &newest, "marked")?;
+        // The thumbnails the frames asked for are answered, so the host has room for the original.
+        self.witness_pump(events, sent, &mut daemon)?;
+        self.witness_primary("o", Some(Action::ChatOpenImage))?;
+        // The chat's tick sends the original's request, as the next turns of the window's loop do.
+        let mut original = None;
+        for _ in 0..100 {
+            self.drain_events();
+            while let Ok(req) = sent.try_recv() {
+                if matches!(&req, OutgoingReq::ChatFile { req } if req.variant == sot_protocol::ops::ChatFileVariant::Original) {
+                    original = Some(req);
+                } else if let Some(evt) = daemon.answer(req) {
+                    events.send((host.clone(), IncomingEvt::Chat(evt))).map_err(|_| anyhow::anyhow!("the fixture's event channel closed"))?;
+                }
+            }
+            if original.is_some() { break; }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let original = original.ok_or_else(|| anyhow::anyhow!("the picture's original was never asked for: {:?}", self.status.text()))?;
+        anyhow::ensure!(!self.full_drawer_shown(), "a picture's request left the chat at full height");
+        // The drawer goes full again before the picture arrives: its arrival ends the full height, and the picture is drawn.
+        self.witness_full(DrawerContent::Chat, &mut frames, &newest)?;
+        if let Some(evt) = daemon.answer(original) {
+            events.send((host.clone(), IncomingEvt::Chat(evt))).map_err(|_| anyhow::anyhow!("the fixture's event channel closed"))?;
+        }
+        self.witness_pump(events, sent, &mut daemon)?;
+        self.witness_settle(&mut frames, &newest, "the picture")?;
+        anyhow::ensure!(!self.full_drawer_shown() && self.preview_source.node_id().is_none() && self.raster.is_shown(),
+            "the picture arrived at a hidden preview: full {}, status {:?}", self.full_drawer_shown(), self.status.text());
+        // Primary+u at full height shows the preview and posts nothing; the next press says what it says today.
+        while sent.try_recv().is_ok() {}
+        self.witness_full(DrawerContent::Chat, &mut frames, &newest)?;
+        self.witness_primary("u", Some(Action::ChatPostFile))?;
+        let posts = |sent: &mut Requests| std::iter::from_fn(|| sent.try_recv().ok()).filter(|r| matches!(r, OutgoingReq::ChatPostFile { .. })).count();
+        anyhow::ensure!(posts(sent) == 0 && !self.full_drawer_shown() && self.status.text().contains("covered"),
+            "Primary+u at full height said {:?} (full: {})", self.status.text(), self.full_drawer_shown());
+        self.witness_primary("u", Some(Action::ChatPostFile))?;
+        anyhow::ensure!(self.status.text().contains("a picture opened from the chat"), "the second press said {:?}", self.status.text());
+        // Where the preview is drawn beside the full drawer, the first press does what the key does.
+        self.witness_full(DrawerContent::Chat, &mut frames, &newest)?;
+        self.pane_rects.preview = ratatui::layout::Rect::new(1, 1, 10, 10);
+        self.witness_primary("u", Some(Action::ChatPostFile))?;
+        anyhow::ensure!(!self.status.text().contains("covered") && self.full_drawer_shown(), "a drawn preview was said covered: {:?}", self.status.text());
+        // The REPL's `Primary+l`, the drawer swapped to the REPL keeping its height.
+        self.witness_full(DrawerContent::Repl, &mut frames, &newest)?;
+        let effects = self.repl_model.clear_scrollback();
+        self.apply_repl_effects(effects);
+        anyhow::ensure!(self.status.text() == "repl · scrollback cleared" && self.full_drawer_shown(), "Primary+l: {:?}, full {}", self.status.text(), self.full_drawer_shown());
         Ok(())
     }
 

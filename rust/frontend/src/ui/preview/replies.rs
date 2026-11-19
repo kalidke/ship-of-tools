@@ -141,6 +141,7 @@ impl State {
     /// canvas hides and drawing, crop, scale and open act on nothing. A cursor move, a row switch or a `preview.changed` for
     /// the fired node shows a file again.
     pub(in crate::ui) fn install_chat_picture(&mut self, mime: String, bytes: Vec<u8>) {
+        self.reveal_preview();
         let generation = self.preview_requests.issue_preview();
         let workspace_id = self.selected.workspace_id().clone();
         self.install_preview_reply(PreviewReply { node_id: None, workspace_id, mime, bytes, extras: None, generation });

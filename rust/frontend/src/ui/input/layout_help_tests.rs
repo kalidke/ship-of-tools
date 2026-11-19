@@ -695,6 +695,19 @@ fn full_height_waits_for_a_column_left_of_the_agent_wide_enough_to_lay_out() {
     h.cycle_on(DrawerContent::Chat, &base); h.cycle_on(DrawerContent::Chat, &base);
     assert!(h.layout.full_shown(&base, PaneFocus::Repl), "the layout state is full; only the geometry declines");
 }
+/// An answer that is the preview ends the full height, the same clear as any other return: the drawer is at its height
+/// and its key goes to full height again.
+#[test]
+fn an_ended_full_height_is_at_the_drawers_height_and_its_key_goes_full_again() {
+    let base = LayoutPreset::default_laptop();
+    let mut h = Harness::new(DrawerContent::Closed, PaneFocus::NavTree, false);
+    h.cycle(DrawerContent::Chat); h.cycle(DrawerContent::Chat);
+    assert!(h.layout.full_shown(&base, PaneFocus::Repl));
+    h.layout.end_full();
+    assert!(!h.layout.full_shown(&base, PaneFocus::Repl) && h.layout.drawer() == DrawerContent::Chat);
+    h.cycle(DrawerContent::Chat);
+    assert!(h.layout.full_shown(&base, PaneFocus::Repl));
+}
 /// The key paths that once rested the focus on a pane the full height hid: Help then a spatial move then a row
 /// switch or an automatic REPL open; a reveal of the agent; the wide-preview key. After every step, on every preset,
 /// the focused pane is drawn.
