@@ -373,14 +373,19 @@ Launch (`launch-sot.sh`, the rendered `sot-launch`, `lib/sot-daemon.sh`, `launch
   one `sotd log-path` names; a nonempty `frontend.log` moves to `frontend.prev.log` first, replacing the older backup,
   so a launch keeps its own log and the one before and nothing older (the wrapper's respawns of the window add to the
   launch's file); an empty one leaves the backup alone. A folder the call makes is private as the daemon makes it, the
-  leaf at 0700 whatever the caller's umask and its parents as that umask makes them, because the daemon refuses a state
-  folder others can reach and the first icon start can come before any daemon; a folder that exists keeps its mode. The
+  leaf at 0700 whatever the caller's umask and its parents as that umask makes them, because it holds this account's logs
+  and state and the first icon start can come before any daemon, so the file is not readable by others in that time
+  (`sotd` itself resets a state folder this account owns to 0700 at its start and refuses only a symlink, a folder
+  another account owns or a non-folder, `rust/backend/src/main.rs`); a folder that exists keeps its mode. The
   wrapper started again after an apply has the variable, parent 1 and now a regular file for output, so it rotates
   nothing. Every other start, a terminal, a pipe or a file a caller gave, a descendant of the app, and every start on
   Linux and Windows, is left exactly as it is, and each step fails open: with no folder, no `sotd` or a file that cannot
-  be opened, the window starts with its streams as they were. Limits: a detached start from inside the app whose output
-  is a pipe or /dev/null is still taken for an icon start; a click on the running app's icon may start a second
-  wrapper (unmeasured, `open -n` does), and each start rotates, so the file names the two most recent starts, and a
+  be opened, the window starts with its streams as they were. Limits: a detached start from inside the app
+  (`sot-launch > file &` from a shell that ends) has the variable and parent 1. With its output on a file the caller
+  gets its output and the running window's log is untouched. With its output on a pipe, the caller gets nothing, the new
+  window's lines go to `frontend.log`, and the running window's log is renamed to `frontend.prev.log` (after a second
+  such start it is in no file); with its output at /dev/null the same happens to the running window's log. A click on
+  the running app's icon may start a second wrapper (unmeasured, `open -n` does), and each start rotates, so the file names the two most recent starts, and a
   window still running from before keeps writing to its renamed file until a third start replaces it; the output of
   the remote wrapper's own `sot-apply` call, which runs before `launch-sot.sh`, is not in the file; the file has no
   size bound within a launch; which process reads the pipes macOS gives the program was not measured. Measured on the

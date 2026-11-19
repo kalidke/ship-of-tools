@@ -305,6 +305,18 @@ d="$WORK/l-forced-file"; mk_wrapper "$d" "0" 0 0; force_log "$d"
 run_as "$d" files
 check "standard output into a file a caller gave: the trigger holds and the lines still go to the caller; no log file" \
     "0 window out 1|window err 1|no" "$WR_RC $(windows "$d/o")|$(windows "$d/err")|$([ -e "$d/state" ] && echo yes || echo no)"
+# A terminal: util-linux's script gives the wrapper a pseudo-terminal for its output (BSD's script takes other arguments).
+if [ "$(uname -s)" = Linux ] && script --version 2>/dev/null | grep -q util-linux; then
+    d="$WORK/l-forced-tty"; mk_wrapper "$d" "0" 0 0; force_log "$d"
+    WR_RC=0
+    script -qec "$(printf '%q ' env HOME="$d/home" SOT_COMM_HOME="$d/home/.sot-comm" PATH="$d/stubs:$TOOLS" STUB_LOG="$d/log" "$d/home/.local/bin/sot-launch")" "$d/typescript" \
+        >/dev/null 2>&1 </dev/null || WR_RC=$?
+    tr -d '\r' < "$d/typescript" > "$d/typescript.txt"
+    check "standard output a terminal: the trigger holds and the lines still go to the terminal; no log file" \
+        "0 window out 1 window err 1 no" "$WR_RC $(windows "$d/typescript.txt") $([ -e "$d/state" ] && echo yes || echo no)"
+else
+    printf '    SKIP a terminal for standard output (util-linux script is not here)\n'
+fi
 
 case_start "window_log_trigger"
 ours="$(sot_bundle_id)"
@@ -391,7 +403,8 @@ check "the wrapper that dials the plan: a start that is not an icon launch is le
     "0 window out 1 window err 1 no" "$WR_RC $(windows "$d/piped") $([ -e "$d/state" ] && echo yes || echo no)"
 
 case_start "window_log_the_folder_is_private_as_the_daemons_is"
-# The daemon refuses a state folder that group or others can reach, and the wrapper can be the first to make it.
+# The state folder holds this account's logs and state, and the wrapper can be the first to make it, before any daemon:
+# private as the daemon makes it (the leaf 0700 whatever the umask), so its file is never readable by others.
 d="$WORK/l-mode"; mk_wrapper "$d" "0" 0 0; force_log "$d"
 printf '%s\n' "$d/xdg/state/sot/sotd.log" > "$d/logpath"
 ( umask 022; run_as "$d" null )
