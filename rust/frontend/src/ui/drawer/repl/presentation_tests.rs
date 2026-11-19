@@ -643,23 +643,24 @@ fn the_windows_link_back_note_is_told_from_program_output() {
 }
 
 #[test]
-fn the_error_label_never_pushes_out_text_that_fit_the_pane() {
-    // The pane clips and never wraps. At 8 px a cell, 400 px is 50 columns: a 45-column first line fits alone, not
-    // after the 7-column label, so the label takes a row of its own; a 40-column one shares its row; a 60-column one
-    // was clipped already.
+fn the_error_label_is_inline_at_every_pane_width() {
+    // Julia prints `ERROR: ` and the message on one row. The pane clips what is too long and never wraps, so the label
+    // costs a long first line 7 cells; row counts must not depend on the pane's width.
     let key = row("host", "row");
-    let (mut model, mut owner) = (ReplModel::default(), Owner::default());
-    owner.commit_layout(rect(400.0, 400.0), (0, 100));
-    model.edit_draft(DraftEdit::Replace("x".into()));
-    let plan = model.begin_eval(target(&key)).unwrap();
-    let id = plan.submission.eval_id();
-    model.complete_submission(plan.submission, Ok(()));
-    for len in [40, 45, 60] {
-        frame(&mut model, &key, id, ReplFrame::Error { message: "m".repeat(len), stacktrace: vec![] });
+    for width in [0.0, 100.0, 400.0, 2000.0] {
+        let (mut model, mut owner) = (ReplModel::default(), Owner::default());
+        owner.commit_layout(rect(width, 400.0), (0, 100));
+        model.edit_draft(DraftEdit::Replace("x".into()));
+        let plan = model.begin_eval(target(&key)).unwrap();
+        let id = plan.submission.eval_id();
+        model.complete_submission(plan.submission, Ok(()));
+        for len in [5, 12, 13, 14, 45, 60] {
+            frame(&mut model, &key, id, ReplFrame::Error { message: "m".repeat(len), stacktrace: vec![] });
+        }
+        let rows = text(&build(&mut owner, &model, &key, 0).0);
+        let expected: Vec<String> = [5, 12, 13, 14, 45, 60].iter().map(|n| format!("ERROR: {}", "m".repeat(*n))).collect();
+        assert_eq!(rows[1..7], expected[..], "pane {width} px wide");
     }
-    let rows = text(&build(&mut owner, &model, &key, 0).0);
-    assert_eq!(rows[1..5], [format!("ERROR: {}", "m".repeat(40)), "ERROR: ".to_string(), "m".repeat(45),
-        format!("ERROR: {}", "m".repeat(60))]);
 }
 
 #[test]

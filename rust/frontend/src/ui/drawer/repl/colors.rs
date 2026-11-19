@@ -22,7 +22,7 @@ const TRACE_GRAY: Color = Color::DarkGray;
 // What Julia's REPL has no counterpart for: the drawer's own words and marks.
 /// Text a program wrote to stderr. Julia's REPL prints it in the terminal's own color, so a log read back later
 /// cannot tell it from stdout; the drawer keeps the difference with a gray (ANSI 7, 170 on the pane's near-black
-/// surface, contrast 8.5 against 12.5 for the default text), which Julia's REPL uses for nothing, so it reads as
+/// surface, contrast 8.5 against 12.4 for the default text), which Julia's REPL uses for nothing, so it reads as
 /// neither an error (`ERROR: ` is bold light red) nor a warning (yellow).
 const STDERR: Color = Color::Gray;
 /// A note the window wrote into the log itself (the link is back), told from the session's output.

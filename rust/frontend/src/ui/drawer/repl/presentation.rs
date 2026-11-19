@@ -379,21 +379,10 @@ fn project_lines<I>(
                     if message_lines.is_empty() {
                         message_lines.push(String::new());
                     }
-                    // The pane clips and never wraps: the label shares the first row unless that would push out
-                    // text which fit (from the previous layout's width; the first frame's is zero).
-                    let label = Span::styled("ERROR: ", colors::error_label());
-                    let (cols, first_w) = (
-                        if cell_w > 0.0 { (avail_w_px / cell_w) as usize } else { 0 },
-                        unicode_width::UnicodeWidthStr::width(message_lines[0].as_str()),
-                    );
-                    let label_row = cols > 0 && first_w <= cols && first_w + label.width() > cols;
-                    if label_row {
-                        out.push(RtLine::from(vec![label.clone()]));
-                    }
                     for (i, line) in message_lines.into_iter().enumerate() {
                         let mut spans = vec![Span::styled(line, colors::plain())];
-                        if i == 0 && !label_row {
-                            spans.insert(0, label.clone());
+                        if i == 0 {
+                            spans.insert(0, Span::styled("ERROR: ", colors::error_label()));
                         }
                         out.push(RtLine::from(spans));
                     }

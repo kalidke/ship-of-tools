@@ -1083,3 +1083,28 @@ fn destroy_cleanup_forgets_only_the_named_parked_row() {
     assert_eq!(m.input(), "b draft");
     assert_eq!(submit(&mut m, &b, "next"), bid + 1);
 }
+
+#[test]
+fn the_windows_own_frames_stay_marked_as_frames_are_appended() {
+    // `own_frames` holds indices into `frames`, which only grows: a second reopen, repeated ids, a completion that
+    // appends (one of its frames repeating the note's words) and a reopen of a parked row leave each mark on its frame.
+    let mut m = ReplModel::default();
+    let (a, b) = (key("one", "a"), key("one", "b"));
+    let id = submit(&mut m, &a, "a");
+    complete(&mut m, &a, id);
+    m.reopen_runs(&"one".into(), &a, vec![id, id]);
+    output(&mut m, "one", id, &a, "x");
+    let ReplFrame::Stderr { text: note } = m.entries()[0].frames[0].clone() else { panic!("the note is a stderr frame") };
+    m.apply_eval_completion("one".into(), id, &a, 2, vec![ReplFrame::Stderr { text: note.clone() }]);
+    m.reopen_runs(&"one".into(), &a, vec![id]);
+    complete(&mut m, &a, id);
+    switch(&mut m, &a, &b);
+    m.reopen_runs(&"one".into(), &b, vec![id]);
+    let entry = &m.parked_entries(&a).unwrap()[0];
+    assert_eq!(entry.frames.len(), 5);
+    assert_eq!(entry.own_frames, [0, 3, 4]);
+    for (i, frame) in entry.frames.iter().enumerate() {
+        let is_note = matches!(frame, ReplFrame::Stderr { text } if *text == note);
+        assert_eq!(is_note, i != 1, "frame {i}");
+    }
+}
