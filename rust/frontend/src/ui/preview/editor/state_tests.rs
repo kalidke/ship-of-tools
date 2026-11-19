@@ -937,4 +937,5 @@ fn the_edit_buffer_is_shaped_again_for_a_pane_of_another_width_or_scale() {
     assert!(h.editor.shaped_for(w + 0.2, scale) == false, "a resized pane");
     assert!(h.editor.shaped_for(w, 1.5) == false, "a zoom");
     assert!(Editor::default().shaped_for(w, scale), "no shaping, nothing to redo");
+    assert!(h.editor.shaped_for(0.0, scale), "a hidden pane is not shaped for");
 }

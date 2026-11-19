@@ -381,7 +381,8 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   Where a row involved, the one the cursor stands on or the one it would land on, holds right-to-left text, or the
   shaped buffer is not the body's text, that one step is the file's line as it was (a Hebrew word on a row sends the
   steps onto and off it to the file's next line; the rest of the file is unaffected; the bar is still drawn there); Home and End stay on the file's line. The frame shapes the edit buffer again, before it draws, when the pane's width or the text scale is not the one it
-  was shaped for (`State::reshape_edit_to_pane`, from `Editor::shaped_for`: a resize, a drawer opening, a zoom), so
+  was shaped for (`State::reshape_edit_to_pane`, from `Editor::shaped_for`: a resize, a drawer opening, a zoom; not for a pane with
+  no width, which a full-height drawer leaves the preview), so
   the screen and the next key's rows are of the pane's own width; a key that arrives between a resize event and its
   frame reads the rows still on screen. Pinned by `state_tests`: placing
   (`the_cursor_is_drawn_at_the_end_of_a_row_of_the_text_and_on_an_empty_line_and_a_wide_or_joined_character`,

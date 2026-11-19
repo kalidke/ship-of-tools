@@ -338,10 +338,11 @@ impl Editor {
         if let Some(edit) = self.edit.as_mut() { edit.buf.set_cursor(at); }
     }
 
-    /// Whether the shaped buffer is of this width and text scale (or there is none): the width and scale it was
-    /// shaped for are the buffer's own.
+    /// Whether the shaped buffer is of this width and text scale (or there is none, or the pane has no width, as
+    /// under a full-height drawer: shaping to a pixel would cost a second for nothing the screen shows): the width
+    /// and scale it was shaped for are the buffer's own.
     pub(in crate::ui) fn shaped_for(&self, width: f32, scale: f32) -> bool {
-        self.shaped.as_ref().is_none_or(|s| {
+        width < 1.0 || self.shaped.as_ref().is_none_or(|s| {
             s.buffer.size().0 == Some(width.max(1.0)) && s.body_em() == crate::ui::preview::markdown::BODY_SIZE * scale
         })
     }
