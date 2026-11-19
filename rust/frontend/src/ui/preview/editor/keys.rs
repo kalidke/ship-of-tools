@@ -89,7 +89,12 @@ pub(in crate::ui) fn editor_key(state: &mut State, key: KeyPress<'_>) -> Control
         // the preview because the injected `█` is
         // part of the rendered string — rebuild
         // unconditionally (cheap).
-        EditorKey::StaleAnswered | EditorKey::Edited => state.rebuild_edit_preview(),
+        EditorKey::StaleAnswered => state.rebuild_edit_preview(),
+        // The cursor moved or the text changed: the view follows it.
+        EditorKey::Edited => {
+            state.rebuild_edit_preview();
+            state.follow_edit_cursor();
+        }
     }
     state.window.request_redraw();
     Break(())
@@ -137,6 +142,13 @@ impl State {
         (self.concept.rect().w.max(1.0), self.canvas.scale() * self.canvas.text_scale_mult())
     }
 
+    /// Scroll the edit view just far enough to show the cursor's row (the pane's height as the scroll clamp reads it).
+    pub(in crate::ui) fn follow_edit_cursor(&mut self) {
+        let (now, length) = self.scroll_ask();
+        let visible = self.concept.rect().h - crate::ui::render::text::EXTRA_TOP_PAD_PX;
+        self.editor.follow_cursor(&mut self.shaped, visible, now, length);
+    }
+
     /// Re-shape the edit preview from the active edit buffer. Called
     /// whenever a key mutates the buffer; cheap enough for a
     /// few-KB annotation. Without an edit it clears the shaped
@@ -150,3 +162,7 @@ impl State {
         });
     }
 }
+
+#[cfg(test)]
+#[path = "keys_native_fixture_tests.rs"]
+mod keys_native_fixture_tests;

@@ -180,7 +180,10 @@ a paragraph the pane wraps over several rows they step through those rows, and
 the cursor keeps its column across a shorter row. `PageUp` and `PageDown` move
 a third of the pane's rows the same way. `Home` and `End` go to the start and
 end of the whole line of the file, which for a wrapped paragraph is the
-paragraph. Hold `Shift` with any of these to extend the selection.
+paragraph. Hold `Shift` with any of these to extend the selection. The view
+follows the cursor: when a key moves it above or below the pane, the text
+scrolls just far enough to show it again. The mouse wheel can still scroll the
+text away from the cursor, and the next key you press brings it back.
 
 A save is written inside the project and never through a link: a file whose
 own name is a link, or one reached through a linked folder, is refused, and

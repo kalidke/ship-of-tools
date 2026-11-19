@@ -3,6 +3,7 @@
 
 use super::*;
 use cosmic_text::FontSystem;
+use std::time::{Duration, Instant};
 
 /// An editor over `content`, shaped at `cells` monospace cells of width.
 struct Harness {
@@ -225,4 +226,125 @@ fn a_body_ending_in_a_newline_is_walked_by_rows() {
         h.act(Action::EditDown);
     }
     assert_eq!(h.cursor(), PARAGRAPH.len() + 1, "the empty line after the final newline is a row");
+}
+
+/// A pane over the editor: a preview whose line is taller than the editor's (prose, 22 px against 19), `visible` px
+/// of text high, which each cursor move scrolls as the window's key path does and then lays out as a frame does.
+struct Pane {
+    view: ShapedPreview,
+    visible: f32,
+}
+
+impl Pane {
+    fn new(h: &mut Harness, visible: f32) -> Self {
+        let highlight = crate::ui::preview::markdown::highlight::HighlightService::new().unwrap();
+        let md = MarkdownPreview::new(&mut h.fs, "text", 400.0, visible, 1.0, &Default::default(), &Default::default(),
+            &highlight, &Default::default(), false);
+        let rect = ScreenRect { x: 0.0, y: 0.0, w: 400.0, h: visible };
+        assert!(md.line_height() > 19.0, "the preview's line must be taller than the editor's");
+        Self { view: ShapedPreview::new(md, highlight, rect), visible }
+    }
+
+    /// The key path's own steps after a key: re-shape, follow, then the frame's clamp.
+    fn after_key(&mut self, h: &mut Harness) {
+        let (fs, width) = (&mut h.fs, h.width);
+        h.editor.reshape(&KeyBindings::defaults(), |spans| MarkdownPreview::new_plain_spans(fs, spans, width, 1.0));
+        h.editor.follow_cursor(&mut self.view, self.visible, Instant::now(), Duration::ZERO);
+        self.frame(h);
+    }
+
+    fn frame(&mut self, h: &Harness) {
+        let line_h = self.view.md().line_height();
+        let max = crate::ui::preview::pane::preview_max_scroll(line_h, self.visible, h.editor.shaped().unwrap());
+        self.view.advance(Instant::now(), max, self.visible / line_h, true);
+    }
+
+    /// Whether the cursor's row is wholly inside what the pane draws.
+    fn shows_cursor(&self, h: &Harness) -> bool {
+        let (top, bottom) = h.editor.cursor_row().expect("the cursor's row is in the layout");
+        let from = self.view.scroll_px();
+        top >= from && bottom <= from + self.visible
+    }
+}
+
+fn long_text() -> String {
+    (0..200).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n")
+}
+
+#[test]
+fn the_view_scrolls_just_far_enough_to_show_the_cursor_row() {
+    let mut h = Harness::new(&long_text(), 40);
+    let mut pane = Pane::new(&mut h, 200.0);
+    pane.after_key(&mut h);
+    for _ in 0..60 {
+        h.act(Action::EditDown);
+        pane.after_key(&mut h);
+        assert!(pane.shows_cursor(&h), "the cursor is out of view at {}", h.cursor());
+    }
+    let (_, bottom) = h.editor.cursor_row().unwrap();
+    let slack = pane.view.scroll_px() + pane.visible - bottom;
+    assert!(pane.view.scroll() > 0.0 && slack < pane.view.md().line_height(), "scrolled past what the row needed: {slack}");
+    // A jump to the end, then to the start, brings each into view; the start is the top.
+    h.act(Action::EditFinish);
+    pane.after_key(&mut h);
+    assert!(pane.shows_cursor(&h) && pane.view.scroll() > 100.0);
+    h.act(Action::EditStart);
+    pane.after_key(&mut h);
+    assert!(pane.shows_cursor(&h));
+    assert_eq!(pane.view.scroll(), 0.0);
+}
+
+#[test]
+fn a_motion_that_keeps_the_cursor_in_view_does_not_scroll() {
+    let mut h = Harness::new(&long_text(), 40);
+    let mut pane = Pane::new(&mut h, 200.0);
+    pane.after_key(&mut h);
+    for action in [Action::EditDown, Action::EditDown, Action::EditRight, Action::EditUp] {
+        h.act(action);
+        pane.after_key(&mut h);
+        assert_eq!(pane.view.scroll(), 0.0, "{action:?} scrolled a cursor that stayed in view");
+    }
+    // Scrolled partway, a step that stays inside the view moves nothing either.
+    for _ in 0..30 {
+        h.act(Action::EditDown);
+        pane.after_key(&mut h);
+    }
+    let at = pane.view.scroll();
+    assert!(at > 0.0);
+    h.act(Action::EditUp);
+    pane.after_key(&mut h);
+    assert_eq!(pane.view.scroll(), at);
+}
+
+#[test]
+fn the_wheel_scrolls_away_and_the_next_key_brings_the_view_back() {
+    let mut h = Harness::new(&long_text(), 40);
+    let mut pane = Pane::new(&mut h, 200.0);
+    pane.after_key(&mut h);
+    h.act(Action::EditDown);
+    pane.after_key(&mut h);
+    pane.view.scroll_by(40, Instant::now(), Duration::ZERO);
+    pane.frame(&h);
+    assert_eq!(pane.view.scroll(), 40.0, "the wheel moves the edit view");
+    assert!(!pane.shows_cursor(&h), "the cursor is now out of view");
+    h.act(Action::EditRight);
+    pane.after_key(&mut h);
+    assert!(pane.shows_cursor(&h), "the next motion brings the view back");
+    assert_eq!(pane.view.scroll(), 0.0);
+}
+
+#[test]
+fn the_cursors_row_is_found_under_a_header_and_not_in_a_stale_buffer() {
+    let mut editor = Editor::default();
+    editor.enter_concept("files/x".into(), None, "---\nkind: note\n---\none\ntwo\nthree");
+    let mut h = Harness::new("", 40);
+    h.editor = editor;
+    h.edit().buf.set_cursor(5);
+    let (fs, width) = (&mut h.fs, h.width);
+    h.editor.reshape(&KeyBindings::defaults(), |spans| MarkdownPreview::new_plain_spans(fs, spans, width, 1.0));
+    let (top, bottom) = h.editor.cursor_row().unwrap();
+    assert!(top > 0.0 && bottom > top, "below the header's lines: {top}..{bottom}");
+    // Text typed since the shaping: the buffer is not the edit's, so there is no row to follow.
+    h.type_char("x");
+    assert_eq!(h.editor.cursor_row(), None);
 }

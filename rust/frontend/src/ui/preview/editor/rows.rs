@@ -4,6 +4,9 @@
 
 use cosmic_text::{Buffer, LayoutRun};
 
+/// The block drawn at the cursor in the edit buffer's text.
+pub(super) const CURSOR: &str = "\u{2588}";
+
 /// Where a vertical step lands, and the x the next vertical steps keep across rows shorter than it.
 pub(super) struct Landing {
     pub(super) cursor: usize,
@@ -44,4 +47,19 @@ pub(super) fn vertical(buffer: &Buffer, body: &str, cursor: usize, goal_x: Optio
     let line_start: usize = body.split('\n').take(runs[to].line_i).map(|l| l.len() + 1).sum();
     let cursor = line_start + at;
     body.is_char_boundary(cursor).then_some(Landing { cursor, goal_x })
+}
+
+/// The top and bottom, px in the layout, of the row the cursor is on in `buffer`, the edit's shaped buffer: the
+/// header, the body with the cursor mark inserted at `cursor`, then the footer's two lines. `None` where the buffer is
+/// not that text (so the header's lines need not be counted: the footer's end finds the body's first line).
+pub(super) fn cursor_row(buffer: &Buffer, body: &str, cursor: usize) -> Option<(f32, f32)> {
+    let first = buffer.lines.len().checked_sub(body.matches('\n').count() + 3)?;
+    let before = &body[..cursor];
+    let (line, in_line) = (before.matches('\n').count(), cursor - before.rfind('\n').map_or(0, |i| i + 1));
+    let text = body.split('\n').nth(line)?;
+    let marked = [&text[..in_line], CURSOR, &text[in_line..]].concat();
+    let run = buffer.layout_runs().find(|r| {
+        r.line_i == first + line && r.glyphs.iter().any(|g| g.start == in_line && g.end == in_line + CURSOR.len())
+    })?;
+    (run.text == marked).then_some((run.line_top, run.line_top + run.line_height))
 }

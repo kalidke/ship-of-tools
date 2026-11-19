@@ -158,6 +158,21 @@ impl ShapedPreview {
         let at_once = self.motion.ask(delta, now, length);
         self.scroll = (self.scroll + at_once).max(0.0);
     }
+    /// The editor's cursor row spans `top..bottom` px in its buffer: scroll just far enough, in whole lines of this
+    /// preview, to show it in a pane `visible_px` tall, counting what is already owed. A row in view moves nothing.
+    pub(in crate::ui) fn follow(&mut self, top: f32, bottom: f32, visible_px: f32, now: Instant, length: Duration) {
+        let line_h = self.md.line_height().max(1.0);
+        let from = (self.scroll + self.motion.owed()) * line_h;
+        let target = if top < from {
+            (top / line_h).floor()
+        } else if bottom > from + visible_px {
+            ((bottom - visible_px) / line_h).ceil()
+        } else {
+            return;
+        };
+        self.scroll_to(target, now, length);
+    }
+
     /// A person asked for the top; the distance is what lies between the asked position and it.
     pub(in crate::ui) fn scroll_to_top(&mut self, now: Instant, length: Duration) { self.scroll_to(0.0, now, length); }
     /// A person asked for the far end; the next layout knows where it is.

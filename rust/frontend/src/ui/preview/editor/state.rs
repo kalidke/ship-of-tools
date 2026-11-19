@@ -3,7 +3,9 @@
 
 use crate::ui::*;
 use crate::ui::input::keypress::KeyPress;
-use super::rows;
+use super::rows::{self, CURSOR};
+use crate::ui::preview::shaped::ShapedPreview;
+use std::time::{Duration, Instant};
 
 /// Active concept-annotation edit. `None` when the preview pane is in
 /// read-only view mode (the default); `Some` when the user pressed `e`
@@ -116,7 +118,6 @@ impl EditState {
         }
         let body = self.buf.body();
         let cur = self.buf.cursor();
-        const CURSOR: &str = "\u{2588}";
         let has_sel = self.buf.selection_range().is_some();
         match self.buf.selection_range() {
             // Cursor sits at one end of the range (a = start, b = end). Place
@@ -333,6 +334,27 @@ impl Editor {
         &mut self, bindings: &KeyBindings, shape: impl FnOnce(&[(String, bool)]) -> MarkdownPreview,
     ) {
         self.shaped = self.edit.as_ref().map(|edit| shape(&edit.spans(bindings)));
+    }
+
+    /// Put the cursor at `at`, as a native fixture's stand-in for the keys it cannot press.
+    #[cfg(test)]
+    pub(in crate::ui) fn put_cursor(&mut self, at: usize) {
+        if let Some(edit) = self.edit.as_mut() { edit.buf.set_cursor(at); }
+    }
+
+    /// The top and bottom, px in the shaped buffer, of the row the cursor is on; `None` without an edit, or where the
+    /// buffer is not the edit's text.
+    pub(in crate::ui) fn cursor_row(&self) -> Option<(f32, f32)> {
+        let (edit, shaped) = (self.edit.as_ref()?, self.shaped.as_ref()?);
+        rows::cursor_row(&shaped.buffer, edit.buf.body(), edit.buf.cursor())
+    }
+
+    /// Scroll `view` just far enough to show the row the cursor is on, in a pane `visible_px` tall; a cursor already
+    /// in view moves nothing, and a row the layout cannot find leaves the view where it is.
+    pub(in crate::ui) fn follow_cursor(&self, view: &mut ShapedPreview, visible_px: f32, now: Instant, length: Duration) {
+        if let Some((top, bottom)) = self.cursor_row() {
+            view.follow(top, bottom, visible_px, now, length);
+        }
     }
 
     /// Edit mode takes every key (`None` without an edit). The discard prompt takes only its answer; the stale

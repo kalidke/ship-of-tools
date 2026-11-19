@@ -354,9 +354,22 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   `up_on_the_first_row_goes_to_the_start_and_down_on_the_last_to_the_end`,
   `text_the_rows_cannot_be_matched_to_steps_by_the_files_lines`, `the_cursor_mark_does_not_move_the_column`,
   `a_wrapped_paragraph_under_a_header_is_walked_by_rows`, `a_body_ending_in_a_newline_is_walked_by_rows`,
-  `page_keys_take_the_same_step_by_the_pane_rows`, `a_long_texts_shaped_rows_reach_its_last_line`). Limits: the tests
+  `page_keys_take_the_same_step_by_the_pane_rows`, `a_long_texts_shaped_rows_reach_its_last_line`). A key that moved the
+  cursor or changed the text (`EditorKey::Edited`) is followed by `State::follow_edit_cursor`: the view scrolls just far
+  enough, in whole lines of the shown preview (`ShapedPreview::follow`, counting what the easing still owes), to show
+  the cursor's row, and moves nothing for a row already in view; the row is the editor's buffer's, found by counting
+  back from the footer's two lines (`rows::cursor_row`), so its height and the preview's line height, which differ
+  (19 px against a prose preview's 22), meet only in pixels. The wheel moves the edit view as before and the next
+  motion or edit brings it back; a reload, a save, a restored row, a resize and the mouse follow nothing. A row the
+  layout cannot find (a body the shaper splits at a lone CR) leaves the view where it is. Pinned by
+  `the_view_scrolls_just_far_enough_to_show_the_cursor_row`, `a_motion_that_keeps_the_cursor_in_view_does_not_scroll`,
+  `the_wheel_scrolls_away_and_the_next_key_brings_the_view_back` and
+  `the_cursors_row_is_found_under_a_header_and_not_in_a_stale_buffer`, and in the window's own layout by the native
+  fixture `an_edit_view_follows_its_cursor` (`preview/editor/keys_native_fixture_tests.rs`, in `run_state_fixtures`,
+  so only under a display; it puts the cursor and calls the key path's `rebuild_edit_preview` and `follow_edit_cursor`,
+  and is red with `ShapedPreview::follow` made a no-op). Limits: the tests
   press through `edit_buffer_key` because a winit `KeyEvent` cannot be built outside the event loop, so `Editor::key`'s
-  hand-off and the shaper closure in `editor_key` rest on reading; the body is shaped once more for each vertical key;
+  hand-off, the shaper closure and the `Edited` arm in `editor_key` rest on reading; the body is shaped once more for each vertical key;
   the row below a cursor inside a wrapped line is read from the layout without the cursor's own cell, which the next
   draw adds, so the mark can reflow the wrap by one character and show a column to the left of the one asked for;
   no person has used it yet.
