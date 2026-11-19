@@ -31,9 +31,10 @@ const HANDLE: usize = 40;
 pub(crate) const ENTRY: usize = 1 + PART + 1 + 3 + PART + 2 + 2 + HANDLE;
 const _: () = assert!(ENTRY <= MAX_NAME);
 
-/// A member-chosen name as report data: no control or invisible formatting character (`Cc`, `Cf`), no double quote or
-/// mark drawn like one (`is_quote`), no `\`, whitespace runs one space, trimmed, and past `max` bytes cut and ended with
-/// `…`. So in a report a double quote is always structure, never data, and nothing in a name looks like one.
+/// A member-chosen name as report data: no control or invisible formatting character (`Cc`, `Cf`), no double quote and
+/// none of the common marks drawn like one (`is_quote`), no `\`, whitespace runs one space, trimmed, and past `max`
+/// bytes cut and ended with `…`. So in a report a double quote is always structure, never data; the count before each
+/// list says how many people it names, whatever a mark the list misses looks like.
 pub(crate) fn plain(s: &str, max: usize) -> String {
     let mut out = String::new();
     for c in s.chars().filter(|c| !(c.is_control() || is_format(*c) || is_quote(*c) || *c == '\\')) {
@@ -59,15 +60,18 @@ fn quoted(s: &str, max: usize) -> String {
     format!("\"{}\"", plain(s, max))
 }
 
-/// A double quote or a mark drawn like one: `"`, its full-width and modifier forms, the double quotation marks of
-/// Unicode's initial and final punctuation (`Pi`, `Pf`: guillemets, curly double quotes, the substitution and
-/// transposition marks), the double primes and the CJK quotation marks and ditto mark. Single-quote look-alikes (`'`,
-/// `‘`, `’`, `‹`, `›`) stay: an apostrophe is part of many names.
+/// A double quote or one of the common marks drawn like one: `"`, its full-width and modifier forms, the double
+/// acute accent, the Hebrew gershayim, the double quotation marks of Unicode's initial and final punctuation (`Pi`,
+/// `Pf`: guillemets, curly double quotes, the substitution and transposition marks), the double, triple and quadruple
+/// primes, the heavy ornament quotes and the CJK quotation marks and ditto mark. A list: Unicode can add another, which
+/// the report's count answers. Single-quote look-alikes (`'`, `‘`, `’`, `‹`, `›`) stay: an apostrophe is part of many
+/// names.
 fn is_quote(c: char) -> bool {
     matches!(c,
-        '"' | '\u{ab}' | '\u{bb}' | '\u{2ba}' | '\u{2ee}' | '\u{201c}'..='\u{201f}' | '\u{2033}' | '\u{2036}'
-        | '\u{2e02}'..='\u{2e05}' | '\u{2e09}'..='\u{2e0a}' | '\u{2e0c}'..='\u{2e0d}' | '\u{2e1c}'..='\u{2e1d}'
-        | '\u{2e20}'..='\u{2e21}' | '\u{3003}' | '\u{301d}'..='\u{301f}' | '\u{ff02}')
+        '"' | '\u{ab}' | '\u{bb}' | '\u{2ba}' | '\u{2dd}' | '\u{2ee}' | '\u{5f4}' | '\u{201c}'..='\u{201f}' | '\u{2033}'
+        | '\u{2034}' | '\u{2036}' | '\u{2057}' | '\u{275d}'..='\u{275e}' | '\u{2e02}'..='\u{2e05}' | '\u{2e09}'..='\u{2e0a}'
+        | '\u{2e0c}'..='\u{2e0d}' | '\u{2e1c}'..='\u{2e1d}' | '\u{2e20}'..='\u{2e21}' | '\u{3003}' | '\u{301d}'..='\u{301f}'
+        | '\u{ff02}' | '\u{1f676}'..='\u{1f678}')
 }
 
 /// An invisible formatting character (Unicode's `Cf`, and the noncharacters beside it): zero-width characters, direction

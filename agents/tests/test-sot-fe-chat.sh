@@ -414,6 +414,24 @@ case_a_file_usage_error_sends_nothing_and_exits_1() {
     [ -z "$bad" ] && [ "$n" = 0 ] || { echo "$bad sent=$n"; return 1; }
 }
 
+# `sot-fe chat post`'s copy of the report's words is wire's `told_words`: every case of
+# rust/protocol/src/ops/told_words_cases.tsv (a reply's payload, a tab, the line), which the protocol test
+# `sot_fe_and_the_wire_print_the_same_report` asserts on the wire's side, is printed here exactly.
+case_sot_fe_prints_the_wire_report_for_every_case() {
+    local cases="$SCRIPT_DIR/../../rust/protocol/src/ops/told_words_cases.tsv" bad="" n=0 payload line tab
+    tab="$(printf '\t')"
+    [ -f "$cases" ] || { echo "no $cases"; return 1; }
+    while IFS= read -r row; do
+        case "$row" in '#'*|'') continue ;; esac
+        payload="${row%%"$tab"*}"; line="${row#*"$tab"}"
+        if printf '%s' "$payload" | jq -e 'has("file")' >/dev/null; then file_answered "$payload"; else answered "$payload"; fi
+        stop_stub_daemon
+        n=$((n + 1))
+        { [ "$CH_RC" = 0 ] && [ "$CH_OUT" = "$line" ]; } || bad="$bad [want: $line | got rc=$CH_RC: $CH_OUT]"
+    done < "$cases"
+    [ "$n" -ge 10 ] && [ -z "$bad" ] || { echo "cases=$n$bad"; return 1; }
+}
+
 # The daemon's report cannot be forged by a member's names (chat guarantee 35): the reviewer's pair, whose real name
 # holds `x), Ada (Ada Lovelace`, prints as one entry, and the printed line splits back on its quotes into exactly the
 # entries sent, a handle after one of them included.
@@ -457,6 +475,7 @@ check "a file post is one chat.resolve, then one chat.post_file with node, threa
 check "each file outcome prints its words and exits with its code"                         case_each_file_outcome_has_its_words_and_exit_code
 check "no answer to the file post is one request, never two, and exit 3"                    case_no_answer_to_the_file_post_is_one_request_and_exit_3
 check "a file usage error sends nothing and exits 1"                                       case_a_file_usage_error_sends_nothing_and_exits_1
+check "sot-fe prints wire's report for every case of told_words_cases.tsv"                case_sot_fe_prints_the_wire_report_for_every_case
 check "the mentioned report splits back into exactly the entries sent"                      case_the_mentioned_report_splits_back_into_the_entries_sent
 check "each wait is past the daemon's own bounds for that post, with a margin"             case_each_wait_is_past_the_daemons_own_bounds
 

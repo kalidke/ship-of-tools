@@ -159,8 +159,9 @@ in double quotes and parentheses, then their Slack handle, which no one else in 
 
 `posted; mentioned 1: "Ada" ("Ann Dee") @ann.dee`
 
-Names are shown without double quotes, marks that look like them, backslashes or invisible characters, so whatever a
-member puts in their name, each quoted name is one member's, and the count says how many there are.
+Names are shown without double quotes, the common marks drawn like them, backslashes or invisible characters, so a
+double quote on the status line always begins or ends a name. The count before each list says how many people it
+names; trust it if a name seems to hold more than one.
 
 A comma, a period, a hyphen or `'s` may follow the name, and `_`, `*` or `~` may surround it (`_@Ada_`). Nothing is
 looked up inside `` `code` ``, a fenced code block, a line that starts with `>`, or an address such as

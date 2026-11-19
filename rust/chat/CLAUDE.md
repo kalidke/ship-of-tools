@@ -960,15 +960,17 @@ bot identity, workspace name, read-pacing instant, name cache, member list (guar
    workspace, kept to letters, digits, `.`, `_` and `-` (else the member's id) and cut to 40 bytes with no mark, so no
    two entries are alike whatever names a member copies. Every name part is made by `plain`: no control or invisible
    formatting character (`Cc`, `Cf`: zero-width characters, direction marks, overrides and isolates, the word joiner,
-   the soft hyphen, tags), no `"` and no mark drawn like one (`is_quote`: the double quotation marks of `Pi` and `Pf`,
-   `U+FF02`, `U+02BA`, `U+02EE`, `U+201C` to `U+201F`, `U+2033`, `U+2036`, `U+3003`, `U+301D` to `U+301F`; single-quote
+   the soft hyphen, tags), no `"` and none of the common marks drawn like one (`is_quote`, a list: the double quotation
+   marks of `Pi` and `Pf`, `U+FF02`, `U+02BA`, `U+02DD`, `U+02EE`, `U+05F4`, `U+201C` to `U+201F`, `U+2033`, `U+2034`,
+   `U+2036`, `U+2057`, `U+275D`, `U+275E`, `U+3003`, `U+301D` to `U+301F`, `U+1F676` to `U+1F678`; single-quote
    look-alikes stay, an apostrophe being part of many names), no `\`, whitespace runs one space, trimmed, a part past 55
    bytes cut and ended with `…`; an empty part shows as `""`. An entry is therefore at most `ENTRY` = 159 bytes, the one
    bound, within wire's `MAX_NAME` (160) that the window's lenient reader keeps (`every_entry_ends_with_the_handle_and_fits_its_bound`
    pins an entry at it with the longest handle and the longest id). A double quote in a report is always structure,
-   never data, and nothing in a name looks like one: no name a member chooses can make one entry read as two or change
-   another's (`no_member_name_can_forge_the_report`, the reviewer's forged pair, look-alike quotes and a table of hostile
-   names, split back into exactly the entries sent). The same entries name a `several_members` entry's candidates, and
+   never data: no name a member chooses can make one entry parse as two or change another's, and the common marks drawn
+   like a double quote are removed, while the count before each list says how many people it names, whatever a mark the
+   list misses looks like (`no_member_name_can_forge_the_report`, the reviewer's forged pair, each removed mark and a
+   table of hostile names, split back into exactly the entries sent). The same entries name a `several_members` entry's candidates, and
    the typed name a `ChatUnlinked` echoes is `"@name"` by the same function. The report's words are wire's one form,
    `told_words`, which the window prints and `sot-fe chat post` copies: `; mentioned <n>: <entries>` and `; not
    linked: <name> (<reason>)`, a several entry `(several members, <n>: <entries>)`, the count the number of people a

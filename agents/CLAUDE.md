@@ -362,7 +362,8 @@ of each.
   The text, handle and thread reach `jq` on stdin. Exit 0 with `posted <ts>`, then the report in wire's one form (`told_words`, which jq copies): `; mentioned <n>:
   <entries>` for the members the post mentions and `; not linked: "@<name>" (<reason>[, <n>: <candidates>])` for each
   `@` name the daemon left as text, entries as the daemon made them (`"display" ("real") @handle`), a count before each
-  list; 1 for usage; 2, nothing posted for certain, with
+  list (the copy is pinned to the wire's: `case_sot_fe_prints_the_wire_report_for_every_case` reads the pairs in
+  `rust/protocol/src/ops/told_words_cases.tsv`, which the protocol test asserts too); 1 for usage; 2, nothing posted for certain, with
   `refused <code> <words>` or `limited, wait <n> s`; 3, the post may exist, with `unknown: ...` (also a `handler_error`
   reply) or `no answer: ...` (also a hello the daemon refused, which cannot be told apart), each ending "do not send it
   again; ask the person to look in the channel". A caller tests the exit code, and never posts again on 3. The daemon refuses a row post under any name but the row's bound handle (chat contract, D13).

@@ -855,3 +855,27 @@ fn the_report_counts_the_people_before_each_list() {
     ];
     assert_eq!(told_words(&[], &unlinked), r#"; not linked: "@Zed" (no member), "@Cy" (several members, 2: "C1" @c1, "C2" @c2), and more"#);
 }
+
+/// The cases in `told_words_cases.tsv` (beside this file): each `posted` reply's line is `posted <ts>` (else `posted file
+/// <id>`) and `told_words`. `agents/tests/test-sot-fe-chat.sh` asserts `sot-fe chat post`'s output on the same file, so
+/// its copy of the words cannot drift from this one.
+#[test]
+fn sot_fe_and_the_wire_print_the_same_report() {
+    let cases: Vec<(&str, &str)> = include_str!("told_words_cases.tsv")
+        .lines()
+        .filter(|l| !l.starts_with('#') && !l.is_empty())
+        .map(|l| l.split_once('\t').expect("a payload, a tab and a line"))
+        .collect();
+    assert!(cases.len() >= 10);
+    for (payload, line) in cases {
+        let v: Value = serde_json::from_str(payload).unwrap();
+        let (lead, mentioned, unlinked) = if v.get("file").is_some() {
+            let ChatPostFileRes::Posted { file, ts, mentioned, unlinked } = serde_json::from_value(v).unwrap() else { panic!("{payload}") };
+            (ts.map_or(format!("posted file {file}"), |t| format!("posted {}", t.as_str())), mentioned, unlinked)
+        } else {
+            let ChatPostRes::Posted { ts, mentioned, unlinked } = serde_json::from_value(v).unwrap() else { panic!("{payload}") };
+            (format!("posted {}", ts.as_str()), mentioned, unlinked)
+        };
+        assert_eq!(format!("{lead}{}", told_words(&mentioned, &unlinked)), line, "{payload}");
+    }
+}

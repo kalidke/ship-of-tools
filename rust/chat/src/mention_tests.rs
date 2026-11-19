@@ -315,6 +315,10 @@ fn no_member_name_can_forge_the_report() {
     // Marks drawn like a double quote go too, so no name reads as a second entry to an eye; an apostrophe stays.
     let looks = "x\u{2ba}), \u{201c}Ada\u{201d} (\u{ff02}Ada\u{2033} \u{3003}\u{ab}L\u{bb}\u{2036}\u{301d}\u{301e}\u{2ee}\u{201e}";
     assert_eq!(super::plain(looks, 160), "x), Ada (Ada L");
+    // The marks round five found (gershayim, double acute, triple and quadruple primes, ornament quotes), each removed.
+    for mark in ['\u{5f4}', '\u{2dd}', '\u{2034}', '\u{2057}', '\u{275d}', '\u{275e}', '\u{1f676}', '\u{1f677}', '\u{1f678}'] {
+        assert_eq!(super::plain(&format!("x{mark}), {mark}Ada{mark}"), 160), "x), Ada", "U+{:04X}", u32::from(mark));
+    }
     assert_eq!(super::plain("O\u{2019}Brien \u{2018}Al\u{2019} O'Neil \u{2039}x\u{203a}", 160), "O\u{2019}Brien \u{2018}Al\u{2019} O'Neil \u{2039}x\u{203a}");
     // The typed name a report echoes, and the candidates, are made the same way.
     let twins = [Members::person("U0Q1", "Quo\"te", "A"), Members::person("U0Q2", "Quo\"te", "B")];

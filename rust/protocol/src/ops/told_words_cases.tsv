@@ -1,0 +1,16 @@
+# The report's lines: each case is a `posted` reply's payload (JSON, `chat.post`'s or `chat.post_file`'s), a tab, and the
+# line `sot-fe chat post` prints for it: `posted <ts>` (else `posted file <id>`) and then wire's `told_words`. Read by
+# `chat_tests::sot_fe_and_the_wire_print_the_same_report` (through `include_str!`) and by
+# `agents/tests/test-sot-fe-chat.sh` (`case_sot_fe_prints_the_wire_report_for_every_case`), so the two copies of the words
+# cannot drift. Every reason, both counts and caps, an entry with and without a real name, and both lists together.
+{"outcome":"posted","ts":"1700000000.000100"}	posted 1700000000.000100
+{"outcome":"posted","ts":"1700000000.000100","mentioned":["\"Ada Example\" @ada.example"]}	posted 1700000000.000100; mentioned 1: "Ada Example" @ada.example
+{"outcome":"posted","ts":"1700000000.000100","mentioned":["\"Ada\" (\"Ann Dee\") @ann.dee","\"Ben\" @ben"]}	posted 1700000000.000100; mentioned 2: "Ada" ("Ann Dee") @ann.dee, "Ben" @ben
+{"outcome":"posted","ts":"1700000000.000100","mentioned":["\"Ada\" @ada","\"Ben\" @ben",""]}	posted 1700000000.000100; mentioned 2 and more: "Ada" @ada, "Ben" @ben, and more
+{"outcome":"posted","ts":"1700000000.000100","unlinked":[{"name":"\"@Zed\"","why":"no_member"}]}	posted 1700000000.000100; not linked: "@Zed" (no member)
+{"outcome":"posted","ts":"1700000000.000100","unlinked":[{"name":"\"@Ben\"","why":"several_members","candidates":["\"Ben Smith\" @ben.smith","\"Ben Sample\" @ben.sample"]}]}	posted 1700000000.000100; not linked: "@Ben" (several members, 2: "Ben Smith" @ben.smith, "Ben Sample" @ben.sample)
+{"outcome":"posted","ts":"1700000000.000100","unlinked":[{"name":"\"@Cy\"","why":"several_members","candidates":["\"Cy One\" @c1","\"Cy Two\" @c2","\"Cy Three\" @c3","\"Cy Four\" @c4",""]}]}	posted 1700000000.000100; not linked: "@Cy" (several members, 4 and more: "Cy One" @c1, "Cy Two" @c2, "Cy Three" @c3, "Cy Four" @c4, and more)
+{"outcome":"posted","ts":"1700000000.000100","unlinked":[{"name":"\"@Ada\"","why":"members_unread"},{"name":"\"@Bo\"","why":"too_many_members"},{"name":"\"@channel\"","why":"channel_wide"},{"name":"\"@Ada\"","why":"too_long"},{"name":"\"@Zz\"","why":"later_reason"},{"name":"","why":"more"}]}	posted 1700000000.000100; not linked: "@Ada" (the member list could not be read), "@Bo" (the member list is too large), "@channel" (a session never notifies a whole channel), "@Ada" (the post would be too long), "@Zz" (not linked), and more
+{"outcome":"posted","ts":"1700000000.000100","mentioned":["\"Ada\" (\"Ann Dee\") @ann.dee"],"unlinked":[{"name":"\"@Zed\"","why":"no_member"},{"name":"\"@Ben\"","why":"several_members","candidates":["\"Ben Smith\" @ben.smith","\"Ben Sample\" @ben.sample"]}]}	posted 1700000000.000100; mentioned 1: "Ada" ("Ann Dee") @ann.dee; not linked: "@Zed" (no member), "@Ben" (several members, 2: "Ben Smith" @ben.smith, "Ben Sample" @ben.sample)
+{"outcome":"posted","file":"F0FILE","mentioned":["\"Ada Example\" @ada.example"],"unlinked":[{"name":"\"@Zed\"","why":"no_member"}]}	posted file F0FILE; mentioned 1: "Ada Example" @ada.example; not linked: "@Zed" (no member)
+{"outcome":"posted","file":"F0FILE","ts":"1700000800.000100","mentioned":["\"Ada please\" (\"x), Ada (Ada Lovelace\") @mal"]}	posted 1700000800.000100; mentioned 1: "Ada please" ("x), Ada (Ada Lovelace") @mal

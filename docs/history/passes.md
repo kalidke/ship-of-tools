@@ -3030,8 +3030,8 @@ the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the sa
     holds them ended at its step's five minutes with every test passed: `main` was red there for two landings. The
     local gate runs on Linux, where they took seconds. One commit: one font system per test, and no re-shape where
     the window makes none.
-  - A name after `@` in a post is a Slack mention (CHAT-MENTION-NOT-A-MENTION). One builder, six commits; a fresh
-    reviewer, four rounds. The daemon resolves the name at the post against the workspace's members (read under
+  - A name after `@` in a post is a Slack mention (CHAT-MENTION-NOT-A-MENTION). One builder, seven commits; a fresh
+    reviewer, five rounds. The daemon resolves the name at the post against the workspace's members (read under
     the bot's token, paged, bounded, cached ten minutes, bounded in time) and sends a mention token only for an id
     it resolved itself; everything typed is escaped as before. A whole name as Slack shows it beats a first name; a
     first name links when one member has it; anything else stays text and the poster is told who could be meant;
@@ -3044,5 +3044,7 @@ the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the sa
     put in double quotes. Round four found that a member who copied only another's real name got no handle, and that
     the skill's example was not one the rule makes: every entry now ends with the account's handle, marks drawn like
     a double quote are removed too, each list says how many people it names, and every report line the documents
-    show is asserted from the real function. Unproven: no person has been notified by such a mention; a stand-in
+    show is asserted from the real function. Round five found five more marks drawn like a double quote, now
+    removed, with the records saying what the count guarantees rather than how a name looks, and pinned `sot-fe`'s
+    copy of the report's words to the wire's with one file of replies and lines both suites read. Unproven: no person has been notified by such a mention; a stand-in
     answered for Slack.
