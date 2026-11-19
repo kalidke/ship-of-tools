@@ -2959,3 +2959,13 @@ the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the sa
     it made the row count depend on the pane's width. Three commits land, 05061453c, f0f5f17bf and 154d2d85b. Left
     open and filed: the drawer clips long lines, a program's own colors are dropped, typed code has no syntax
     colors, and the manual's still of the drawer shows the old colors. No person has looked at it.
+  - The status line on a full-height drawer's border (FULL-DRAWER-HIDES-ITS-ANSWERS), the replacement for the
+    cycle's refused fourth commit. The same builder, three rounds, 12:22 to 13:02; the same reviewer, rounds four
+    and five, to 13:09. The words that answer a person's action are drawn on the drawer's top border, from its title
+    to the next pane, so none is hidden and none changes the drawer's height; only an answer that is the preview
+    itself (a chat picture opened, the previewed file about to be posted) uncovers the preview, ending full height
+    and maximize alike, decided by what the last frame drew. Round four found that a full and maximized Chat said
+    the preview showed when it did not. Two commits land, 1305a2f99 and 7338f5194. Left by round five as notes and
+    taken up next: in a layout with no preview column the post key no longer posts at all, where it posted the
+    nav's selected file before; a picture opened there still shrinks the drawer to no purpose; and with the focus
+    on the agent pane the border's words are not shown below about 120 columns on the laptop layout.
