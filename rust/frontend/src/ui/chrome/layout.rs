@@ -80,7 +80,10 @@ impl LayoutGeom {
 /// Compute the geometry for one frame. `area` is the full chrome
 /// area (from ratatui's frame), `preset` selects the column shape,
 /// and `drawer_open` toggles whether the bottom drawer eats its
-/// configured fraction of vertical space. When `maximize` is `Some`,
+/// configured fraction of vertical space; `drawer_full` makes the open drawer stand the whole height of the columns
+/// it spans (see `LayoutPreset::full_span`), which are then not laid out, while every column right of it keeps the
+/// rect it has at the normal height. A preset where that cannot be right (the agent column first, or too small to lay
+/// out beside the drawer) keeps the normal height. When `maximize` is `Some`,
 /// the named slot fills the entire inner area and every other slot
 /// + every inner border collapses to zero — the wireframe degenerates
 /// to just the outer rectangle.
@@ -93,6 +96,7 @@ pub fn compute(
     area: Rect,
     preset: &LayoutPreset,
     drawer_open: bool,
+    drawer_full: bool,
     maximize: Option<Slot>,
 ) -> LayoutGeom {
     // Maximised mode: the focused slot eats the whole inner area; no
@@ -194,6 +198,10 @@ pub fn compute(
     let llm_idx = preset.columns.iter().position(|c| c.slot == Slot::Llm);
     let partial_drawer = drawer_top_y.is_some()
         && llm_idx.map(|i| i > 0 && spans[i - 1] >= 2).unwrap_or(false);
+    // The columns the drawer covers are hidden (not laid out) at full height, so the drawer, whose extent stays
+    // what it is at the normal height, is the only thing left of the agent column.
+    let full = drawer_full && drawer_top_y.is_some() && (partial_drawer || llm_idx.is_none());
+    let covered = |i: usize| full && llm_idx.is_none_or(|l| i < l);
 
     let mut cursor = inner_left;
     for (i, column) in preset.columns.iter().enumerate() {
@@ -223,6 +231,7 @@ pub fn compute(
             height,
         };
         match column.slot {
+            _ if covered(i) => {}
             Slot::Nav => geom.nav = Some(rect),
             Slot::Preview => geom.preview = Some(rect),
             Slot::Llm => geom.llm = Some(rect),
@@ -236,7 +245,7 @@ pub fn compute(
         cursor = cursor.saturating_add(span).saturating_add(1);
         // Record the inner vertical border position (one cell past
         // this column's right edge) — unless this is the last column.
-        if i + 1 < n {
+        if i + 1 < n && (!covered(i) || (partial_drawer && i + 1 == llm_idx.unwrap())) {
             let vline_x = cursor.saturating_sub(1);
             geom.vlines.push(vline_x);
             // The vline immediately to Llm's left runs the *full*
@@ -251,7 +260,7 @@ pub fn compute(
     // Drawer rect — partial-width when Llm pins the right side, full
     // chrome width otherwise.
     if let Some(y) = drawer_top_y {
-        let drawer_inner_top = y + 1;
+        let drawer_inner_top = if full { full_inner_top } else { y + 1 };
         let drawer_inner_bot = area.y + area.height - 2;
         if drawer_inner_top <= drawer_inner_bot {
             // Narrow only when the divider left of Llm was laid out.
@@ -278,8 +287,10 @@ pub fn compute(
                         Slot::Repl => geom.repl = Some(drawer_rect),
                     }
                 }
-                geom.drawer_x_end = drawer_x_end;
-                geom.hlines.push(y);
+                if !full {
+                    geom.drawer_x_end = drawer_x_end;
+                    geom.hlines.push(y);
+                }
             }
         }
     }

@@ -17,7 +17,7 @@ screens write `Cmd`. A letter in a key is always lowercase: `Ctrl+k` is Ctrl and
   and `f` for Files mode, which lists the project's files. Select the project's session in Sessions mode, or move
   between sessions with `Shift+ArrowLeft` and `Shift+ArrowRight`.
 - **The Chat panel.** The bottom of the window shows one thing at a time: the Julia REPL, a terminal, the monitor, Help
-  or the Chat panel. `Ctrl+k` shows the Chat panel there and gives it the keys; `Ctrl+k` again makes it as tall as the columns it spans, and a third `Ctrl+k` hides it. Its top line
+  or the Chat panel. `Ctrl+k` shows the Chat panel there and gives it the keys; `Ctrl+k` again makes it full height, and a third `Ctrl+k` hides it. Its top line
   reads `chat ·` and what it shows. What a key did is said on the status line, the line starting `status:` at the top
   of the navigation tree.
 - **The computer that runs your sessions.** On each of your computers, Ship of Tools' service (`sotd`, a background
@@ -51,7 +51,7 @@ screen lists its keys at its foot. A screen taller than the panel says `PageDown
 mouse wheel scroll it.
 
 The panel holds the codes you paste until it has all three, then sends them. Closing the panel before that (Escape,
-`Ctrl+k`, or selecting another session) drops every code pasted so far, and you start again at the first screen. Once
+pressing `Ctrl+k` until it hides, or selecting another session) drops every code pasted so far, and you start again at the first screen. Once
 the three are sent, closing the panel does not stop the check.
 
 ### The keys on each screen

@@ -26,7 +26,7 @@ pub(in crate::ui) enum PaneFocus {
 }
 
 impl PaneFocus {
-    fn slot(self) -> crate::ui::persist::settings::Slot {
+    pub(in crate::ui) fn slot(self) -> crate::ui::persist::settings::Slot {
         use crate::ui::persist::settings::Slot;
         match self {
             PaneFocus::NavTree => Slot::Nav,
@@ -106,9 +106,10 @@ impl DrawerContent {
         self != DrawerContent::Closed
     }
 
-    /// Toggle `slot` per the symmetric Ctrl+J / Ctrl+T rule: pressing a
-    /// drawer key opens its content, swaps to it if the other is showing,
-    /// and closes if its own content is already showing.
+    /// Toggle `slot`: opens its content, swaps to it if the other is
+    /// showing, and closes if its own content is already showing. A
+    /// drawer's key does this through `LayoutHelp::cycle_drawer`, which
+    /// puts a full height between open and closed.
     pub(in crate::ui) fn toggle(self, slot: DrawerContent) -> DrawerContent {
         if self == slot {
             DrawerContent::Closed
@@ -151,7 +152,6 @@ pub(in crate::ui) struct PaneRects {
 impl State {
     /// Delegate ordinary moves without changing prompts or notices.
     pub(in crate::ui) fn set_focus(&mut self, to: PaneFocus) {
-        self.layout_help.focus_landed(to);
         self.focus_prompts.set_focus(to);
     }
 

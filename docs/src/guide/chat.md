@@ -16,7 +16,7 @@ changed; see [Keybindings](../ref/keybindings.md).
   project, and follows the selection. In Slack, a session's posts are labeled `<handle> (row via Ship of Tools)`: there
   `row` means a session.
 - **Where it is.** The bottom of the window shows one thing at a time: the Julia REPL, a terminal, the monitor, Help or
-  the Chat panel. `Ctrl+k` shows the Chat panel there and gives it the keys; `Ctrl+k` again makes it as tall as the columns it spans, and a third `Ctrl+k` hides it. A click in the
+  the Chat panel. `Ctrl+k` shows the Chat panel there and gives it the keys; `Ctrl+k` again makes it full height, and a third `Ctrl+k` hides it. A click in the
   messages gives it the keys too, and Escape gives them back to the navigation tree, after closing an open thread first.
 - **Its top line.** The panel's first line reads `chat ·` and the channel (`chat · #lab-general`); when more than one
   Slack workspace is connected it names the workspace first (`chat · Alpha Lab · #lab-general`). After the channel it

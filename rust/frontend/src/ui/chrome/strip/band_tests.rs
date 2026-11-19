@@ -92,7 +92,7 @@ fn a_reserved_grid_still_lays_out_every_pane() {
             width: cols,
             height: rows,
         };
-        let geom = crate::ui::chrome::layout::compute(area, &preset, true, None);
+        let geom = crate::ui::chrome::layout::compute(area, &preset, true, false, None);
         let llm = geom.llm.expect("the Llm column must survive the reservation");
         let repl = geom.repl.expect("the drawer must survive the reservation");
         assert!(

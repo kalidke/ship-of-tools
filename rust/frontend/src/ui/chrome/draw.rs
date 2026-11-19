@@ -136,7 +136,10 @@ impl State {
         );
         self.nav_spill.observe(spill_cursor_now, self.settings.nav_spill_ms);
         let nav_spill_active = self.nav_spill.active();
-        let layout_preset = self.layout_help.effective_preset(self.settings.resolve_preset(self.monitor_aspect));
+        let base_preset = self.settings.resolve_preset(self.monitor_aspect);
+        self.layout_help.settle(base_preset, focus);
+        let drawer_full = self.layout_help.full_shown(base_preset, focus);
+        let layout_preset = self.layout_help.effective_preset(base_preset);
         // `drawer` was bound above (after the terminal lazy-spawn/close).
         let drawer_open = drawer.is_open();
         let (preview_name, monitor_host_label, monitor_host_connected) = self.pane_title_inputs();
@@ -150,7 +153,7 @@ impl State {
         let help_state = self.layout_help.help();
         let help_bindings = &self.bindings;
         let mut view = ChromeView {
-            layout_preset: &layout_preset, drawer_open, maximize_slot, nav_logo_row, focus, mode,
+            layout_preset: &layout_preset, drawer_open, drawer_full, maximize_slot, nav_logo_row, focus, mode,
             nav_prompt_line: &nav_prompt_line, lease_notice, nav_line: &nav_line, owed_line: &owed_line,
             status: &status, tree_empty, contrast_dim, concept_status: &concept_status,
             last_key: &last_key, nav_spill_active, preview_name: &preview_name,

@@ -12,7 +12,7 @@ fn area(w: u16, h: u16) -> Rect {
 
 /// Test helper: call `compute` without maximisation.
 fn compute_default(area: Rect, preset: &LayoutPreset, drawer_open: bool) -> LayoutGeom {
-    compute(area, preset, drawer_open, None)
+    compute(area, preset, drawer_open, false, None)
 }
 
 #[test]
@@ -89,7 +89,7 @@ fn partial_drawer_keeps_llm_full_height() {
     // With the drawer open, nav + preview should be shorter (clipped
     // at drawer_top) and llm should run the full inner height.
     let preset = LayoutPreset::default_ultrawide();
-    let g = compute(area(120, 40), &preset, true, None);
+    let g = compute(area(120, 40), &preset, true, false, None);
     let nav = g.nav.unwrap();
     let prev = g.preview.unwrap();
     let llm = g.llm.unwrap();
@@ -118,7 +118,7 @@ fn partial_drawer_not_applied_without_llm_column() {
     // with the drawer open, llm_left_vline stays None and the
     // drawer spans the whole chrome width (legacy behaviour).
     let preset = LayoutPreset::default_portrait();
-    let g = compute(area(60, 80), &preset, true, None);
+    let g = compute(area(60, 80), &preset, true, false, None);
     assert!(g.llm_left_vline.is_none());
     assert!(g.drawer_x_end.is_none());
     let repl = g.repl.unwrap();
@@ -131,7 +131,7 @@ fn partial_drawer_not_applied_without_llm_column() {
 #[test]
 fn maximize_fills_one_slot_zero_borders() {
     let preset = LayoutPreset::default_ultrawide();
-    let g = compute(area(120, 40), &preset, false, Some(Slot::Preview));
+    let g = compute(area(120, 40), &preset, false, false, Some(Slot::Preview));
     assert!(g.preview.is_some());
     assert!(g.nav.is_none());
     assert!(g.llm.is_none());
@@ -149,7 +149,7 @@ fn wireframe_right_edges_survive_a_partial_drawer() {
     use ratatui::{buffer::Buffer, layout::Rect};
     let area = Rect::new(0, 0, 60, 20);
     let paint = |p: &LayoutPreset| {
-        let geom = crate::ui::chrome::layout::compute(area, p, true, None);
+        let geom = crate::ui::chrome::layout::compute(area, p, true, false, None);
         let mut buf = Buffer::empty(area);
         draw_wireframe(
             &mut buf,
@@ -197,7 +197,7 @@ fn tiny_preview_width_with_drawer_open_does_not_panic() {
         drawer: Some(Slot::Repl),
         drawer_height: 0.40,
     };
-    let g = compute(area(160, 45), &preset, true, None);
+    let g = compute(area(160, 45), &preset, true, false, None);
     assert!(g.llm_left_vline.is_none());
     assert!(g.drawer_x_end.is_none());
     assert!(g.repl.is_some());
@@ -213,7 +213,7 @@ fn six_cell_wide_window_with_drawer_open_does_not_panic() {
         LayoutPreset::default_laptop(),
         LayoutPreset::default_portrait(),
     ] {
-        let g = compute(area(6, 20), &preset, true, None);
+        let g = compute(area(6, 20), &preset, true, false, None);
         assert!(g.llm_left_vline.is_none());
         assert!(g.repl.is_some());
     }
@@ -225,11 +225,11 @@ fn drawer_opens_only_from_seven_rows() {
     // of 3 exceeds the rows left after the 4 reserved), so none opens.
     let preset = LayoutPreset::default_ultrawide();
     for rows in 5..7 {
-        let g = compute(area(120, rows), &preset, true, None);
+        let g = compute(area(120, rows), &preset, true, false, None);
         assert!(g.repl.is_none(), "no drawer at {rows} rows");
         assert!(g.hlines.is_empty());
     }
-    let g = compute(area(120, 7), &preset, true, None);
+    let g = compute(area(120, 7), &preset, true, false, None);
     assert!(g.repl.is_some());
 }
 

@@ -243,7 +243,7 @@ pub(in crate::ui) fn navigation_chords(state: &mut State, key: KeyPress<'_>, lab
             // move_in walks only laid-out panes, so focus never
             // reaches an invisible pty.
             let preset = state.settings.resolve_preset(state.monitor_aspect);
-            let (columns, drawer) = state.layout_help.spatial_slots(preset);
+            let (columns, drawer) = state.layout_help.spatial_slots(preset, state.focus_prompts.focus());
             state.focus_prompts.move_focus(dir, &columns, drawer);
             // Keymap-driven label (Ctrl+Arrow on Windows/Linux,
             // Cmd+Arrow on macOS) instead of a hard-coded
@@ -316,7 +316,8 @@ pub(in crate::ui) fn layout_chords(state: &mut State, key: KeyPress<'_>, label: 
 
 pub(in crate::ui) fn drawer_chords(state: &mut State, key: KeyPress<'_>, label: String) -> ControlFlow<()> {
     let KeyPress { action, .. } = key;
-    // Ctrl+J: toggle the REPL drawer. VS Code's panel-toggle convention; reads
+    // A drawer's own key cycles it: closed, open, full height (`LayoutHelp::cycle_drawer`), closed.
+    // Ctrl+J: the REPL drawer. VS Code's panel-toggle convention; reads
     // intuitively as "show me the bottom panel". When
     // the drawer opens, focus moves into it so the user
     // can immediately type. When it closes, focus
@@ -324,8 +325,8 @@ pub(in crate::ui) fn drawer_chords(state: &mut State, key: KeyPress<'_>, label: 
     // landing pane).
     // Ctrl+J (Repl) and Ctrl+T (Terminal) are symmetric:
     // each opens its own drawer content, swaps to it if the
-    // other is showing, and closes if its own is already
-    // showing. Both share the `PaneFocus::Repl` drawer slot;
+    // other is showing, and steps its own on from open to full
+    // height to closed. Both share the `PaneFocus::Repl` drawer slot;
     // `state.layout_help.drawer()` decides which content renders (and, per
     // G4, where keystrokes route). When the drawer is open
     // focus moves into it; when it closes from the drawer,
@@ -346,7 +347,8 @@ pub(in crate::ui) fn drawer_chords(state: &mut State, key: KeyPress<'_>, label: 
         None
     };
     if let Some(slot) = drawer_key {
-        let effect = state.layout_help.cycle_drawer(slot, state.focus_prompts.focus());
+        let preset = state.settings.resolve_preset(state.monitor_aspect);
+        let effect = state.layout_help.cycle_drawer(slot, state.focus_prompts.focus(), preset);
         effect.apply(state, Some(label));
         return Break(());
     }

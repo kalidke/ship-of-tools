@@ -16,12 +16,15 @@ Monitor, Chat and Help into the drawer. Column order, widths and the drawer heig
 column.
 
 A drawer's own key steps it through three states: pressed with the drawer closed, it opens at the preset's height;
-pressed again, the drawer grows to the full height of the columns it spans, so the navigation tree and the preview
-(or, with no agent column, everything) are covered while the agent pane stays beside it; pressed a third time, it
-closes, and the next open is at the preset's height again. Another drawer's key swaps that drawer in and keeps the
-height. Help is always at the preset's height, over a full drawer too, and the full drawer is there when Help closes.
-Moving focus to the navigation tree or the preview, which a full drawer hides, brings the drawer back to the preset's
-height first.
+pressed again, the drawer grows to the full height of the columns above it and hides them, and no other pane moves or
+changes size: with the default layouts the navigation tree and the preview are hidden and the agent pane stays beside
+the drawer, and with a layout that has no agent column everything is hidden. A layout that puts the agent column first
+has no full height (it would cover the agent pane), and there the key goes from open to closed. Pressed a third time, the
+drawer closes, and the next open is at the preset's height again. Another drawer's key swaps that drawer in and keeps
+the height. Help is always at the preset's height, over a full drawer too, and the full drawer is there when Help
+closes. A full drawer is drawn only while the keys are in the drawer or in a pane it leaves visible: moving to a pane it
+hides (Escape gives the navigation tree the keys) shows the drawer at the preset's height, and the next press of its
+key makes it full again.
 
 This page walks each pane in turn — what it is, what fills it, and the keys
 that drive it — and links out to the guide behind it. For a first-session
@@ -54,7 +57,7 @@ than stacking:
 | [Help](#Help-drawer) | `F1`, or `Ctrl+?` twice | the focused pane's actions and their bindings, searchable |
 | [Chat](chat.md) | `Ctrl+k` | the held messages of the selected row's Slack channel, newest at the bottom; no key typed there reaches the REPL |
 
-Each session keeps its own drawer: whether it is open and which content it shows come back as you left them when you switch back to the session. A session you have not visited yet starts with the drawer closed; the session the window opened on keeps the drawer the window opened with. The Terminal is one shell for the window, so two sessions that show it show the same shell. The drawer's height (including full height), maximize and the wide preview belong to the window, not to a session, and a switch closes the Help drawer. The sessions' drawers are not kept across a window restart.
+Each session keeps its own drawer: whether it is open and which content it shows come back as you left them when you switch back to the session. A session you have not visited yet starts with the drawer closed; the session the window opened on keeps the drawer the window opened with. The Terminal is one shell for the window, so two sessions that show it show the same shell. The drawer's height (full height too: a session with no drawer open ends it), maximize and the wide preview belong to the window, not to a session, and a switch closes the Help drawer. The sessions' drawers are not kept across a window restart.
 
 Drawer toggles are **global** — they fire even when another pane holds focus. The drawer keys take their chords from the panes: while one is held, `Ctrl+k` (like `Ctrl+j`, `Ctrl+t` and `Ctrl+m`) opens its drawer and does not reach the agent pane, the REPL or the Terminal.
 

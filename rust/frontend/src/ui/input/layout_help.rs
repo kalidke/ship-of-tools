@@ -72,8 +72,9 @@ struct HelpOrigin { focus: PaneFocus, drawer: DrawerContent, maximized: bool }
 
 pub(in crate::ui) struct LayoutHelp {
     drawer: DrawerContent,
-    /// The open drawer stands the height of the columns it spans. Window-wide like the drawer's height, never parked
-    /// with a row, and only ever true while the drawer is open (`set_drawer`, `focus_landed`).
+    /// A drawer's key asked for full height. Window-wide like the drawer's height, never parked with a row, and only
+    /// true while the drawer is open (`set_drawer`); whether it is drawn is `full_shown`'s, and `settle` drops it
+    /// when it is not.
     full: bool,
     maximized: bool,
     wide_preview: bool,
@@ -120,16 +121,24 @@ impl LayoutHelp {
             help_start_pending: start_help, help_peek_start_pending: start_peek }
     }
     pub(in crate::ui) fn drawer(&self) -> DrawerContent { self.drawer }
-    #[cfg(test)]
-    pub(in crate::ui) fn full(&self) -> bool { self.full }
     /// Every change of the drawer goes through here, so a drawer that closes leaves no full height behind.
     fn set_drawer(&mut self, drawer: DrawerContent) {
         self.drawer = drawer;
         if !drawer.is_open() { self.full = false; }
     }
-    /// A focus that lands on the nav or preview pane, which a full drawer hides, returns the drawer to its height.
-    pub(in crate::ui) fn focus_landed(&mut self, focus: PaneFocus) {
-        if matches!(focus, PaneFocus::NavTree | PaneFocus::Preview) { self.full = false; }
+    /// Whether the drawer is drawn at full height. Only while a tenant (not Help) is shown, the preset has a full
+    /// height (`LayoutPreset::full_span`) and the focus is on a pane that height leaves drawn: the drawer or a column
+    /// right of it. Focus anywhere else, however it got there, shows the normal layout, so focus never rests on a
+    /// pane that is not drawn.
+    pub(in crate::ui) fn full_shown(&self, base: &LayoutPreset, focus: PaneFocus) -> bool {
+        if !self.full || !self.drawer.is_open() || self.drawer == DrawerContent::Help { return false; }
+        let preset = self.effective_preset(base);
+        preset.full_span().is_some_and(|n| focus == PaneFocus::Repl || preset.columns[n..].iter().any(|c| c.slot == focus.slot()))
+    }
+    /// A full height that is not shown is over: the next full height comes from the drawer's key. Help keeps it,
+    /// for the drawer Help covers. Called before each frame's layout and by the key.
+    pub(in crate::ui) fn settle(&mut self, base: &LayoutPreset, focus: PaneFocus) {
+        if self.drawer != DrawerContent::Help && !self.full_shown(base, focus) { self.full = false; }
     }
     /// Whether the chat is shown: the drawer is Chat, or Help whose saved origin is Chat. The origin survives the REPL
     /// opening over Help, but then the drawer is the REPL and the chat is not shown.
@@ -175,8 +184,12 @@ impl LayoutHelp {
     }
     /// A drawer's own key: closed opens it, open goes to full height, full closes it. Another tenant's key swaps and
     /// keeps the height. Callers that only close a drawer use `toggle_drawer`, one step whatever the height.
-    pub(in crate::ui) fn cycle_drawer(&mut self, tenant: DrawerContent, focus: PaneFocus) -> LayoutEffect {
-        if self.drawer != tenant || self.full { return self.toggle_drawer(tenant, focus); }
+    /// A preset with no full height (`full_span` is `None`) goes from open to closed.
+    pub(in crate::ui) fn cycle_drawer(&mut self, tenant: DrawerContent, focus: PaneFocus, base: &LayoutPreset) -> LayoutEffect {
+        self.settle(base, focus);
+        if self.drawer != tenant || self.full || self.effective_preset(base).full_span().is_none() {
+            return self.toggle_drawer(tenant, focus);
+        }
         self.full = true;
         LayoutEffect { focus: Some(PaneFocus::Repl), redraw: true, ..Default::default() }
     }
@@ -217,14 +230,18 @@ impl LayoutHelp {
     }
     pub(in crate::ui) fn effective_preset(&self, base: &LayoutPreset) -> LayoutPreset {
         let mut preset = if self.wide_preview() { base.wide_preview() } else { base.clone() };
-        // Help is always at the drawer's height; the full height comes back with the drawer Help covered.
-        if self.full && self.drawer != DrawerContent::Help { preset = preset.full_drawer(); }
         if self.drawer == DrawerContent::Help && preset.drawer.is_none() { preset.drawer = Some(Slot::Repl); }
         preset
     }
-    pub(in crate::ui) fn spatial_slots(&self, base: &LayoutPreset) -> (Vec<Slot>, Option<Slot>) {
+    pub(in crate::ui) fn spatial_slots(&self, base: &LayoutPreset, focus: PaneFocus) -> (Vec<Slot>, Option<Slot>) {
         let preset = self.effective_preset(base);
-        (preset.columns.iter().map(|c| c.slot).collect(), if self.drawer.is_open() { preset.drawer } else { None })
+        let mut columns: Vec<Slot> = preset.columns.iter().map(|c| c.slot).collect();
+        // At full height the drawer stands where the columns it covers were: the first column.
+        if let (true, Some(slot), Some(n)) = (self.full_shown(base, focus), preset.drawer, preset.full_span()) {
+            columns.splice(..n, [slot]);
+            return (columns, None);
+        }
+        (columns, if self.drawer.is_open() { preset.drawer } else { None })
     }
     pub(in crate::ui) fn open_help(&mut self, context: help::Context, focus: PaneFocus) -> LayoutEffect {
         if self.help_origin.is_none() {
@@ -237,7 +254,7 @@ impl LayoutHelp {
     }
     pub(in crate::ui) fn close_help(&mut self) -> LayoutEffect {
         let focus = if let Some(origin) = self.help_origin.take() {
-            self.drawer = origin.drawer;
+            self.set_drawer(origin.drawer);
             self.maximized = origin.maximized;
             origin.focus
         } else { self.set_drawer(DrawerContent::Closed); PaneFocus::NavTree };

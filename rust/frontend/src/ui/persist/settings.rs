@@ -292,17 +292,17 @@ impl LayoutPreset {
         p
     }
 
-    /// Full-height variant (a drawer's key pressed on an open drawer): the columns the drawer spans (those left of
-    /// the Llm column, else all) become one column of the drawer's slot and its summed width, and the drawer is
-    /// gone, so the pane stands the height of the columns it replaced. A preset with no drawer comes back unchanged.
-    pub fn full_drawer(&self) -> Self {
-        let Some(slot) = self.drawer else { return self.clone() };
-        let cut = self.columns.iter().position(|c| c.slot == Slot::Llm).filter(|&i| i > 0).unwrap_or(self.columns.len());
-        let width = self.columns[..cut].iter().map(|c| c.width).sum();
-        let mut p = self.clone();
-        p.columns.splice(..cut, [Column { slot, width }]);
-        p.drawer = None;
-        p
+    /// How many leading columns a drawer at full height covers: those left of the agent column (the ones the drawer
+    /// already spans), every column when the preset has none. `None` where full height cannot be right: no drawer,
+    /// or the agent column first, which would put the agent pane under the drawer. A preset that already lists a
+    /// `repl` column is not special: the drawer's rect wins over it at every height.
+    pub fn full_span(&self) -> Option<usize> {
+        self.drawer?;
+        match self.columns.iter().position(|c| c.slot == Slot::Llm) {
+            Some(0) => None,
+            Some(i) => Some(i),
+            None => Some(self.columns.len()),
+        }
     }
 }
 

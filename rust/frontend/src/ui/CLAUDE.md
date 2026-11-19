@@ -895,22 +895,33 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   `a_switch_while_help_shows_returns_the_focus_help_took_and_never_moves_it_into_the_entered_drawer`.
 - A drawer's own key cycles it (`LayoutHelp::cycle_drawer`, called by `drawer_chords` alone): closed opens it at the
   preset's height, an open one goes to full height, a full one closes; another tenant's key swaps and keeps the height.
-  `toggle_drawer` stays one step (open, swap or close) for every other caller (the Chat Connect step, the native fixtures),
-  so a toggle closes a full drawer at once. Full height is `LayoutPreset::full_drawer`, applied by `effective_preset`:
-  the columns the drawer spans (those left of the agent column, else all) become one column of the drawer's slot and the
-  preset has no drawer, so the agent pane stays beside it and every tenant draws into the rect it is given. The flag is
-  window-wide like the height, never in a parked view (a row with a drawer open meets a full one; a row with none is
-  never full), and `set_drawer` clears it whenever the drawer closes, by any path. Help is drawn at the preset's height
-  over a full drawer and the full height returns with the drawer under it. `State::set_focus` calls `focus_landed`, so
-  focus on the nav or preview, which a full drawer hides, first returns the drawer to its height (a focus set through
-  `FocusPrompts` alone, the spatial move and the scale prompt, cannot land there while the panes are hidden). Maximize
-  over a full drawer shows the drawer alone and restores to the full height. Limits: the rounding of the nav and preview
-  widths can move the agent pane's edge one cell between the heights; a preset that already lists a `repl` column shows
-  no change at full height; no person has used it; the Terminal's and REPL's resize at full height rest on the drawer
-  rect being read each frame (`term_size_observed`), the Monitor chart's on `plan` from `repl_cells`. Pinned by
-  `a_drawers_own_key_cycles_closed_open_full_closed`, `a_full_drawer_stands_the_height_of_the_columns_it_spans`,
-  `another_drawers_key_swaps_and_keeps_the_height`, `every_close_clears_the_full_height_and_a_toggle_closes_in_one_step`,
-  `focus_on_a_hidden_pane_returns_the_drawer_to_its_height`, `help_and_maximize_over_a_full_drawer` and
+  `toggle_drawer` stays one step (open, swap or close) for every other caller (the Chat Connect step, the native
+  fixtures), so a toggle closes a full drawer at once. Full height is a third state of `layout::compute`
+  (`drawer_full`), not a rewritten preset: the drawer keeps the horizontal extent it has at the normal height and takes
+  the whole inner height, the columns it spans (`LayoutPreset::full_span`: those left of the agent column, all when the
+  preset has none) are not laid out, and every column right of them keeps its rect at every window size, so the agent
+  pane and its terminal are neither moved nor resized by a press. A preset has no full height (`full_span` is `None`:
+  the agent column first or alone, or no drawer) and the key goes from open to closed on it; `compute` also keeps the
+  normal height where the agent column is too narrow to lay out beside the drawer. A `repl` column in a preset is not
+  special: the drawer's rect wins over it at every height. The invariant is that focus never rests on a pane that is
+  not drawn: `LayoutHelp::full_shown(base, focus)` is true only while the flag is set, a tenant (not Help) is shown, the
+  preset has a full height and the focus is the drawer or a column right of the covered ones, so a focus anywhere else,
+  by any path, lays out the normal height with no call to make; `spatial_slots` and the frame read the same function.
+  The flag itself is window-wide like the height, never in a parked view (a row with a drawer open meets a full one; a
+  row with none ends it), and `settle` (before each frame's layout, and in the key) drops it when it is not shown, so a
+  full drawer never comes back without its key; `set_drawer` drops it when the drawer closes, by any path, and Help
+  keeps it for the drawer Help covers, which is drawn at the normal height meanwhile. Maximize over a full drawer shows
+  the drawer alone and restores to the full height; the wide-preview key over one hides the agent column, so the
+  covered columns are all of them and the drawer fills the window. Limits: no person has used it; the Terminal's pty is
+  told the rows once each way (its width is unchanged), the REPL and Chat lay out from the rect each frame and the
+  Monitor chart is planned from it, which the view test pins for the rect and reading covers for the rest. Pinned by
+  `a_drawers_own_key_cycles_closed_open_full_closed`,
+  `full_height_covers_its_columns_and_moves_nothing_else_on_every_preset` (the three default presets and user presets
+  with the agent column first, alone, in the middle, with a `repl` column on either side of it, and a single column,
+  at widths 20 to 300), `another_drawers_key_swaps_and_keeps_the_height`,
+  `every_close_ends_the_full_height_and_a_toggle_closes_in_one_step`, `full_height_is_shown_only_while_the_focus_is_drawn`,
+  `no_key_path_rests_the_focus_on_a_pane_that_is_not_drawn` (Help then a spatial move then a row switch or a run,
+  a reveal of the agent, the wide-preview key), `help_and_maximize_over_a_full_drawer` and
   `chrome::view::tests::every_tenant_fills_the_rect_a_full_height_drawer_stands_in`.
 - Maximize follows focus, yields to a leave line without clearing, and leaves spatial navigation on the preset.
   Context-admitted restore peels maximize before gated wide restoration. Wide enable bounces only Llm; admitted

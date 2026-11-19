@@ -48,6 +48,8 @@ pub(super) type NavRow = (
 pub(super) struct ChromeView<'a> {
     pub(super) layout_preset: &'a crate::ui::persist::settings::LayoutPreset,
     pub(super) drawer_open: bool,
+    /// The open drawer stands the whole height of the columns it spans (`compute`'s `drawer_full`).
+    pub(super) drawer_full: bool,
     pub(super) maximize_slot: Option<crate::ui::persist::settings::Slot>,
     pub(super) nav_logo_row: bool,
     pub(super) focus: PaneFocus,
@@ -233,7 +235,7 @@ impl ChromeView<'_> {
         &self,
         area: ratatui::layout::Rect,
     ) -> (crate::ui::chrome::layout::LayoutGeom, ratatui::layout::Rect, ratatui::layout::Rect, ratatui::layout::Rect, ratatui::layout::Rect, ratatui::layout::Rect) {
-        let ChromeView { layout_preset, drawer_open, maximize_slot, nav_logo_row, .. } = *self;
+        let ChromeView { layout_preset, drawer_open, drawer_full, maximize_slot, nav_logo_row, .. } = *self;
         // Inner divisions positioned by the user-configurable
         // settings (defaults 50/50, see settings.toml). Range
         // clamped to [10, 90] at parse time so the math here
@@ -255,7 +257,7 @@ impl ChromeView<'_> {
         // `cols >= 2 && rows >= 2` similarly keeps the BL
         // backend safe). Toggle: Ctrl+z. A leave's line restores the
         // panes (`maximize_slot`).
-        let geom = crate::ui::chrome::layout::compute(area, &layout_preset, drawer_open, maximize_slot);
+        let geom = crate::ui::chrome::layout::compute(area, &layout_preset, drawer_open, drawer_full, maximize_slot);
         // Names preserved so the rest of the closure reads
         // unchanged: nav = old TL (left column), preview = old
         // TR (middle column), llm = old BL (rightmost column

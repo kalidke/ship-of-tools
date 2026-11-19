@@ -119,7 +119,7 @@ struct NavFrame<'a> {
     alone: Option<u16>,
     /// What the Chat drawer shows in its body instead of records.
     body: Option<&'a crate::ui::drawer::chat::Body>,
-    /// The drawer at full height (`LayoutPreset::full_drawer`) instead of its own.
+    /// The drawer at full height instead of its own.
     full: bool,
 }
 
@@ -134,8 +134,7 @@ fn paint_chrome_nav(
     nav: NavFrame<'_>,
 ) -> (Vec<String>, u16, ratatui::layout::Rect, (usize, usize), ratatui::layout::Rect, u16, ratatui::layout::Rect, Vec<NavSpillSeg>, u16) {
     let (repl_input, repl_lines, scroll, drawer) = repl;
-    let mut preset = crate::ui::persist::settings::LayoutPreset::default_laptop();
-    if nav.full { preset = preset.full_drawer(); }
+    let preset = crate::ui::persist::settings::LayoutPreset::default_laptop();
     let status = status.to_string();
     let prompt = nav.alone.is_none().then(|| ("delete AA05\rBB05? [y/N]".to_string(), String::new()));
     let none: Option<String> = None;
@@ -154,6 +153,7 @@ fn paint_chrome_nav(
     let mut view = ChromeView {
         layout_preset: &preset,
         drawer_open: true,
+        drawer_full: nav.full,
         maximize_slot: None,
         nav_logo_row: false,
         focus: PaneFocus::NavTree,
