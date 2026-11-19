@@ -1,7 +1,8 @@
 //! The Slack Web API calls the first chat stage needs: `auth.test` (and `identify`, the setup's, before a workspace is
 //! configured), `bots.info` for the bot's app, channel history and thread replies (paged), `chat.postMessage` under a
 //! custom author, a file shared into a channel (Slack's three upload steps), the channel picker's calls (the channel
-//! list, one channel's facts, one join), and author names through a bounded cache. Every call goes out through `http`
+//! list, one channel's facts, one join), author names through a bounded cache, and the member list a post's `@` names are
+//! linked from (`mention`). Every call goes out through `http`
 //! and comes back as the wire record through `normalize`; there is no second record and no second HTTP path.
 //! No socket, no file method, no configuration: the caller hands in the `Secret` and a file's bytes.
 
@@ -13,11 +14,13 @@ use std::time::Duration;
 
 use reqwest::Url;
 use serde_json::{json, Value};
-use sot_protocol::chat::{escape_text, post_text_fits, text_segments, ChatName, ChatRecord, Origin, TextSegment, Ts, PICTURE_MIMES};
+use sot_protocol::chat::{escape_text, post_text_fits, text_segments, ChatName, ChatRecord, Origin, TextSegment, Ts, MAX_TEXT, PICTURE_MIMES};
+use sot_protocol::ops::{ChatUnlinked, ChatUnlinkedWhy};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::time::Instant;
 
 use crate::http::{Http, HttpError, Request, Response, Secret, MAX_BODY, MAX_SCAN_BODY};
+use crate::mention::{link, Linked, Member, Roster};
 use crate::normalize::{clean, normalize, ts_key, valid_id, Context, Normalized, MAX_FILENAME, MAX_MENTIONS, MAX_NAME};
 use crate::service::{End, BOT_TOKEN_REFUSED};
 use crate::watch::MAX_CHANNELS;
@@ -51,6 +54,14 @@ pub const MAX_RETRY: Duration = Duration::from_secs(sot_protocol::ops::MAX_RETRY
 const LIST_PAGE: usize = 200;
 const MAX_LIST_PAGES: usize = 5;
 const _: () = assert!(LIST_PAGE * MAX_LIST_PAGES == MAX_LISTED);
+/// The member list's page size and the pages one walk reads: a workspace of more than `MAX_MEMBERS` people, bots and
+/// deactivated accounts links no name. Each page is bounded by `MEMBERS_BODY`.
+const MEMBER_PAGE: usize = 200;
+const MAX_MEMBER_PAGES: usize = 10;
+pub const MAX_MEMBERS: usize = MEMBER_PAGE * MAX_MEMBER_PAGES;
+const MEMBERS_BODY: usize = 4 << 20;
+/// How long a member list read serves posts before the next post that names someone reads it again.
+pub const MEMBERS_FRESH: Duration = Duration::from_secs(600);
 
 const BASE: &str = "https://slack.com/api/";
 const JSON: &str = "application/json; charset=utf-8";
@@ -546,6 +557,8 @@ pub struct Api {
     /// Reads are not eligible before this instant (the last rate limit's retry header).
     eligible: Mutex<Option<Instant>>,
     names: Mutex<Names>,
+    /// The workspace's people as the last whole `users.list` walk read them, and when (guarantee 35).
+    members: tokio::sync::Mutex<Option<(Instant, Arc<Roster>)>>,
     closed: AtomicBool,
     /// The permits it draws on, each held across every step of one transfer: its own unless it was given shared ones.
     transfers: Transfers,
@@ -652,6 +665,7 @@ impl Api {
             own: Mutex::new(None),
             eligible: Mutex::new(None),
             names: Mutex::new(Names::default()),
+            members: tokio::sync::Mutex::new(None),
             closed: AtomicBool::new(false),
             transfers: Transfers::new(),
             name: Mutex::new(None),
@@ -906,9 +920,7 @@ impl Api {
         self.own.lock().unwrap().clone().ok_or(ApiError::NoIdentity)
     }
 
-    /// Post once: a row's under a custom author, a person's under their own user token and with nothing of the app
-    /// (`Err(NoPersonToken)` unsent when none is held; never the bot's token instead). `thread`: a parent's `ts`, to reply. Input the post cannot carry is refused before anything is sent (`Err`); from
-    /// there the result is a `PostOutcome`, and no path resends.
+    /// `post_linked`'s outcome alone.
     pub async fn post(
         &self,
         channel: &str,
@@ -917,6 +929,21 @@ impl Api {
         name: &str,
         text: &str,
     ) -> Result<PostOutcome, ApiError> {
+        self.post_linked(channel, thread, kind, name, text).await.map(|(outcome, _)| outcome)
+    }
+
+    /// Post once: a row's under a custom author, a person's under their own user token and with nothing of the app
+    /// (`Err(NoPersonToken)` unsent when none is held; never the bot's token instead). `thread`: a parent's `ts`, to reply. Input the post cannot carry is refused before anything is sent (`Err`); from
+    /// there the result is a `PostOutcome`, and no path resends. The text's `@` names are linked (`linked`), and the
+    /// names left as text are returned with the outcome.
+    pub async fn post_linked(
+        &self,
+        channel: &str,
+        thread: Option<&str>,
+        kind: PostKind,
+        name: &str,
+        text: &str,
+    ) -> Result<(PostOutcome, Vec<ChatUnlinked>), ApiError> {
         if self.is_closed() {
             return Err(ApiError::Closed);
         }
@@ -926,9 +953,12 @@ impl Api {
         if !valid_id(channel) || (kind == PostKind::Row && !author_ok(name)) {
             return Err(ApiError::BadRequest);
         }
-        let text = slack_text(text)?;
+        if text.is_empty() || !post_text_fits(text) {
+            return Err(ApiError::BadRequest);
+        }
         let token = self.poster(kind)?;
-        let mut body = json!({"channel": channel, "text": text});
+        let linked = self.linked(text, kind, MAX_TEXT).await?;
+        let mut body = json!({"channel": channel, "text": linked.text});
         if kind == PostKind::Row {
             body["username"] = format!("{name} ({} via Ship of Tools)", kind.word()).into();
             body["metadata"] = json!({
@@ -950,7 +980,7 @@ impl Api {
         if let PostOutcome::Refused(code) = &outcome {
             self.refused(kind, code);
         }
-        Ok(outcome)
+        Ok((outcome, linked.unlinked))
     }
 
     /// One transfer permit, taken at once: `Err(Http(Busy))` while `MAX_TRANSFERS` are held, `Err(Closed)` for a closed
@@ -974,7 +1004,7 @@ impl Api {
     #[allow(clippy::too_many_arguments)]
     pub async fn post_file(
         &self,
-        _transfer: Transfer,
+        transfer: Transfer,
         channel: &str,
         thread: Option<&str>,
         kind: PostKind,
@@ -983,6 +1013,24 @@ impl Api {
         bytes: Vec<u8>,
         comment: Option<&str>,
     ) -> Result<FileOutcome, ApiError> {
+        let shared = self.post_file_linked(transfer, channel, thread, kind, name, file_name, bytes, comment).await;
+        shared.map(|(outcome, _)| outcome)
+    }
+
+    /// `post_file`, with the comment's `@` names linked as a post's are (the row's label never is) and the names left as
+    /// text returned with the outcome.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn post_file_linked(
+        &self,
+        _transfer: Transfer,
+        channel: &str,
+        thread: Option<&str>,
+        kind: PostKind,
+        name: &str,
+        file_name: &str,
+        bytes: Vec<u8>,
+        comment: Option<&str>,
+    ) -> Result<(FileOutcome, Vec<ChatUnlinked>), ApiError> {
         if self.is_closed() {
             return Err(ApiError::Closed);
         }
@@ -996,58 +1044,67 @@ impl Api {
         if !valid_id(channel) || (kind == PostKind::Row && !author_ok(name)) || !file_name_ok || !bytes_ok || comment == Some("") {
             return Err(ApiError::BadRequest);
         }
-        let comment = match kind {
-            PostKind::Row => {
-                let label = format!("{name} ({} via Ship of Tools)", kind.word());
-                Some(slack_text(&match comment {
-                    Some(c) => format!("{label}: {c}"),
-                    None => label,
-                })?)
-            }
-            PostKind::Person => comment.map(slack_text).transpose()?,
-        };
+        // A row's comment rides after its label, which is escaped and never linked.
+        let label = (kind == PostKind::Row).then(|| format!("{name} ({} via Ship of Tools)", kind.word()));
+        let typed = [label.as_deref(), comment].into_iter().flatten().collect::<Vec<_>>().join(": ");
+        if (label.is_some() || comment.is_some()) && !post_text_fits(&typed) {
+            return Err(ApiError::BadRequest);
+        }
         let share_url = self.url("files.completeUploadExternal", &[])?;
         let token = self.poster(kind)?;
-        let params = [("filename", file_name.to_string()), ("length", bytes.len().to_string())];
-        let v = match self.read_as(token.clone(), "files.getUploadURLExternal", &params, MAX_BODY).await {
-            Ok(v) => v,
-            Err(ApiError::Limited { retry_after, assumed }) => return Ok(FileOutcome::Limited { retry_after, assumed }),
-            Err(e) => {
-                let code = refusal(&e);
-                self.refused(kind, &code);
-                return Ok(FileOutcome::Refused(code));
+        let (comment, unlinked) = match (label, comment) {
+            (label, Some(c)) => {
+                let prefix = label.map(|l| escape_text(&format!("{l}: "))).unwrap_or_default();
+                let linked = self.linked(c, kind, MAX_TEXT - prefix.len()).await?;
+                (Some(prefix + &linked.text), linked.unlinked)
             }
+            (label, None) => (label.map(|l| escape_text(&l)), Vec::new()),
         };
-        let upload_url = v.get("upload_url").and_then(Value::as_str).filter(|u| u.len() <= MAX_URL);
-        let (Some(file), Some(upload_url)) = (answered_id(&v, "file_id"), upload_url) else {
-            return Ok(FileOutcome::Refused(ApiError::Malformed.code().into()));
-        };
-        // The upload URL carries its own grant: no bearer, and `Http` refuses a host that is not Slack's before a byte.
-        let upload = Request::post(upload_url, self.deadlines.transfer, "application/octet-stream", bytes);
-        match self.http.send(upload).await {
-            Ok(r) if (200..=299).contains(&r.status()) => {}
-            Ok(r) => return Ok(FileOutcome::Refused(format!("http_{}", r.status()))),
-            Err(e) => return Ok(FileOutcome::Refused(e.code().into())),
+        // The share's three steps: any return here is the outcome, with the names left as text.
+        let outcome = async {
+            let params = [("filename", file_name.to_string()), ("length", bytes.len().to_string())];
+            let v = match self.read_as(token.clone(), "files.getUploadURLExternal", &params, MAX_BODY).await {
+                Ok(v) => v,
+                Err(ApiError::Limited { retry_after, assumed }) => return FileOutcome::Limited { retry_after, assumed },
+                Err(e) => {
+                    let code = refusal(&e);
+                    self.refused(kind, &code);
+                    return FileOutcome::Refused(code);
+                }
+            };
+            let upload_url = v.get("upload_url").and_then(Value::as_str).filter(|u| u.len() <= MAX_URL);
+            let (Some(file), Some(upload_url)) = (answered_id(&v, "file_id"), upload_url) else {
+                return FileOutcome::Refused(ApiError::Malformed.code().into());
+            };
+            // The upload URL carries its own grant: no bearer, and `Http` refuses a host that is not Slack's before a byte.
+            let upload = Request::post(upload_url, self.deadlines.transfer, "application/octet-stream", bytes);
+            match self.http.send(upload).await {
+                Ok(r) if (200..=299).contains(&r.status()) => {}
+                Ok(r) => return FileOutcome::Refused(format!("http_{}", r.status())),
+                Err(e) => return FileOutcome::Refused(e.code().into()),
+            }
+            if self.is_closed() {
+                return FileOutcome::Refused(ApiError::Closed.code().into());
+            }
+            let mut body = json!({
+                "files": [{"id": file, "title": file_name}],
+                "channel_id": channel,
+            });
+            if let Some(comment) = comment {
+                body["initial_comment"] = comment.into();
+            }
+            if let Some(parent) = thread {
+                body["thread_ts"] = parent.as_str().into();
+            }
+            let share = Request::post(share_url, self.deadlines.post, JSON, body.to_string().into_bytes()).bearer(token);
+            let outcome = share_outcome(self.http.send(share).await, channel);
+            if let FileOutcome::Refused(code) = &outcome {
+                self.refused(kind, code);
+            }
+            outcome
         }
-        if self.is_closed() {
-            return Ok(FileOutcome::Refused(ApiError::Closed.code().into()));
-        }
-        let mut body = json!({
-            "files": [{"id": file, "title": file_name}],
-            "channel_id": channel,
-        });
-        if let Some(comment) = comment {
-            body["initial_comment"] = comment.into();
-        }
-        if let Some(parent) = thread {
-            body["thread_ts"] = parent.as_str().into();
-        }
-        let share = Request::post(share_url, self.deadlines.post, JSON, body.to_string().into_bytes()).bearer(token);
-        let outcome = share_outcome(self.http.send(share).await, channel);
-        if let FileOutcome::Refused(code) = &outcome {
-            self.refused(kind, code);
-        }
-        Ok(outcome)
+        .await;
+        Ok((outcome, unlinked))
     }
 
     /// Read one picture of a channel's, under one transfer permit (guarantee 33): `files.info` for the file, which must be
@@ -1119,25 +1176,34 @@ impl Api {
     /// The channels the bot can see: every public channel and the private ones it is in, as many pages as `MAX_LISTED`
     /// allows, each page one read. The list is whole or an error; `more` says Slack had another page when it stopped.
     pub async fn channels(&self) -> Result<ChannelList, ApiError> {
-        let mut channels = Vec::new();
+        let params = [("types", "public_channel,private_channel".to_string()), ("exclude_archived", "true".to_string())];
+        let (channels, more) = self.list("conversations.list", &params, "channels", (LIST_PAGE, MAX_LIST_PAGES, MAX_BODY), listed).await?;
+        Ok(ChannelList { channels, more })
+    }
+
+    /// A list method read whole: pages of `page` items under `params`, at most `pages` of them each bounded by `body`,
+    /// each item of `key` kept through `keep`. `more` says Slack had another page when it stopped. A page that is not
+    /// one, a cursor past `MAX_CURSOR` (`TooLarge`) or the one just sent (`Repeated`) fails the whole list.
+    async fn list<T>(
+        &self,
+        method: &str,
+        params: &[(&'static str, String)],
+        key: &str,
+        (page, pages, body): (usize, usize, usize),
+        keep: impl Fn(&Value) -> Option<T>,
+    ) -> Result<(Vec<T>, bool), ApiError> {
+        let mut items = Vec::new();
         let mut sent: Option<String> = None;
-        for _ in 0..MAX_LIST_PAGES {
-            let mut params = vec![
-                ("types", "public_channel,private_channel".to_string()),
-                ("exclude_archived", "true".to_string()),
-                ("limit", LIST_PAGE.to_string()),
-            ];
+        for _ in 0..pages {
+            let mut params = params.to_vec();
+            params.push(("limit", page.to_string()));
             params.extend(sent.clone().map(|c| ("cursor", c)));
-            let v = self.read("conversations.list", &params, MAX_BODY).await?;
-            let page = v
-                .get("channels")
-                .and_then(Value::as_array)
-                .filter(|c| c.len() <= LIST_PAGE)
-                .ok_or(ApiError::Malformed)?;
-            channels.extend(page.iter().filter_map(listed));
+            let v = self.read(method, &params, body).await?;
+            let listed = v.get(key).and_then(Value::as_array).filter(|c| c.len() <= page).ok_or(ApiError::Malformed)?;
+            items.extend(listed.iter().filter_map(&keep));
             let next = v.pointer("/response_metadata/next_cursor").and_then(Value::as_str).unwrap_or("");
             if next.is_empty() {
-                return Ok(ChannelList { channels, more: false });
+                return Ok((items, false));
             }
             if next.len() > MAX_CURSOR {
                 return Err(ApiError::TooLarge);
@@ -1147,7 +1213,44 @@ impl Api {
             }
             sent = Some(next.into());
         }
-        Ok(ChannelList { channels, more: true })
+        Ok((items, true))
+    }
+
+    /// `text` as a post sends it (guarantee 35): escaped, with its `@` names linked within `room` bytes. The member list
+    /// is read only when a name needs it, and a member linked is remembered by the name cache, so the post read back shows
+    /// the name at once. The caller has checked the text fits; a client closed meanwhile sends nothing.
+    async fn linked(&self, text: &str, kind: PostKind, room: usize) -> Result<Linked, ApiError> {
+        let mut linked = link(text, kind, Err(ChatUnlinkedWhy::MembersUnread), room);
+        if linked.wanted {
+            linked = match self.roster().await.as_deref() {
+                Ok(Roster::Read(members)) => link(text, kind, Ok(members), room),
+                Ok(Roster::TooMany) => link(text, kind, Err(ChatUnlinkedWhy::TooManyMembers), room),
+                Err(_) => linked,
+            };
+        }
+        linked.linked.iter().for_each(|(id, shown)| self.remember(id, shown));
+        if self.is_closed() {
+            return Err(ApiError::Closed);
+        }
+        Ok(linked)
+    }
+
+    /// The workspace's people: the last walk's while `MEMBERS_FRESH`, else one `users.list` walk under the bot's token,
+    /// all within `NAMES_DEADLINE` (another post's walk waited for included). A walk that fails or runs out of time is
+    /// `Err` and is not remembered; one that finds more than `MAX_MEMBERS` is remembered as `TooMany`.
+    async fn roster(&self) -> Result<Arc<Roster>, ()> {
+        let walk = async {
+            let mut held = self.members.lock().await;
+            if let Some((_, roster)) = held.as_ref().filter(|(at, _)| at.elapsed() < MEMBERS_FRESH) {
+                return Ok(roster.clone());
+            }
+            let page = (MEMBER_PAGE, MAX_MEMBER_PAGES, MEMBERS_BODY);
+            let (members, more) = self.list("users.list", &[], "members", page, Member::of).await.map_err(|_| ())?;
+            let roster = Arc::new(if more { Roster::TooMany } else { Roster::Read(members) });
+            *held = Some((Instant::now(), roster.clone()));
+            Ok(roster)
+        };
+        tokio::time::timeout(self.deadlines.names, walk).await.unwrap_or(Err(()))
     }
 
     /// One channel's facts, from one `conversations.info`. An id that is no channel's is refused unsent.
@@ -1583,15 +1686,6 @@ fn refusal(e: &ApiError) -> String {
         ApiError::Status(s) => format!("http_{s}"),
         other => other.code().into(),
     }
-}
-
-/// The one way a request body gets a `text`: plain text made Slack's, so no `<!channel>` or `<@U1>` in it pings or
-/// mentions. Empty, or escaped past the bound, it is refused unsent.
-fn slack_text(text: &str) -> Result<String, ApiError> {
-    if text.is_empty() || !post_text_fits(text) {
-        return Err(ApiError::BadRequest);
-    }
-    Ok(escape_text(text))
 }
 
 /// Slack's `error` code, only when it is `[a-z0-9_.]{1,64}`: its text is never copied.

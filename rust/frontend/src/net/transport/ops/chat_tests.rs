@@ -339,7 +339,7 @@ fn file_post_req() -> ChatPostFileReq {
 #[tokio::test]
 async fn a_file_post_without_its_answer_is_unknown_and_never_written_again() {
     for (payload, want) in [
-        (serde_json::json!({ "outcome": "posted", "file": "F0FILE" }), "Done(Posted { file: \"F0FILE\", ts: None })"),
+        (serde_json::json!({ "outcome": "posted", "file": "F0FILE" }), "Done(Posted { file: \"F0FILE\", ts: None, unlinked: [] })"),
         (serde_json::json!({ "error": "x", "code": "not_a_file" }), "Done(Refused { code: NotAFile })"),
         (serde_json::json!({ "error": "a panic's text", "code": "handler_error" }), "Done(Unknown)"),
         (serde_json::json!({ "unexpected": true }), "Done(Unknown)"),

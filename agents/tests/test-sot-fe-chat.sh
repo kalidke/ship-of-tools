@@ -237,6 +237,7 @@ case_each_outcome_has_its_words_and_exit_code() {
             || bad="$bad [$payload: rc=$CH_RC out=$CH_OUT]"
     done <<'EOF'
 {"outcome":"posted","ts":"1700000000.000100"}|0|posted 1700000000.000100
+{"outcome":"posted","ts":"1700000000.000100","unlinked":[{"name":"Zed","why":"no_member"},{"name":"channel","why":"channel_wide"},{"name":"cy","why":"later_reason"}]}|0|posted 1700000000.000100; not linked: @Zed (no member), @channel (a session never notifies a whole channel), @cy (not linked)
 {"outcome":"refused","code":"busy"}|2|refused busy the chat is busy; try again in a moment
 {"outcome":"refused","code":"bad_request"}|2|refused bad_request the request is not valid (empty or over-long text, or a name that is not this session's)
 {"outcome":"limited","retry_after_secs":12,"assumed":false}|2|limited, wait 12 s
@@ -374,6 +375,7 @@ case_each_file_outcome_has_its_words_and_exit_code() {
     done <<'EOF'
 {"outcome":"posted","file":"F0FILE","ts":"1700000800.000100"}|0|posted 1700000800.000100
 {"outcome":"posted","file":"F0FILE"}|0|posted file F0FILE
+{"outcome":"posted","file":"F0FILE","unlinked":[{"name":"Ada","why":"members_unread"}]}|0|posted file F0FILE; not linked: @Ada (the member list could not be read)
 {"outcome":"refused","code":"busy"}|2|refused busy the chat is busy; try again in a moment
 {"outcome":"refused","code":"failed"}|2|refused failed the chat request failed
 {"error":"the file is not a readable file in the project's folder","code":"not_a_file"}|2|refused not_a_file the file is not a readable file in the project's folder

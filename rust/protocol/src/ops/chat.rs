@@ -1,7 +1,7 @@
 // the project chat's operations and events (B2d): what the window and the daemon say about one watched channel
 
 use super::*;
-use crate::chat::{an_id, at_most, is_id, within, ChatRecord, Ts, MAX_ID, MAX_MIME, MAX_NAME, MAX_TEXT};
+use crate::chat::{an_id, at_most, is_id, within, ChatRecord, Ts, MAX_ID, MAX_MENTIONS, MAX_MIME, MAX_NAME, MAX_TEXT};
 
 /// The most messages a history page asks for or holds.
 pub const MAX_PAGE: u16 = 20;
@@ -536,12 +536,56 @@ pub struct ChatPostReq {
     pub text: String,
 }
 
+/// A name after `@` in a post that the daemon left as text, and why. At most `MAX_MENTIONS` on a reply.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChatUnlinked {
+    #[serde(deserialize_with = "within::<_, MAX_NAME>")]
+    pub name: String,
+    pub why: ChatUnlinkedWhy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatUnlinkedWhy {
+    NoMember,
+    SeveralMembers,
+    MembersUnread,
+    TooManyMembers,
+    /// `@channel`, `@here` or `@everyone` in a row's post: an agent never notifies a whole channel.
+    ChannelWide,
+    /// Linked, the text would pass `MAX_TEXT`.
+    TooLong,
+    /// A reason added later.
+    #[serde(other)]
+    Other,
+}
+
+impl ChatUnlinkedWhy {
+    /// The one fixed text of a reason, as the window and `sot-fe chat post` show it.
+    pub fn text(self) -> &'static str {
+        match self {
+            ChatUnlinkedWhy::NoMember => "no member",
+            ChatUnlinkedWhy::SeveralMembers => "several members",
+            ChatUnlinkedWhy::MembersUnread => "the member list could not be read",
+            ChatUnlinkedWhy::TooManyMembers => "the member list is too large",
+            ChatUnlinkedWhy::ChannelWide => "a session never notifies a whole channel",
+            ChatUnlinkedWhy::TooLong => "the post would be too long",
+            ChatUnlinkedWhy::Other => "not linked",
+        }
+    }
+}
+
 /// Reply to `chat.post`, by `outcome`. `refused`: definitely not posted. `limited`: not posted, and `retry_after_secs`
 /// is how long to wait (`assumed` when the wait is a guess). `unknown`: the post may exist, so read history, never resend.
+/// `posted` names the `@` names the daemon left as text.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum ChatPostRes {
-    Posted { ts: Ts },
+    Posted {
+        ts: Ts,
+        #[serde(default, skip_serializing_if = "Vec::is_empty", deserialize_with = "at_most::<_, _, MAX_MENTIONS>")]
+        unlinked: Vec<ChatUnlinked>,
+    },
     Refused { code: ChatCode },
     Limited {
         #[serde(deserialize_with = "retry_wait")]
@@ -587,6 +631,8 @@ pub enum ChatPostFileRes {
         file: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         ts: Option<Ts>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty", deserialize_with = "at_most::<_, _, MAX_MENTIONS>")]
+        unlinked: Vec<ChatUnlinked>,
     },
     Refused { code: ChatCode },
     Limited {

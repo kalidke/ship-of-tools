@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use crate::net::dial::HostKey;
 use crate::net::transport::{ChatEvt, ChatReply, OutgoingReq};
 use sot_protocol::ops::{
-    ChatChangedEvt, ChatCode, ChatHistoryReq, ChatHistoryRes, ChatPostFileReq, ChatPostFileRes, ChatPostReq, ChatPostRes, ChatService, ChatStatusEvt, ChatTarget, ChatWatchRes,
+    ChatChangedEvt, ChatCode, ChatHistoryReq, ChatHistoryRes, ChatPostFileReq, ChatPostFileRes, ChatPostReq, ChatPostRes, ChatService, ChatUnlinked, ChatStatusEvt, ChatTarget, ChatWatchRes,
     ChatWatchState, ChatUpper, MAX_PAGE,
 };
 use sot_protocol::chat::{ChatRecord, Ts};
@@ -53,8 +53,8 @@ pub(super) enum Fill {
 /// and one fe-net never wrote (the connection's daemon does not post plain text) is `Outdated`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum PostShown {
-    /// Proved made: a text posted, or a file shared (whose `ts` Slack's answer can lack).
-    Posted,
+    /// Proved made: a text posted, or a file shared (whose `ts` Slack's answer can lack), with the `@` names left as text.
+    Posted(Vec<ChatUnlinked>),
     Refused(ChatCode),
     /// The wait in seconds, and whether it is a guess.
     Limited(u64, bool),
@@ -73,7 +73,7 @@ pub(super) enum Posting {
 /// A post's reply, text or file, as the owner reads it: one table for both kinds.
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum PostReply {
-    Posted,
+    Posted(Vec<ChatUnlinked>),
     Refused(ChatCode),
     Limited(u64, bool),
     /// It may have been made: never refused, so never offered again.
@@ -85,7 +85,7 @@ pub(super) enum PostReply {
 impl From<ChatReply<ChatPostRes>> for PostReply {
     fn from(reply: ChatReply<ChatPostRes>) -> Self {
         match reply {
-            ChatReply::Done(ChatPostRes::Posted { .. }) => PostReply::Posted,
+            ChatReply::Done(ChatPostRes::Posted { unlinked, .. }) => PostReply::Posted(unlinked),
             ChatReply::Done(ChatPostRes::Refused { code }) => PostReply::Refused(code),
             ChatReply::Done(ChatPostRes::Limited { retry_after_secs, assumed }) => PostReply::Limited(retry_after_secs, assumed),
             ChatReply::Done(ChatPostRes::Unknown) | ChatReply::Refused(_) => PostReply::Unknown,
@@ -97,7 +97,7 @@ impl From<ChatReply<ChatPostRes>> for PostReply {
 impl From<ChatReply<ChatPostFileRes>> for PostReply {
     fn from(reply: ChatReply<ChatPostFileRes>) -> Self {
         match reply {
-            ChatReply::Done(ChatPostFileRes::Posted { .. }) => PostReply::Posted,
+            ChatReply::Done(ChatPostFileRes::Posted { unlinked, .. }) => PostReply::Posted(unlinked),
             ChatReply::Done(ChatPostFileRes::Refused { code }) => PostReply::Refused(code),
             ChatReply::Done(ChatPostFileRes::Limited { retry_after_secs, assumed }) => PostReply::Limited(retry_after_secs, assumed),
             ChatReply::Done(ChatPostFileRes::Unknown) | ChatReply::Refused(_) => PostReply::Unknown,
@@ -716,7 +716,7 @@ impl ChatOwner {
     pub(super) fn on_posted(&mut self, host: &HostKey, post: &Posting, reply: PostReply, now: Instant) -> Option<String> {
         self.posting.take_if(|(h, r)| h == host && r == post)?;
         let outcome = match reply {
-            PostReply::Posted => PostShown::Posted,
+            PostReply::Posted(unlinked) => PostShown::Posted(unlinked),
             PostReply::Refused(code) => PostShown::Refused(code),
             PostReply::Limited(secs, assumed) => {
                 self.wait_until = Some((now + Duration::from_secs(secs), assumed));
@@ -730,7 +730,7 @@ impl ChatOwner {
             }
             PostReply::Unknown => PostShown::Unknown,
         };
-        let made = (outcome == PostShown::Posted).then(|| post.target().row.clone());
+        let made = matches!(outcome, PostShown::Posted(_)).then(|| post.target().row.clone());
         self.took(outcome, matches!(post, Posting::File(_)));
         made
     }

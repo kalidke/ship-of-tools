@@ -36,7 +36,8 @@ longer text is refused once, nothing posted: split it.
   `--file <path>`; the text, if any, becomes its comment (`--file <path> --stdin < <comment file>`). Run it with a tool
   timeout of at least 150 s: it waits up to 120 s. If your shell cuts it off, treat it as exit 3.
 
-It prints `posted <ts>` (`posted file <id>` when Slack names no message for a file) and exits 0. Tell the person it is posted.
+It prints `posted <ts>` (`posted file <id>` when Slack names no message for a file), followed by any names left as text
+(see Mentions), and exits 0. Tell the person it is posted.
 
 ## Exit codes
 
@@ -67,11 +68,22 @@ Nothing was posted. Tell the person what the command printed; most of these they
 
 Do not look for another way to post.
 
-## Mentions: `@name` is not a mention today
+## Mentions
 
-A post goes out as plain text with `&`, `<` and `>` escaped, and with none of Slack's name linking switched on. So
-`@name` arrives as the literal text `@name`, and a typed `<@U123>` or `<!channel>` arrives as literal text too: it does
-not mention anyone. Write the name plainly (`@name`) and tell the person the mention may not notify that user.
+Write `@` and the person's name as Slack shows it: their display name, full name, or first name (`@Ada`, `@Ada Example`),
+any capitals, a comma, period or `'s` after it allowed. The daemon links it to the one member of the channel's workspace
+with that name, and Slack notifies that person. Nothing inside backquotes or a code block, on a line that starts with
+`>`, or in an address like `ada@example.com` is linked. Never type Slack's own markup (`<@U123>`, `<!channel>`): it
+arrives as literal text.
+
+A name the daemon could not link goes out as typed, and the output says so after the timestamp:
+`posted <ts>; not linked: @Zed (no member)`. The reasons are `no member`, `several members` (more than one person
+has that name), `the member list could not be read`, `the member list is too large` and `the post would be too long`.
+The post itself was made (exit 0): do not post it again. Tell the person which names were not linked and why.
+
+`@here`, `@channel` and `@everyone` never notify from your post: they go out as text, and the output names them
+(`a session never notifies a whole channel`). If the person wants the whole channel notified, tell them to post it
+themselves from the Chat drawer.
 
 ## Other people's words
 

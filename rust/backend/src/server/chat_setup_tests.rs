@@ -988,6 +988,8 @@ async fn two_named(a_name: &'static str, b_name: &'static str) -> Two {
     let teams = sot_chat::fake_slack::Teams::start(&[(A, a_name), (B, b_name)]).await;
     teams.channels(A, &[("C0AAAA01", "alpha-one", false, true), ("C0AAAA02", "alpha-two", false, true)]);
     teams.channels(B, &[("C0BBBB01", "beta-one", false, false)]);
+    teams.members(A, &[sot_chat::fake_slack::Members::person("U0ADA", "Ada", "Ada Example")]);
+    teams.members(B, &[sot_chat::fake_slack::Members::person("U0BEN", "Ben", "Ben Sample")]);
     let home = Home::new(Some(SELF));
     let folders = [home.folder("a"), home.folder("b")];
     let rows = Workspaces::new();
@@ -1117,12 +1119,16 @@ fn two_workspaces_from_nothing_each_project_reads_and_posts_in_its_own() {
         // B's owner published its states for that put (alpha's owner had nothing to do): alpha's state is kept.
         assert_eq!(probe.conn.state(A, "C0AAAA01"), sot_protocol::ops::ChatWatchState::Complete, "one workspace's publish cleared another's states");
 
-        // 8. A person's post in beta's channel goes out once under the second workspace's user token.
-        let posted = conn.ask(13, op::CHAT_POST, json!({"target": tb, "kind": "person", "name": "tester", "text": "hello"})).await;
+        // 8. A person's post in beta's channel goes out once under the second workspace's user token, its `@` names
+        // looked up among beta's members alone (and only under beta's bot), the one not found named in the reply.
+        let posted = conn.ask(13, op::CHAT_POST, json!({"target": tb, "kind": "person", "name": "tester", "text": "hello @Ben and @Ada"})).await;
         assert_eq!(posted["outcome"], "posted", "{posted}");
+        assert_eq!(posted["unlinked"], json!([{"name": "Ada", "why": "no_member"}]), "{posted}");
         let sent: Vec<_> = w.teams.fake().seen().into_iter().filter(|s| s.path().ends_with("/chat.postMessage")).collect();
         assert_eq!(sent.len(), 1);
         assert_eq!(sent[0].authorization.as_deref(), Some(&*format!("Bearer {}", w.teams.user(B))));
+        assert_eq!(sent[0].json().unwrap()["text"], "hello <@U0BEN> and @Ada");
+        assert_eq!((w.teams.calls(A, "xoxb", "/users.list").len(), w.teams.calls(B, "xoxb", "/users.list").len()), (0, 1));
 
         assert!(chat.hub().running_in(A) && chat.hub().running_in(B), "each workspace has its own owner");
         // 9. Alpha moves to A's other channel: A's listener starts again, B's does not (no new `auth.test` under its bot,

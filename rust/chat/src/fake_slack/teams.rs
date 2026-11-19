@@ -1,6 +1,6 @@
 //! Several Slack workspaces in one fake, each answering by the request's bearer: every workspace has its own app, with
 //! its bot, user and app-level tokens, its channels and its socket. `auth.test` names each bearer's workspace and its
-//! name, `bots.info` the bot's app; `apps.connections.open` under a workspace's app token answers a URL whose ticket names
+//! name, `bots.info` the bot's app, `users.list` its people; `apps.connections.open` under a workspace's app token answers a URL whose ticket names
 //! that workspace, and the upgrade's ticket picks its socket, whose hello and envelopes name its app. A bearer that is no
 //! workspace's, or a bot token `revoke` was called for, is refused with Slack's codes. The tokens are built at run time
 //! from the workspace's id and a fixed body, so no token-shaped literal is written.
@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
-use super::{FakeSlack, Identity, Reply, Seen};
+use super::{FakeSlack, Identity, Members, Reply, Seen};
 
 /// One listed channel: its id, its name, whether it is private, whether the workspace's app is in it.
 pub type TeamChannel = (&'static str, &'static str, bool, bool);
@@ -25,6 +25,7 @@ struct Team {
     id: &'static str,
     name: &'static str,
     channels: Mutex<Vec<TeamChannel>>,
+    members: Mutex<Vec<Value>>,
     revoked: AtomicBool,
     feed: mpsc::UnboundedSender<Value>,
     rx: Arc<tokio::sync::Mutex<mpsc::UnboundedReceiver<Value>>>,
@@ -63,7 +64,7 @@ impl Teams {
             .iter()
             .map(|&(id, name)| {
                 let (feed, rx) = mpsc::unbounded_channel();
-                Team { id, name, channels: Mutex::new(Vec::new()), revoked: AtomicBool::new(false), feed, rx: Arc::new(tokio::sync::Mutex::new(rx)) }
+                Team { id, name, channels: Mutex::new(Vec::new()), members: Mutex::new(Vec::new()), revoked: AtomicBool::new(false), feed, rx: Arc::new(tokio::sync::Mutex::new(rx)) }
             })
             .collect();
         let teams = Arc::new(teams);
@@ -123,6 +124,11 @@ impl Teams {
 
     pub fn channels(&self, id: &str, channels: &[TeamChannel]) {
         self.team(id).channels.lock().unwrap().extend_from_slice(channels);
+    }
+
+    /// The workspace's people, as its `users.list` answers them (`Members::person` entries).
+    pub fn members(&self, id: &str, people: &[Value]) {
+        self.team(id).members.lock().unwrap().extend_from_slice(people);
     }
 
     /// From now on the workspace's bot token is refused `token_revoked` on every call.
@@ -250,6 +256,7 @@ fn answer(teams: &Arc<Vec<Team>>, seen: &Seen, port: u16) -> Reply {
             Some(_) => Reply::json(&json!({"ok": true, "ts": "1700000999.000100"})),
             None => refusal("channel_not_found"),
         },
+        ("xoxb", "users.list") => Members(team.members.lock().unwrap().clone()).reply(seen).expect("a users.list request"),
         ("xoxb", "users.info") => Reply::json(&json!({"ok": true, "user": {"profile": {"display_name": "Name"}}})),
         _ => refusal("unknown_method"),
     }

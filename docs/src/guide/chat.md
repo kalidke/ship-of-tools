@@ -137,8 +137,26 @@ with `posting…` on the status line. Only Slack's answer that the post was made
 keeps it, and the status line says why. If the answer was lost (`may have been posted`), look at the channel before
 posting again: a post is never sent twice on its own.
 
-A post is plain text: what you type, a `<` included, arrives as typed, and `@here` and `<!channel>` arrive as plain
-text that pings no one.
+A post is plain text: what you type, a `<` included, arrives as typed, and a typed `<@U123>` or `<!channel>` arrives as
+plain text that pings no one. The one exception is a name after `@`, described next.
+
+### Mentioning someone
+
+Type `@` and the person's name as Slack shows it: their display name, their full name, or their first name when no
+other member of the workspace has it, in any capitals (`@Ada`, `@ada example`). Slack shows the name as a mention and
+notifies that person, as if you had picked them in Slack. A comma, a period or `'s` may follow the name. Nothing is
+looked up inside `` `code` ``, a fenced code block, a line that starts with `>`, or an address such as `ada@example.com`.
+Only the members of the project's own workspace are looked up, and Ship of Tools reads the workspace's member list
+again at most every 10 minutes, so a person who joined in the last few minutes may not be found.
+
+A name that cannot be linked goes out as you typed it, and the status line names it after the post, for example
+`posted; not linked: @Zed (no member)`. The reasons are `no member` (no one has that name), `several members` (more
+than one person has it: type more of the name), `the member list could not be read` (Slack did not answer within 10
+seconds; the post went out once, without waiting longer), `the member list is too large` (the workspace has more than
+2,000 accounts, people, bots and deactivated ones counted; no name is linked there), and `the post would be too long`.
+
+`@here`, `@channel` and `@everyone` notify the channel, as they do in Slack, when you post them from the Chat panel
+(Slack may still refuse them by the workspace's settings). A session's agent cannot: its `@channel` goes out as text.
 
 If the computer that runs your sessions holds no Slack code that posts as you (it was connected before Ship of Tools
 posted as you, or Slack stopped accepting the code), nothing is posted, and the panel shows the setup page's
@@ -151,7 +169,8 @@ kept: see
 `Ctrl+u` posts the file the preview pane shows, once, as your own message, with what you typed as its comment. The
 preview pane is the window's middle column, which shows the file selected in the navigation tree's Files mode (press
 `f` there). The file goes to the channel or thread your message was begun in, or, with nothing typed, to the channel and
-the thread open then. The status line says `shared <name> to <channel>` when it is posted, and the message is cleared.
+the thread open then. The status line says `shared <name> to <channel>` when it is posted, and the message is cleared. A name after `@`
+in the comment is a mention, as in a message.
 
 The file must be a file of the selected session's folder, at most 16 MiB (a fixed limit of Ship of Tools; a larger one
 is refused with `not posted: the file is larger than the chat carries`), and not one of the chat's own settings files. A picture opened from the chat is not a file of the project, so with one in the preview
@@ -209,8 +228,10 @@ The agent runs `sot-fe chat post [--thread <ts>] (<text> | --stdin)` in the sess
 by `--thread`, or else is a new message. It is sent once: the command prints `posted <ts>` and exits 0; exits 2 with
 `refused` and a reason, or `limited, wait <n> s`, when nothing was posted; and exits 3 with `unknown` or `no answer`
 when the post may exist, in which case the agent does not post it again and asks you to look in the channel. A reply is public to
-every member of the channel. A name typed as `@name` goes out as plain text and does not notify that person; the agent
-says so when you ask it to mention someone. The command posts only to the session's own project channel, for everyone
+every member of the channel. An `@name` in the agent's post or file comment mentions that person, as in yours
+([Mentioning someone](#Mentioning-someone)), and the command adds `; not linked: @<name> (<reason>)` after `posted <ts>`
+for each name it left as text. `@here`, `@channel` and `@everyone` are never a mention in an agent's post: they go out
+as text, and the command names them. The command posts only to the session's own project channel, for everyone
 in it: it cannot post to another channel or send a direct message.
 
 ### A figure from the agent
@@ -278,6 +299,7 @@ messages to be missed, the top line says `not up to date`.
 | The status line says | What to do |
 |---|---|
 | `posting…` | Wait for the post's answer. |
+| `posted; not linked: @<name> (<reason>)` | The post went out with that name as text; see [Mentioning someone](#Mentioning-someone). |
 | `nothing to post` | Type a message first. |
 | `not posted: <reason>`, such as `you are not in that channel in Slack; join it there first` | Fix the reason; the message is kept. |
 | `not posted: Slack asked for a pause; wait <n> s` | Wait, then press Enter again. |

@@ -1274,6 +1274,7 @@ fn no_project_word_reaches_a_screen() {
     use super::picker::{pair_words, Picker};
     use super::row_channel::Stand;
     use sot_protocol::ops::ChatPairRes;
+    use sot_protocol::ops::ChatUnlinkedWhy::{ChannelWide, MembersUnread, NoMember, Other, SeveralMembers, TooLong, TooManyMembers};
 
     let codes = {
         // A match with no wildcard: a code added later fails to compile here until its text is in the table.
@@ -1305,7 +1306,9 @@ fn no_project_word_reaches_a_screen() {
         said.push(post_words(&PostShown::Outdated, true, host).unwrap_or_default());
     }
     said.extend([wait_words(5, false), wait_words(5, true)]);
-    for shown in [PostShown::Posted, PostShown::Unknown, PostShown::Limited(3, false)] {
+    let unlinked = |why| PostShown::Posted(vec![sot_protocol::ops::ChatUnlinked { name: "Zed".into(), why }]);
+    let reasons = [NoMember, SeveralMembers, MembersUnread, TooManyMembers, ChannelWide, TooLong, Other].map(unlinked);
+    for shown in [PostShown::Posted(Vec::new()), PostShown::Unknown, PostShown::Limited(3, false)].into_iter().chain(reasons) {
         said.extend(post_words(&shown, false, "a"));
     }
     for code in codes {

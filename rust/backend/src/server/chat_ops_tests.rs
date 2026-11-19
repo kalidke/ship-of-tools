@@ -552,6 +552,13 @@ async fn row_verbs_target_current_thread_and_submit_once() {
     let sent: Vec<Value> = fake.seen().iter().filter(|s| s.path().ends_with("/chat.postMessage")).filter_map(|s| s.json()).collect();
     assert_eq!(sent.len(), 2, "one post for the window's and one for the row's");
     assert_eq!((sent[1]["thread_ts"].as_str(), sent[1]["username"].as_str()), (Some(thread), Some("alpha-h (row via Ship of Tools)")), "{}", sent[1]);
+    // A row's `@channel` stays text, and the reply names it (chat guarantee 35).
+    let mut wide = row_post(&rig.alpha, "C0AAAA", "alpha-h", None);
+    wide["text"] = json!("done @channel");
+    let posted = cli.ask(31, op::CHAT_POST, wide).await;
+    assert_eq!(posted["unlinked"], json!([{"name": "channel", "why": "channel_wide"}]), "{posted}");
+    let last = fake.seen().into_iter().rfind(|s| s.path().ends_with("/chat.postMessage")).and_then(|s| s.json()).unwrap();
+    assert_eq!(last["text"], "done @channel");
 }
 
 /// A file's bytes, as a test writes them into a row's folder.
@@ -607,6 +614,14 @@ async fn a_row_posts_a_file_of_its_folder_under_its_own_handle_once() {
     let limited = cli.ask(33, op::CHAT_POST_FILE, file_post(&rig.alpha, "C0AAAA", "row", "alpha-h", "files:figs/fit.png")).await;
     assert_eq!(limited, json!({"outcome": "limited", "retry_after_secs": 7, "assumed": false}));
     assert_eq!(uploads(&fake).len(), 10);
+    // A row's comment keeps `@here` as text, and the reply names it (chat guarantee 35).
+    mode.store(OK, Ordering::SeqCst);
+    let mut wide = file_post(&rig.alpha, "C0AAAA", "row", "alpha-h", "files:figs/fit.png");
+    wide["comment"] = json!("@here the fit");
+    let posted = cli.ask(34, op::CHAT_POST_FILE, wide).await;
+    assert_eq!(posted["unlinked"], json!([{"name": "here", "why": "channel_wide"}]), "{posted}");
+    let share = fake.seen().into_iter().rfind(|s| s.path().ends_with("/files.completeUploadExternal")).and_then(|s| s.json()).unwrap();
+    assert_eq!(share["initial_comment"], "alpha-h (row via Ship of Tools): @here the fit");
 }
 
 /// Runs `then` just before the daemon opens the file at `path`, once: a test's stand-in for another process acting

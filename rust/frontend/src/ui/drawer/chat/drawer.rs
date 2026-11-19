@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use sot_protocol::chat::{Ts, MAX_NAME};
 use sot_protocol::chat::slack_app_name;
-use sot_protocol::ops::{ChatChannel, ChatCode, ChatFileVariant, ChatHistoryReq, ChatPairRes, ChatPostFileReq, ChatPostFileRes, ChatPostKind, ChatPostReq, ChatPostRes, ChatResolveRes, ChatService, ChatTarget, ChatUnconfigured, ChatWorkspaceInfo};
+use sot_protocol::ops::{ChatChannel, ChatCode, ChatFileVariant, ChatHistoryReq, ChatPairRes, ChatPostFileReq, ChatPostFileRes, ChatPostKind, ChatPostReq, ChatPostRes, ChatResolveRes, ChatService, ChatTarget, ChatUnconfigured, ChatUnlinked, ChatWorkspaceInfo};
 
 use crate::net::dial::HostKey;
 use crate::net::transport::{ChatEvt, ChatReply, OutgoingReq};
@@ -170,10 +170,11 @@ pub(super) fn never_written(req: &OutgoingReq) -> Option<ChatEvt> {
 }
 
 /// What the status line says of a post's outcome, by whether it was a file post (`file`); a post made says nothing here
-/// (its draft is gone, and a file's share is said by `settle`).
+/// (its draft is gone, and a file's share is said by `settle`) unless a name in it was left as text.
 pub(super) fn post_words(shown: &PostShown, file: bool, host: &str) -> Option<String> {
     Some(match shown {
-        PostShown::Posted => return None,
+        PostShown::Posted(unlinked) if file || unlinked.is_empty() => return None,
+        PostShown::Posted(unlinked) => format!("posted{}", not_linked(unlinked)),
         // A file post sends no name: the daemon refuses a file whose name Slack cannot take.
         PostShown::Refused(ChatCode::BadRequest) if file => "not posted: the file's name is not one the chat can send".into(),
         PostShown::Refused(ChatCode::BadRequest) => "not posted: the chat name is not valid; fix the name = line under [chat] in settings.toml (the settings file this window loaded)".into(),
@@ -182,6 +183,12 @@ pub(super) fn post_words(shown: &PostShown, file: bool, host: &str) -> Option<St
         PostShown::Unknown => "may have been posted: check the channel before sending it again".into(),
         PostShown::Outdated => format!("not posted: update Ship of Tools on {}, then post again", computer(host)),
     })
+}
+
+/// The `@` names a post left as text, as the status line ends its words with them: nothing when there are none.
+pub(super) fn not_linked(unlinked: &[ChatUnlinked]) -> String {
+    let names: Vec<String> = unlinked.iter().map(|u| format!("@{} ({})", u.name, u.why.text())).collect();
+    if names.is_empty() { String::new() } else { format!("; not linked: {}", names.join(", ")) }
 }
 
 /// What the preview shows when `chat.post_file` asks for its file.
@@ -684,6 +691,10 @@ impl ChatDrawer {
             // Which Slack app the workspace is connected to, so the screen names the one to keep.
             outs.push((host.clone(), OutgoingReq::ChatWorkspaces));
         }
+        let unlinked = match &reply {
+            PostReply::Posted(unlinked) => not_linked(unlinked),
+            _ => String::new(),
+        };
         let mut made = None;
         outs.extend(self.owner_outs(|o| {
             made = o.on_posted(host, &post, reply, now);
@@ -698,7 +709,7 @@ impl ChatDrawer {
             }
             if let Posting::File(req) = &post {
                 let name = req.node_id.rsplit('/').next().unwrap_or(&req.node_id).trim_start_matches("files:");
-                self.notice = Some(format!("shared {name} to {}", self.rows.label(target.channel.as_str())));
+                self.notice = Some(format!("shared {name} to {}{unlinked}", self.rows.label(target.channel.as_str())));
             }
         }
         outs

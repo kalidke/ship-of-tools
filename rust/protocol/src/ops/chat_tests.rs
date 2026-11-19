@@ -102,7 +102,7 @@ fn every_request_reply_and_event_keeps_its_shape() {
         ChatPostReq { target: target(), thread: None, kind: ChatPostKind::Row, name: "r".into(), text: "hi".into() },
         json!({"target": target_json(), "thread": null, "kind": "row", "name": "r", "text": "hi"}),
     );
-    pinned(ChatPostRes::Posted { ts: ts("3.000003") }, json!({"outcome": "posted", "ts": "3.000003"}));
+    pinned(ChatPostRes::Posted { ts: ts("3.000003"), unlinked: Vec::new() }, json!({"outcome": "posted", "ts": "3.000003"}));
     pinned(ChatPostRes::Refused { code: ChatCode::StaleRow }, json!({"outcome": "refused", "code": "stale_row"}));
     pinned(
         ChatPostRes::Limited { retry_after_secs: 30, assumed: true },
@@ -678,10 +678,10 @@ fn the_file_pair_keeps_its_shape_and_its_bounds() {
         json!({"target": target_json(), "thread": null, "kind": "person", "name": "p", "node_id": "files:a", "comment": null}),
     );
     pinned(
-        ChatPostFileRes::Posted { file: "F1".into(), ts: Some(ts("3.000003")) },
+        ChatPostFileRes::Posted { file: "F1".into(), ts: Some(ts("3.000003")), unlinked: Vec::new() },
         json!({"outcome": "posted", "file": "F1", "ts": "3.000003"}),
     );
-    pinned(ChatPostFileRes::Posted { file: "F1".into(), ts: None }, json!({"outcome": "posted", "file": "F1"}));
+    pinned(ChatPostFileRes::Posted { file: "F1".into(), ts: None, unlinked: Vec::new() }, json!({"outcome": "posted", "file": "F1"}));
     pinned(ChatPostFileRes::Refused { code: ChatCode::NotAFile }, json!({"outcome": "refused", "code": "not_a_file"}));
     pinned(
         ChatPostFileRes::Limited { retry_after_secs: 30, assumed: false },
@@ -764,4 +764,34 @@ fn a_file_outcome_or_code_added_later_reads_as_the_safe_one() {
         let r: ChatRefusal = serde_json::from_value(json!({"error": format!("unknown op: {op}")})).unwrap();
         assert_eq!(r.code, None);
     }
+}
+
+/// A posted reply names the `@` names the daemon left as text, at most `MAX_MENTIONS`, and stays additive: a reply
+/// without them (an older daemon's) reads as none, a reason added later reads as `other`, and a reply that names them
+/// carries only the field an older window skips.
+#[test]
+fn a_posted_reply_names_the_names_left_as_text_and_stays_additive() {
+    let zed = ChatUnlinked { name: "Zed".into(), why: ChatUnlinkedWhy::NoMember };
+    pinned(
+        ChatPostRes::Posted { ts: ts("3.000003"), unlinked: vec![zed.clone()] },
+        json!({"outcome": "posted", "ts": "3.000003", "unlinked": [{"name": "Zed", "why": "no_member"}]}),
+    );
+    pinned(
+        ChatPostFileRes::Posted { file: "F1".into(), ts: None, unlinked: vec![zed] },
+        json!({"outcome": "posted", "file": "F1", "unlinked": [{"name": "Zed", "why": "no_member"}]}),
+    );
+    let later: ChatPostRes = serde_json::from_value(json!({"outcome": "posted", "ts": "3.000003", "unlinked": [{"name": "a", "why": "new_reason"}]})).unwrap();
+    assert!(matches!(later, ChatPostRes::Posted { unlinked, .. } if unlinked[0].why == ChatUnlinkedWhy::Other));
+    let many: Vec<Value> = (0..=crate::chat::MAX_MENTIONS).map(|n| json!({"name": n.to_string(), "why": "no_member"})).collect();
+    assert!(serde_json::from_value::<ChatPostRes>(json!({"outcome": "posted", "ts": "3.000003", "unlinked": many})).is_err());
+    let long = "n".repeat(crate::chat::MAX_NAME + 1);
+    assert!(serde_json::from_value::<ChatPostRes>(json!({"outcome": "posted", "ts": "3.000003", "unlinked": [{"name": long, "why": "no_member"}]})).is_err());
+    // What an older window reads: the reply's outcome and ts, the new field skipped.
+    #[derive(serde::Deserialize)]
+    #[serde(tag = "outcome", rename_all = "snake_case")]
+    enum Older {
+        Posted { ts: Ts },
+    }
+    let older: Older = serde_json::from_value(json!({"outcome": "posted", "ts": "3.000003", "unlinked": [{"name": "Zed", "why": "no_member"}]})).unwrap();
+    assert!(matches!(older, Older::Posted { ts: t } if t == ts("3.000003")));
 }

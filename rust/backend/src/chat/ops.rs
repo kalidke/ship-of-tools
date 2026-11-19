@@ -222,15 +222,15 @@ pub(crate) async fn post(req_id: u64, payload: serde_json::Value, chat: &Arc<Cha
     };
     let refused_post = |code| reply(req_id, NAME, &ChatPostRes::Refused { code });
     // The one call: nothing below sends again, whatever it answers.
-    let outcome = api.post(req.target.channel.as_str(), req.thread.as_ref().map(|t| t.as_str()), post_kind(req.kind), &req.name, &req.text).await;
+    let outcome = api.post_linked(req.target.channel.as_str(), req.thread.as_ref().map(|t| t.as_str()), post_kind(req.kind), &req.name, &req.text).await;
     match outcome {
         Err(e) => refused_post(code_of(&e)),
-        Ok(PostOutcome::Posted(ts)) => reply(req_id, NAME, &ChatPostRes::Posted { ts }),
-        Ok(PostOutcome::Refused(why)) => refused_post(post_refusal_code(post_kind(req.kind), &why)),
-        Ok(PostOutcome::Limited { retry_after, assumed }) => {
+        Ok((PostOutcome::Posted(ts), unlinked)) => reply(req_id, NAME, &ChatPostRes::Posted { ts, unlinked }),
+        Ok((PostOutcome::Refused(why), _)) => refused_post(post_refusal_code(post_kind(req.kind), &why)),
+        Ok((PostOutcome::Limited { retry_after, assumed }, _)) => {
             reply(req_id, NAME, &ChatPostRes::Limited { retry_after_secs: retry_after.as_secs(), assumed })
         }
-        Ok(PostOutcome::Unknown) => reply(req_id, NAME, &ChatPostRes::Unknown),
+        Ok((PostOutcome::Unknown, _)) => reply(req_id, NAME, &ChatPostRes::Unknown),
     }
 }
 
@@ -277,15 +277,15 @@ pub(crate) async fn post_file(req_id: u64, payload: serde_json::Value, chat: &Ar
     let refused_post = |code| reply(req_id, NAME, &ChatPostFileRes::Refused { code });
     let (channel, thread) = (req.target.channel.as_str(), req.thread.as_ref().map(|t| t.as_str()));
     // The one call: nothing below sends again, whatever it answers.
-    let outcome = api.post_file(transfer, channel, thread, post_kind(req.kind), &req.name, &file_name, bytes, req.comment.as_deref()).await;
+    let outcome = api.post_file_linked(transfer, channel, thread, post_kind(req.kind), &req.name, &file_name, bytes, req.comment.as_deref()).await;
     match outcome {
         Err(e) => refused_post(code_of(&e)),
-        Ok(FileOutcome::Posted { file, ts }) => reply(req_id, NAME, &ChatPostFileRes::Posted { file, ts }),
-        Ok(FileOutcome::Refused(why)) => refused_post(post_refusal_code(post_kind(req.kind), &why)),
-        Ok(FileOutcome::Limited { retry_after, assumed }) => {
+        Ok((FileOutcome::Posted { file, ts }, unlinked)) => reply(req_id, NAME, &ChatPostFileRes::Posted { file, ts, unlinked }),
+        Ok((FileOutcome::Refused(why), _)) => refused_post(post_refusal_code(post_kind(req.kind), &why)),
+        Ok((FileOutcome::Limited { retry_after, assumed }, _)) => {
             reply(req_id, NAME, &ChatPostFileRes::Limited { retry_after_secs: retry_after.as_secs(), assumed })
         }
-        Ok(FileOutcome::Unknown) => reply(req_id, NAME, &ChatPostFileRes::Unknown),
+        Ok((FileOutcome::Unknown, _)) => reply(req_id, NAME, &ChatPostFileRes::Unknown),
     }
 }
 
