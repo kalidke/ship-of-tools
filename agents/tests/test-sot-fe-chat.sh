@@ -240,9 +240,9 @@ case_each_outcome_has_its_words_and_exit_code() {
 {"outcome":"refused","code":"busy"}|2|refused busy the chat is busy; try again in a moment
 {"outcome":"refused","code":"bad_request"}|2|refused bad_request the request is not valid (empty or over-long text, or a name that is not this session's)
 {"outcome":"limited","retry_after_secs":12,"assumed":false}|2|limited, wait 12 s
-{"outcome":"unknown"}|3|unknown: the post may exist; do not send it again; read the thread first
-{"outcome":"somethingelse"}|3|unknown: the post may exist; do not send it again; read the thread first
-{"error":"the chat request failed","code":"handler_error"}|3|unknown: the post may exist; do not send it again; read the thread first
+{"outcome":"unknown"}|3|unknown: the post may exist; do not send it again; ask the person to look in the channel
+{"outcome":"somethingelse"}|3|unknown: the post may exist; do not send it again; ask the person to look in the channel
+{"error":"the chat request failed","code":"handler_error"}|3|unknown: the post may exist; do not send it again; ask the person to look in the channel
 {"error":"the session's project now has another channel","code":"stale_mapping"}|2|refused stale_mapping the session's project now has another channel
 EOF
     [ -z "$bad" ] || { echo "$bad"; return 1; }
@@ -273,7 +273,7 @@ case_no_answer_to_the_post_is_one_request_and_exit_3() {
     stage_reply chat.resolve "$MAPPED"; start_stub_daemon
     run_chat "" SOT_WORKSPACE_ID=$ROW STUB_NAME=alpha-h -- "hi"
     local p; p="$(sent chat.post)"; stop_stub_daemon
-    [ "$CH_RC" = 3 ] && contains "$CH_OUT" "no answer: the post may exist; do not send it again; read the thread first" && [ "$p" = 1 ] \
+    [ "$CH_RC" = 3 ] && contains "$CH_OUT" "no answer: the post may exist; do not send it again; ask the person to look in the channel" && [ "$p" = 1 ] \
         || { echo "rc=$CH_RC post_requests=$p out=$CH_OUT"; return 1; }
 }
 
@@ -379,9 +379,9 @@ case_each_file_outcome_has_its_words_and_exit_code() {
 {"error":"the file is not a readable file in the project's folder","code":"not_a_file"}|2|refused not_a_file the file is not a readable file in the project's folder
 {"error":"the file is larger than the chat carries","code":"too_large"}|2|refused too_large the file is larger than the chat carries
 {"outcome":"limited","retry_after_secs":12,"assumed":false}|2|limited, wait 12 s
-{"outcome":"unknown"}|3|unknown: the post may exist; do not send it again; read the thread first
-{"outcome":"somethingelse"}|3|unknown: the post may exist; do not send it again; read the thread first
-{"error":"the chat request failed","code":"handler_error"}|3|unknown: the post may exist; do not send it again; read the thread first
+{"outcome":"unknown"}|3|unknown: the post may exist; do not send it again; ask the person to look in the channel
+{"outcome":"somethingelse"}|3|unknown: the post may exist; do not send it again; ask the person to look in the channel
+{"error":"the chat request failed","code":"handler_error"}|3|unknown: the post may exist; do not send it again; ask the person to look in the channel
 EOF
     [ -z "$bad" ] || { echo "$bad"; return 1; }
 }
@@ -390,7 +390,7 @@ case_no_answer_to_the_file_post_is_one_request_and_exit_3() {
     stage_reply chat.resolve "$MAPPED"; start_stub_daemon
     run_chat "" SOT_WORKSPACE_ID=$ROW SOT_WORKSPACE_ROOT="$PROJ" STUB_NAME=alpha-h -- --file "$PROJ/figs/fit.png" "the fit"
     local p; p="$(sent chat.post_file)"; stop_stub_daemon
-    [ "$CH_RC" = 3 ] && contains "$CH_OUT" "no answer: the post may exist; do not send it again; read the thread first" && [ "$p" = 1 ] \
+    [ "$CH_RC" = 3 ] && contains "$CH_OUT" "no answer: the post may exist; do not send it again; ask the person to look in the channel" && [ "$p" = 1 ] \
         || { echo "rc=$CH_RC post_file_requests=$p out=$CH_OUT"; return 1; }
 }
 

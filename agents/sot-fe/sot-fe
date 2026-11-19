@@ -172,7 +172,7 @@
 #              (--timeout <s> changes both waits). Prints `posted <ts>`
 #              and exits 0; exit 1 for usage; exit 2 with `refused <code> <words>` or `limited, wait <n> s` (NOTHING was
 #              posted: fix it, or wait and post once more); exit 3 with `unknown: ...` or `no answer: ...` (the post
-#              MAY exist: never post again; read the thread first). Test the exit code, not the words. A reply is
+#              MAY exist: never post again; ask the person to look in the channel). Test the exit code, not the words. A reply is
 #              public to every member of the channel.
 #              With --file <path> it shares a file of the row's folder instead, the text as its comment: ONE
 #              `chat.post_file`, waiting 120 s (agents/CLAUDE.md says its rules).

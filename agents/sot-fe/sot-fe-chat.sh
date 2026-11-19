@@ -26,7 +26,7 @@ _chat_refused() {
 # The post may exist: exit 3, the one code that means "never post again". Every exit 2 is a certain "nothing was posted".
 # (A hello the daemon refused, or a frame that never left, is no answer too, and says the same: it cannot be told apart.)
 _chat_may_exist() {
-    echo "$1: the post may exist; do not send it again; read the thread first" >&2
+    echo "$1: the post may exist; do not send it again; ask the person to look in the channel" >&2
     exit 3
 }
 
