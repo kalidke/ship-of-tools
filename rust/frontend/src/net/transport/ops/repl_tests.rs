@@ -39,3 +39,21 @@ fn an_error_reply_ends_the_eval_with_one_error_frame() {
         "the acceptance ack is an empty ReplEvalDone"
     );
 }
+
+/// The window's own runs say they are a person's (`color`), so the REPL child prints them with color; the one writer of
+/// both requests is here, and an agent's `sot-fe repl run` is a request of another program that does not.
+#[tokio::test]
+async fn the_windows_eval_and_file_run_carry_the_color_flag() {
+    let mut pending = HashMap::new();
+    for (send_eval, op) in [(true, "repl.eval"), (false, "repl.run_file")] {
+        let mut wire = Vec::new();
+        if send_eval {
+            send_repl_eval(&mut wire, &mut pending, 1, 7, "1+1".into(), None, None).await.unwrap();
+        } else {
+            send_repl_run_file(&mut wire, &mut pending, 2, 8, "/a.jl".into(), false, None).await.unwrap();
+        }
+        let frame = sot_protocol::codec::read_frame_blocking(&mut std::io::BufReader::new(&wire[..])).unwrap();
+        assert_eq!(frame.op, op);
+        assert_eq!(frame.payload["color"], true, "{op}: {}", frame.payload);
+    }
+}

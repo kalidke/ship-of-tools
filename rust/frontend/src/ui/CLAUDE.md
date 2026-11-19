@@ -20,12 +20,45 @@ the image caption, the starting, running and `(N ms)` notes, the live prompt's u
 could still send, or one placed in the log by hand reaches it), the window's own note (light magenta, told from output by the entry's
 `own_frames`, which `reopen_runs` fills), and stderr, the one place the drawer departs from Julia's REPL on purpose: Julia
 prints stderr in the terminal's own color, which leaves a log read back later with no way to tell it from stdout, so the drawer
-keeps stderr gray (ANSI 7, contrast 8.5 on the pane's surface against 12.4 for the default text; Julia's REPL uses it for
+keeps stderr gray, the base a program's own colors are drawn over (ANSI 7, contrast 8.5 on the pane's surface against 12.4 for the default text; Julia's REPL uses it for
 nothing, so it reads as neither an error nor a warning). The `ERROR: ` label is always inline, as Julia prints it, and the
-first row of its message wraps 7 cells sooner. Limits: the Julia child's output reaches the window as plain text (its streams are pipes, so Julia colors nothing in
-them, and the window drops the escapes it is sent), so the logging macros' labels, a program's own colors, a stack frame's
-module and argument colors and underline, `help?>` and `shell>` (modes the drawer has not), `Status` in pkg mode and the typed
-code's syntax coloring are not drawn; a frame Julia prints as `top-level scope` from its code info under another name is bold,
+first row of its message wraps 7 cells sooner. A program's own colors (`drawer/repl/sgr.rs`): color follows who asked for the eval. The window's own `repl.eval` and
+`repl.run_file` carry `color: true` (`net/transport/ops/repl.rs`), so the Julia child prints that eval's terminal escapes (the
+logging macros' labels, `printstyled`, `Pkg`'s output in pkg mode and through `Pkg.status()`, the module and argument colors of
+a stack trace the code itself prints), and the window says in its hello it reads them (`reads_terminal_color`, from
+`net/transport/hello.rs`); an eval another program sends (`sot-fe repl eval|run`, `run --fresh` included, and `repl.execute`)
+carries no flag and prints none. Sidecars R7 has the daemon's side: an older window is sent no ESC byte. The drawer reads the SGR sequences of `stdout`, `stderr`, a value and an error message into cell styles
+(the 16 colors, the 256-color and RGB forms in `;` and `:` spellings, bold, dim, reverse and their resets, the default colors
+returning to the stream's own style, so stderr's gray stays under a program's `ESC [ 39 m`), through the Terminal drawer's color
+map (`vt100_color_to_ratatui`, so the green is the one green); erase in line (`CSI K`: 0 or no parameter from the cursor on, 1 the start through the cursor, 2 the whole row, the cursor kept;
+the cleared cells are spaces in the base style, not in a background a program selected, because the window has no row width to
+paint a background to and a painted one would stop where the text did, and the cells from the cursor on are removed) and cursor to
+column 1 (`CSI G`, `CSI 0G`, `CSI 1G`, a `\r`) act on the row, an erase on a row nothing was written to makes no row, so a shorter repaint leaves no tail of the longer; every other sequence
+(`sot_protocol::escapes`, linear and bounded at 4096 bytes) is dropped; a sequence the bound or the end of the text leaves
+unfinished is data, and a string a stray opener leaves unfinished is text with every line in it (the reader returns the lines
+the held text ends, `Reader::ended`: a drawn run equals the same text fed whole, in any pieces, a property test over seeded random
+text); a control character, a lone ESC among them, is a space. A color carries from one frame of a stream to the next (`stdout` and `stderr` each), never across
+streams or evals, and a color a program leaves open ends with its eval: the window's own note starts from no color and does not
+carry the program's. Text with only SGR escapes and newlines is pushed run by run; only a `\r` (which overwrites from the start of
+the line, as a terminal does) makes the open row a vector of cells, written in place and turned into runs once when the line
+ends or is drawn (`sgr::Reader`), so a row costs the characters written to it and never the row so far. That is one invariant of `Row`, stated for every
+operation: it costs what its write was, amortized (an erase spends only the cells between the start of what is not known to be blank
+and the cursor, `blank_to`, and the cursor reaches a column only by writing the cells before it). The reader dispatches on
+`Func`, the one table of what it honors, and a budget test drives each function, alone and with a write, on rows 1, 4 and 16
+times as long with the cursor at the end of text, at the end of cells, at the start and after an erase: the work (cells written,
+moved, blanked and scanned, counted by one test counter) is at most twice the bytes fed at every length, 1.0 at most measured; a
+function added to `Func` does not compile in the test until it has a row
+(`sgr::tests::every_function_costs_what_its_write_was_and_never_the_row_so_far`, and the reviewers' own inputs in
+`a_row_costs_what_is_written_to_it_never_the_row_so_far`: 449 KiB of `ESC [ 2K` froze the window 4 seconds before). Drawing a row
+costs the row, once for its frame (the rows of a frame are cached by width and text length). A write that ends in the middle of an escape sequence is
+held with the next (`a_write_ending_in_the_middle_of_a_sequence_is_read_with_the_next`). Limits on what a program's output does, the manual's list (`docs/src/guide/repl.md`) item for item, each pinned by one row of `presentation::tests::the_limits_the_manual_lists_are_what_the_drawer_draws`: a tab is one space, not a jump to a tab stop, so a repaint over tabs lands in other columns than a terminal's; a backspace, a bell and every other control character is a space; a cursor move other than to column 1 does nothing (`two`, a line break, `ESC [ 1 A`, `\r`, `ONE` shows `ONE` on a row after `two`, so a program that redraws several lines by moving up, as `Pkg`'s own progress does, shows each redraw as new rows, and a move to another column writes where the cursor was: after what is there, or, after a `\r`, over the line's start, so `abcdef`, `\r`, `ESC [ 4 G`, `X` shows `Xbcdef` and a meter that updates one number by its column writes it at the wrong place); a wide glyph and an accent written as a mark of its own are one cell each in a row a `\r` has sent back, so a repaint over them lands a place off; erased cells are plain, never the selected background; underline, italic and conceal (SGR 4, 3, 8) are parsed and not drawn, so hidden text shows; each write of a program is a row of its own, so a `\r` or an erase acts only inside its write; a sequence a program prints in two writes more than the child's hold apart reaches the window as two halves, and each shows as text; the drawer has no selection or copy (REPL-DRAWER-NO-SELECTION-OR-COPY). Other limits: the child's own
+process stderr, the startup lines and a stalled start's error tail are not colored; `help?>` and `shell>` (modes the drawer has
+not) and the typed code's syntax coloring are not drawn; the stack under an error's message is drawn from the function, file and
+line the child sends, so it has no module or argument colors (only a trace the program prints itself does); tests
+`sgr::tests::*` (among them `text_a_stray_string_opener_holds_is_still_text_with_every_line_it_ends`, `what_is_drawn_is_the_same_whatever_the_pieces_the_text_arrived_in`, `erase_in_line_clears_what_a_shorter_repaint_would_leave`, `a_single_line_reads_as_the_terminal_emulator_reads_it_in_every_honored_function` (seeded single lines of text, `\r`, SGR, the three erases and column 1, compared as text with the vendored vt100, which pins every function's effect on the row beside every other's), `every_function_costs_what_its_write_was_and_never_the_row_so_far`) and `presentation::tests::{a_programs_colors_reach_the_cells_through_the_terminal_drawers_map,
+a_color_carries_from_one_frame_of_a_stream_to_the_next_and_not_across_streams_or_evals,
+the_windows_own_note_starts_from_no_color_and_leaves_none, a_cursor_move_or_a_link_in_a_programs_text_leaves_only_its_words}`,
+`net::transport::hello::tests::the_windows_hello_says_it_reads_terminal_color`, `ops::repl::tests::the_windows_eval_and_file_run_carry_the_color_flag`; the old limits that remain: a frame Julia prints as `top-level scope` from its code info under another name is bold,
 because the child sends the name alone; the window does not read the `JULIA_*_COLOR` variables. Tests:
 `presentation::tests::{each_prompt_mode_has_julias_color_and_weight, an_errors_parts_have_julias_colors,
 output_and_values_are_in_the_terminals_own_color, the_windows_link_back_note_is_told_from_program_output,
@@ -36,7 +69,7 @@ source scan of the two use sites for a color literal),
 `model_tests::the_windows_own_frames_stay_marked_as_frames_are_appended`,
 and `chrome::view::tests::the_live_prompt_is_painted_in_julias_color_and_weight` (the live prompt and its cursor as the chrome
 paints them, per mode, focused and not, so a wrong argument at the call in `chrome/view.rs` fails it).
-`drawer/repl/wrap` owns how the REPL drawer's rows are cut: a logical line longer than the scrollback continues on the next row, at
+`drawer/repl/wrap` owns how the REPL drawer's rows are cut (by styled run: a logical line is `wrap::Logical`, its runs, its head and its indent, and `wrap::rows` cuts them; a run keeps its style across a cut): a logical line longer than the scrollback continues on the next row, at
 the width in whole cells (`ReplPresentation::commit_layout`'s `cols`, the drawer's cell rect, committed in `layout_drawer_px`,
 so a new width needs one more frame, which it asks for). The cut is lossless and by cell width: no space is eaten, and every line
 is cut at the edge, in the middle of a word (the drawer is a terminal's view, not the preview's text); a grapheme cluster (a flag,
@@ -44,11 +77,11 @@ a family emoji, a letter with its marks) is never cut, and a cluster that does n
 the pane still takes a row. Clusters and cells are measured as ratatui's buffer draws them (its segmentation and its
 `unicode-width` 0.2, through `Span`, not the frontend's own `unicode-width` 0.1, which eleven other files outside the REPL drawer
 still use: WIDTH-CRATE-TWO-VERSIONS), so a row fills the pane exactly as far as it is drawn; with the pane no wider than the prompt
-(7 cells, 5 for `pkg> `), or an `ERROR: ` label, the width left is 0 and that line is not cut, and the cursor, under the code, sits in
-the pane's last cell. Every row the drawer builds goes through the one cut (`wrap::rows`, or `wrap::one` for a line of one style):
+(7 cells, 5 for `pkg> `), or an `ERROR: ` label, the width left is 0 and that line is not cut (nor are a stack frame's continuation rows in a pane of 4 cells or less), and the cursor, under the code, sits in
+the pane's last cell. Every row the drawer builds goes through the one cut (`wrap::rows`, or `wrap::one` for a line of one style), a stack frame's among them:
 typed code, stdout, stderr, a value, an error's message, the window's own note, the origin marker of a run another session
 started, the browser link, the image caption, the starting, running and elapsed notes, and the live input; the figures' blank
-rows are empty; the one row that does not is a stack frame's. Typed code's continuation rows sit under the code, an error's under its first column.
+rows are empty. A stack frame's runs are logical lines after the message's in the same cached set of rows, its continuation rows four cells in, under the `at`. Typed code's continuation rows sit under the code, an error's under its first column.
 The line being typed wraps the same way (`presentation::input_lines`, drawn by `chrome/view.rs`): the prompt first, the rows under
 the code, the cursor block on the last row, on a row of its own under the code when that row is full; the input's height is its
 wrapped rows, up to the cap `drawer_layout` sets (the drawer's height less one row of scrollback), and past the cap its last rows
@@ -58,21 +91,17 @@ changes neither. The log keeps its text whole; only the rows are cut. The rows o
 for the width and text length they were made for and dropped when the log no longer holds the frame: before this the drawer
 rebuilt every row of the whole log on every redraw (15 ms for 10,000 lines of 200 characters, a release build); a redraw that changes
 nothing now copies cached rows (1.7 ms; 3.2 to 3.5 ms for a log of many small frames), and a new width re-wraps the whole log once
-(17 ms for one frame of that size, 18 to 26 ms measured by the review on a loaded machine and for many frames, against 12.7 to 14.7 ms
-for the old redraw: a drag frame costs up to twice what every redraw cost before, for ASCII lines; a line with one non-ASCII
-character is segmented by ratatui and costs 3 to 4 times as much, 54 to 61 ms for 10,000 lines of 200 characters, 4 to 5 times the
-old redraw, and nothing is cached across widths). A width of 0 (no drawer rect yet) keeps the last known width; before any, a
+(measured in a release build on 10,000 lines of about 200 characters, in one frame and in 1,000 frames: a redraw that changes nothing 1.2 to 1.8 ms plain, 1.5 to 2.2 ms with a color on each line; a new width 7 to 9 ms plain, 8 to 12 ms with a color on each line, 46 to 51 ms with twenty colored runs on each line, 23 to 27 ms with a non-ASCII character on each; only the piece cut at a row's edge is segmented, so the cost no longer grows with the line; nothing is cached across widths). A width of 0 (no drawer rect yet) keeps the last known width; before any, a
 frame is drawn unwrapped, as before, and the width's arrival moves nothing. What anchors a scrolled-up view: the source of its bottom
 row (eval, frame, logical line), kept at each build; a build for a new width finds that line's first row and scrolls to put it at the
-bottom, and any other change keeps the tail-growth pin. Limits: a stack frame's `at fn (file:line)` row is not wrapped and the pane
-clips it (its five styled spans need a cut by styled run); typed code is wrapped on every redraw (not cached), and so is the
+bottom, and any other change keeps the tail-growth pin. Limits: typed code is wrapped on every redraw (not cached), and so is the
 draft; the cache holds a second copy of each text frame's rows, about three times its text, for as long as the log holds the
 frame; the REPL drawer has no selection and no copy at all (its mouse only focuses and scrolls, its keys type, submit and recall), so there is no copy of wrapped
 text to test and a person cannot take text out of it (REPL-DRAWER-NO-SELECTION-OR-COPY). Tests:
 `presentation::tests::{a_long_line_shows_whole_over_several_rows, a_resize_rewraps_and_a_scrolled_up_reader_stays_on_the_same_text,
 the_width_arriving_does_not_move_a_scrolled_up_reader, a_rows_wrapped_frames_are_not_another_rows_with_the_same_ids,
 a_resize_keeps_the_reader_in_the_frame_they_were_reading, the_layout_commit_carries_the_width_the_next_build_wraps_for,
-a_row_switch_forgets_the_view_anchor_of_the_row_left}`, `wrap::tests::{a_line_is_cut_at_the_width_and_nothing_is_lost,
+a_row_switch_forgets_the_view_anchor_of_the_row_left}`, `wrap::tests::{a_cut_never_loops_on_a_trailing_newline_and_never_splits_a_mark_from_its_letter, cutting_a_long_line_reads_the_line_once}` (a cut reads only the part of the line that fits its row, offsets from the segmentation's own lengths), `presentation::tests::the_drawers_own_notes_keep_their_colors_after_the_cut`, `wrap::tests::{a_run_keeps_its_style_across_a_cut, a_logical_line_with_no_head_has_the_whole_width_and_its_continuation_rows_an_indent}`, `presentation::tests::{a_stack_frames_row_wraps_under_its_at_and_its_styles_survive_the_cut, a_resize_keeps_a_reader_in_a_stack_trace_on_the_frame_they_were_reading}`, `wrap::tests::{a_line_is_cut_at_the_width_and_nothing_is_lost,
 a_wide_glyph_or_a_tab_at_the_edge_is_neither_split_nor_lost, width_zero_returns_the_text_whole,
 the_prefix_takes_the_first_row_and_the_hang_the_rest, a_frame_changing_nothing_is_not_wrapped_again,
 a_cluster_is_never_cut_and_no_row_overfills_the_pane_as_it_is_drawn}`, `chrome::view::tests::{the_live_input_wraps_at_the_drawers_width_and_keeps_its_cursor_in_view,

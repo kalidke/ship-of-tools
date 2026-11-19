@@ -21,11 +21,37 @@ or the agent pane for shell commands.
 The prompts and the error label use the colors of Julia's own REPL: `julia>` is bold green, `pkg>` is bold
 blue, and an error starts with a bold light-red `ERROR:`. Typed code, output and values are in the window's
 normal text color. Text a program writes to stderr is gray, which Julia's own REPL does not do; it keeps stderr
-apart from stdout in the log. A line longer than the drawer is wide continues on the next row, the line you are typing included; only a stack frame's
-row in an error is still cut at the edge. The drawer cannot yet select or copy text.
+apart from stdout in the log. A line longer than the drawer is wide continues on the next row, the line you are typing
+included, and so does a stack frame's row in an error. A drawer 7 cells wide or less is too narrow for that: a line that
+starts with a prompt or `ERROR:` is not cut there, and the pane clips it.
 
-Colors a program or Julia's logger adds are not drawn yet: the `@info`, `@warn` and `@error` labels and a
-program's own colors show uncolored (gray, as stderr), and typed code has no syntax coloring.
+Code you run from the drawer prints in color, as in a terminal: the `@info`, `@warn` and `@error` labels, `printstyled`,
+`Pkg`'s status and the colors of packages that ask whether the output takes color, and the module and argument colors of a
+stack trace that code prints itself. The stack under an error's own message is drawn without them. The drawer draws the 16
+colors, the 256-color and RGB forms, bold, dim and reverse. A color a program leaves on ends when its code finishes. Code an agent
+runs for you with `sot-fe repl`, `sot-fe repl run --fresh` included, prints without color, as before. Text on stderr that a
+program does not color is gray. Typed code has no syntax coloring.
+
+Each piece of output a program prints is drawn on a row of its own: `print("a"); print("b")` shows two rows. A return to the
+start of the line, and an erase of the rest of it, work as in a terminal only inside one piece, so a progress meter that
+repaints its line with each piece shows every repaint as a new row.
+
+What the drawer does not do with a program's output:
+
+- A tab is drawn as one space, not a jump to the next tab stop, so text lined up with tabs, or written over them after a
+  return to the start of the line, can land in other columns than in a terminal.
+- A backspace, a bell and other control characters are drawn as a space.
+- Moving the cursor anywhere but to the start of the line does nothing: what the program prints next goes where the cursor
+  already was. So a display that redraws several lines by moving up shows each redraw as new lines, and a meter that updates
+  one number by moving to its column writes it at the wrong place (after a return to the start of the line, over the line's
+  start).
+- A wide character (Chinese, Japanese, an emoji) or an accent written as a separate mark counts as one place when a line is
+  written over, so the new text can land a place off.
+- Erasing part of a line leaves plain spaces, never the background color the program chose.
+- Underline, italic and hidden text are drawn as plain text.
+- If a program prints a title, a link or a color in two pieces more than a tenth of a second apart, the drawer shows both
+  pieces as text.
+- The drawer cannot yet select or copy text.
 
 The REPL and the kernel run the `julia` that `SOT_JULIA_BIN` names, else
 juliaup's default channel, else a `julia` on `PATH`. Both start with

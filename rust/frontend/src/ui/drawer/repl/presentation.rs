@@ -1,7 +1,7 @@
 //! Window-wide REPL presentation: image identity, line projection, layout and scroll anchoring.
 
 use crate::ui::*;
-use super::{colors, wrap::{self, Wrap}, ReplEffects};
+use super::{colors, sgr::{self, Sgr}, wrap::{self, Wrap}, ReplEffects};
 use crate::ui::render::scissor::scissor_px;
 
 // State supplies a normalized row key; presentation never resolves row identities.
@@ -284,28 +284,25 @@ fn pinned_repl_scroll(
     (scroll as i64 + delta).clamp(0, u16::MAX as i64) as u16
 }
 
-/// A program's output stream as a terminal shows it: `\r\n` and `\n` end a line,
-/// and within a line a lone `\r` returns to its start, so what follows
-/// overwrites it (a progress bar's updates make one row, not a blank row and a
-/// row each). Then the window's rule for each line (`cell_lines`); a blank line
-/// stays a row.
-fn stream_lines(text: &str) -> Vec<String> {
-    text.replace("\r\n", "\n")
-        .lines()
-        .flat_map(|line| {
-            let mut row: Vec<char> = Vec::new();
-            for part in line.split('\r') {
-                for (i, c) in part.chars().enumerate() {
-                    match row.get_mut(i) {
-                        Some(cell) => *cell = c,
-                        None => row.push(c),
-                    }
-                }
-            }
-            let rows = cell_lines(&row.into_iter().collect::<String>());
-            if rows.is_empty() { vec![String::new()] } else { rows }
-        })
-        .collect()
+/// The rows of a stdout or stderr frame (`text` in `base`, from stderr or not), after the frames of its stream before it:
+/// the text is read as a terminal reads it (`\r` overwrites, SGR escapes color), wrapped and cached.
+fn stream_rows(
+    wrap: &mut Wrap,
+    states: &mut HashMap<(u64, bool), Sgr>,
+    key: (WsKey, u64, usize),
+    (text, base, stderr): (&str, Style, bool),
+    out: &mut Vec<RtLine<'static>>,
+) {
+    let slot = (key.1, stderr);
+    let start = states.get(&slot).copied().unwrap_or_default();
+    let made = |cols| {
+        let mut sgr = start;
+        let lines = sgr::styled_lines(text, base, &mut sgr, true);
+        (wrap::rows(&lines.into_iter().map(|runs| wrap::Logical { runs, head: None, indent: 0 }).collect::<Vec<_>>(), cols), sgr)
+    };
+    let (rows, end) = wrap.frame(key, text.len(), made);
+    out.extend(rows.0.iter().cloned());
+    states.insert(slot, end);
 }
 
 /// The live input's rows for a pane `cols` cells wide: the prompt first, the code under it at the same column, long lines
@@ -346,6 +343,8 @@ fn project_lines<I>(
     let mut starts: Vec<(u64, usize)> = Vec::new();
     // Where each entry (frame `usize::MAX`) and each frame starts, for `Wrap::anchor`.
     let mut marks: Vec<(usize, u64, usize)> = Vec::new();
+    // The SGR state each stream (eval, stderr or not) has left, which its next frame starts from.
+    let mut states: HashMap<(u64, bool), Sgr> = HashMap::new();
     for entry in log {
         starts.push((entry.eval_id, out.len()));
         marks.push((out.len(), entry.eval_id, usize::MAX));
@@ -358,50 +357,55 @@ fn project_lines<I>(
             marks.push((out.len(), entry.eval_id, frame_idx));
             let fkey = (row.clone(), entry.eval_id, frame_idx);
             if let (true, ReplFrame::Stderr { text }) = (entry.own_frames.contains(&frame_idx), frame) {
-                let rows = wrap.frame(fkey, text.len(), |cols| wrap::rows(&stream_lines(text), colors::notice(), cols, None, 0));
-                out.extend(rows.0.iter().cloned());
+                // The window's own note starts from no program state and leaves none: a color a program left open on
+                // stderr is not the note's.
+                let made = |cols| {
+                    let lines = sgr::styled_lines(text, colors::notice(), &mut Sgr::default(), true);
+                    (wrap::rows(&lines.into_iter().map(|runs| wrap::Logical { runs, head: None, indent: 0 }).collect::<Vec<_>>(), cols), Sgr::default())
+                };
+                out.extend(wrap.frame(fkey, text.len(), made).0 .0.iter().cloned());
                 continue;
             }
             match frame {
-                ReplFrame::Stdout { text } => {
-                    let rows = wrap.frame(fkey, text.len(), |cols| wrap::rows(&stream_lines(text), colors::plain(), cols, None, 0));
-                    out.extend(rows.0.iter().cloned());
-                }
-                ReplFrame::Stderr { text } => {
-                    let rows = wrap.frame(fkey, text.len(), |cols| wrap::rows(&stream_lines(text), colors::stderr(), cols, None, 0));
-                    out.extend(rows.0.iter().cloned());
-                }
+                ReplFrame::Stdout { text } => stream_rows(wrap, &mut states, fkey, (text, colors::plain(), false), &mut out),
+                ReplFrame::Stderr { text } => stream_rows(wrap, &mut states, fkey, (text, colors::stderr(), true), &mut out),
                 ReplFrame::Value { mime, text } => {
-                    let rows = wrap.frame(fkey, mime.len() + text.len(), |cols| {
-                        let mut lines = cell_lines(text);
-                        if let (Some(first), false) = (lines.first_mut(), mime == "text/plain") {
-                            first.insert_str(0, &format!("[{}] ", cell_row(mime)));
-                        }
-                        wrap::rows(&lines, colors::plain(), cols, None, 0)
-                    });
-                    out.extend(rows.0.iter().cloned());
+                    let prefix = (mime != "text/plain").then(|| Span::raw(format!("[{}] ", cell_row(mime))));
+                    let made = |cols| {
+                        let lines = sgr::styled_lines(text, colors::plain(), &mut Sgr::default(), false);
+                        let lines: Vec<_> = lines.into_iter().enumerate()
+                            .map(|(i, runs)| wrap::Logical { runs, head: if i == 0 { prefix.clone() } else { None }, indent: 0 })
+                            .collect();
+                        (wrap::rows(&lines, cols), Sgr::default())
+                    };
+                    out.extend(wrap.frame(fkey, mime.len() + text.len(), made).0 .0.iter().cloned());
                 }
                 ReplFrame::Error {
                     message,
                     stacktrace,
                 } => {
-                    let rows = wrap.frame(fkey, message.len(), |cols| {
-                        let mut lines = cell_lines(message);
+                    // The message's lines and then each stack frame are logical lines of one cached set of rows, so a
+                    // reader inside a stack trace keeps their place through a resize and its rows are not rebuilt.
+                    let made = |cols| {
+                        let mut lines = sgr::styled_lines(message, colors::plain(), &mut Sgr::default(), false);
                         if lines.is_empty() {
-                            lines.push(String::new());
+                            lines.push(vec![(String::new(), colors::plain())]);
                         }
-                        wrap::rows(&lines, colors::plain(), cols, Some(Span::styled("ERROR: ", colors::error_label())), 0)
-                    });
-                    out.extend(rows.0.iter().cloned());
-                    for sf in stacktrace {
-                        out.push(RtLine::from(vec![
-                            Span::styled("    at ", colors::trace_gray()),
-                            Span::styled(cell_row(&sf.function).into_owned(), colors::trace_function(&sf.function)),
-                            Span::styled(" (", colors::trace_gray()),
-                            Span::styled(format!("{}:{}", cell_row(&sf.file), sf.line), colors::trace_gray()),
-                            Span::styled(")", colors::trace_gray()),
-                        ]));
-                    }
+                        let mut lines: Vec<_> = lines.into_iter().enumerate().map(|(i, runs)| wrap::Logical {
+                            runs, head: (i == 0).then(|| Span::styled("ERROR: ", colors::error_label())), indent: 0,
+                        }).collect();
+                        // A frame's row continues under its `at`, four cells in.
+                        lines.extend(stacktrace.iter().map(|sf| wrap::Logical {
+                            runs: vec![
+                                ("    at ".to_string(), colors::trace_gray()),
+                                (cell_row(&sf.function).into_owned(), colors::trace_function(&sf.function)),
+                                (format!(" ({}:{})", cell_row(&sf.file), sf.line), colors::trace_gray()),
+                            ],
+                            head: None, indent: 4,
+                        }));
+                        (wrap::rows(&lines, cols), Sgr::default())
+                    };
+                    out.extend(wrap.frame(fkey, message.len() + stacktrace.len(), made).0 .0.iter().cloned());
                 }
                 ReplFrame::Done { .. } => {}
                 ReplFrame::Browser { url, .. } => {

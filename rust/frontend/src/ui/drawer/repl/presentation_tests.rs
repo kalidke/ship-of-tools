@@ -1,4 +1,4 @@
-use super::{ReplImagePainter, ReplImageUpload, ReplPresentation};
+use super::{colors, ReplImagePainter, ReplImageUpload, ReplPresentation};
 use crate::ui::*;
 use base64::Engine as _;
 use std::{cell::RefCell, io::Cursor, rc::Rc};
@@ -592,8 +592,7 @@ fn an_errors_parts_have_julias_colors() {
     assert_eq!(styled(&lines, "second"), [("second".into(), None, false)]);
     assert_eq!(styled(&lines, "    at f (a.jl:3)"), [
         ("    at ".into(), Some(Color::DarkGray), false), ("f".into(), None, true),
-        (" (".into(), Some(Color::DarkGray), false), ("a.jl:3".into(), Some(Color::DarkGray), false),
-        (")".into(), Some(Color::DarkGray), false),
+        (" (a.jl:3)".into(), Some(Color::DarkGray), false),
     ]);
     // Julia prints `top-level scope` and an unnamed frame plain and every other function name bold
     // (`Base/stacktraces.jl` `show_spec_linfo`).
@@ -920,4 +919,195 @@ fn the_cursor_stays_in_a_pane_no_wider_than_the_prompt() {
     }
     let rows = super::input_lines("", false, true, 6);
     assert_eq!(text(&rows), ["julia> ", "     █"], "a 6-cell pane: the cursor in its last cell");
+}
+
+/// The scrollback's rows for one eval's frames, in a pane `cols` cells wide.
+fn frames_rows(cols: usize, frames: Vec<ReplFrame>) -> Vec<RtLine<'static>> {
+    let key = row("host", "row");
+    let (mut model, mut owner) = (ReplModel::default(), Owner::default());
+    owner.set_cols(cols);
+    model.edit_draft(DraftEdit::Replace("x".into()));
+    let plan = model.begin_eval(target(&key)).unwrap();
+    let id = plan.submission.eval_id();
+    model.complete_submission(plan.submission, Ok(()));
+    for f in frames {
+        frame(&mut model, &key, id, f);
+    }
+    finish(&mut model, &key, id);
+    build(&mut owner, &model, &key, 0).0
+}
+
+#[test]
+fn a_programs_colors_reach_the_cells_through_the_terminal_drawers_map() {
+    let lines = frames_rows(80, vec![
+        ReplFrame::Stdout { text: "plain \u{1b}[1;32mgreen\u{1b}[0m end\n".into() },
+        ReplFrame::Stderr { text: "\u{1b}[33m\u{1b}[1mWarning: \u{1b}[22m\u{1b}[39mthe text".into() },
+        ReplFrame::Value { mime: "text/plain".into(), text: "\u{1b}[34mblue\u{1b}[39m".into() },
+        ReplFrame::Error { message: "bad \u{1b}[36mtype\u{1b}[39m".into(), stacktrace: vec![] },
+    ]);
+    assert_eq!(text(&lines)[1..5], ["plain green end", "Warning: the text", "blue", "ERROR: bad type"]);
+    assert_eq!(styled(&lines, "plain green end"),
+        [("plain ".into(), None, false), ("green".into(), Some(Color::Green), true), (" end".into(), None, false)]);
+    // stderr's own gray is what a reset or a default color returns to.
+    assert_eq!(styled(&lines, "Warning: the text"),
+        [("Warning: ".into(), Some(Color::Yellow), true), ("the text".into(), Some(Color::Gray), false)]);
+    assert_eq!(styled(&lines, "blue"), [("blue".into(), Some(Color::Blue), false)]);
+    assert_eq!(styled(&lines, "ERROR: bad type")[1..], [("bad ".into(), None, false), ("type".into(), Some(Color::Cyan), false)]);
+}
+
+#[test]
+fn a_color_carries_from_one_frame_of_a_stream_to_the_next_and_not_across_streams_or_evals() {
+    let lines = frames_rows(80, vec![
+        ReplFrame::Stdout { text: "\u{1b}[31mone".into() },
+        ReplFrame::Stderr { text: "other".into() },
+        ReplFrame::Stdout { text: "two\u{1b}[39m".into() },
+        ReplFrame::Stdout { text: "three".into() },
+    ]);
+    assert_eq!(styled(&lines, "one")[0].1, Some(Color::Red));
+    assert_eq!(styled(&lines, "other")[0].1, Some(Color::Gray));
+    assert_eq!(styled(&lines, "two")[0].1, Some(Color::Red));
+    assert_eq!(styled(&lines, "three")[0].1, None);
+    // A color never closed ends with its eval: the next eval, the typed code and the window's own note are plain.
+    let key = row("host", "row");
+    let (mut model, mut owner) = (ReplModel::default(), Owner::default());
+    for (i, out) in ["\u{1b}[31mopen", "next"].into_iter().enumerate() {
+        model.edit_draft(DraftEdit::Replace(format!("code{i}")));
+        let plan = model.begin_eval(target(&key)).unwrap();
+        let id = plan.submission.eval_id();
+        model.complete_submission(plan.submission, Ok(()));
+        output(&mut model, &key, id, out);
+        finish(&mut model, &key, id);
+    }
+    let lines = build(&mut owner, &model, &key, 0).0;
+    assert_eq!(styled(&lines, "open")[0].1, Some(Color::Red));
+    assert_eq!(styled(&lines, "next"), [("next".into(), None, false)]);
+    assert!(styled(&lines, "julia> code1").iter().all(|s| s.1 != Some(Color::Red)));
+}
+
+#[test]
+fn the_windows_own_note_starts_from_no_color_and_leaves_none() {
+    let key = row("host", "row");
+    let (mut model, mut owner) = (ReplModel::default(), Owner::default());
+    model.edit_draft(DraftEdit::Replace("x".into()));
+    let plan = model.begin_eval(target(&key)).unwrap();
+    let id = plan.submission.eval_id();
+    model.complete_submission(plan.submission, Ok(()));
+    frame(&mut model, &key, id, ReplFrame::Stderr { text: "\u{1b}[31mleft open".into() });
+    let entries = model.entries().to_vec();
+    let mut entry = entries[0].clone();
+    entry.frames.push(ReplFrame::Stderr { text: "the connection is back".into() });
+    entry.own_frames = vec![1];
+    entry.frames.push(ReplFrame::Stderr { text: "after".into() });
+    let lines = owner.build(&key, &[entry], false, 8.0, 16.0, 0).0;
+    let note = styled(&lines, "the connection is back");
+    assert_eq!(note[0].1, Some(Color::LightMagenta), "{note:?}");
+    assert_eq!(styled(&lines, "after")[0].1, Some(Color::Red), "the program's color goes on past the note");
+}
+
+#[test]
+fn a_cursor_move_or_a_link_in_a_programs_text_leaves_only_its_words() {
+    let lines = frames_rows(80, vec![ReplFrame::Stdout { text: "a\u{1b}[2J\u{1b}[1Ab \u{1b}]8;;http://x\u{1b}\\link\u{1b}]8;;\u{1b}\\\n".into() }]);
+    assert_eq!(text(&lines)[1], "ab link");
+}
+
+#[test]
+fn a_stack_frames_row_wraps_under_its_at_and_its_styles_survive_the_cut() {
+    let at = serde_json::from_value(serde_json::json!({"fn": "f", "file": format!("/{}.jl", "p".repeat(30)), "line": 3})).unwrap();
+    let lines = frames_rows(20, vec![ReplFrame::Error { message: "m".into(), stacktrace: vec![at] }]);
+    let rows = text(&lines);
+    assert!(rows.iter().all(|r| r.chars().count() <= 20), "{rows:?}");
+    let at_row = rows.iter().position(|r| r.starts_with("    at f")).unwrap();
+    assert!(rows[at_row + 1].starts_with("    ") && !rows[at_row + 1].starts_with("     "), "{rows:?}");
+    let whole: String = rows[at_row..at_row + 3].iter().enumerate()
+        .map(|(i, r)| if i == 0 { r.clone() } else { r[4..].to_string() }).collect();
+    assert_eq!(whole, format!("    at f (/{}.jl:3)", "p".repeat(30)));
+    assert_eq!(styled(&lines, "    at f (/ppppppppp")[1], ("f".into(), None, true), "the function keeps its bold");
+}
+
+#[test]
+fn a_resize_keeps_a_reader_in_a_stack_trace_on_the_frame_they_were_reading() {
+    let key = row("host", "row");
+    let (mut model, mut owner) = (ReplModel::default(), Owner::default());
+    owner.set_cols(20);
+    model.edit_draft(DraftEdit::Replace("x".into()));
+    let plan = model.begin_eval(target(&key)).unwrap();
+    let id = plan.submission.eval_id();
+    model.complete_submission(plan.submission, Ok(()));
+    let stack: Vec<_> = (0..12).map(|i| serde_json::from_value(serde_json::json!({"fn": format!("fn{i:02}"), "file": format!("/{}.jl", "q".repeat(30)), "line": i})).unwrap()).collect();
+    frame(&mut model, &key, id, ReplFrame::Error { message: "m".into(), stacktrace: stack });
+    finish(&mut model, &key, id);
+    let scroll = 8;
+    let (lines, now) = build(&mut owner, &model, &key, scroll);
+    let rows = text(&lines);
+    let bottom = |rows: &[String], s: u16| rows[..=rows.len() - 1 - s as usize].iter().rev().find(|r| r.starts_with("    at fn")).unwrap()[..10].to_string();
+    let before = bottom(&rows, now);
+    owner.set_cols(60);
+    let (lines, now) = build(&mut owner, &model, &key, scroll);
+    assert_eq!(bottom(&text(&lines), now), before);
+}
+
+/// The six notes only the drawer writes keep their style through the cut, on every row they take.
+#[test]
+fn the_drawers_own_notes_keep_their_colors_after_the_cut() {
+    let entry = |code: &str| ReplEntry {
+        eval_id: 1, code: code.into(), frames: vec![], elapsed_ms: 0, in_flight: false, pkg_mode: false, origin: None,
+        own_frames: Vec::new(),
+    };
+    let browser = ReplFrame::Browser { url: "http://127.0.0.1:54321/page".into(), open: false, fe: None };
+    let image = ReplFrame::Image { mime: "image/png".into(), data_base64: String::new(), bytes: 12345 };
+    let notes = [
+        ("origin marker", ReplEntry { origin: Some("session ▸ run /home/someone/analysis.jl".into()), ..entry("") }, false, colors::origin()),
+        ("browser link", ReplEntry { frames: vec![browser], ..entry("1") }, false, colors::browser_link()),
+        ("image caption", ReplEntry { frames: vec![image], ..entry("1") }, false, colors::image_note()),
+        ("starting note", ReplEntry { in_flight: true, ..entry("1") }, true, colors::starting()),
+        ("running note", ReplEntry { in_flight: true, ..entry("1") }, false, colors::running()),
+        ("elapsed note", ReplEntry { elapsed_ms: 123_456, ..entry("1") }, false, colors::elapsed()),
+    ];
+    for (name, entry, starting, style) in notes {
+        let mut owner = Owner::default();
+        owner.set_cols(8);
+        let lines = owner.build(&row("host", "row"), &[entry.clone()], starting, 8.0, 16.0, 0).0;
+        // The typed code's row (and an origin marker has none) is not the note.
+        let skip = usize::from(entry.origin.is_none());
+        let note_rows = &lines[skip..];
+        assert!(note_rows.len() >= 2, "{name}: the note is cut: {:?}", text(&lines));
+        for line in note_rows {
+            for span in line.spans.iter().filter(|s| !s.content.trim().is_empty()) {
+                assert_eq!(span.style, style, "{name}: {:?}", span.content);
+            }
+        }
+    }
+}
+
+/// One line of the manual's list of what the drawer does not do with a program's output, each with the text it is about
+/// and what is drawn (`docs/src/guide/repl.md`, and the limits in `ui/CLAUDE.md`, say the same items).
+#[test]
+fn the_limits_the_manual_lists_are_what_the_drawer_draws() {
+    let so = |t: &str| ReplFrame::Stdout { text: t.into() };
+    let out = |frames: Vec<ReplFrame>| text(&frames_rows(80, frames)).into_iter().skip(1).collect::<Vec<_>>();
+    // A tab is one space, so a repaint from the start of the line lands where a terminal's would not.
+    assert_eq!(out(vec![so("a\tb\rX\n")]), ["X b"]);
+    // A backspace, a bell and the other control characters are a space each.
+    assert_eq!(out(vec![so("a\u{8}b\u{7}c\u{7f}d\n")]), ["a b c d"]);
+    // Moving the cursor anywhere but to the start of the line does nothing: up shows the redraw as a new row, another column
+    // writes after what is there.
+    assert_eq!(out(vec![so("one\ntwo\n\u{1b}[1A\r\u{1b}[2KONE\n")]), ["one", "two", "ONE"]);
+    assert_eq!(out(vec![so("abc\u{1b}[5Gd\n")]), ["abcd"]);
+    // The move is ignored, so the text goes where the cursor was: over the start of the line after a `\r`.
+    assert_eq!(out(vec![so("abcdef\r\u{1b}[4GX\n")]), ["Xbcdef"]);
+    assert_eq!(out(vec![so("Progress:  10%\r\u{1b}[11G42%\n")]), ["42%gress:  10%"]);
+    // A wide character is one place, so writing over it lands a place off; an accent written as its own mark is one of its own.
+    assert_eq!(out(vec![so("\u{4e2d}\u{4e2d}\rab\n")]), ["ab"]);
+    assert_eq!(out(vec![so("e\u{301}\r\u{4e2d}\n")]), ["\u{4e2d}\u{301}"]);
+    // Erased cells are plain spaces, whatever background the program selected.
+    let rows = frames_rows(80, vec![so("abcdef\rxy\u{1b}[42m\u{1b}[1K\n")]);
+    assert_eq!(rows[1].spans.iter().map(|s| (s.content.to_string(), s.style.bg)).collect::<Vec<_>>(), [("   def".to_string(), None)]);
+    // Underline, italic and hidden text are drawn as plain text.
+    let rows = frames_rows(80, vec![so("\u{1b}[4mu\u{1b}[3mi\u{1b}[8mh\n")]);
+    assert_eq!(rows[1].spans.iter().map(|s| (s.content.to_string(), s.style.add_modifier)).collect::<Vec<_>>(), [("uih".to_string(), Modifier::empty())]);
+    // The start of a title waits for its end past the child's hold: each write is its own row here, so the start is text.
+    // (Frames as the real child sends them for `print("before \e]0;start"); sleep(0.3); print("\nend\a after\n")`.)
+    assert_eq!(out(vec![so("before "), so("\u{1b}]0;start"), so("\nend\u{7} after\n")]), ["before ", " ]0;start", "", "end  after"]);
+    // A program's writes are not one line in this drawer: each is a row, and a repaint overwrites only within its own write.
+    assert_eq!(out(vec![so("a"), so("b\n")]), ["a", "b"]);
 }

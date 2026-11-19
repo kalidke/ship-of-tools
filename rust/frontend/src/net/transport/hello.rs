@@ -87,6 +87,9 @@ pub(super) async fn send_hello<W: AsyncWrite + Unpin>(
         token: token.map(|s| s.to_string()),
         instance: Some(identity.instance.clone()),
         name: Some(identity.name.clone()),
+        // The REPL drawer reads a run's color escapes (`ui/drawer/repl/sgr.rs`); the daemon sends the text with them to a
+        // window that says so, and without them to every other.
+        reads_terminal_color: true,
         ..HelloReq::this_process(
             session.memory.client_id.clone(),
             crate::net::identity::FrontendIdentity::ROLE,

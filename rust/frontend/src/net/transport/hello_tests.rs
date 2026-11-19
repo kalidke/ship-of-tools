@@ -33,3 +33,21 @@ fn protocol_mismatch_headline_names_the_side_that_is_behind() {
     let first = headline(sot_protocol::PROTOCOL_VERSION - 1, "0.5.9");
     assert!(first.starts_with("daemon out of date"), "{first}");
 }
+
+/// The window's hello says it reads terminal escapes (the REPL drawer's colors); the daemon sends text with its escape
+/// sequences to a window that says so and without them to every other.
+#[tokio::test]
+async fn the_windows_hello_says_it_reads_terminal_color() {
+    let _env = crate::net::state::test_env::set_test_env();
+    let session = super::SessionState {
+        host: "h".to_string(),
+        memory: crate::net::state::SessionMemory::fresh(),
+        gate: super::StateSaveGate::new(),
+        takes_drawing: false,
+        posts_plain_text: false,
+    };
+    let mut wire = Vec::new();
+    super::send_hello(&mut wire, 1, &session, None).await.unwrap();
+    let frame = sot_protocol::codec::read_frame_blocking(&mut std::io::BufReader::new(&wire[..])).unwrap();
+    assert_eq!(frame.payload["reads_terminal_color"], true, "{}", frame.payload);
+}

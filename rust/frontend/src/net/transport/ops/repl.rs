@@ -40,7 +40,9 @@ pub(crate) async fn send_repl_eval<W: AsyncWrite + Unpin>(
                 code,
                 mode,
                 workspace_id,
-                color: false,
+                // A person's run from a window that draws terminal color (`ui/drawer/repl/sgr.rs`): the REPL child prints
+                // it with color. An agent's run through `sot-fe` or `repl.execute` carries no flag.
+                color: true,
             })?,
         ),
         None,
@@ -100,7 +102,9 @@ pub(crate) async fn send_repl_run_file<W: AsyncWrite + Unpin>(
                 fresh,
                 workspace_id,
                 origin: None,
-                color: false,
+                // A person's run from a window that draws terminal color (`ui/drawer/repl/sgr.rs`): the REPL child prints
+                // it with color. An agent's run through `sot-fe` or `repl.execute` carries no flag.
+                color: true,
             })?,
         ),
         None,
