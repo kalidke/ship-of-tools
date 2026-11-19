@@ -51,14 +51,15 @@ env:
 
 jobs:
   publish-guard:
-    name: publish guard (${{ matrix.os }}, ${{ matrix.suite }})
+    # xcode-27 is GitHub's hosted label for macOS 27 (a public preview image); macos-latest is macOS 26.
+    name: publish guard (${{ matrix.os == 'xcode-27' && 'macos-27, xcode-27' || matrix.os }}, ${{ matrix.suite }})
     runs-on: ${{ matrix.os }}
     # One job per suite: Windows Git Bash starts processes slowly, and the three suites in one job ran past ten minutes.
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-latest, windows-latest]
+        os: [ubuntu-24.04, macos-latest, xcode-27, windows-latest]
         suite: [test-pre-push, test-publish-guard-setup, test-publish-guard-entries]
     defaults:
       run:
@@ -106,10 +107,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - id: plan
-        run: echo "landing=$(python3 scripts/tests/shards.py plan landing)" >> "$GITHUB_OUTPUT"
+        # The plan names each system once. Every job it gives macOS (macos-latest, macOS 26) runs again on macOS 27, under
+        # the `xcode-27` label, so the two macOS runners run the same jobs.
+        run: |
+          plan=$(python3 scripts/tests/shards.py plan landing)
+          echo "landing=$(jq -c '. + [.[] | select(.os == "macos-latest") | .os = "xcode-27"]' <<< "$plan")" >> "$GITHUB_OUTPUT"
 
   test:
-    name: build+test (${{ matrix.os }}, ${{ matrix.shard }})
+    name: build+test (${{ matrix.os == 'xcode-27' && 'macos-27, xcode-27' || matrix.os }}, ${{ matrix.shard }})
     needs: plan
     runs-on: ${{ matrix.os }}
     # Every step below carries its own bound, and this ceiling is the sum of the bounds of every step the job can run on
@@ -176,13 +181,13 @@ jobs:
       # The vendored vt100 crate is excluded: it denies clippy::all in its own source, which beats -A on the command
       # line. CLIPPY_CONF_DIR names rust/clippy-tests: a test runs its children through sot_platform::test_wait (docs/ownership.md).
       - name: Test children
-        if: matrix.os == 'macos-latest' && contains(matrix.shard, 'sup')
+        if: runner.os == 'macOS' && contains(matrix.shard, 'sup')
         timeout-minutes: 6
         env:
           CLIPPY_CONF_DIR: "${{ github.workspace }}/rust/clippy-tests"
         run: cargo clippy --workspace --exclude vt100-ctt --all-targets --features sot-frontend/test-pane-timing,sot-frontend/test-window-close --locked -- -A clippy::all -D clippy::disallowed_methods
       - name: Selected Rust bodies (portable proofs)
-        if: matrix.os == 'macos-latest' && contains(matrix.shard, 'sup')
+        if: runner.os == 'macOS' && contains(matrix.shard, 'sup')
         timeout-minutes: 3
         uses: ./.github/actions/selected-body
         with:

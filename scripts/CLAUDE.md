@@ -105,7 +105,7 @@ Guarantees, each with the mechanism it rests on:
   `fresh-be-only`, the update scenarios and the Windows smoke stay in release.yml.
 - The hosted runs are two. rust.yml, on main after each batch of merges (since 2026-10-26, the maintainer's decision; a
   red run is fixed forward in the next landing or its landing reverted), is the build and the unit tests sharded on all three systems by
-  `.github/test-shards.txt`; its `release SYSTEM shard...` lines defer selected shards to that system's release gate.
+  `.github/test-shards.txt`, the macOS jobs on macOS 26 and again on macOS 27 (the `xcode-27` image, a preview); its `release SYSTEM shard...` lines defer selected shards to that system's release gate.
   Each job is bound by `timeout-minutes`, with a check that every test of a named target runs in
   exactly one shard (`tests/shards.py check`), in five to seven minutes. In the build+test job every step has its own
   bound and the job's is their sum plus two minutes, so a slow runner fails in the step it slowed, named, never as a
