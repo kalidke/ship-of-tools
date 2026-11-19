@@ -2974,3 +2974,7 @@ the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the sa
     it for two landings: the scoped local gate runs a changed crate's own tests, and the platform's check reads every
     crate's sources, so a frontend change was never run against it. Found in a hosted run of another branch. One
     commit. Since then a landing that changes any Rust source also runs the platform's `test_scan` tests locally.
+  - The Windows process-listing test (WIN-CIM-LISTING-30S), test-only. One builder; no reviewer beyond the landing
+    session's reading of the diff. The leak test's Windows readers use the daemon's own in-process snapshot in place
+    of a whole-table PowerShell listing, which had run past 30 s twice on hosted Windows. One hosted Windows run of
+    the change passed the test. Left as notes: the product's installer still lists the whole table on Windows.

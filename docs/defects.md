@@ -645,11 +645,6 @@ owned by `docs/CLAUDE.md`.
 - **DISPLAY-INTO-CHILD** [note] `sidecars/display/` (one 235-line file and a page) moves to
   `sidecars/child/display.rs`, the concept "what each child the daemon starts carries"; it deletes a folder, a page and
   the "display/ sibling" cross-reference.
-- **WIN-CIM-LISTING-30S** [note] `sidecars::repl::project_tests::the_command_line_observer_rejects_a_deliberate_leak` failed
-  once on a hosted Windows run: the whole-table `Get-CimInstance Win32_Process` listing in `repl/tree_argv_tests.rs`
-  `read_tree` ran past its 30 s bound; the rerun passed. The state the test does not own is the runner's WMI service.
-  Query only the probe's tree (`-Filter` by ParentProcessId, walked), or name a bound for a cold provider; measure a cold
-  first query on a Windows box.
 - **PKG-DOWNLOAD-TARBALL** [note] A Pkg download tarball was left in `TMPDIR`; the root cause was not proven, so
   newer child-folder cleanup cannot be said to fix it. Needs a Linux Julia/Pkg interrupted-download setup.
 - **REPL-SURVIVES-DAEMON** [feature] A row's REPL (and kernel) outlive a daemon restart, so a row keeps its loaded
@@ -1285,6 +1280,8 @@ owned by `docs/CLAUDE.md`.
   probe; installer hooks (superseded, check); stop commands that match only what they stop.
 
 ## Closed
+
+- **WIN-CIM-LISTING-30S** (sidecars) [note] closed by the landing that fixes it, 2026-11-19, a red twice in hosted Windows runs, no use: `the_command_line_observer_rejects_a_deliberate_leak` ran past its 30 s bound on the whole-table `Get-CimInstance Win32_Process` listing; the test's Windows tree reader and command-line reader (`repl/tree_argv_tests.rs`) now use the daemon's in-process Toolhelp snapshot and per-process handle read (`comm::registry::ancestors`), with no PowerShell or WMI; on a hosted Windows run of the change the test passed (once in each of the two binaries that hold it); that one run does not prove the timeout gone, which showed in two runs of many.
 
 - **REPL-COLOR-SCAN-CUTS-AT-A-TEST-ATTRIBUTE** (fe-ui) [session] closed by the landing that fixes it, 2026-11-19, seen by a session reading a hosted run (the platform crate's `no_scan_cuts_a_file_at_its_first_cfg_test` failed on Linux, macOS and Windows on a branch that held the REPL drawer's colors): the colors' source scan (`a_color_at_a_use_site_is_not_in_the_drawers_table`) cut each scanned file at its first test attribute, which the platform's scan check refuses because code below a mid-file test module is then never read. It now uses `sot_platform::test_scan::without_test_modules`, as the other source scans do. The colors' landing reached `main` red on this check: its scoped local gate ran the frontend's tests and not the platform's, whose scan check reads every crate's sources.
 

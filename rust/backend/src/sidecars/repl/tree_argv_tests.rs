@@ -2,11 +2,11 @@
 //! way each OS can, and each one's command line. A process that has exited is skipped; a command line that cannot be
 //! read from a process still alive fails the test.
 
-#[cfg(any(windows, target_os = "macos"))]
+#[cfg(target_os = "macos")]
 use std::time::Duration;
 
-/// The bound on one reading of the process table or of a command line (Linux reads `/proc`, with no child).
-#[cfg(any(windows, target_os = "macos"))]
+/// The bound on one reading of the process table (Linux reads `/proc` and Windows the Toolhelp snapshot, with no child).
+#[cfg(target_os = "macos")]
 const BOUND: Duration = Duration::from_secs(30);
 
 /// The running child's real argument vector, from the operating system, or `None` once the process has exited. On
@@ -92,28 +92,18 @@ fn os_argv(pid: u32) -> Option<Vec<String>> {
 
 #[cfg(windows)]
 fn os_argv(pid: u32) -> Option<Vec<String>> {
-    let mut command = std::process::Command::new("powershell");
-    command.args([
-        "-NoProfile",
-        "-Command",
-        &format!(
-            "Get-CimInstance Win32_Process -Filter 'ProcessId={pid}' | ForEach-Object {{ if ($null -eq $_.CommandLine) {{ 'NULL ' + $_.Name + ' parent ' + $_.ParentProcessId + ' created ' + $_.CreationDate }} else {{ 'CMD ' + $_.CommandLine }} }}"
-        ),
-    ]);
-    let ran = sot_platform::test_wait::run_within(&mut command, BOUND).ok();
-    let row = ran.stdout.trim();
-    if row.is_empty() {
-        return None;
-    }
-    let line = row
-        .strip_prefix("CMD ")
-        .unwrap_or_else(|| panic!("the command line of process {pid}, still alive, cannot be read: {row}"));
-    Some(vec![line.to_owned()])
+    // The product's own in-process read (an open handle and `NtQueryInformationProcess`), not WMI: no service to be
+    // cold, no child to bound. `None` is a process that cannot be opened, which for a child of this test is one that
+    // has exited.
+    let (_, line) = crate::comm::registry::ancestors::info(pid)?;
+    let line = line.unwrap_or_else(|| panic!("the command line of process {pid}, still alive, cannot be read"));
+    Some(vec![line])
 }
 
 /// The process ids of the child's tree, read the way each OS can. Linux and macOS: its process group (the containment
 /// makes the child its leader), from `/proc` and from one `ps -A -o pid=,pgid=`. Windows: the root and every
-/// descendant, walked from the root over one CIM query of `ProcessId, ParentProcessId, CreationDate` ([`descendants`]);
+/// descendant, walked from the root over one in-process Toolhelp snapshot, each candidate's creation time read from its own
+/// handle ([`descendants`]); no PowerShell or WMI, so no service whose first query can be cold;
 /// a descendant whose parent has already exited breaks the walk and is not seen (the daemon's job holds it, and the
 /// Linux run covers that path).
 #[cfg(target_os = "linux")]
@@ -147,23 +137,26 @@ fn read_tree(root: u32) -> Vec<u32> {
 
 #[cfg(windows)]
 fn read_tree(root: u32) -> Vec<u32> {
-    let mut command = std::process::Command::new("powershell");
-    command.args([
-        "-NoProfile",
-        "-Command",
-        "Get-CimInstance Win32_Process | ForEach-Object { \"$($_.ProcessId) $($_.ParentProcessId) $(if ($_.CreationDate) { $_.CreationDate.ToFileTimeUtc() } else { 0 })\" }",
-    ]);
-    let ran = sot_platform::test_wait::run_within(&mut command, BOUND).ok();
-    let rows: Vec<(u32, u32, u64)> = ran
-        .stdout
-        .lines()
-        .filter_map(|l| {
-            let mut cols = l.split_whitespace();
-            Some((cols.next()?.parse().ok()?, cols.next()?.parse().ok()?, cols.next()?.parse().ok()?))
-        })
+    use crate::comm::registry::ancestors::{info, snapshot};
+    let procs = snapshot().expect("the tree reader: the Toolhelp snapshot failed");
+    assert!(procs.contains_key(&root), "the tree reader did not list the root {root}");
+    // Creation times only for the processes the parent edges reach from the root, so the handles opened are the tree's.
+    let mut reach = vec![root];
+    let mut next = 0;
+    while next < reach.len() {
+        let parent = reach[next];
+        next += 1;
+        for (pid, (ppid, _)) in &procs {
+            if *ppid == parent && !reach.contains(pid) {
+                reach.push(*pid);
+            }
+        }
+    }
+    let rows: Vec<(u32, u32, u64)> = reach
+        .iter()
+        .filter_map(|pid| Some((*pid, procs[pid].0, info(*pid)?.0)))
         .collect();
-    assert!(!rows.is_empty(), "the tree reader: the CIM query printed no process: {ran}");
-    assert!(rows.iter().any(|row| row.0 == root), "the tree reader did not list the root {root}: {ran}");
+    assert!(rows.iter().any(|row| row.0 == root), "the tree reader could not open the root {root}");
     descendants(root, &rows)
 }
 
