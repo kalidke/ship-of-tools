@@ -649,7 +649,7 @@ fn full_height_is_shown_only_while_the_focus_is_drawn() {
             let survives = base.full_span().is_some_and(|n| focus == PaneFocus::Repl || base.columns[n..].iter().any(|c| c.slot == focus.slot()));
             assert_eq!(shown, full && survives && base.full_span().is_some(), "{name} {focus:?}");
             assert!(focus_is_drawn(&h.layout, &base, focus), "{name} {focus:?} full={full}: focus is on a pane that is not drawn");
-            h.layout.settle(&base, focus);
+            h.layout.frame_layout(&base, focus);
             h.focus.set_focus(PaneFocus::Repl);
             assert_eq!(h.layout.full_shown(&base, PaneFocus::Repl), full && survives, "{name} {focus:?}: the flag is over once settled");
         } } }
@@ -657,11 +657,43 @@ fn full_height_is_shown_only_while_the_focus_is_drawn() {
     let base = LayoutPreset::default_laptop();
     let mut h = Harness::new(DrawerContent::Closed, PaneFocus::NavTree, false);
     h.cycle(DrawerContent::Chat); h.cycle(DrawerContent::Chat);
-    h.focus.set_focus(PaneFocus::NavTree); h.layout.settle(&base, PaneFocus::NavTree);
+    h.focus.set_focus(PaneFocus::NavTree); h.layout.frame_layout(&base, PaneFocus::NavTree);
     h.focus.set_focus(PaneFocus::Repl);
     assert!(!h.layout.full_shown(&base, PaneFocus::Repl), "focus coming back does not bring the full height back");
     h.cycle(DrawerContent::Chat);
     assert!(h.layout.full_shown(&base, PaneFocus::Repl), "the key does");
+}
+/// The key settles a full height that is not shown before it reads it: Escape gives the nav the keys, and the drawer's
+/// key, pressed before any frame is drawn, goes to full height (it is open at its height) instead of closing it.
+#[test]
+fn the_drawers_key_meets_the_height_that_is_shown_not_a_stale_flag() {
+    let base = LayoutPreset::default_laptop();
+    for tenant in TENANTS {
+        let mut h = Harness::new(DrawerContent::Closed, PaneFocus::NavTree, false);
+        h.cycle(tenant); h.cycle(tenant);
+        h.focus.set_focus(PaneFocus::NavTree);
+        h.cycle(tenant);
+        assert_eq!(h.layout.drawer(), tenant, "{tenant:?}: the drawer was shown at its height, so the key does not close it");
+        assert!(h.layout.full_shown(&base, h.focus.focus()), "{tenant:?}: it goes full and takes the focus");
+    }
+}
+/// `compute` keeps the normal height where the column just left of the agent column is under 2 cells wide, because
+/// the drawer then spans the whole width as it does at the normal height: the agent pane, laid out and 70 cells wide,
+/// does not make up for it.
+#[test]
+fn full_height_waits_for_a_column_left_of_the_agent_wide_enough_to_lay_out() {
+    use crate::ui::chrome::layout::compute;
+    let base = LayoutPreset {
+        columns: vec![Column { slot: Slot::Nav, width: 0.40 }, Column { slot: Slot::Preview, width: 0.01 },
+            Column { slot: Slot::Llm, width: 0.59 }],
+        drawer: Some(Slot::Repl), drawer_height: 0.40,
+    };
+    let (open, full) = (compute(rect(120, 40), &base, true, false, None), compute(rect(120, 40), &base, true, true, None));
+    assert_eq!(full.llm.map(|r| r.width), Some(70), "the agent pane is laid out");
+    assert_eq!((full.repl, full.llm, full.nav, full.hlines.clone()), (open.repl, open.llm, open.nav, open.hlines), "the normal height");
+    let mut h = Harness::new(DrawerContent::Closed, PaneFocus::NavTree, false);
+    h.cycle_on(DrawerContent::Chat, &base); h.cycle_on(DrawerContent::Chat, &base);
+    assert!(h.layout.full_shown(&base, PaneFocus::Repl), "the layout state is full; only the geometry declines");
 }
 /// The key paths that once rested the focus on a pane the full height hid: Help then a spatial move then a row
 /// switch or an automatic REPL open; a reveal of the agent; the wide-preview key. After every step, on every preset,
@@ -677,15 +709,15 @@ fn no_key_path_rests_the_focus_on_a_pane_that_is_not_drawn() {
             for row in [DrawerContent::Chat, DrawerContent::Closed, DrawerContent::Terminal] {
                 let mut h = start(); h.open(); spatial(&mut h); check(&h, "help, spatial");
                 let e = h.layout.enter_row_drawer(row, h.focus.focus()); e.apply(&mut h, None);
-                h.layout.settle(&base, h.focus.focus()); check(&h, "row switch");
+                h.layout.frame_layout(&base, h.focus.focus()); check(&h, "row switch");
             }
             let mut h = start(); h.open(); spatial(&mut h); spatial(&mut h);
             h.layout.show_repl_automatically(true, true);
-            h.layout.settle(&base, h.focus.focus()); check(&h, "run opens the REPL");
-            let mut h = start(); spatial(&mut h); h.layout.settle(&base, h.focus.focus()); check(&h, "spatial");
-            let e = h.layout.reveal_agent(); e.apply(&mut h, None); h.layout.settle(&base, h.focus.focus()); check(&h, "reveal");
+            h.layout.frame_layout(&base, h.focus.focus()); check(&h, "run opens the REPL");
+            let mut h = start(); spatial(&mut h); h.layout.frame_layout(&base, h.focus.focus()); check(&h, "spatial");
+            let e = h.layout.reveal_agent(); e.apply(&mut h, None); h.layout.frame_layout(&base, h.focus.focus()); check(&h, "reveal");
         }
-        let mut h = start(); h.action(Action::ToggleWidePreview); h.layout.settle(&base, h.focus.focus()); check(&h, "wide preview");
+        let mut h = start(); h.action(Action::ToggleWidePreview); h.layout.frame_layout(&base, h.focus.focus()); check(&h, "wide preview");
     }
 }
 /// Help is at the drawer's height over a full drawer and the full height returns with the drawer under it; the

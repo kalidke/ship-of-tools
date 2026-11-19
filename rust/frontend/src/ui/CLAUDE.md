@@ -901,14 +901,16 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   the whole inner height, the columns it spans (`LayoutPreset::full_span`: those left of the agent column, all when the
   preset has none) are not laid out, and every column right of them keeps its rect at every window size, so the agent
   pane and its terminal are neither moved nor resized by a press. A preset has no full height (`full_span` is `None`:
-  the agent column first or alone, or no drawer) and the key goes from open to closed on it; `compute` also keeps the
-  normal height where the agent column is too narrow to lay out beside the drawer. A `repl` column in a preset is not
+  the agent column first or alone, or no drawer) and the key goes from open to closed on it. `compute` also keeps the
+  normal height (the layout state stays full, the geometry declines) where the column just left of the agent column is
+  under 2 cells wide, so the drawer already spans the whole width, whatever the agent pane's own width, and where the
+  window has under 7 rows, which has no drawer at any height; the middle press is then a dead step. A `repl` column in a preset is not
   special: the drawer's rect wins over it at every height. The invariant is that focus never rests on a pane that is
   not drawn: `LayoutHelp::full_shown(base, focus)` is true only while the flag is set, a tenant (not Help) is shown, the
   preset has a full height and the focus is the drawer or a column right of the covered ones, so a focus anywhere else,
   by any path, lays out the normal height with no call to make; `spatial_slots` and the frame read the same function.
   The flag itself is window-wide like the height, never in a parked view (a row with a drawer open meets a full one; a
-  row with none ends it), and `settle` (before each frame's layout, and in the key) drops it when it is not shown, so a
+  row with none ends it), and `settle` drops it when it is not shown (`frame_layout`, the frame's only way to its layout, and the start of the key), so a
   full drawer never comes back without its key; `set_drawer` drops it when the drawer closes, by any path, and Help
   keeps it for the drawer Help covers, which is drawn at the normal height meanwhile. Maximize over a full drawer shows
   the drawer alone and restores to the full height; the wide-preview key over one hides the agent column, so the
@@ -920,6 +922,7 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   with the agent column first, alone, in the middle, with a `repl` column on either side of it, and a single column,
   at widths 20 to 300), `another_drawers_key_swaps_and_keeps_the_height`,
   `every_close_ends_the_full_height_and_a_toggle_closes_in_one_step`, `full_height_is_shown_only_while_the_focus_is_drawn`,
+  `the_drawers_key_meets_the_height_that_is_shown_not_a_stale_flag`, `full_height_waits_for_a_column_left_of_the_agent_wide_enough_to_lay_out`,
   `no_key_path_rests_the_focus_on_a_pane_that_is_not_drawn` (Help then a spatial move then a row switch or a run,
   a reveal of the agent, the wide-preview key), `help_and_maximize_over_a_full_drawer` and
   `chrome::view::tests::every_tenant_fills_the_rect_a_full_height_drawer_stands_in`.

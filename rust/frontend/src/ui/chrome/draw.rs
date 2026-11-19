@@ -137,9 +137,7 @@ impl State {
         self.nav_spill.observe(spill_cursor_now, self.settings.nav_spill_ms);
         let nav_spill_active = self.nav_spill.active();
         let base_preset = self.settings.resolve_preset(self.monitor_aspect);
-        self.layout_help.settle(base_preset, focus);
-        let drawer_full = self.layout_help.full_shown(base_preset, focus);
-        let layout_preset = self.layout_help.effective_preset(base_preset);
+        let (layout_preset, drawer_full) = self.layout_help.frame_layout(base_preset, focus);
         // `drawer` was bound above (after the terminal lazy-spawn/close).
         let drawer_open = drawer.is_open();
         let (preview_name, monitor_host_label, monitor_host_connected) = self.pane_title_inputs();

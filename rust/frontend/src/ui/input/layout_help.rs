@@ -135,9 +135,15 @@ impl LayoutHelp {
         let preset = self.effective_preset(base);
         preset.full_span().is_some_and(|n| focus == PaneFocus::Repl || preset.columns[n..].iter().any(|c| c.slot == focus.slot()))
     }
-    /// A full height that is not shown is over: the next full height comes from the drawer's key. Help keeps it,
-    /// for the drawer Help covers. Called before each frame's layout and by the key.
-    pub(in crate::ui) fn settle(&mut self, base: &LayoutPreset, focus: PaneFocus) {
+    /// What a frame lays out: the full height that is not shown is over first (the next one comes from the drawer's
+    /// key), then the preset and whether the drawer is drawn full. The frame's only way to its layout.
+    pub(in crate::ui) fn frame_layout(&mut self, base: &LayoutPreset, focus: PaneFocus) -> (LayoutPreset, bool) {
+        self.settle(base, focus);
+        (self.effective_preset(base), self.full_shown(base, focus))
+    }
+    /// A full height that is not shown is over. Help keeps it, for the drawer Help covers. Run by each frame
+    /// (`frame_layout`) and at the start of the drawer's key.
+    fn settle(&mut self, base: &LayoutPreset, focus: PaneFocus) {
         if self.drawer != DrawerContent::Help && !self.full_shown(base, focus) { self.full = false; }
     }
     /// Whether the chat is shown: the drawer is Chat, or Help whose saved origin is Chat. The origin survives the REPL
