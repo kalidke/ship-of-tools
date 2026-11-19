@@ -2990,3 +2990,11 @@ the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the sa
     in its own words when no Slack workspace is connected, and no longer tells an agent to read a thread it cannot
     read. Round one found the manual's hand-kept skill lists stale and a wrong thread value. Unproven: no session
     has yet been asked in plain words with the new layer installed.
+  - The REPL drawer wraps (REPL-DRAWER-CLIPS-LONG-LINES). The colors' builder, three commits; a fresh reviewer,
+    three rounds. Every row the drawer draws is cut at the pane's width by one function, the line being typed
+    included, with its cursor in view; a row cache keeps an unchanged redraw from rebuilding the log. Round one found
+    that the typed line still clipped while the manual said a long line wraps, and that emoji were measured by a
+    different width table than they are drawn with; round two that the drawer's own notes bypassed the cut. Left:
+    a stack frame's row still clips (REPL-DRAWER-STACK-ROW-CLIPS, open), the drawer has no selection or copy
+    (REPL-DRAWER-NO-SELECTION-OR-COPY, open), and eleven files outside the drawer measure with the older width
+    table (WIDTH-CRATE-TWO-VERSIONS, open). No person has looked at it.
