@@ -22,7 +22,8 @@ fn record(workspace: &str, channel: &str, ts: &str, text: &str) -> ChatRecord {
     }
 }
 
-/// A scratch comm folder (the registry turn held for the test's life), the daemon's rows, and a mapped folder.
+/// A scratch comm folder (the registry turn held alone for the test's life: an append takes the registry lock within
+/// what is left of the 2 s inbox wait), the daemon's rows, and a mapped folder.
 struct World {
     th: TestHome,
     rows: Workspaces,
@@ -35,7 +36,7 @@ impl World {
         let dir = tempfile::tempdir().unwrap();
         let folder = dir.path().join("mapped");
         std::fs::create_dir_all(&folder).unwrap();
-        World { th: TestHome::new(), rows: Workspaces::new(), folder: super::super::canonical(&folder).unwrap(), _dir: dir }
+        World { th: TestHome::exclusive(), rows: Workspaces::new(), folder: super::super::canonical(&folder).unwrap(), _dir: dir }
     }
 
     fn name(&self) -> String {

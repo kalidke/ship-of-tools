@@ -28,6 +28,8 @@ const LONG: Duration = Duration::from_secs(30);
 
 /// A hub with row alpha (handle `alpha-h`, a live session) mapped to `C0AAAA`, a comm folder this daemon appends to
 /// itself, and a fake Slack with a live socket. The chat's environment names the test's comm folder, never the process's.
+/// The test holds the registry's turn alone: a filing takes the registry lock within what is left of the inbox wait
+/// (2 s), a bound another test's hold of the process-wide turn would spend (`registry::lock::TURN_TESTS`).
 struct World {
     th: TestHome,
     /// The mapped folder, as the chat names it.
@@ -48,7 +50,7 @@ async fn world_at(floor: &str) -> World {
 }
 
 async fn world_with(floor: Option<&str>) -> World {
-    let th = TestHome::new();
+    let th = TestHome::exclusive();
     th.own_record();
     let mut home = Home::new(Some(SELF));
     home.env = std::mem::take(&mut home.env).with("SOT_COMM_HOME", &th.home).with("SOT_SOCKET", th.home.join("no-daemon.sock"));
@@ -715,7 +717,8 @@ fn post_record(n: u32) -> sot_protocol::chat::ChatRecord {
 }
 
 /// A delivering file maps alpha to a channel of the default workspace `MA` and beta to one of a second, `MB`, each row
-/// with a live handle; both workspaces run and both sockets said hello.
+/// with a live handle; both workspaces run and both sockets said hello. The registry's turn is held alone, as
+/// [`World`]'s is.
 struct MailTwo {
     teams: sot_chat::fake_slack::Teams,
     th: TestHome,
@@ -733,7 +736,7 @@ async fn mail_two() -> MailTwo {
     let teams = sot_chat::fake_slack::Teams::start(&[(a, "Alpha Lab"), (b, "Beta Lab")]).await;
     teams.channels(a, &[("C0AAAA01", "alpha-one", false, true)]);
     teams.channels(b, &[("C0BBBB01", "beta-one", false, true)]);
-    let th = TestHome::new();
+    let th = TestHome::exclusive();
     th.own_record();
     let mut home = Home::new(Some(SELF));
     home.env = std::mem::take(&mut home.env).with("SOT_COMM_HOME", &th.home).with("SOT_SOCKET", th.home.join("no-daemon.sock"));
