@@ -184,7 +184,7 @@ paragraph. Hold `Shift` with any of these to extend the selection. A row of
 right-to-left text is the exception: a step onto or off it goes by the file's
 line. The cursor is a thin bar drawn over the text, on every row, at the edge of
 the letter it stands before. A line end written as CR and LF is one position
-for the cursor. The view follows the cursor: when
+for the cursor, and a CR alone ends a line as a line feed does. The view follows the cursor: when
 a key moves it above or below the pane, the text scrolls just far enough to
 show it again, at once. The mouse wheel can still scroll the text away from the cursor,
 and the next key that moves the cursor or changes the text brings it back.

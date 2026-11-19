@@ -547,6 +547,7 @@ fn walk_texts() -> Vec<(&'static str, String)> {
         ("markdown", md), ("list", list), ("code", code), ("table", table), ("nospace", nospace), ("tabs", tabs),
         ("cjk", cjk), ("combining", comb), ("emoji", emoji), ("empty", String::new()), ("one_char", "a".into()),
         ("only_newlines", "\n\n\n\n".into()), ("crlf", crlf), ("one_crlf", one_crlf), ("lone_cr", lone_cr),
+        ("cr_only_file", format!("{LOREM}\rsecond line\rthird line\r")), ("final_lone_cr", format!("{LOREM}\n\n{LOREM}\r")),
     ]
 }
 
@@ -938,4 +939,129 @@ fn the_edit_buffer_is_shaped_again_for_a_pane_of_another_width_or_scale() {
     assert!(h.editor.shaped_for(w, 1.5) == false, "a zoom");
     assert!(Editor::default().shaped_for(w, scale), "no shaping, nothing to redo");
     assert!(h.editor.shaped_for(0.0, scale), "a hidden pane is not shaped for");
+}
+
+/// Every cursor position the buffer allows in `body`: a char boundary that is not inside a CRLF.
+fn positions(body: &str) -> Vec<usize> {
+    (0..=body.len()).filter(|&i| body.is_char_boundary(i) && !(i > 0 && body[..i].ends_with('\r') && body[i..].starts_with('\n'))).collect()
+}
+
+/// The tops of the rows the drawn text gives the body line that holds byte `at`.
+fn row_tops(h: &mut Harness, at: usize) -> Vec<f32> {
+    let body = h.body();
+    let lines: Vec<(usize, usize)> = super::super::buffer::lines(&body).collect();
+    let k = lines.partition_point(|l| l.0 <= at) - 1;
+    let buffer = &h.editor.shaped().unwrap().buffer;
+    let shaped = buffer.lines.len() - 2 - lines.len() + k;
+    buffer.layout_runs().filter(|r| r.line_i == shaped).map(|r| r.line_top).collect()
+}
+
+#[test]
+fn a_file_whose_last_line_ends_in_a_lone_cr_has_a_bar_and_a_step_at_every_byte() {
+    let cases = [
+        ("cr_only_file", "first line\rsecond line\rthird line\r".to_string()),
+        ("paragraph_then_cr", format!("{LOREM}\r")),
+        ("lf_file_last_line_cr", format!("{LOREM}\n\n{LOREM}\r")),
+        ("cr_only_no_final_cr", "first\rsecond\rthird".to_string()),
+    ];
+    for (name, text) in cases {
+        let mut h = Harness::new(&text, 40);
+        assert_eq!(h.editor.shaped().unwrap().buffer.lines.len(), super::super::buffer::lines(&text).count() + 2, "{name}: the drawn text has the file's lines");
+        for at in positions(&text) {
+            h.put(at);
+            assert!(h.editor.cursor_place().is_some(), "{name}: no bar at {at}");
+            let rev = h.edit().buf.rev();
+            let (shaped, index) = (h.editor.shaped.as_ref().unwrap(), h.editor.index.as_ref().unwrap());
+            assert!(rows::vertical(&shaped.buffer, index, &text, rev, at, None, 1).is_some(), "{name}: no step down at {at}");
+        }
+    }
+    // Down from the first paragraph's start stays inside it.
+    let mut h = Harness::new(&format!("{LOREM}\n\n{LOREM}\r"), 40);
+    h.act(Action::EditDown);
+    assert!(h.cursor() > 0 && h.cursor() < LOREM.len(), "{}", h.cursor());
+    // Delete between the two CRs of a final `\r\r\n` leaves a final lone CR.
+    let mut h = Harness::new("t.\r\r\n", 40);
+    h.put(3);
+    h.press(Key::Named(NamedKey::Delete), Some(Action::EditDelete), false, 3);
+    assert_eq!(h.body(), "t.\r");
+    assert!(h.editor.cursor_place().is_some());
+}
+
+/// Every text of up to `max` characters from `alphabet`.
+fn texts_up_to(alphabet: &[&str], max: usize) -> Vec<String> {
+    let mut all = vec![String::new()];
+    let mut layer = vec![String::new()];
+    for _ in 0..max {
+        layer = layer.iter().flat_map(|t| alphabet.iter().map(move |c| format!("{t}{c}"))).collect();
+        all.extend(layer.iter().cloned());
+    }
+    all
+}
+
+#[test]
+fn every_short_text_has_one_row_for_each_cursor_position() {
+    for text in texts_up_to(&["a", "\r", "\n"], 6) {
+        let mut h = Harness::new(&text, 40);
+        for at in positions(&text) {
+            h.put(at);
+            let place = h.editor.cursor_place().unwrap_or_else(|| panic!("{text:?}: no bar at {at}"));
+            let tops = row_tops(&mut h, at);
+            assert_eq!(tops.iter().filter(|&&t| t == place.top).count(), 1, "{text:?} at {at}: the bar is on one row of its line: {place:?} {tops:?}");
+        }
+    }
+    // A wide and a right-to-left letter: every position has a bar on one row of its line.
+    for text in texts_up_to(&["あ", "א", "\r", "\n"], 4) {
+        let mut h = Harness::new(&text, 40);
+        for at in positions(&text) {
+            h.put(at);
+            let place = h.editor.cursor_place().unwrap_or_else(|| panic!("{text:?}: no bar at {at}"));
+            let tops = row_tops(&mut h, at);
+            assert_eq!(tops.iter().filter(|&&t| t == place.top).count(), 1, "{text:?} at {at}: {place:?} {tops:?}");
+        }
+    }
+}
+
+#[test]
+fn from_every_position_of_a_short_text_up_then_down_and_down_then_up_come_back_to_the_row() {
+    for text in texts_up_to(&["a", "\r", "\n"], 5) {
+        let mut h = Harness::new(&text, 40);
+        for at in positions(&text) {
+            for (go, back) in [(Action::EditUp, Action::EditDown), (Action::EditDown, Action::EditUp)] {
+                h.put(at);
+                let before = h.place().top;
+                h.act(go);
+                let (moved, mid) = (h.cursor(), h.place().top);
+                if mid != before && (mid < before) == (go == Action::EditUp) {
+                    h.act(back);
+                    assert_eq!(h.place().top, before, "{text:?}: {go:?} from {at} to {moved} and back is not on the starting row");
+                } else if go == Action::EditUp {
+                    assert_eq!(moved, 0, "{text:?}: Up from the first row at {at}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn a_delete_before_a_crlf_that_leaves_one_leaves_the_cursor_before_it() {
+    let mut h = Harness::new("a\rX\nb", 40);
+    h.put(2);
+    h.press(Key::Named(NamedKey::Delete), Some(Action::EditDelete), false, 3);
+    assert_eq!((h.body(), h.cursor()), ("a\r\nb".to_string(), 1));
+}
+
+#[test]
+fn the_bar_on_a_right_to_left_glyph_stands_at_the_edge_it_is_read_from() {
+    // The row's glyphs, read from the shaped buffer: the first byte's bar is the right edge of the glyph that starts
+    // there, the end of the text's the left edge of the glyph that ends there.
+    let mut h = Harness::new(HEBREW, 40);
+    let glyphs: Vec<(usize, usize, f32, f32)> = h.editor.shaped().unwrap().buffer.layout_runs().next().unwrap()
+        .glyphs.iter().map(|g| (g.start, g.end, g.x, g.w)).collect();
+    assert!(glyphs.iter().all(|g| g.0 < g.1));
+    let first = glyphs.iter().find(|g| g.0 == 0).unwrap();
+    let last = glyphs.iter().max_by_key(|g| g.1).unwrap();
+    h.put(0);
+    assert_eq!(h.place().x, first.2 + first.3, "at the start: the right edge of the first glyph");
+    h.put(HEBREW.len());
+    assert_eq!(h.place().x, last.2, "at the end: the left edge of the last glyph");
 }

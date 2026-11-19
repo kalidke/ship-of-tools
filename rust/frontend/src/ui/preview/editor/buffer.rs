@@ -14,14 +14,16 @@
 // Up, Down, PgUp and PgDn move by the row on screen: `rows::vertical`
 // reads the rows of the buffer the window draws and lands the cursor with
 // `set_cursor`. `move_up`, `move_down` and their `_rows` forms below step by
-// logical lines (split on `\n`) and run only for a step `vertical` cannot
+// logical lines (the shaper's: see `lines`) and run only for a step `vertical` cannot
 // make: a row of right-to-left text, or a shaped buffer that is not the
 // body's text. Home and End stay on the logical line, so in a wrapped
 // paragraph they go to the paragraph's start and end. The cursor is not in
 // the shaped text: the window draws it over the rows (`rows::place`).
-// A CRLF line end is one position: no motion, landing or removal leaves the
-// cursor, and so a selection edge, between the `\r` and the `\n` (`off_crlf`),
-// since the drawn text turns each piece's line ends in by itself.
+// Lines end where the shaper ends them (`lines`, `end_len`: a CRLF is one end,
+// a lone CR, LF, NEL, LS and PS are each one), and the shaped rows' index reads
+// the same function. A CRLF is one position: no motion, landing or removal
+// leaves the cursor, and so a selection edge, between the `\r` and the `\n`
+// (`off_crlf`), since the drawn text turns each span's line ends in by itself.
 
 /// One point-in-time buffer state for the undo/redo stacks.
 #[derive(Debug, Clone)]
@@ -108,7 +110,7 @@ impl EditBuffer {
                 });
                 self.rev = next_rev();
                 self.body = prev.body;
-                self.cursor = off_crlf(&self.body, prev.cursor.min(self.body.len()));
+                self.cursor = prev.cursor.min(self.body.len());
                 self.last_kind = None;
                 self.last_edit_pos = None;
                 self.anchor = None;
@@ -129,7 +131,7 @@ impl EditBuffer {
                 });
                 self.rev = next_rev();
                 self.body = next.body;
-                self.cursor = off_crlf(&self.body, next.cursor.min(self.body.len()));
+                self.cursor = next.cursor.min(self.body.len());
                 self.last_kind = None;
                 self.last_edit_pos = None;
                 self.anchor = None;
@@ -349,15 +351,14 @@ impl EditBuffer {
     }
 
     /// Move to the start of the current logical line (after the
-    /// preceding `\n`, or byte 0 if there isn't one).
+    /// preceding line end, or byte 0 if there isn't one).
     pub fn move_line_start(&mut self) {
         self.cursor = line_start(&self.body, self.cursor);
     }
 
-    /// Move to the end of the current logical line (the position of the
-    /// next `\n`, before its `\r` if it has one, or EOF).
+    /// Move to the end of the current logical line (before its line end, or EOF).
     pub fn move_line_end(&mut self) {
-        self.cursor = off_crlf(&self.body, line_end(&self.body, self.cursor));
+        self.cursor = line_end(&self.body, self.cursor);
     }
 
     /// Put the cursor at `at`, a `char` boundary of the body (before the `\r` of a CRLF if `at` is inside it); any
@@ -388,10 +389,11 @@ impl EditBuffer {
             return;
         }
         let col = self.body[cur_start..self.cursor].chars().count();
-        let prev_line_terminator = cur_start - 1; // the `\n`
-        let prev_start = line_start(&self.body, prev_line_terminator);
-        let prev_text = &self.body[prev_start..prev_line_terminator];
-        self.cursor = off_crlf(&self.body, prev_start + nth_char_byte(prev_text, col));
+        // The line end before this line: two bytes for a CRLF, else the one character.
+        let prev_end = cur_start - if self.body[..cur_start].ends_with("\r\n") { 2 } else { self.body[..cur_start].chars().next_back().map_or(1, char::len_utf8) };
+        let prev_start = line_start(&self.body, prev_end);
+        let prev_text = &self.body[prev_start..prev_end];
+        self.cursor = prev_start + nth_char_byte(prev_text, col);
     }
 
     /// Move down one logical line, preserving the column.
@@ -404,10 +406,10 @@ impl EditBuffer {
             return;
         }
         let col = self.body[cur_start..self.cursor].chars().count();
-        let next_start = cur_end + 1; // skip the `\n`
+        let next_start = cur_end + end_len(&self.body, cur_end).unwrap_or(0);
         let next_end = line_end(&self.body, next_start);
         let next_text = &self.body[next_start..next_end];
-        self.cursor = off_crlf(&self.body, next_start + nth_char_byte(next_text, col));
+        self.cursor = next_start + nth_char_byte(next_text, col);
     }
 
     /// Move up `rows` logical lines at once (PageUp). Column is
@@ -468,16 +470,39 @@ fn off_crlf(s: &str, at: usize) -> usize {
     if at > 0 && s.as_bytes().get(at - 1) == Some(&b'\r') && s.as_bytes().get(at) == Some(&b'\n') { at - 1 } else { at }
 }
 
-/// Byte index of the first char on the line containing `byte`. Either
-/// the position after the most recent `\n` before `byte`, or 0.
-fn line_start(s: &str, byte: usize) -> usize {
-    s[..byte].rfind('\n').map(|i| i + 1).unwrap_or(0)
+/// The characters a line ends at, as the shaper ends one (`normalize_newlines`): a CRLF is one end, and a lone CR,
+/// LF, NEL, LS and PS are each one. This and `end_len` are the one place that says where lines end, for the buffer's
+/// motions, the shaped rows' index (`rows`) and, by the shaper's own rule, the drawn text.
+const END_CHARS: [char; 5] = ['\r', '\n', '\u{85}', '\u{2028}', '\u{2029}'];
+
+/// The length of the line end that starts at `at`, or `None` where none does (`\r\n` is one end of two bytes; a CR
+/// at the end of the text, or before anything else, is a lone CR).
+pub(super) fn end_len(s: &str, at: usize) -> Option<usize> {
+    let c = s[at..].chars().next().filter(|c| END_CHARS.contains(c))?;
+    Some(if c == '\r' && s.as_bytes().get(at + 1) == Some(&b'\n') { 2 } else { c.len_utf8() })
 }
 
-/// Byte index of the line terminator (the `\n`) on the line containing
-/// `byte`, or the buffer length if the line runs to EOF.
+/// The lines of `s` as `(start, end)` byte ranges without their ends: one more than there are ends, so a text that
+/// ends in a line end ends in an empty line.
+pub(super) fn lines(s: &str) -> impl Iterator<Item = (usize, usize)> + '_ {
+    let mut next = Some(0);
+    std::iter::from_fn(move || {
+        let start = next?;
+        let end = s[start..].find(END_CHARS).map_or(s.len(), |i| start + i);
+        next = end_len(s, end).map(|len| end + len);
+        Some((start, end))
+    })
+}
+
+/// Byte index of the first char on the line containing `byte`: after the last line end before it, or 0.
+fn line_start(s: &str, byte: usize) -> usize {
+    s[..byte].rfind(END_CHARS).map_or(0, |i| i + s[i..].chars().next().map_or(1, char::len_utf8))
+}
+
+/// Byte index of the line end on the line containing `byte` (before the `\r` of a CRLF), or the buffer length if the
+/// line runs to EOF.
 fn line_end(s: &str, byte: usize) -> usize {
-    s[byte..].find('\n').map(|i| byte + i).unwrap_or(s.len())
+    s[byte..].find(END_CHARS).map_or(s.len(), |i| byte + i)
 }
 
 /// Byte offset of the `n`-th char in `s`, or `s.len()` if `s` has fewer

@@ -353,10 +353,13 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   number no buffer has had, taken again at every change of the text, at birth, and by undo and redo, so an overtyping
   of the same length is told from the text it was shaped from), and a re-shape or a changed text makes it out of
   date, when `place` and `vertical` answer `None` (no bar, no follow, the step by the file's lines) until the key's
-  re-shape. `rows::place` maps a body byte to the shaped line it is on (the
-  lines are counted back from the footer's two, so the header's are never counted; a body line is split at the
-  characters the shaper ends a line at, a lone CR, U+0085, U+2028 and U+2029, and a CR before a line end goes with it,
-  so a CRLF is one line end and a line that splits is mapped line by line) and then to the row that holds the byte: the
+  re-shape. `rows::place` maps a body byte to the shaped line it is on (the lines are counted back from the footer's
+  two, so the header's are never counted; the body's lines are the lines the shaper makes, and one function says where
+  they end for the buffer's motions (Home, End, the file's-line fallback), the index and the property test of the drawn
+  text: `buffer::lines` and `buffer::end_len`, where a CRLF is one end and a lone CR, LF, NEL, LS and PS are each one,
+  the shaper's own rule (`normalize_newlines`, which sees each span of the drawn text alone, so a CR that ends the
+  body is a lone CR and the footer's lines follow it); body line `k` is shaped line `first + k`, with no second
+  splitting) and then to the row that holds the byte: the
   row from its first glyph (the least byte any glyph of it starts at) to the next row's, so the space a wrap drops
   belongs to the row it ends, and a byte where one row ends and the next begins (a word broken between glyphs)
   belongs to the next. The bar stands at the leading edge of the glyph that holds the byte (its left edge, its right

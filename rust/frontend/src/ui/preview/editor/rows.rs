@@ -5,16 +5,6 @@
 use crate::ui::ScreenRect;
 use cosmic_text::{Buffer, LayoutGlyph};
 
-/// The characters the shaper ends a line at that the body does not: a lone CR, NEL, LS and PS (`normalize_newlines`).
-const SPLITS: [char; 4] = ['\r', '\u{85}', '\u{2028}', '\u{2029}'];
-
-/// The shaped lines of one body line, as `(byte offset in the body line, text)`: a CR that ends the line is the
-/// first half of a CRLF and goes with the line end.
-fn pieces(line: &str) -> impl Iterator<Item = (usize, &str)> {
-    let text = line.strip_suffix('\r').unwrap_or(line);
-    text.split(SPLITS).map(move |piece| (piece.as_ptr() as usize - line.as_ptr() as usize, piece))
-}
-
 /// The least byte any glyph of the row starts at: the row's first byte, whichever way it runs.
 fn lead(glyphs: &[LayoutGlyph]) -> Option<usize> {
     glyphs.iter().map(|g| g.start).min()
@@ -41,31 +31,28 @@ thread_local! {
 /// answer `None` for a revision other than its own.
 pub(super) struct Index {
     rev: u64,
-    /// Per body line: its byte start in the body and the index of its first shaped line.
+    /// Per body line, as `buffer::lines` gives them: its bytes in the body without its end. Body line `k` is shaped
+    /// line `first + k`: the shaper ends lines where `buffer::lines` does.
     lines: Vec<(usize, usize)>,
+    first: usize,
     rows: Vec<Row>,
 }
 
 impl Index {
-    /// The index of `buffer`, the edit's shaped buffer: the header's lines, then each body line as one or more
-    /// shaped lines, then the footer's two, so the body's lines are counted back from the footer and the header
+    /// The index of `buffer`, the edit's shaped buffer: the header's lines, then the body's, one for each of
+    /// `buffer::lines`, then the footer's two, so the body's lines are counted back from the footer and the header
     /// needs no count. `None` where the buffer has fewer lines than that.
     pub(super) fn new(buffer: &Buffer, body: &str, rev: u64) -> Option<Self> {
         #[cfg(test)]
         BUILDS.with(|b| b.set(b.get() + 1));
-        let (mut at, mut shaped, mut lines) = (0, 0, Vec::new());
-        for line in body.split('\n') {
-            lines.push((at, shaped));
-            (at, shaped) = (at + line.len() + 1, shaped + pieces(line).count());
-        }
-        let first = buffer.lines.len().checked_sub(shaped + 2)?;
-        lines.iter_mut().for_each(|l| l.1 += first);
+        let lines: Vec<(usize, usize)> = super::buffer::lines(body).collect();
+        let first = buffer.lines.len().checked_sub(lines.len() + 2)?;
         let (mut rows, mut layout): (Vec<Row>, usize) = (Vec::new(), 0);
         for run in buffer.layout_runs() {
             layout = if rows.last().is_some_and(|r| r.line == run.line_i) { layout + 1 } else { 0 };
             rows.push(Row { line: run.line_i, layout, top: run.line_top, height: run.line_height });
         }
-        Some(Self { rev, lines, rows })
+        Some(Self { rev, lines, first, rows })
     }
 }
 
@@ -82,10 +69,6 @@ impl<'a> Rows<'a> {
         (index.rev == rev).then_some(Self { buffer, body, index })
     }
 
-    fn lines(&self) -> &'a [(usize, usize)] {
-        &self.index.lines
-    }
-
     fn glyphs(&self, row: usize) -> &'a [LayoutGlyph] {
         let row = &self.index.rows[row];
         self.buffer.lines[row.line].layout_opt().as_ref().and_then(|l| l.get(row.layout)).map_or(&[][..], |l| &l.glyphs[..])
@@ -95,31 +78,25 @@ impl<'a> Rows<'a> {
         self.index.rows[row].line
     }
 
-    fn line_text(&self, k: usize) -> &'a str {
-        let end = self.lines().get(k + 1).map_or(self.body.len(), |next| next.0 - 1);
-        &self.body[self.lines()[k].0..end]
-    }
-
-    /// The shaped line a body byte is on and its byte in it; `None` where the shaped line is not the body's text.
+    /// The shaped line a body byte is on and its byte in it (a byte in a line end is the end of its line); `None`
+    /// where the shaped line is not the body's text.
     fn to_shaped(&self, at: usize) -> Option<(usize, usize)> {
-        let k = self.lines().partition_point(|l| l.0 <= at) - 1;
-        let in_line = at - self.lines()[k].0;
-        let (j, (start, piece)) = pieces(self.line_text(k)).enumerate().take_while(|(_, (s, _))| *s <= in_line).last()?;
-        let shaped = self.lines()[k].1 + j;
-        (self.buffer.lines.get(shaped)?.text().len() == piece.len()).then_some((shaped, (in_line - start).min(piece.len())))
+        let lines = &self.index.lines;
+        let k = lines.partition_point(|l| l.0 <= at) - 1;
+        let shaped = self.index.first + k;
+        (self.buffer.lines.get(shaped)?.text().len() == lines[k].1 - lines[k].0).then_some((shaped, (at - lines[k].0).min(lines[k].1 - lines[k].0)))
     }
 
     /// The body byte at `byte` of shaped line `shaped`; `None` for a line that is not the body's.
     fn to_body(&self, shaped: usize, byte: usize) -> Option<usize> {
-        let k = self.lines().partition_point(|l| l.1 <= shaped).checked_sub(1)?;
-        let (start, piece) = pieces(self.line_text(k)).nth(shaped - self.lines()[k].1)?;
-        (self.buffer.lines.get(shaped)?.text().len() == piece.len()).then_some(self.lines()[k].0 + start + byte)
+        let (start, end) = *self.index.lines.get(shaped.checked_sub(self.index.first)?)?;
+        (self.buffer.lines.get(shaped)?.text().len() == end - start).then_some(start + byte)
     }
 
     /// The body's rows: the indexes in `runs` from the body's first row to the footer's.
     fn body_rows(&self) -> std::ops::Range<usize> {
         let row = |line: usize| self.index.rows.partition_point(|r| r.line < line);
-        row(self.lines()[0].1)..row(self.buffer.lines.len() - 2)
+        row(self.index.first)..row(self.buffer.lines.len() - 2)
     }
 
     /// The row that holds `byte` of shaped line `shaped`, with the x of that place. A row holds the bytes from its
