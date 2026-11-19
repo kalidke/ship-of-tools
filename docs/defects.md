@@ -715,6 +715,19 @@ owned by `docs/CLAUDE.md`.
 
 ## fe-ui
 
+- **REPL-DRAWER-CLIPS-LONG-LINES** [note] The REPL drawer cuts a line longer than the pane at the pane's edge and does
+  not wrap it: typed code, output, a value and an error's message alike, so the end of a long error cannot be read in
+  the drawer. Found by the review of REPL-DRAWER-COLORS-NOT-JULIAS, whose `ERROR: ` label takes 7 more cells from an
+  error's first line; never reported by a person. Fix decided: the drawer wraps its lines at the pane's width, as
+  the preview's text does.
+- **REPL-DRAWER-PROGRAM-COLORS-DROPPED** [note] The labels of `@info`, `@warn`, `@error` and `@debug`, and any color a
+  program prints, show uncolored in the REPL drawer (gray, as stderr), where Julia's REPL colors them: the row's Julia
+  runs with its streams on pipes and no color, and the window strips terminal escapes from what arrives
+  (`strip_csi`). Part of what the maintainer asked for on 2026-11-19 ("make the color sheme in julia repl match
+  cononical colors") and not built by REPL-DRAWER-COLORS-NOT-JULIAS. Fix decided: the REPL child prints with color and
+  the drawer reads the color escapes into cell colors through the map the Terminal drawer uses.
+- **REPL-DRAWER-NO-SYNTAX-COLORS** [feature] Julia 1.12 and later color typed code in the REPL by its syntax; the REPL
+  drawer shows typed code in one color. Put to the maintainer on 2026-11-19 as a choice; no go-ahead yet.
 - **FULL-DRAWER-HIDES-ITS-ANSWERS** [note] A drawer at full height (DRAWER-KEY-CYCLES) covers the nav pane, with its
   status line, and the preview, so the words that answer a person's action in the drawer (a refused chat post's
   reason, the Connect step's messages) and what `Primary+o` or a click on a chat picture opens in the preview are out

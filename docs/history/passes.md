@@ -2950,3 +2950,12 @@ the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the sa
     a fourth, which ended full height whenever a key wrote a status word, was refused in round three and is left
     out, its problem filed as FULL-DRAWER-HIDES-ITS-ANSWERS. The sizing's 50 lines became about 110 with the layout
     state. No person has used it.
+  - The REPL drawer's colors (REPL-DRAWER-COLORS-NOT-JULIAS), asked for by the maintainer at 11:37 from the window on
+    Linux. One builder, three rounds and a rebuild on `main`, 11:38 to 12:35; one reviewer, two rounds, to 12:28. The
+    colors were read from Julia 1.13's REPL source and from the escapes `julia --color=yes` prints. Round one refused
+    three things: the window's own note read as program output, stderr could no longer be told from stdout (kept
+    gray by the session's decision, a departure from Julia said in the contract), and `top-level scope` was bold.
+    A rule that put `ERROR: ` on its own row when the line would clip was built and taken out again in round two:
+    it made the row count depend on the pane's width. Three commits land, 05061453c, f0f5f17bf and 154d2d85b. Left
+    open and filed: the drawer clips long lines, a program's own colors are dropped, typed code has no syntax
+    colors, and the manual's still of the drawer shows the old colors. No person has looked at it.
