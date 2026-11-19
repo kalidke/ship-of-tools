@@ -321,6 +321,13 @@ impl MarkdownPreview {
         }
     }
 
+    /// The y on screen below which text drawn in `rect`, scrolled `scroll_px`, is clipped: the foot of the last whole
+    /// line, after the top padding (`whole_line_bottom`).
+    pub fn clip_bottom(&self, rect: crate::ui::ScreenRect, scroll_px: f32) -> f32 {
+        let pad = crate::ui::render::text::EXTRA_TOP_PAD_PX;
+        rect.y + pad + self.whole_line_bottom(scroll_px, rect.h - pad)
+    }
+
     /// Body em (font size) in physical pixels. Used by the math-paint
     /// pass to size SVG bitmaps relative to body text: a MathJax SVG
     /// reports `width="N ex"` and the pixel width is `N * ex_factor *

@@ -162,15 +162,19 @@ impl ShapedPreview {
     /// preview, to show it in a pane `visible_px` tall, counting what is already owed. A row in view moves nothing.
     pub(in crate::ui) fn follow(&mut self, top: f32, bottom: f32, visible_px: f32, now: Instant, length: Duration) {
         let line_h = self.md.line_height().max(1.0);
-        // The scroll clamp floors the pane at a line, so a pane shorter than the row never flips between two views.
+        // The scroll clamp floors the pane at a line; so does this.
         let visible_px = visible_px.max(line_h);
         let from = (self.scroll + self.motion.owed()) * line_h;
-        let target = if top < from {
-            (top / line_h).floor()
-        } else if bottom > from + visible_px {
-            ((bottom - visible_px) / line_h).ceil()
-        } else {
+        // The scroll moves in whole preview lines, so the row's foot is shown from `lo` on and its top up to `hi`.
+        // Where no whole line does both (a short pane, a row off the preview's line grid) the top is shown, and the
+        // same key again asks for the same place: the view never flips between the two.
+        let (lo, hi) = (((bottom - visible_px) / line_h).ceil(), (top / line_h).floor());
+        let target = if top >= from && bottom <= from + visible_px {
             return;
+        } else if top >= from && lo <= hi {
+            lo
+        } else {
+            hi
         };
         self.scroll_to(target, now, length);
     }

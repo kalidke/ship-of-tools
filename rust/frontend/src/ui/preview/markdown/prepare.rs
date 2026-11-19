@@ -111,10 +111,7 @@ impl State {
 
         // The preview text is laid out at its own line pitch, so the cell-grid
         // bottom rarely lands on a line boundary; clip at the last whole line.
-        let whole_line_clip = |p: &MarkdownPreview, r: ScreenRect, scroll_px: f32| {
-            r.y + crate::ui::render::text::EXTRA_TOP_PAD_PX
-                + p.whole_line_bottom(scroll_px, r.h - crate::ui::render::text::EXTRA_TOP_PAD_PX)
-        };
+        let whole_line_clip = |p: &MarkdownPreview, r: ScreenRect, scroll_px: f32| p.clip_bottom(r, scroll_px);
         let md_clip_bottom = whole_line_clip(self.shaped.md(), md_rect, preview_scroll_px);
         let mut extras: Vec<crate::ui::render::text::ExtraArea> = Vec::new();
         if let (Some(sb), Some(lbl)) = (scalebar_draw.as_ref(), self.overlays.scalebar_label()) {

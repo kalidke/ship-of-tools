@@ -78,9 +78,11 @@ impl EditState {
 
     /// Move the cursor `rows` rows up (negative) or down on screen, the rows read from the shaped buffer the window
     /// draws; by the file's lines where `rows::vertical` finds none. Shift extends the selection.
-    fn move_rows(&mut self, rows: isize, extend: bool, shaped: Option<&MarkdownPreview>) {
+    fn move_rows(&mut self, rows: isize, extend: bool, shaped: Shaped<'_>) {
         self.buf.set_selecting(extend);
-        let landing = shaped.and_then(|s| rows::vertical(&s.buffer, self.buf.body(), self.buf.cursor(), self.goal, rows));
+        let landing = shaped.and_then(|(s, index)| {
+            rows::vertical(&s.buffer, index, self.buf.body(), self.buf.rev(), self.buf.cursor(), self.goal, rows)
+        });
         match landing {
             Some(landing) => {
                 self.buf.set_cursor(landing.cursor);
@@ -165,7 +167,12 @@ pub(in crate::ui) struct Editor {
     pending_file: Option<String>,
     /// Shaped preview buffer for the active edit, drawn in place of the file preview.
     shaped: Option<MarkdownPreview>,
+    /// The rows of `shaped`, built with it; out of date for any text but the one it was shaped from.
+    index: Option<rows::Index>,
 }
+
+/// The shaped buffer the window draws with the index of its rows, as a key reads them.
+type Shaped<'a> = Option<(&'a MarkdownPreview, &'a rows::Index)>;
 
 /// What a key in edit mode did, for the window to send, re-shape and repaint.
 pub(in crate::ui) enum EditorKey {
@@ -306,6 +313,7 @@ impl Editor {
     pub(in crate::ui) fn close(&mut self) {
         self.edit = None;
         self.shaped = None;
+        self.index = None;
     }
 
     /// The edit a row parks with.
@@ -320,6 +328,8 @@ impl Editor {
         &mut self, bindings: &KeyBindings, shape: impl FnOnce(&[(String, bool)]) -> MarkdownPreview,
     ) {
         self.shaped = self.edit.as_ref().map(|edit| shape(&edit.spans(bindings)));
+        self.index = self.edit.as_ref().zip(self.shaped.as_ref())
+            .and_then(|(edit, shaped)| rows::Index::new(&shaped.buffer, edit.buf.body(), edit.buf.rev()));
     }
 
     /// Put the cursor at `at`, as a native fixture's stand-in for the keys it cannot press.
@@ -328,11 +338,24 @@ impl Editor {
         if let Some(edit) = self.edit.as_mut() { edit.buf.set_cursor(at); }
     }
 
+    /// Whether the shaped buffer is of this width and text scale (or there is none): the width and scale it was
+    /// shaped for are the buffer's own.
+    pub(in crate::ui) fn shaped_for(&self, width: f32, scale: f32) -> bool {
+        self.shaped.as_ref().is_none_or(|s| {
+            s.buffer.size().0 == Some(width.max(1.0)) && s.body_em() == crate::ui::preview::markdown::BODY_SIZE * scale
+        })
+    }
+
+    /// The shaped buffer with its rows, when there are both.
+    fn view(&self) -> Shaped<'_> {
+        self.shaped.as_ref().zip(self.index.as_ref())
+    }
+
     /// Where the cursor stands in the shaped buffer, px in its layout; `None` without an edit, or where the buffer is
     /// not the edit's text (a body changed since it was shaped).
     pub(in crate::ui) fn cursor_place(&self) -> Option<rows::Place> {
-        let (edit, shaped) = (self.edit.as_ref()?, self.shaped.as_ref()?);
-        rows::place(&shaped.buffer, edit.buf.body(), edit.buf.cursor())
+        let (edit, (shaped, index)) = (self.edit.as_ref()?, self.view()?);
+        rows::place(&shaped.buffer, index, edit.buf.body(), edit.buf.rev(), edit.buf.cursor())
     }
 
     /// Scroll `view` just far enough to show the row the cursor is on, in a pane `visible_px` tall; a cursor already
@@ -423,7 +446,7 @@ impl Editor {
             });
         }
         let pressed = Pressed { logical: &event.logical_key, action, ctrl, alt, shift, super_ };
-        edit_buffer_key(edit, pressed, page_rows, self.shaped.as_ref());
+        edit_buffer_key(edit, pressed, page_rows, self.shaped.as_ref().zip(self.index.as_ref()));
         Some(EditorKey::Edited)
     }
 }
@@ -439,7 +462,7 @@ struct Pressed<'a> {
     super_: bool,
 }
 
-fn edit_buffer_key(edit: &mut EditState, key: Pressed<'_>, page_rows: usize, shaped: Option<&MarkdownPreview>) -> bool {
+fn edit_buffer_key(edit: &mut EditState, key: Pressed<'_>, page_rows: usize, shaped: Shaped<'_>) -> bool {
     let Pressed { logical, action, .. } = key;
     // Only Up, Down and the page keys keep the column they started in.
     if !matches!(action, Some(Action::EditUp | Action::EditDown | Action::EditPageUp | Action::EditPageDown)) {
@@ -528,7 +551,7 @@ fn edit_buffer_key(edit: &mut EditState, key: Pressed<'_>, page_rows: usize, sha
     buf_changed
 }
 
-fn edit_motion_key(edit: &mut EditState, key: Pressed<'_>, page_rows: usize, shaped: Option<&MarkdownPreview>) -> bool {
+fn edit_motion_key(edit: &mut EditState, key: Pressed<'_>, page_rows: usize, shaped: Shaped<'_>) -> bool {
     let Pressed { logical, action, shift, ctrl, alt, super_ } = key;
     let mut buf_changed = false;
     match logical {

@@ -47,6 +47,18 @@ impl State {
         ensure!(self.shaped.scroll() == 60.0 && !shown(self)?, "the wheel did not take the view from the cursor: {}", self.shaped.scroll());
         moved(self, 13)?;
         ensure!(shown(self)?, "the next motion did not bring the view back");
+        // A resize: the frame shapes the edit buffer for the pane's new width before it draws, so the rows a key reads
+        // are the rows the screen shows.
+        let width = |s: &State| s.editor.shaped().and_then(|shaped| shaped.buffer.size().0);
+        let before = width(self);
+        let size = self.window.inner_size();
+        self.canvas.resize(self.gpu.queue(), size.width - 160, size.height - 80);
+        self.redraw()?;
+        ensure!(width(self) != before && width(self) == Some(self.concept.rect().w.max(1.0)),
+            "the edit buffer kept its old width {before:?} in a pane of {}", self.concept.rect().w);
+        self.canvas.resize(self.gpu.queue(), size.width, size.height);
+        self.redraw()?;
+        ensure!(width(self) == before, "the edit buffer did not follow the pane back: {:?}", width(self));
         self.editor.close();
         self.shaped.scroll_to_top(now, length);
         self.redraw()

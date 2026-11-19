@@ -67,7 +67,7 @@ impl Harness {
     fn press(&mut self, logical: Key, action: Option<Action>, shift: bool, page_rows: usize) {
         let pressed = Pressed { logical: &logical, action, ctrl: false, alt: false, shift, super_: false };
         let edit = self.editor.edit.as_mut().unwrap();
-        edit_buffer_key(edit, pressed, page_rows, self.editor.shaped.as_ref());
+        edit_buffer_key(edit, pressed, page_rows, self.editor.shaped.as_ref().zip(self.editor.index.as_ref()));
         self.reshape();
     }
 
@@ -620,11 +620,13 @@ fn the_kept_column_survives_a_change_of_scale() {
     };
     let mut fs = FontSystem::new();
     let small = shaped(&mut fs, 1.0);
-    let down = rows::vertical(&small.buffer, &body, 40, None, 1).unwrap();
+    let index = rows::Index::new(&small.buffer, &body, 7).unwrap();
+    let down = rows::vertical(&small.buffer, &index, &body, 7, 40, None, 1).unwrap();
     assert_eq!(down.cursor, 61 + 10);
     // The window zooms before the next Down: the kept column is still column 40.
     let large = shaped(&mut fs, 1.5);
-    let again = rows::vertical(&large.buffer, &body, down.cursor, Some(down.goal), 1).unwrap();
+    let index = rows::Index::new(&large.buffer, &body, 7).unwrap();
+    let again = rows::vertical(&large.buffer, &index, &body, 7, down.cursor, Some(down.goal), 1).unwrap();
     assert_eq!(again.cursor, 72 + 40);
 }
 
@@ -643,17 +645,26 @@ fn a_crlf_file_is_followed_row_by_row() {
 }
 
 #[test]
-fn a_pane_shorter_than_a_row_does_not_flip_the_view() {
-    let mut h = Harness::new("one row of text here", 40);
-    let mut pane = Pane::new(&mut h, 2.0);
-    pane.after_key(&mut h);
-    let mut seen = Vec::new();
-    for _ in 0..6 {
-        h.act(Action::EditRight);
+fn a_pane_shorter_than_two_rows_does_not_flip_the_view_on_any_row() {
+    // The editor's rows are 19 px and the preview scrolls in 22 px lines: rows 1 to 9 start off the preview's
+    // grid, and a pane of 14, 22, 30 or 37 px cannot hold some of them whole at any scroll.
+    for visible in [2.0, 14.0, 22.0, 30.0, 37.0] {
+        let text = (0..12).map(|i| format!("row {i} of text here")).collect::<Vec<_>>().join("\n");
+        let mut h = Harness::new(&text, 40);
+        let mut pane = Pane::new(&mut h, visible);
         pane.after_key(&mut h);
-        seen.push(pane.view.scroll());
+        for row in 0..10 {
+            h.put(text.split('\n').take(row).map(|l| l.len() + 1).sum::<usize>());
+            pane.after_key(&mut h);
+            let mut seen = Vec::new();
+            for _ in 0..4 {
+                h.act(Action::EditRight);
+                pane.after_key(&mut h);
+                seen.push(pane.view.scroll());
+            }
+            assert!(seen.windows(2).all(|w| w[0] == w[1]), "a {visible} px pane, row {row}: {seen:?}");
+        }
     }
-    assert!(seen.windows(2).all(|w| w[0] == w[1]), "{seen:?}");
 }
 
 #[test]
@@ -833,4 +844,97 @@ fn the_bar_is_drawn_on_a_mixed_row_at_every_byte_and_at_both_ends() {
         h.put(at);
         assert!(h.editor.cursor_place().is_some(), "no bar at {at}");
     }
+}
+
+fn place_at(top: f32) -> rows::Place {
+    rows::Place { x: 100.0, top, height: 19.0 }
+}
+
+#[test]
+fn the_bar_is_clipped_as_the_text_it_stands_on_is() {
+    let pane = ScreenRect { x: 50.0, y: 40.0, w: 300.0, h: 100.0 };
+    let pad = crate::ui::render::text::EXTRA_TOP_PAD_PX;
+    // The buffer is drawn from pane.y + pad - scroll; its text is cut at the pane's top, at its right edge and at the
+    // foot of the last whole line.
+    let clip_bottom = pane.y + pad + 95.0;
+    let rect = |place, scroll| rows::bar(place, pane, scroll, clip_bottom);
+    // A row in the middle: the bar's vertical extent is the row's, from the same origin as the text.
+    let mid = rect(place_at(38.0), 0.0).unwrap();
+    assert_eq!((mid.y, mid.h), (pane.y + pad + 38.0, 19.0));
+    assert!(mid.x < pane.x + 100.0 && mid.x + mid.w > pane.x + 100.0, "centered on its place");
+    // At the pane's top edge: a row whose top is at pane.y is whole, however far it is above the padding.
+    let top = rect(place_at(-pad), 0.0).unwrap();
+    assert_eq!((top.y, top.h), (pane.y, 19.0));
+    // Partly cut at the top: the part above the pane is not drawn.
+    let cut_top = rect(place_at(-pad - 5.0), 0.0).unwrap();
+    assert_eq!((cut_top.y, cut_top.h), (pane.y, 14.0));
+    assert!(rect(place_at(-pad - 19.0), 0.0).is_none(), "a row wholly above");
+    // At the bottom edge: a row that ends at the text's clip is whole; one that crosses it is cut there.
+    let foot = rect(place_at(95.0 - 19.0), 0.0).unwrap();
+    assert_eq!((foot.y + foot.h, foot.h), (clip_bottom, 19.0));
+    let cut_foot = rect(place_at(95.0 - 10.0), 0.0).unwrap();
+    assert_eq!((cut_foot.y + cut_foot.h, cut_foot.h), (clip_bottom, 10.0));
+    assert!(rect(place_at(95.0), 0.0).is_none(), "a row wholly below");
+    // A scrolled view moves the row with the text.
+    assert_eq!(rect(place_at(138.0), 100.0).unwrap().y, mid.y);
+    // At the pane's right edge: centered on x = pane.w, half of it is inside; past the edge nothing is.
+    let right = rows::bar(rows::Place { x: pane.w, ..place_at(10.0) }, pane, 0.0, clip_bottom).unwrap();
+    assert_eq!(right.x + right.w, pane.x + pane.w);
+    assert!(right.w < 2.0 + 0.001 && right.w > 0.5);
+    assert!(rows::bar(rows::Place { x: pane.w + 5.0, ..place_at(10.0) }, pane, 0.0, clip_bottom).is_none());
+    // At the left edge likewise.
+    let left = rows::bar(rows::Place { x: 0.0, ..place_at(10.0) }, pane, 0.0, clip_bottom).unwrap();
+    assert_eq!(left.x, pane.x);
+}
+
+#[test]
+fn the_row_list_is_built_once_per_shaping_and_not_by_a_key_a_frame_or_a_follow() {
+    let mut h = Harness::new(&long_text(), 40);
+    let mut pane = Pane::new(&mut h, 200.0);
+    let built = || rows::BUILDS.with(|b| b.get());
+    let before = built();
+    h.reshape();
+    assert_eq!(built() - before, 1, "one build for each shaping");
+    // 40 keys with the window's work between them except the re-shape (a cursor move leaves the text, so the layout
+    // stands): the step, the follow's place and the frame's place read the one list.
+    let before = built();
+    let logical = Key::Named(NamedKey::ArrowDown);
+    for _ in 0..40 {
+        let pressed = Pressed { logical: &logical, action: Some(Action::EditDown), ctrl: false, alt: false, shift: false, super_: false };
+        let edit = h.editor.edit.as_mut().unwrap();
+        edit_buffer_key(edit, pressed, 3, h.editor.shaped.as_ref().zip(h.editor.index.as_ref()));
+        h.editor.follow_cursor(&mut pane.view, pane.visible, Instant::now(), Duration::ZERO);
+        let _ = h.editor.cursor_place();
+    }
+    assert_eq!(built() - before, 0, "no key, follow or bar built a row list");
+    assert!(h.cursor() > 0, "the keys moved the cursor");
+}
+
+#[test]
+fn a_text_changed_to_one_of_the_same_length_since_the_shaping_has_no_place_and_no_step() {
+    let mut h = Harness::new("abcd\nefgh\nijkl", 40);
+    h.put(1);
+    assert!(h.editor.cursor_place().is_some());
+    // Overtype one character: the same lengths, a different text, not shaped again.
+    h.edit().buf.set_selecting(true);
+    h.edit().buf.move_right();
+    h.edit().buf.insert_char('X');
+    assert_eq!(h.body(), "aXcd\nefgh\nijkl");
+    assert_eq!(h.editor.cursor_place(), None, "the layout is of the text before the overtyping");
+    let (body, rev, cursor) = { let e = h.edit(); (e.buf.body().to_string(), e.buf.rev(), e.buf.cursor()) };
+    let (shaped, index) = (h.editor.shaped.as_ref().unwrap(), h.editor.index.as_ref().unwrap());
+    assert!(rows::vertical(&shaped.buffer, index, &body, rev, cursor, None, 1).is_none());
+    // Shaped again, it has both.
+    h.reshape();
+    assert!(h.editor.cursor_place().is_some());
+}
+
+#[test]
+fn the_edit_buffer_is_shaped_again_for_a_pane_of_another_width_or_scale() {
+    let mut h = Harness::new("some text to shape", 40);
+    let (w, scale) = (h.width, 1.0);
+    assert!(h.editor.shaped_for(w, scale));
+    assert!(h.editor.shaped_for(w + 0.2, scale) == false, "a resized pane");
+    assert!(h.editor.shaped_for(w, 1.5) == false, "a zoom");
+    assert!(Editor::default().shaped_for(w, scale), "no shaping, nothing to redo");
 }

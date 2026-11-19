@@ -65,6 +65,10 @@ pub struct EditBuffer {
     /// max(anchor, cursor)`. `None` when nothing is selected. A plain motion
     /// clears it; a Shift+motion sets it (if unset) and sweeps the cursor.
     anchor: Option<usize>,
+    /// Replaced by a number no buffer has had at every change of the text (and at birth), so a layout shaped from an
+    /// earlier text, or from another buffer's, is told from this one even when the lengths agree. A move of the
+    /// cursor leaves it.
+    rev: u64,
 }
 
 impl EditBuffer {
@@ -77,7 +81,12 @@ impl EditBuffer {
             last_kind: None,
             last_edit_pos: None,
             anchor: None,
+            rev: next_rev(),
         }
+    }
+
+    pub fn rev(&self) -> u64 {
+        self.rev
     }
 
     pub fn can_undo(&self) -> bool {
@@ -97,6 +106,7 @@ impl EditBuffer {
                     body: self.body.clone(),
                     cursor: self.cursor,
                 });
+                self.rev = next_rev();
                 self.body = prev.body;
                 self.cursor = off_crlf(&self.body, prev.cursor.min(self.body.len()));
                 self.last_kind = None;
@@ -117,6 +127,7 @@ impl EditBuffer {
                     body: self.body.clone(),
                     cursor: self.cursor,
                 });
+                self.rev = next_rev();
                 self.body = next.body;
                 self.cursor = off_crlf(&self.body, next.cursor.min(self.body.len()));
                 self.last_kind = None;
@@ -218,6 +229,7 @@ impl EditBuffer {
             self.undo.remove(0);
         }
         self.redo.clear();
+        self.rev = next_rev();
         self.body.replace_range(s..e, "");
         self.cursor = off_crlf(&self.body, s);
         self.anchor = None;
@@ -235,6 +247,7 @@ impl EditBuffer {
     /// Raw insertion with no undo bookkeeping — shared by `insert_char`
     /// (coalesced typing) and `insert_str` (atomic paste).
     fn insert_str_raw(&mut self, s: &str) {
+        self.rev = next_rev();
         self.body.insert_str(self.cursor, s);
         self.cursor += s.len();
     }
@@ -299,6 +312,7 @@ impl EditBuffer {
         }
         self.checkpoint(EditKind::Delete);
         let prev = self.prev_boundary(self.cursor);
+        self.rev = next_rev();
         self.body.replace_range(prev..self.cursor, "");
         self.cursor = off_crlf(&self.body, prev);
         self.last_edit_pos = Some(self.cursor);
@@ -316,6 +330,7 @@ impl EditBuffer {
         }
         self.checkpoint(EditKind::Delete);
         let next = self.next_boundary(self.cursor);
+        self.rev = next_rev();
         self.body.replace_range(self.cursor..next, "");
         self.cursor = off_crlf(&self.body, self.cursor);
         self.last_edit_pos = Some(self.cursor);
@@ -439,6 +454,12 @@ impl EditBuffer {
             .map(|c| byte + c.len_utf8())
             .unwrap_or(byte)
     }
+}
+
+/// A revision number no buffer has had before: the shaped layout of a text names the revision it was shaped from.
+fn next_rev() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 /// `at`, or the byte before the `\r` when `at` falls between the `\r` and the `\n` of a CRLF: a line end is one

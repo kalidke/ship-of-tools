@@ -2,7 +2,8 @@
 //! (`vertical`). Both read the shaped buffer the window draws, so they see the rows the person sees. The cursor is
 //! never a character of that text: the render pass draws it at `place`.
 
-use cosmic_text::{Buffer, LayoutRun};
+use crate::ui::ScreenRect;
+use cosmic_text::{Buffer, LayoutGlyph};
 
 /// The characters the shaper ends a line at that the body does not: a lone CR, NEL, LS and PS (`normalize_newlines`).
 const SPLITS: [char; 4] = ['\r', '\u{85}', '\u{2028}', '\u{2029}'];
@@ -15,23 +16,43 @@ fn pieces(line: &str) -> impl Iterator<Item = (usize, &str)> {
 }
 
 /// The least byte any glyph of the row starts at: the row's first byte, whichever way it runs.
-fn lead(run: &LayoutRun) -> Option<usize> {
-    run.glyphs.iter().map(|g| g.start).min()
+fn lead(glyphs: &[LayoutGlyph]) -> Option<usize> {
+    glyphs.iter().map(|g| g.start).min()
 }
 
-/// The edit's shaped buffer read against its body: the header's lines, then each body line as one or more shaped
-/// lines, then the footer's two, so the body's lines are counted back from the footer and the header needs no count.
-struct Rows<'a> {
-    buffer: &'a Buffer,
-    body: &'a str,
+/// One row of the shaped buffer: its line, its place among that line's rows, and its top and height in px.
+struct Row {
+    line: usize,
+    layout: usize,
+    top: f32,
+    height: f32,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many indexes this thread built, for the test that counts them per key.
+    pub(super) static BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// What the edit's shaped buffer says of its body, built once when the buffer is shaped (`Editor::reshape`) and read
+/// by the bar, the step and the follow: the body's lines and the buffer's rows. It is of one body, the one whose
+/// revision (`EditBuffer::rev`, raised by every change of the text) it carries, and of one shaping: a body that has
+/// changed since, even to a text of the same length, or a re-shape, makes it out of date, and `place` and `vertical`
+/// answer `None` for a revision other than its own.
+pub(super) struct Index {
+    rev: u64,
     /// Per body line: its byte start in the body and the index of its first shaped line.
     lines: Vec<(usize, usize)>,
-    /// Every row of the buffer, in order.
-    runs: Vec<LayoutRun<'a>>,
+    rows: Vec<Row>,
 }
 
-impl<'a> Rows<'a> {
-    fn new(buffer: &'a Buffer, body: &'a str) -> Option<Self> {
+impl Index {
+    /// The index of `buffer`, the edit's shaped buffer: the header's lines, then each body line as one or more
+    /// shaped lines, then the footer's two, so the body's lines are counted back from the footer and the header
+    /// needs no count. `None` where the buffer has fewer lines than that.
+    pub(super) fn new(buffer: &Buffer, body: &str, rev: u64) -> Option<Self> {
+        #[cfg(test)]
+        BUILDS.with(|b| b.set(b.get() + 1));
         let (mut at, mut shaped, mut lines) = (0, 0, Vec::new());
         for line in body.split('\n') {
             lines.push((at, shaped));
@@ -39,34 +60,66 @@ impl<'a> Rows<'a> {
         }
         let first = buffer.lines.len().checked_sub(shaped + 2)?;
         lines.iter_mut().for_each(|l| l.1 += first);
-        Some(Self { buffer, body, lines, runs: buffer.layout_runs().collect() })
+        let (mut rows, mut layout): (Vec<Row>, usize) = (Vec::new(), 0);
+        for run in buffer.layout_runs() {
+            layout = if rows.last().is_some_and(|r| r.line == run.line_i) { layout + 1 } else { 0 };
+            rows.push(Row { line: run.line_i, layout, top: run.line_top, height: run.line_height });
+        }
+        Some(Self { rev, lines, rows })
+    }
+}
+
+/// The edit's shaped buffer read against its body through its index.
+struct Rows<'a> {
+    buffer: &'a Buffer,
+    body: &'a str,
+    index: &'a Index,
+}
+
+impl<'a> Rows<'a> {
+    /// `None` where the index is not of this body (`rev` is the body's revision).
+    fn new(buffer: &'a Buffer, index: &'a Index, body: &'a str, rev: u64) -> Option<Self> {
+        (index.rev == rev).then_some(Self { buffer, body, index })
+    }
+
+    fn lines(&self) -> &'a [(usize, usize)] {
+        &self.index.lines
+    }
+
+    fn glyphs(&self, row: usize) -> &'a [LayoutGlyph] {
+        let row = &self.index.rows[row];
+        self.buffer.lines[row.line].layout_opt().as_ref().and_then(|l| l.get(row.layout)).map_or(&[][..], |l| &l.glyphs[..])
+    }
+
+    fn line_of(&self, row: usize) -> usize {
+        self.index.rows[row].line
     }
 
     fn line_text(&self, k: usize) -> &'a str {
-        let end = self.lines.get(k + 1).map_or(self.body.len(), |next| next.0 - 1);
-        &self.body[self.lines[k].0..end]
+        let end = self.lines().get(k + 1).map_or(self.body.len(), |next| next.0 - 1);
+        &self.body[self.lines()[k].0..end]
     }
 
     /// The shaped line a body byte is on and its byte in it; `None` where the shaped line is not the body's text.
     fn to_shaped(&self, at: usize) -> Option<(usize, usize)> {
-        let k = self.lines.partition_point(|l| l.0 <= at) - 1;
-        let in_line = at - self.lines[k].0;
+        let k = self.lines().partition_point(|l| l.0 <= at) - 1;
+        let in_line = at - self.lines()[k].0;
         let (j, (start, piece)) = pieces(self.line_text(k)).enumerate().take_while(|(_, (s, _))| *s <= in_line).last()?;
-        let shaped = self.lines[k].1 + j;
+        let shaped = self.lines()[k].1 + j;
         (self.buffer.lines.get(shaped)?.text().len() == piece.len()).then_some((shaped, (in_line - start).min(piece.len())))
     }
 
     /// The body byte at `byte` of shaped line `shaped`; `None` for a line that is not the body's.
     fn to_body(&self, shaped: usize, byte: usize) -> Option<usize> {
-        let k = self.lines.partition_point(|l| l.1 <= shaped).checked_sub(1)?;
-        let (start, piece) = pieces(self.line_text(k)).nth(shaped - self.lines[k].1)?;
-        (self.buffer.lines.get(shaped)?.text().len() == piece.len()).then_some(self.lines[k].0 + start + byte)
+        let k = self.lines().partition_point(|l| l.1 <= shaped).checked_sub(1)?;
+        let (start, piece) = pieces(self.line_text(k)).nth(shaped - self.lines()[k].1)?;
+        (self.buffer.lines.get(shaped)?.text().len() == piece.len()).then_some(self.lines()[k].0 + start + byte)
     }
 
     /// The body's rows: the indexes in `runs` from the body's first row to the footer's.
     fn body_rows(&self) -> std::ops::Range<usize> {
-        let row = |line: usize| self.runs.partition_point(|r| r.line_i < line);
-        row(self.lines[0].1)..row(self.buffer.lines.len() - 2)
+        let row = |line: usize| self.index.rows.partition_point(|r| r.line < line);
+        row(self.lines()[0].1)..row(self.buffer.lines.len() - 2)
     }
 
     /// The row that holds `byte` of shaped line `shaped`, with the x of that place. A row holds the bytes from its
@@ -78,18 +131,18 @@ impl<'a> Rows<'a> {
     /// the text (its right edge, its left edge for a right-to-left glyph). Where a left-to-right and a right-to-left
     /// glyph meet, the byte stands at the leading edge of the glyph that starts there.
     fn stand(&self, shaped: usize, byte: usize) -> Option<(usize, f32)> {
-        let first = self.runs.partition_point(|r| r.line_i < shaped);
-        let rows = self.runs[first..].iter().take_while(|r| r.line_i == shaped).count();
-        let row_start = |j: usize| if j == 0 { 0 } else { lead(&self.runs[first + j]).unwrap_or(0) };
+        let first = self.index.rows.partition_point(|r| r.line < shaped);
+        let rows = self.index.rows[first..].iter().take_while(|r| r.line == shaped).count();
+        let row_start = |j: usize| if j == 0 { 0 } else { lead(self.glyphs(first + j)).unwrap_or(0) };
         let j = (0..rows).rev().find(|&j| row_start(j) <= byte)?;
-        let run = &self.runs[first + j];
-        let x = match run.glyphs.iter().find(|g| g.start <= byte && byte < g.end) {
+        let glyphs = self.glyphs(first + j);
+        let x = match glyphs.iter().find(|g| g.start <= byte && byte < g.end) {
             Some(g) if g.level.is_rtl() => g.x + g.w,
             Some(g) => g.x,
-            None => match run.glyphs.iter().filter(|g| g.end <= byte).max_by_key(|g| g.end) {
+            None => match glyphs.iter().filter(|g| g.end <= byte).max_by_key(|g| g.end) {
                 Some(g) if g.level.is_rtl() => g.x,
                 Some(g) => g.x + g.w,
-                None => run.glyphs.iter().min_by_key(|g| g.start).map_or(0.0, |g| if g.level.is_rtl() { g.x + g.w } else { g.x }),
+                None => glyphs.iter().min_by_key(|g| g.start).map_or(0.0, |g| if g.level.is_rtl() { g.x + g.w } else { g.x }),
             },
         };
         Some((first + j, x))
@@ -99,12 +152,12 @@ impl<'a> Rows<'a> {
     /// last glyph of the line's last row, and after the last glyph of a row that wrap dropped a space from (a word
     /// broken between glyphs ends at the next row's first place instead). An empty line has the one place.
     fn stops(&self, row: usize) -> Vec<(f32, usize)> {
-        let run = &self.runs[row];
-        let mut stops: Vec<_> = run.glyphs.iter().map(|g| (g.x, g.start)).collect();
-        let end = run.glyphs.last().map_or((0.0, 0), |g| (g.x + g.w, g.end));
-        match self.runs.get(row + 1).filter(|next| next.line_i == run.line_i) {
-            None => stops.push((end.0, run.text.len())),
-            Some(next) if lead(next).is_some_and(|start| start > end.1) => stops.push(end),
+        let glyphs = self.glyphs(row);
+        let mut stops: Vec<_> = glyphs.iter().map(|g| (g.x, g.start)).collect();
+        let end = glyphs.last().map_or((0.0, 0), |g| (g.x + g.w, g.end));
+        match self.index.rows.get(row + 1).filter(|next| next.line == self.line_of(row)) {
+            None => stops.push((end.0, self.buffer.lines[self.line_of(row)].text().len())),
+            Some(_) if lead(self.glyphs(row + 1)).is_some_and(|start| start > end.1) => stops.push(end),
             Some(_) => {}
         }
         stops
@@ -119,12 +172,13 @@ pub(in crate::ui) struct Place {
     pub(in crate::ui) height: f32,
 }
 
-/// The cursor's place in `buffer`, the edit's shaped buffer, for the body `body` and its cursor `cursor`.
-pub(super) fn place(buffer: &Buffer, body: &str, cursor: usize) -> Option<Place> {
-    let rows = Rows::new(buffer, body)?;
+/// The cursor's place in `buffer`, the edit's shaped buffer with its `index`, for the body `body` (of revision `rev`)
+/// and its cursor `cursor`.
+pub(super) fn place(buffer: &Buffer, index: &Index, body: &str, rev: u64, cursor: usize) -> Option<Place> {
+    let rows = Rows::new(buffer, index, body, rev)?;
     let (shaped, byte) = rows.to_shaped(cursor)?;
     let (row, x) = rows.stand(shaped, byte)?;
-    Some(Place { x, top: rows.runs[row].line_top, height: rows.runs[row].line_height })
+    Some(Place { x, top: index.rows[row].top, height: index.rows[row].height })
 }
 
 /// Where a vertical step lands, and the column it keeps across shorter rows, in ems so a zoom between two steps
@@ -136,10 +190,12 @@ pub(super) struct Landing {
 
 /// The cursor at `cursor` in `body` moved `rows` rows (negative up) over `buffer`, the edit's shaped buffer. The goal
 /// column is `goal` when a step before set it, else the cursor's own. Up from the first row lands at 0 and Down from
-/// the last at the body's end. `None` where the buffer is not the body's text or a row involved is right to left: the
+/// the last at the body's end. `None` where the index is not the body's or a row involved is right to left: the
 /// caller steps by the file's lines then.
-pub(super) fn vertical(buffer: &Buffer, body: &str, cursor: usize, goal: Option<f32>, rows: isize) -> Option<Landing> {
-    let layout = Rows::new(buffer, body)?;
+pub(super) fn vertical(
+    buffer: &Buffer, index: &Index, body: &str, rev: u64, cursor: usize, goal: Option<f32>, rows: isize,
+) -> Option<Landing> {
+    let layout = Rows::new(buffer, index, body, rev)?;
     let (shaped, byte) = layout.to_shaped(cursor)?;
     let (from, x) = layout.stand(shaped, byte)?;
     let em = buffer.metrics().font_size;
@@ -149,10 +205,24 @@ pub(super) fn vertical(buffer: &Buffer, body: &str, cursor: usize, goal: Option<
         return Some(Landing { cursor: if rows < 0 { 0 } else { body.len() }, goal });
     };
     // A row that runs right to left is not stepped by columns: the step is the file's line.
-    if [from, to].iter().any(|&row| layout.runs[row].glyphs.iter().any(|g| g.level.is_rtl())) {
+    if [from, to].iter().any(|&row| layout.glyphs(row).iter().any(|g| g.level.is_rtl())) {
         return None;
     }
     let (_, at) = layout.stops(to).into_iter().min_by(|a, b| (a.0 / em - goal).abs().total_cmp(&(b.0 / em - goal).abs()))?;
-    let cursor = layout.to_body(layout.runs[to].line_i, at)?;
+    let cursor = layout.to_body(layout.line_of(to), at)?;
     body.is_char_boundary(cursor).then_some(Landing { cursor, goal })
+}
+
+/// The cursor's bar for the cursor at `place`, in the pane `pane` with its text scrolled `scroll_px`, clipped exactly as
+/// the text it stands on is: the text is drawn from `pane.y + EXTRA_TOP_PAD_PX - scroll_px` and cut at the pane's left,
+/// top and right edges and at `clip_bottom` (the foot of the text's last whole line), in whole pixels
+/// (`TextBounds`). The bar is centered on its place; `None` where nothing of it is inside the clip.
+pub(in crate::ui) fn bar(place: Place, pane: ScreenRect, scroll_px: f32, clip_bottom: f32) -> Option<ScreenRect> {
+    let w = (place.height * 0.12).max(2.0);
+    let top = pane.y + crate::ui::render::text::EXTRA_TOP_PAD_PX + place.top - scroll_px;
+    let x0 = (pane.x + place.x - w / 2.0).max(pane.x.floor());
+    let x1 = (pane.x + place.x + w / 2.0).min((pane.x + pane.w).ceil());
+    let y0 = top.max(pane.y.floor());
+    let y1 = (top + place.height).min(clip_bottom.ceil());
+    (x1 > x0 && y1 > y0).then_some(ScreenRect { x: x0, y: y0, w: x1 - x0, h: y1 - y0 })
 }

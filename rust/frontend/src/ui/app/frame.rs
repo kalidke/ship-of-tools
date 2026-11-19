@@ -37,6 +37,7 @@ impl State {
         let cell_backs = self.brushes.prepare_backs(&cell_backs, &self.gpu)?;
         self.rebuild_fatal_if_shown(show_fatal);
         self.layout_concept(preview_rect);
+        self.reshape_edit_to_pane();
         let preview_scroll_px = self.clamp_preview_scroll(show_edit, md_rect, preview_rect);
         let edit_cursor = if show_edit { self.edit_cursor_rect(preview_rect, preview_scroll_px) } else { None };
         let media_paint_targets = self.prepare_media(show_md, md_rect, preview_scroll_px);
