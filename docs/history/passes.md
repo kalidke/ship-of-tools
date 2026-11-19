@@ -3020,3 +3020,8 @@ the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the sa
     row, 196 s for the `julia/repl` row. Limits: a walk through a helper of another name, a `resource_dir` lookup and a
     Julia or shell test that reads another folder are added by hand; a Windows-only reader is covered by the hosted
     Windows run alone.
+  - Two notes from the editor's fifth round, one commit by the same builder, read by the landing session: the frame
+    fits the edit buffer before it decides what the pane shows, so an edit entered under a covered preview is drawn
+    at its first frame; and a discard closes the edit as a clean Escape does, so the preview is fetched again and
+    shows the file as last saved, where it showed the render from before the editing began, in the released version
+    too.

@@ -396,11 +396,20 @@ The remaining concepts below still reach shared fields through `impl State` bloc
     (the footer then says clean), and the frame checks again before it draws, so the discard prompt's raising and
     dismissal, the stale banner and a save each reach the screen at the next frame. A pane with no width (a
     full-height drawer) is not shaped for, by any caller (`rebuild_edit_preview` returns for it, and
-    `Editor::owes_shaping` is false at it): the frame shapes when the width returns. The frame fits the buffer to the pane before it draws
-    (`State::reshape_edit_to_pane`, from `Editor::fit`): a new width lays the same buffer out again
+    `Editor::owes_shaping` is false at it): the frame shapes when the width returns. The frame fits the buffer to the pane before it decides what the pane shows
+    (`State::frame_shows`: the pane laid out, `State::reshape_edit_to_pane`, from `Editor::fit`, then `preview_shows`),
+    so an edit with no shaped text yet (a row switched to under a full-height drawer, a `file.read` that opened one
+    there) is drawn as the editor in the first frame at the pane's width, not as the read-only file with no other
+    frame asked for. The fit (`reshape_edit_to_pane`): a new width lays the same buffer out again
     (`Buffer::set_size`, as the preview's text does on a resize) and rebuilds the index, and only a new text scale
     (a zoom) or a text not yet shaped shapes it again; a pane with no width (a full-height drawer) is left alone. A
     key that arrives between a resize event and its frame reads the rows still on screen.
+  - Discarding. The prompt's confirm key closes the edit and its outcome is `Closed`, as a clean buffer's Escape is
+    (it was `DiscardAnswered`, which fetches nothing, in every version up to v0.7.2): the window's arm for `Closed`
+    asks for the file's preview again, so after a save, more edits and a discard the preview shows the file as it is
+    now. A fetch was chosen over installing what the last save wrote because it asks the daemon for the file itself
+    and cannot show text older than the save; an installed copy would be the editor's bytes, which the preview's
+    render of them is not. A save still in flight when the key is pressed is not waited for.
   - The follow. A key that moved the cursor or changed the text (`EditorKey::Edited`) is followed by
     `State::follow_edit_cursor`: the view scrolls just far enough, in whole lines of the shown preview
     (`ShapedPreview::follow`, counting what a wheel's easing still owes, with the pane floored at one line as the
@@ -460,7 +469,10 @@ The remaining concepts below still reach shared fields through `impl State` bloc
     the frame's fit removed), and `an_edit_footer_says_what_the_edit_is` (the same file: an outcome through
     `apply_editor_outcome` and a save reply through `on_file_write_done` draw the prompt, take it down and say clean,
     and a pane with no width is not shaped for; red with the outcome's re-shape and the frame's check both removed,
-    which is `main`'s behavior, and with the guard in `rebuild_edit_preview` removed).
+    which is `main`'s behavior, with the guard in `rebuild_edit_preview` removed, and with `frame_shows` deciding
+    before it fits; the same fixture restores an edit with no shaped text under a pane with no width and checks the
+    first frame at the width shows the editor), and
+    `discarding_with_the_confirm_key_closes_the_edit_as_a_clean_escape_does` for the discard's outcome.
   - Limits. The tests press through `edit_buffer_key` because a winit `KeyEvent` cannot be built outside the event
     loop, so `Editor::key`'s hand-off, `editor_key`'s call of `apply_editor_outcome` and the paint of the bar (the render pass, no
     pure test reaches it) rest on reading. A key itself costs 0.02 ms on a 465 KB file (release build), and a motion

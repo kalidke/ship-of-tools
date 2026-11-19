@@ -28,16 +28,16 @@ impl State {
         // lands — for now showing it here was overriding the actual
         // file content the user navigated to.
         let preview_rect = cells_to_px(preview_cells);
+        // The pane is laid out and the edit buffer fitted to it before the pane decides what it shows: an edit that has
+        // no shaped text yet (a row switched to under a full-height drawer) is shaped by now, so its first frame draws it.
         let crate::ui::preview::layout::PreviewShows { fatal: show_fatal, png: show_png, edit: show_edit, md: show_md, canvas: show_canvas } =
-            self.preview_shows();
+            self.frame_shows(preview_rect);
         let (caption_draw, image_rect, png_rect) = self.layout_figure(preview_rect, show_png);
         let md_rect = self.layout_markdown(preview_rect, cell_w, cell_h);
         // The chat's rectangles come back from its layout, so they are this frame's.
         cell_backs.extend(self.layout_drawer_px(cells_to_px, repl_scrollback_cells, repl_window, repl_cells));
         let cell_backs = self.brushes.prepare_backs(&cell_backs, &self.gpu)?;
         self.rebuild_fatal_if_shown(show_fatal);
-        self.layout_concept(preview_rect);
-        self.reshape_edit_to_pane();
         let preview_scroll_px = self.clamp_preview_scroll(show_edit, md_rect, preview_rect);
         let edit_cursor = if show_edit { self.edit_cursor_rect(preview_rect, preview_scroll_px) } else { None };
         let media_paint_targets = self.prepare_media(show_md, md_rect, preview_scroll_px);

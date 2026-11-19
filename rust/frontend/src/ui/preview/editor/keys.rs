@@ -147,6 +147,15 @@ impl State {
         super::rows::bar(self.editor.cursor_place()?, pane, scroll_px, clip_bottom)
     }
 
+    /// What the pane shows this frame, decided after the pane is laid out and the edit buffer fitted to it
+    /// (`reshape_edit_to_pane`): deciding first would draw the read-only file for the frame that gives an edit its
+    /// shaped text, and ask for no other.
+    pub(in crate::ui) fn frame_shows(&mut self, preview_rect: ScreenRect) -> crate::ui::preview::layout::PreviewShows {
+        self.layout_concept(preview_rect);
+        self.reshape_edit_to_pane();
+        self.preview_shows()
+    }
+
     /// Fit the edit buffer to the pane when its width or the text scale is no longer the one it was shaped for (a
     /// window resize, a drawer opening, a zoom): the frame calls it after the pane is laid out and before the text is
     /// drawn, so the screen and the next key's rows are of the pane's own width. A new width lays the same buffer

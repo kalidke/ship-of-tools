@@ -1177,3 +1177,20 @@ fn a_pane_with_no_width_is_not_shaped_for_and_is_when_it_returns() {
     assert!(!h.editor.owes_shaping(0.0), "no shaping to a pixel for a pane with no width");
     assert!(h.editor.owes_shaping(h.width), "and the width's return owes it");
 }
+
+#[test]
+fn discarding_with_the_confirm_key_closes_the_edit_as_a_clean_escape_does() {
+    // `Closed` is the outcome whose window arm fetches the file's preview again; `DiscardAnswered` is not: after a
+    // save, more edits and a discard, the preview showed the render from before the session.
+    let mut h = Harness::new("alpha", 40);
+    h.press_key(None, Some("x"));
+    assert!(matches!(h.press_key(Some(Action::Cancel), None), Some(EditorKey::ConfirmDiscard)));
+    assert!(matches!(h.press_key(Some(Action::DiscardConfirm), None), Some(EditorKey::Closed)));
+    assert!(!h.editor.is_editing());
+    // Any other answer keeps the edit.
+    let mut h = Harness::new("alpha", 40);
+    h.press_key(None, Some("x"));
+    h.press_key(Some(Action::Cancel), None);
+    assert!(matches!(h.press_key(Some(Action::EditLeft), None), Some(EditorKey::DiscardAnswered)));
+    assert!(h.editor.is_editing());
+}

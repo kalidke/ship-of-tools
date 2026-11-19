@@ -111,6 +111,18 @@ impl State {
         self.redraw()?;
         ensure!(!self.editor.needs_reshape() && self.editor.cursor_place().is_some() && footer(self).contains("modified"),
             "the width's return did not shape the text: {}", footer(self));
+        // A row switched to under a full-height drawer brings its edit back with no shaped text; the frame that gives
+        // the width back must shape it before it decides what the pane shows, or it draws the read-only file and asks
+        // for no other.
+        let parked = self.editor.park();
+        self.editor.close();
+        self.editor.restore(parked);
+        let concept = &mut self.concept;
+        self.canvas.shape(|fs| concept.layout(ScreenRect { w: 0.0, ..rect }, fs));
+        self.rebuild_edit_preview();
+        ensure!(self.editor.is_editing() && self.editor.shaped().is_none(), "the restored edit was shaped to a pane with no width");
+        let shows = self.frame_shows(rect);
+        ensure!(shows.edit && !shows.md, "the first frame at the pane's width shows the read-only file: {shows:?}");
         self.editor.close();
         self.redraw()
     }

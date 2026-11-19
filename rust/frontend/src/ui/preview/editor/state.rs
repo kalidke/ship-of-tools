@@ -195,7 +195,7 @@ type Shaped<'a> = Option<(&'a MarkdownPreview, &'a rows::Index)>;
 
 /// What a key in edit mode did, for the window to send, re-shape and repaint.
 pub(in crate::ui) enum EditorKey {
-    /// The discard prompt was answered: the edit closed, or the prompt went down.
+    /// The discard prompt went down and the edit goes on (the confirm key closes it: `Closed`).
     DiscardAnswered,
     /// Reload a stale file edit from disk; its `file.read` is armed.
     ReloadFile(String),
@@ -205,7 +205,7 @@ pub(in crate::ui) enum EditorKey {
     StaleAnswered,
     /// Cancel on a dirty buffer raised the discard prompt.
     ConfirmDiscard,
-    /// Cancel on a clean buffer closed the edit.
+    /// The edit closed: Cancel on a clean buffer, or the discard prompt's confirm key.
     Closed,
     SaveFile { node_id: String, content: String, expected_version: Option<String> },
     SaveConcept { target: String, content: String, expected_ast_hash: Option<String> },
@@ -462,9 +462,11 @@ impl Editor {
             // other key cancels back to editing.
             if action == Some(Action::DiscardConfirm) && !repeat {
                 self.close();
-            } else {
-                edit.confirm_discard = false;
+                // Closed, as a clean buffer's Escape is: the window asks for the file's preview again, which shows what
+                // the session saved, not the render from before it.
+                return Some(EditorKey::Closed);
             }
+            edit.confirm_discard = false;
             return Some(EditorKey::DiscardAnswered);
         }
         // Stale banner intercepts before edit keys
