@@ -878,14 +878,14 @@ fn the_bar_is_clipped_as_the_text_it_stands_on_is() {
     assert!(rect(place_at(95.0), 0.0).is_none(), "a row wholly below");
     // A scrolled view moves the row with the text.
     assert_eq!(rect(place_at(138.0), 100.0).unwrap().y, mid.y);
-    // At the pane's right edge: centered on x = pane.w, half of it is inside; past the edge nothing is.
+    // At the pane's right edge and its left the bar is whole, moved in to the edge, and never outside the pane;
+    // a bar's width past either edge, nothing of the text is there.
     let right = rows::bar(rows::Place { x: pane.w, ..place_at(10.0) }, pane, 0.0, clip_bottom).unwrap();
-    assert_eq!(right.x + right.w, pane.x + pane.w);
-    assert!(right.w < 2.0 + 0.001 && right.w > 0.5);
-    assert!(rows::bar(rows::Place { x: pane.w + 5.0, ..place_at(10.0) }, pane, 0.0, clip_bottom).is_none());
-    // At the left edge likewise.
+    assert_eq!((right.x + right.w, right.w), (pane.x + pane.w, 2.28));
     let left = rows::bar(rows::Place { x: 0.0, ..place_at(10.0) }, pane, 0.0, clip_bottom).unwrap();
-    assert_eq!(left.x, pane.x);
+    assert_eq!((left.x, left.w), (pane.x, 2.28), "whole at column 0");
+    assert!(rows::bar(rows::Place { x: pane.w + 5.0, ..place_at(10.0) }, pane, 0.0, clip_bottom).is_none());
+    assert!(rows::bar(rows::Place { x: -5.0, ..place_at(10.0) }, pane, 0.0, clip_bottom).is_none());
 }
 
 #[test]

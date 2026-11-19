@@ -190,16 +190,17 @@ pub(super) fn vertical(
     body.is_char_boundary(cursor).then_some(Landing { cursor, goal })
 }
 
-/// The cursor's bar for the cursor at `place`, in the pane `pane` with its text scrolled `scroll_px`, clipped exactly as
-/// the text it stands on is: the text is drawn from `pane.y + EXTRA_TOP_PAD_PX - scroll_px` and cut at the pane's left,
-/// top and right edges and at `clip_bottom` (the foot of the text's last whole line), in whole pixels
-/// (`TextBounds`). The bar is centered on its place; `None` where nothing of it is inside the clip.
+/// The cursor's bar for the cursor at `place`, in the pane `pane` with its text scrolled `scroll_px`. Vertically it is
+/// clipped exactly as the text it stands on is: the text is drawn from `pane.y + EXTRA_TOP_PAD_PX - scroll_px` and cut
+/// at the pane's top edge and at `clip_bottom` (the foot of the text's last whole line), in whole pixels
+/// (`TextBounds`). Horizontally it is whole: centered on its place and moved in as far as the pane's edges (the text
+/// has no gutter, and a letter's ink is not cut there, so a bar at the first column or the end of a full row would
+/// lose half of itself); `None` where its place is a bar's width outside the pane, or no height of it is inside the
+/// clip.
 pub(in crate::ui) fn bar(place: Place, pane: ScreenRect, scroll_px: f32, clip_bottom: f32) -> Option<ScreenRect> {
     let w = (place.height * 0.12).max(2.0);
     let top = pane.y + crate::ui::render::text::EXTRA_TOP_PAD_PX + place.top - scroll_px;
-    let x0 = (pane.x + place.x - w / 2.0).max(pane.x.floor());
-    let x1 = (pane.x + place.x + w / 2.0).min((pane.x + pane.w).ceil());
-    let y0 = top.max(pane.y.floor());
-    let y1 = (top + place.height).min(clip_bottom.ceil());
-    (x1 > x0 && y1 > y0).then_some(ScreenRect { x: x0, y: y0, w: x1 - x0, h: y1 - y0 })
+    let (y0, y1) = (top.max(pane.y.floor()), (top + place.height).min(clip_bottom.ceil()));
+    let inside = (-w..=pane.w + w).contains(&place.x) && pane.w >= w;
+    (inside && y1 > y0).then(|| ScreenRect { x: (pane.x + place.x - w / 2.0).clamp(pane.x, pane.x + pane.w - w), y: y0, w, h: y1 - y0 })
 }

@@ -344,11 +344,12 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   closes it. State sends, re-shapes (`rebuild_edit_preview`) and repaints. The cursor is not a character of the
   shaped text (`EditState::spans` is the header, the body and the footer alone): the render pass draws it as a bar in
   the selection's brush at `Editor::cursor_place` (`State::edit_cursor_rect`, in `paint_text_selections`), so it cannot
-  move a wrap. The bar is clipped as the text it stands on is (`rows::bar`: the same origin, `pane.y +
-  EXTRA_TOP_PAD_PX - scroll`, and the same cut at the pane's left, top and right edges and at the foot of the last
-  whole line, `MarkdownPreview::clip_bottom`, which the text's own clip calls too), so it is never over a neighbor or
-  the border; none is drawn where nothing of it is inside that clip or the layout is not the body's text (see below);
-  every other row has one. The rows are read through one `rows::Index`, built when the buffer is shaped (`Editor::reshape`) and
+  move a wrap. The bar is clipped vertically as the text it stands on is (`rows::bar`: the same origin, `pane.y +
+  EXTRA_TOP_PAD_PX - scroll`, and the same cut at the pane's top edge and at the foot of the last whole line,
+  `MarkdownPreview::clip_bottom`, which the text's own clip calls too), and whole horizontally, moved in as far as the
+  pane's edges (the text has no gutter and a letter's ink is not cut there, so a bar at column 0 or at the end of a
+  full row keeps its width), never over a neighbor or the border; none is drawn where it is a bar's width outside the
+  pane, nothing of it is inside that clip or the layout is not the body's text (see below); every other row has one. The rows are read through one `rows::Index`, built when the buffer is shaped (`Editor::reshape`) and
   never by a key, a frame, the follow or the bar; it is of one body, named by its revision (`EditBuffer::rev`, a
   number no buffer has had, taken again at every change of the text, at birth, and by undo and redo, so an overtyping
   of the same length is told from the text it was shaped from), and a re-shape or a changed text makes it out of
