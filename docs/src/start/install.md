@@ -179,9 +179,9 @@ installs the agent integration:
 | `~/.sot-comm/` | the session messaging scripts (`bin/`) and their runtime state |
 | `~/.local/bin/` | `ccb` (Claude Code launcher), `ccx` (Codex launcher), `sot-fe`, `show-result`, `sot-gh-auth` |
 | `~/.claude/skills/` | the four onboarding skills, which you run before any row exists: `sot-install`, `sot-setup`, `sot-statusline-setup`, `sot-gh-auth` (each named account reaches the folder by the daemon's link) |
-| `~/.sot-comm/claude-layer/` | the other Claude Code skills (under `.claude/skills/`): `julia-repl`, `show-result`, `sot-comm`, `sot-session-start`, `sot-status`, `sitrep`, `worktree`, `project-log`, `reauth`. A session Ship of Tools starts (a row or `ccb`) adds this folder to itself and carries the work-state hooks in its own launch settings; a plain `claude` loads none of it |
+| `~/.sot-comm/claude-layer/` | the other Claude Code skills (under `.claude/skills/`): `julia-repl`, `show-result`, `sot-comm`, `sot-session-start`, `sot-status`, `sitrep`, `worktree`, `project-log`, `reauth`, `sot-chat-post`. A session Ship of Tools starts (a row or `ccb`) adds this folder to itself and carries the work-state hooks in its own launch settings; a plain `claude` loads none of it |
 | `~/.claude/settings.json`, `~/.claude-auth/<name>/settings.json` | two hook entries, merged in without removing yours: `Stop` (the end-of-turn mail check) and `PreToolUse` on `Bash` (the subagent mail guard), each calling a script under `~/.sot-comm/bin`. The work-state hooks an earlier release merged in are removed, but only a command that is exactly one that release wrote; every other hook, a compound command of yours included, stays. A link is followed and its target written once; an account folder with no `settings.json` is skipped |
-| `~/.codex/skills/` | the Codex skills `sot-comm` and `sot-session-start` |
+| `~/.codex/skills/` | the Codex skills `sot-comm`, `sot-session-start` and `sot-chat-post` |
 | `~/.codex/AGENTS.md` | the repo's `AGENTS.md`, installed when none is there and replaced only while the installed file holds "Codex sessions in Ship of Tools"; any other file there is left alone and a warning says to merge by hand |
 | `~/.agents/plugins/sot-comm/`, `~/.agents/plugins/marketplace.json` | the Codex work-state hook plugin; written whether or not Codex is installed, and registered with `codex plugin add sot-comm@sot-local` when it is |
 
@@ -261,7 +261,7 @@ rm -f ~/.local/bin/sot-launch ~/.local/bin/ccb ~/.local/bin/ccx ~/.local/bin/sot
       ~/.local/bin/show-result ~/.local/bin/sot-gh-auth
 rm -f ~/.local/share/applications/ship-of-tools.desktop \
       ~/.local/share/icons/hicolor/256x256/apps/ship-of-tools.png
-rm -rf ~/.codex/skills/{sot-comm,sot-session-start}
+rm -rf ~/.codex/skills/{sot-comm,sot-session-start,sot-chat-post}
 rm -rf ~/.agents/plugins/sot-comm
 ```
 

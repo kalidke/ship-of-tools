@@ -41,6 +41,31 @@ template_hits() {
 
 check "lint: no skill file carries a dollar sign and a digit" template_hits "$ROOT"
 
+# frontmatter_bad ROOT — every SKILL.md of the four skill trees (the three above and comm/adapters/codex/skills) names its
+# own folder in `name:` and has a one-line `description:` of at most 1024 characters. 0 only when there are skills and
+# none is wrong.
+frontmatter_bad() {
+    local root="$1" file n name desc seen=0 bad=0
+    while IFS= read -r file; do
+        seen=$((seen + 1))
+        n="$(basename "$(dirname "$file")")"
+        name="$(sed -n '2,/^---$/{s/^name: *//p;}' "$file" | head -1)"
+        desc="$(sed -n '2,/^---$/{s/^description: *//p;}' "$file" | head -1)"
+        [ "$name" = "$n" ] || { echo "$file: name '$name' is not its folder '$n'"; bad=1; }
+        [ -n "$desc" ] && [ "${#desc}" -le 1024 ] || { echo "$file: description missing or over 1024 characters"; bad=1; }
+    done < <(find "$root/agents/claude" "$root/comm/adapters/claude" "$root/comm/adapters/codex/skills" "$root/.claude/skills" -name SKILL.md 2>/dev/null)
+    [ "$seen" -gt 0 ] || { echo "no skills found under $root"; return 1; }
+    return "$bad"
+}
+check "lint: every skill's name is its folder and its description is one line within 1024 characters" frontmatter_bad "$ROOT"
+mkdir -p "$WORK/fm/agents/claude/y"
+printf -- '---\nname: other\n---\nbody\n' > "$WORK/fm/agents/claude/y/SKILL.md"
+if frontmatter_bad "$WORK/fm" > /dev/null; then
+    echo "FAIL: the frontmatter lint passes a skill whose name is not its folder"; FAIL=$((FAIL + 1))
+else
+    echo "PASS: the frontmatter lint fails a skill whose name is not its folder and has no description"; PASS=$((PASS + 1))
+fi
+
 mkdir -p "$WORK/bad dir/.claude/skills/x"
 printf -- '---\nname: x\n---\nrun $1 now\n' > "$WORK/bad dir/.claude/skills/x/SKILL.md"
 if template_hits "$WORK/bad dir" > /dev/null; then

@@ -366,8 +366,10 @@ of each.
   request, and `--stdin` text with newlines, quotes and a leading `/` whole. The skills tell an agent to reply with it
   (messaging's `sot-comm`); a Codex row is not woken for channel mail. A person's plain ask to post in the row's Slack
   channel finds the verb through `sot-chat-post` (`claude/sot-chat-post/`, and `comm/adapters/codex/skills/sot-chat-post/`
-  for a Codex row, the two files byte-identical), whose description carries the asks' words; the installer's directory
-  walk installs it, so no list names it. It says what the exit codes mean, that a row with no channel is told so, and
+  for a Codex row, the two files byte-identical, pinned by `tests/test-skill-copies.sh`, and every skill's frontmatter linted by `tests/test-skill-templates.sh`; the Codex copy sits in messaging's adapters
+  folder but is agents'), whose description carries the asks' words; the installer's directory walk installs it, so no
+  installer list names it (the manual's install page lists the installed skills and the uninstall line by hand). It says the verb posts only to the row's own channel, publicly, and refuses another channel or a direct message; what the
+  exit codes mean; that a row with no channel is told what the command printed; and
   that an `@name` in a post is literal text, not a mention (the daemon escapes `<`, `>` and `&` and sets no
   `link_names`: CHAT-MENTION-NOT-A-MENTION in `docs/defects.md`). Unproven: that a session, asked in plain words, loads it.
 - `sot-fe chat post [--thread <ts>] --file <path> [<comment> | --stdin]` shares a file of the row's folder (a figure, or

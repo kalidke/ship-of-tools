@@ -25,8 +25,8 @@ start yourself in a terminal loads none of them.
   session's REPL ([How agents use the REPL](@ref agents-repl)), `show-result`
   puts a file in your preview pane or opens a page in your browser, and
   `sot-comm` sends messages to other sessions. Claude Code gets all of them;
-  Codex gets only `sot-comm` and `sot-session-start`, so Codex sessions have no
-  REPL skill yet.
+  Codex gets `sot-comm`, `sot-session-start` and `sot-chat-post`, so Codex sessions
+  have no REPL skill yet.
 - **Hooks** that report the session's work state (working, blocked, done),
   which is what colours its row. See [Work-state colours](../concepts/work-state.md).
 

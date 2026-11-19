@@ -49,6 +49,28 @@ scratch_tree() {
 
 check "every skill copy is byte-identical to its payload" skill_drift "$ROOT"
 
+# A skill shipped to both agents (agents/claude/<n> for Claude rows, comm/adapters/codex/skills/<n> for Codex rows) keeps
+# its two copies byte-identical. Exit 0 only if at least one such skill exists and none differs.
+dual_drift() {
+    local root="$1" d n pairs=0 drift=0
+    for d in "$root"/agents/claude/*/; do
+        n="$(basename "$d")"
+        [ -d "$root/comm/adapters/codex/skills/$n" ] || continue
+        pairs=$((pairs + 1))
+        diff -rq "$d" "$root/comm/adapters/codex/skills/$n" || drift=1
+    done
+    [ "$pairs" -gt 0 ] && return "$drift"
+    return 1
+}
+dual_drifts() { ! dual_drift "$1" >/dev/null; }
+
+check "a skill shipped to both agents is byte-identical in both" dual_drift "$ROOT"
+
+t="$(scratch_tree dual)"
+mkdir -p "$t/comm/adapters" && cp -R "$ROOT/comm/adapters/codex" "$t/comm/adapters/"
+printf 'drifted\n' >> "$t/comm/adapters/codex/skills/sot-chat-post/SKILL.md"
+check "a Codex copy with one changed line fails the check" dual_drifts "$t"
+
 t="$(scratch_tree changed)"
 printf '# drifted\n' >> "$t/agents/claude/sot-statusline-setup/statusline.sh"
 check "a payload with one changed line fails the check" drifts "$t"
