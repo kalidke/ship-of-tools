@@ -75,12 +75,20 @@ where each lives).
      process's socket descriptors, each socket's `socket_fdinfo` (`peer_owner/libproc.rs`).
 
    Every failure refuses, and a process the walk could not read never counts. Limits on macOS:
-   - The rule is the holder's account, not the creator's: no public record names a socket's creator on macOS 27, and
-     `socket_fdinfo`'s `soi_stat` is never filled. So a socket another account created is admitted while a process of
-     this account holds it, and a copy another account holds is not seen.
-   - A process of this account that the kernel refuses to the walk is refused.
-   - A lookup costs two system calls per process of this account, one per socket descriptor they hold and one for the
-     holder.
+   - The rule is the holder's account, not the creator's: on macOS 27.0.1 `net.inet.tcp.pcblist_n` holds no record of
+     another process's connection (measured), and `socket_fdinfo`'s `soi_stat` is not filled in the macOS 13 and 26
+     sources. So a socket another account created is admitted while a process of this account holds it, and a copy
+     another account holds is not seen.
+   - A connection whose peer's end is held only by a process of this account that the kernel refuses to the walk is
+     refused.
+   - A lookup costs at most two system calls per process of this account and one per socket descriptor they hold, plus
+     one for the holder and two for the listing.
+   - Shown on macOS 26.7 and 27.0 by hosted runs on 2026-11-18: one lookup of another process's connection took 0.16 ms
+     (272 processes of the account holding 120 socket descriptors) on 26.7.2 and 0.23 ms (390 processes, 138
+     descriptors) on 27.0.1; Safari reached a page through the window's redirect in 0.8 s and 2.3 s; another account's
+     client got no byte; a walk named the network process of a headless Chrome and of a headless Firefox as this
+     account's, and no process of the account answered EPERM to it. A person's Mac on macOS 27, a windowed Chrome or
+     Firefox, and each later macOS release are unproven until used.
 
    Rests on SO_PEERCRED/pidfd, LOCAL_PEERPID/kqueue, the pipe's SID and impersonation level, the TCP owner tables
    (Linux, Windows) and libproc's process and descriptor records (macOS).

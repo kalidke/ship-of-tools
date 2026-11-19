@@ -1,5 +1,5 @@
 use super::*;
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::net::{Ipv4Addr, Ipv6Addr};
 
@@ -99,7 +99,7 @@ fn only_the_peers_own_established_tcp_end_matches() {
     let wrong = |kind, state, vflag| to_bytes(&record_with(kind, state, vflag, peer, listener));
     assert!(
         !own_end(wrong(SOCKINFO_TCP, 10, INI_IPV4), peer, listener),
-        "state 10: FIN_WAIT_2"
+        "state 10: TIME_WAIT"
     );
     assert!(
         !own_end(wrong(SOCKINFO_TCP, 5, INI_IPV4), peer, listener),
@@ -111,8 +111,11 @@ fn only_the_peers_own_established_tcp_end_matches() {
     );
     assert!(
         !own_end(wrong(SOCKINFO_TCP, TSI_S_ESTABLISHED, 0), peer, listener),
-        "vflag 0"
+        "vflag 0 on IPv4 addresses"
     );
+    // With neither bit set the addresses are not stored in either form: not IPv4's last four bytes, not IPv6 whole.
+    let none = to_bytes(&record_with(SOCKINFO_TCP, TSI_S_ESTABLISHED, 0, p6, l6));
+    assert!(!own_end(none, p6, l6), "vflag 0 on IPv6 addresses");
     // Another port on either endpoint.
     assert!(!own_end(record(peer, listener), v4(50002), listener));
     assert!(!own_end(record(peer, listener), peer, v4(8082)));
@@ -137,13 +140,13 @@ fn a_socket_record_of_another_length_refuses_by_its_length() {
         Ok(501),
         vec![(3, Rec::Bytes(whole[..791].to_vec()))],
     )]);
-    let verdict = owner(&fake, peer, listener, "uid:501");
+    let verdict = owner(&fake, listener, peer, "uid:501");
     assert!(
         matches!(&verdict, PeerOwner::Unknown(why) if why.contains("791")),
         "{verdict:?}"
     );
     fake.procs[0].records.insert(3, Rec::TooBig);
-    let verdict = owner(&fake, peer, listener, "uid:501");
+    let verdict = owner(&fake, listener, peer, "uid:501");
     assert!(
         matches!(&verdict, PeerOwner::Unknown(why) if why.contains("792")),
         "{verdict:?}"
@@ -182,7 +185,6 @@ struct Fake {
     procs: Vec<FakeProc>,
     pids_fails: Option<i32>,
     asked: RefCell<Vec<u32>>,
-    sockets_read: Cell<usize>,
 }
 
 impl Fake {
@@ -191,7 +193,6 @@ impl Fake {
             procs,
             pids_fails: None,
             asked: RefCell::new(Vec::new()),
-            sockets_read: Cell::new(0),
         }
     }
     fn proc(&self, pid: i32) -> io::Result<&FakeProc> {
@@ -217,7 +218,6 @@ impl Procs for Fake {
             .map_err(io::Error::from_raw_os_error)
     }
     fn socket(&self, pid: i32, fd: i32) -> io::Result<Vec<u8>> {
-        self.sockets_read.set(self.sockets_read.get() + 1);
         match self.proc(pid)?.records.get(&fd) {
             Some(Rec::Bytes(b)) => Ok(b.clone()),
             Some(Rec::TooBig) => Err(io::ErrorKind::OutOfMemory.into()),
@@ -235,7 +235,7 @@ fn the_holders_effective_uid_decides_and_an_unread_process_never_counts() {
     let (peer, listener) = (v4(50000), v4(8080));
     let theirs = || (4, Rec::Bytes(record(peer, listener)));
     let accepted = || (3, Rec::Bytes(record(listener, peer)));
-    let judge = |fake: &Fake| owner(fake, peer, listener, "uid:501");
+    let judge = |fake: &Fake| owner(fake, listener, peer, "uid:501");
 
     // The holder's euid is own's, or another's.
     assert_eq!(
@@ -299,7 +299,7 @@ fn the_holders_effective_uid_decides_and_an_unread_process_never_counts() {
     let fake = Fake::of(vec![holder(10, Ok(501), vec![theirs()])]);
     for own in ["S-1-5-21-1", "uid:", "uid:-1", "501"] {
         assert!(
-            matches!(owner(&fake, peer, listener, own), PeerOwner::Unknown(_)),
+            matches!(owner(&fake, listener, peer, own), PeerOwner::Unknown(_)),
             "{own}"
         );
     }

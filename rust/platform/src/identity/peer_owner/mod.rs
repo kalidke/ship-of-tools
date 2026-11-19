@@ -23,7 +23,7 @@ enum PeerOwner {
     Mine,
     /// It belongs to another account (`uid:<n>` or a SID), for the log line.
     Other(String),
-    /// The lookup could not decide (no row, a closed peer, an API error, a table layout this build does not know): refused.
+    /// The lookup could not decide (no row, a closed peer, an API error, a table or record layout this build does not know): refused.
     Unknown(String),
 }
 
@@ -38,9 +38,10 @@ fn tcp_peer_owner(local: SocketAddr, peer: SocketAddr) -> PeerOwner {
     imp::lookup(local, peer, &own)
 }
 
-/// How many owner lookups one listener runs at once. Each lookup reads a whole kernel table on a thread of the
-/// process's shared blocking pool, so another account opening many connections to a page port must not be able to
-/// fill that pool, which the rest of the daemon uses too; the connections beyond it wait their turn.
+/// How many owner lookups one listener runs at once. Each lookup reads a whole kernel table (macOS: walks this
+/// account's processes and sockets) on a thread of the process's shared blocking pool, so another account opening
+/// many connections to a page port must not be able to fill that pool, which the rest of the daemon uses too; the
+/// connections beyond it wait their turn.
 const MAX_LOOKUPS: usize = 8;
 
 /// Refusals already warned of, by (listener, port, owner).
@@ -255,7 +256,7 @@ mod imp {
     use std::net::SocketAddr;
 
     pub(super) fn lookup(local: SocketAddr, peer: SocketAddr, own: &str) -> PeerOwner {
-        libproc::owner(&libproc::Libproc, peer, local, own)
+        libproc::owner(&libproc::Libproc, local, peer, own)
     }
 }
 

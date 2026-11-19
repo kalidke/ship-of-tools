@@ -1,7 +1,8 @@
 //! The macOS owner lookup: walk this account's processes through libproc, find the process that holds the peer's own
-//! end of the connection, and name that process's effective uid. macOS 27's kernel TCP table
-//! (`net.inet.tcp.pcblist_n`) shows a process no other process's connection, and no public record names a socket's
-//! creator there, so the rule is the holder's account, not the creator's. The first holder found decides.
+//! end of the connection, and name that process's effective uid. On macOS 27.0.1 the kernel TCP table
+//! (`net.inet.tcp.pcblist_n`) holds no record of another process's connection (measured), and `socket_fdinfo`'s
+//! `soi_stat`, which could carry the creator, is not filled in the macOS 13 and 26 sources, so the rule is the
+//! holder's account, not the creator's. The first holder found decides.
 //!
 //! The portable part (the record, its decode, the walk over [`Procs`], the list reader) comes first and is compiled for
 //! tests on every platform; the libproc calls that answer [`Procs`] are macOS's.
@@ -22,7 +23,6 @@ const INI_IPV6: u8 = 0x2;
 /// soi_kind is SOCKINFO_TCP. Only what is read is transcribed and the rest is named byte arrays, with no implicit
 /// padding, so any 792 bytes are a value.
 #[repr(C)]
-#[derive(Clone, Copy)]
 struct SocketFdinfo {
     /// proc_fileinfo (24), then socket_info's soi_stat (136), soi_so, soi_pcb, soi_type, soi_protocol, soi_family,
     /// eight shorts, soi_oobmark, soi_rcv and soi_snd.
@@ -112,15 +112,16 @@ pub(super) trait Procs {
     fn euid(&self, pid: i32) -> io::Result<u32>;
 }
 
-/// Whose account holds the peer's end of the connection `listener` accepted from `peer`. `own` is
+/// Whose account holds the peer's end of the connection accepted at `local` (the listener side) from `peer`: the
+/// arguments are in `imp::lookup`'s order, and this is where they become the peer's own end's endpoints. `own` is
 /// `own_account_id`'s `uid:<n>`. Only the effective uid of the holder, read after its socket matched, ever makes
 /// [`PeerOwner::Mine`]: a process or socket the walk could not read counts for nothing. The first holder found
 /// decides. A process or socket that fails to read is skipped and counted; a record of an unknown length, or a list
 /// of processes that cannot be read, refuses the lookup.
 pub(super) fn owner(
     procs: &impl Procs,
+    local: SocketAddr,
     peer: SocketAddr,
-    listener: SocketAddr,
     own: &str,
 ) -> PeerOwner {
     let Some(euid) = own.strip_prefix("uid:").and_then(|n| n.parse::<u32>().ok()) else {
@@ -157,7 +158,7 @@ pub(super) fn owner(
                 }
             };
             sockets_read += 1;
-            match peer_end(&record, peer, listener) {
+            match peer_end(&record, peer, local) {
                 Err(why) => return PeerOwner::Unknown(why),
                 Ok(false) => {}
                 Ok(true) => {
