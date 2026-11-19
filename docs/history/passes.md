@@ -2982,3 +2982,11 @@ the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the sa
     a layout with no preview pane posts as it did before the status line's landing took that away, a picture opened
     there no longer ends the full height, and beside the agent pane the drawer's title shrinks to its first word
     where its whole length would cut the status words.
+  - The skill for posting to a row's Slack channel (CHAT-POST-HARD-TO-FIND, SOT-FE-CHAT-WORDS). One builder, four
+    commits; a fresh reviewer, two rounds. A session asked in plain words to post in its channel had taken about
+    eight tool calls to find the command, since no skill's description matched the ask. The skill `sot-chat-post`
+    (both agents, byte-identical) names the one command, says it posts only to the row's own channel and in public,
+    and what each exit means; the install page's skill lists are linted against the skill folders; the command says
+    in its own words when no Slack workspace is connected, and no longer tells an agent to read a thread it cannot
+    read. Round one found the manual's hand-kept skill lists stale and a wrong thread value. Unproven: no session
+    has yet been asked in plain words with the new layer installed.
