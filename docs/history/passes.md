@@ -2998,3 +2998,15 @@ the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the sa
     a stack frame's row still clips (REPL-DRAWER-STACK-ROW-CLIPS, open), the drawer has no selection or copy
     (REPL-DRAWER-NO-SELECTION-OR-COPY, open), and eleven files outside the drawer measure with the older width
     table (WIDTH-CRATE-TWO-VERSIONS, open). No person has looked at it.
+  - The scoped gate's missing tests (SCOPED-GATE-SKIPS-TREE-READING-TESTS). One builder, two commits. A scoped run
+    now also runs the Rust tests whose verdict depends on files outside their own crate: the three that read every
+    crate's sources or manifests on any Rust change, and thirteen that read a named file elsewhere (a manual page, a
+    shell library, a launcher script, a logo) when that file changes. One table holds them, and the rule's own test
+    searches the tree for readers the table lacks and for a listed file the search cannot find, and every gate run checks
+    each row against the built binaries. A row runs each test it selects by exact name, less the ignored ones
+    and those only the release gate runs, and a row that selects no test fails the run. Review found three rows that
+    could not run or ran too much (the logo row's module is feature-gated, the wordmark decode had no row, the
+    `julia/repl` row ran the release-only page test) and a search that found one form in six. Measured: 0 to 12 s a
+    row, 196 s for the `julia/repl` row. Limits: a walk through a helper of another name, a `resource_dir` lookup and a
+    Julia or shell test that reads another folder are added by hand; a Windows-only reader is covered by the hosted
+    Windows run alone.

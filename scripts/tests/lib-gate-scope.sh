@@ -6,7 +6,9 @@
 # agents | scripts>` or `docs docs`. A path no piece owns, and every path the gate itself runs on or is built from (the
 # workspace manifest and lock, the clippy configs, the gate's own scripts, the publish guard, CI files), is the line
 # `whole <path>`: the run widens to everything, never to less. A scope with no differing path is also whole. Only test
-# jobs narrow; the lint and the workspace build run in every scope.
+# jobs narrow; the lint and the workspace build run in every scope. A changed Rust source or crate manifest also adds the
+# piece `tree <name>` (gate_tree_pieces): the Rust tests that read files outside their own crate (gate_tree_tests) run
+# whatever crates were selected.
 
 # gate_scope_proved_by <rust path>: the shell and Julia pieces whose suites drive that code through the `sotd` binary, one
 # line each, on top of the crate's own. The suites run `sotd comm`, `sotd install`, `sotd update`, `sotd topology`,
@@ -22,8 +24,70 @@ gate_scope_proved_by() {
     esac
 }
 
+# gate_tree_pieces <path>: the `tree <name>` pieces of a path that some Rust test reads from outside its own crate: any Rust
+# source or crate manifest (the platform and capsule scans read every crate's), and the non-Rust files the tests of
+# gate_tree_tests read. Markdown is read only where a name below says so.
+gate_tree_pieces() {
+    case $1 in
+        rust/*/*.rs|rust/*/Cargo.toml) echo "tree rust"; return ;;
+        docs/src/ref/keybindings.md) echo "tree docs-keybindings"; return ;;
+        docs/src/ref/config.md) echo "tree docs-config"; return ;;
+        docs/src/start/install.md|docs/ENROLLING-A-HOST.md|docs/INSTALL-AGENT.md|docs/src/guide/troubleshooting.md)
+            echo "tree docs-install"; return ;;
+        *.md) return ;;
+        logo-wordmark-dark.png) echo "tree logo"; return ;;
+        comm/lib/*) echo "tree comm-lib" ;;
+    esac
+    case $1 in
+        # the files comm/tests/stage-bin.sh lays out (comm/bin-folders.txt), the ones directly in agents/ among them
+        comm/lib/*|comm/registry/*|comm/work_state/*|comm/mail/*|agents/sot-fe/*|agents/spawn/*|agents/worktree/*|comm/bin-folders.txt|comm/tests/stage-bin.sh)
+            echo "tree stage-bin" ;;
+        agents/*/*) ;;
+        agents/*) echo "tree stage-bin" ;;
+    esac
+    case $1 in
+        agents/sot-selection-hook.sh) echo "tree selection-hook" ;;
+        agents/codex/bin/ccx) echo "tree ccx" ;;
+        julia/repl/*) echo "tree julia-repl" ;;
+        scripts/sot-local-daemon.ps1) echo "tree local-daemon" ;;
+    esac
+}
+
+# gate_tree_tests: the Rust tests whose verdict depends on files outside their own crate, one per line: `<tree piece>
+# <file holding the test> <test target> [libtest filters]`. A scoped run whose paths yield the piece (gate_tree_pieces)
+# runs the test (rc-gate.sh) whatever crates were selected: the crate that changed is not the crate whose test reads it.
+# test-rc-gate-scope.sh fails on a Rust file that reads outside its own crate and is not named here. A test target is the
+# target name of the test binary: `sot` the window's, `sotd` the daemon's. A row with filters runs the listed tests that
+# contain one of them (libtest's own matching), less the tests the release gate alone runs (shards.py gated): a scoped run
+# never runs more than the ordinary run does; rc-gate.sh fails a row that selects no test.
+gate_tree_tests() {
+    echo "rust rust/platform/src/test_scan_tests.rs sot_platform test_scan::"
+    echo "rust rust/capsule/tests/isolation_guards.rs isolation_guards"
+    echo "rust rust/capsule/tests/dependents.rs dependents"
+    echo "docs-keybindings rust/frontend/src/ui/input/keybindings_tests.rs sot ui::input::keybindings::tests::"
+    echo "logo rust/frontend/src/ui/render/surface_tests.rs sot ui::render::surface::tests::"
+    echo "docs-config rust/chat/src/config_tests.rs sot_chat config_tests::"
+    echo "docs-install rust/backend/tests/unit_pin.rs unit_pin"
+    echo "comm-lib rust/protocol/src/lib_client_wire_tests.rs sot_protocol client_wire_tests::"
+    echo "comm-lib rust/backend/tests/shell_dial.rs shell_dial"
+    echo "stage-bin rust/backend/tests/comm_cli.rs comm_cli"
+    echo "stage-bin rust/backend/tests/comm_send.rs comm_send"
+    echo "stage-bin rust/backend/tests/comm_file.rs comm_file"
+    echo "selection-hook rust/backend/tests/selection.rs selection"
+    echo "ccx rust/backend/src/agents/env_tests.rs sotd agents::env::tests::ccx_unsets_the_nesting_markers"
+    echo "julia-repl rust/backend/src/sidecars/contract_tests.rs sotd sidecars::repl::"
+    echo "local-daemon rust/topology/src/endpoint_tests.rs sot_topology endpoint::tests::"
+}
+
 # gate_scope_piece <checkout> <path>: the piece lines of a path (one, or more where a suite drives the code)
 gate_scope_piece() {
+    local out
+    out=$(gate_scope_owner "$1" "$2") || return
+    printf '%s\n' "$out"
+    case $out in whole\ *) return ;; esac
+    gate_tree_pieces "$2"
+}
+gate_scope_owner() {
     local d=$1 p=$2 c
     case $p in
         rust/*/*)

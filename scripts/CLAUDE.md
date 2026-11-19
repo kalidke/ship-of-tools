@@ -52,7 +52,32 @@ Guarantees, each with the mechanism it rests on:
   The workspace build, all three clippy lines and both cross checks run in every scope; only test jobs narrow: a touched
   crate's tests, and its doc tests when it has a library target (a binary-only crate has no doc job and no doc result) but not its dependents' tests, which the hosted run on main still runs; the Julia packages
   touched, the shell suites of the touched group, and the
-  installer-publish jobs when `scripts` or any crate is touched. `under-bash` is two kinds of job, by the files that differ
+  installer-publish jobs when `scripts` or any crate is touched. A path that a Rust test reads from outside its own crate also adds a piece `tree <name>`
+  (`gate_tree_pieces`), and the tests of `gate_tree_tests` for that piece run whatever crates were selected: a changed
+  Rust source or crate manifest (`tree rust`: the platform's source scans, the capsule's isolation and dependency-graph
+  guards, which read every crate), and the non-Rust files the tests read (`docs-keybindings`, `docs-config`,
+  `docs-install` for the docs pages the window's, the chat's and the daemon's pins quote; `comm-lib` and `stage-bin`
+  for the comm library and the folders `comm/tests/stage-bin.sh` lays out, which the protocol's and the daemon's comm
+  tests run; `selection-hook`, `ccx`, `julia-repl`, `local-daemon`, and `logo` for `logo-wordmark-dark.png`). Such a path,
+  markdown aside, selected only its own shell or Julia piece before. A row with filters runs each listed test that
+  contains a filter, one job per test by exact name, less the ignored tests and the ones only a `gate-*` shard runs
+  (`shards.py gated`, the cut the whole run makes), so a scoped run never runs more than the whole run does. Every run,
+  scoped or whole, checks every row against the built binaries whether or not its piece was selected, and a row that
+  selects no test (a renamed, ignored or feature-gated one), or whose target the build no longer has, fails (101) naming
+  the row, so a stale row fails the landing that staled it; the listings cost about 1 s. A whole-binary row whose
+  target a `gate-*` shard runs whole is skipped, with a `tree-skipped` line in the summary. A test whose crate is
+  selected anyway runs once. Measured on one computer, run one test after another: the rows of one `tree` piece take 0 to 12 s
+  (`comm_file` 12, `comm_send` 9, `shell_dial` 7, `selection` 6, `comm_cli` 6, the scans 2, the rest under 2) except
+  `julia-repl`, whose 80 `sidecars::repl::` tests take 196 s. A reader that only a Windows run executes (the layout
+  script's test in the updater) is covered by the hosted Windows run alone. `tests/test-rc-gate-scope.sh` searches the
+  Rust sources for four forms of reader (a walk of the workspace; an `include_str!` or `include_bytes!` that resolves
+  outside its own crate; a file that names `CARGO_MANIFEST_DIR` or `repo_file` and holds `../` or `.parent()`; a `"../`
+  literal as the argument of a file call) and fails on a file the list lacks, bar named exceptions that each give a reason;
+  it fails when python3 is missing, and when a listed file is not found by the search (bar one named by hand). Not found,
+  so a manual step for the one who writes it: a walk of the tree through a helper of another name, a lookup through
+  `resource_dir`, and a Julia or shell test that reads another folder; add its row to `gate_tree_tests` and a trigger to
+  `gate_tree_pieces`.
+  `under-bash` is two kinds of job, by the files that differ
   from the base (`gate_scope_ub`): its parse and scan checks, one job `under-bash-parse`, when any file under `comm/`,
   `agents/` or `scripts/` differs (markdown included: the bare in-place `sed` scan reads every tracked file there), and
   each hermetic suite of the selected shell groups under bash 3.2 as its own job `under-bash-<suite key>` when one of

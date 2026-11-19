@@ -479,6 +479,31 @@ PYLIST
     fi
   done
   [ "$BUILD_RC" -eq 0 ] || return 0
+  # the tests that read files outside their own crate (gate_tree_tests): every run, scoped or whole, checks that each row
+  # still selects a test in the built binaries (a renamed, gated or ignored test would otherwise fail the first run that
+  # triggers it); a scoped run whose paths yield the row's piece also runs it, whatever crates were selected, because the
+  # crate that changed is not the crate whose test reads it. A whole binary is the ordinary job.
+  local piece _file lst sel w t i=0 go
+  while read -r piece _file n f; do
+    i=$((i + 1))
+    go=0; narrow && want tree "$piece" && go=1
+    if ! row_for "$n"; then echo "tree-missing $n" >> "$L/summary.txt"; fin "tree-$n" 101; continue; fi
+    if [ -z "$f" ]; then
+      [ "$go" -eq 1 ] || continue
+      if [ -z "${RCG_FULL:-}" ] && python3 "$D/scripts/tests/shards.py" gate-whole "$n"; then
+        echo "tree-skipped $n: a gate-* shard runs it whole" >> "$L/summary.txt"; continue
+      fi
+      emit_bin "$exe" "$pkg"; continue
+    fi
+    # the listed tests that contain a filter, not ignored, and not the release gate's alone; none is a failure
+    lst=$(cd "$pkg" && "${TO[@]}" "${CE[@]}" CARGO_MANIFEST_DIR="$pkg" "$exe" --list --format terse 2> /dev/null < /dev/null | sed -n 's/: test$//p')
+    (cd "$pkg" && "${TO[@]}" "${CE[@]}" CARGO_MANIFEST_DIR="$pkg" "$exe" --list --ignored --format terse 2> /dev/null < /dev/null | sed -n 's/: test$//p') > "$L/tree-ignored.list"
+    sel=$(for w in $f; do grep -F -- "$w" <<< "$lst"; done | sort -u | grep -vxFf "$L/tree-ignored.list")
+    [ -n "${RCG_FULL:-}" ] || sel=$(python3 "$D/scripts/tests/shards.py" gated "$n" <<< "$sel")
+    if [ -z "$sel" ]; then echo "tree-missing $n: no test is selected by $f" >> "$L/summary.txt"; fin "tree-$n-$i" 101; continue; fi
+    [ "$go" -eq 1 ] && ! crate_wanted "$pkg" || continue
+    while IFS= read -r t; do emit_one "$exe" "$pkg" "$t"; done <<< "$sel"
+  done < <(gate_tree_tests)
   for n in "${SPLIT[@]}"; do
     [ -n "${LISTED[$n]:-}" ] || continue
     while IFS= read -r t; do

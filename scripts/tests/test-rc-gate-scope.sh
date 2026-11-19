@@ -18,31 +18,35 @@ check() { if (eval "$2"); then echo "PASS: $1"; else echo "FAIL: $1"; fail=$((fa
 
 # ---- the path-to-piece table, over a checkout with two crates
 co=$work/co
-mkdir -p "$co/rust/platform" "$co/rust/backend" "$co/rust/updater" "$co/rust/clippy-tests"
-: > "$co/rust/platform/Cargo.toml"; : > "$co/rust/backend/Cargo.toml"; : > "$co/rust/updater/Cargo.toml"
+mkdir -p "$co/rust/platform" "$co/rust/backend" "$co/rust/updater" "$co/rust/frontend" "$co/rust/clippy-tests"
+: > "$co/rust/frontend/Cargo.toml"; : > "$co/rust/platform/Cargo.toml"; : > "$co/rust/backend/Cargo.toml"; : > "$co/rust/updater/Cargo.toml"
 table=(
-    "rust/platform/src/lib.rs|rust platform"
-    "rust/backend/tests/x.rs|rust backend"
+    "rust/platform/src/lib.rs|rust platform;tree rust"
+    "rust/backend/tests/x.rs|rust backend;tree rust"
     "rust/backend/CLAUDE.md|rust backend"
+    "rust/backend/Cargo.toml|rust backend;tree rust;shell comm;shell agents;shell scripts;julia root"
+    "rust/frontend/build.rs|rust frontend;tree rust"
+    "rust/frontend/src/ui/x.rs|rust frontend;tree rust"
+    "rust/frontend/CLAUDE.md|rust frontend"
     "rust/Cargo.toml|whole rust/Cargo.toml"
     "rust/Cargo.lock|whole rust/Cargo.lock"
     "rust/clippy-tests/clippy.toml|whole rust/clippy-tests/clippy.toml"
     "rust/clippy.toml|whole rust/clippy.toml"
     "rust/gone/src/lib.rs|whole rust/gone/src/lib.rs"
-    "rust/backend/src/comm/x.rs|rust backend;shell comm;julia root"
-    "rust/backend/src/rows/x.rs|rust backend;shell comm;julia root"
-    "rust/backend/src/agents/x.rs|rust backend;shell agents"
-    "rust/backend/src/install/x.rs|rust backend;shell scripts;julia root"
-    "rust/backend/src/update.rs|rust backend;shell scripts;julia root"
-    "rust/backend/src/topology/x.rs|rust backend;shell scripts;julia root"
-    "rust/backend/src/main.rs|rust backend;shell comm;shell agents;shell scripts;julia root"
-    "rust/backend/src/clients_show.rs|rust backend;shell comm;shell agents;shell scripts;julia root"
-    "rust/backend/src/server/x.rs|rust backend"
-    "rust/updater/src/lib.rs|rust updater;shell scripts;julia root"
-    "rust/platform/src/lib.rs|rust platform"
-    "comm/lib/x.sh|shell comm"
+    "rust/backend/src/comm/x.rs|rust backend;shell comm;julia root;tree rust"
+    "rust/backend/src/rows/x.rs|rust backend;shell comm;julia root;tree rust"
+    "rust/backend/src/agents/x.rs|rust backend;shell agents;tree rust"
+    "rust/backend/src/install/x.rs|rust backend;shell scripts;julia root;tree rust"
+    "rust/backend/src/update.rs|rust backend;shell scripts;julia root;tree rust"
+    "rust/backend/src/topology/x.rs|rust backend;shell scripts;julia root;tree rust"
+    "rust/backend/src/main.rs|rust backend;shell comm;shell agents;shell scripts;julia root;tree rust"
+    "rust/backend/src/clients_show.rs|rust backend;shell comm;shell agents;shell scripts;julia root;tree rust"
+    "rust/backend/src/server/x.rs|rust backend;tree rust"
+    "rust/updater/src/lib.rs|rust updater;shell scripts;julia root;tree rust"
+    "rust/platform/src/lib.rs|rust platform;tree rust"
+    "comm/lib/x.sh|shell comm;tree comm-lib;tree stage-bin"
     "comm/CLAUDE.md|shell comm"
-    "agents/spawn|shell agents"
+    "agents/spawn|shell agents;tree stage-bin"
     "scripts/install.sh|shell scripts"
     "scripts/CLAUDE.md|shell scripts"
     "scripts/tests/installer-state.sh|shell scripts"
@@ -62,7 +66,7 @@ table=(
     "core/src/Core.jl|julia core"
     "core/CLAUDE.md|docs docs"
     "julia/kernel/src/k.jl|julia julia/kernel"
-    "julia/repl/test/runtests.jl|julia julia/repl"
+    "julia/repl/test/runtests.jl|julia julia/repl;tree julia-repl"
     "julia/plugins/pdf-file/src/p.jl|julia julia/plugins/pdf-file"
     "julia/plugins/video-file/Project.toml|julia julia/plugins/video-file"
     "julia/plugins/markdown/src/m.jl|julia root"
@@ -86,12 +90,14 @@ mkdir -p docs comm && echo a > docs/a.md && echo b > comm/b.sh && echo c > rust/
 git add -A && git -c user.name=t -c user.email=t@t commit -q -m one
 check "a diff maps to its sorted pieces" '[ "$(gate_scope "$repo" HEAD~1)" = "docs docs
 rust platform
-shell comm" ]'
+shell comm
+tree rust" ]'
 mkdir -p rust/backend/src/comm && echo r > rust/backend/src/comm/r.rs
 git add -A && git -c user.name=t -c user.email=t@t commit -q -m comm
 check "a Rust path a shell suite proves adds the suite's piece" '[ "$(gate_scope "$repo" HEAD~1)" = "julia root
 rust backend
-shell comm" ]'
+shell comm
+tree rust" ]'
 echo m >> rust/Cargo.toml
 git add -A && git -c user.name=t -c user.email=t@t commit -q -m two
 check "one unowned path widens the scope to whole" '[ "$(gate_scope "$repo" HEAD~3)" = "whole rust/Cargo.toml" ]'
@@ -108,6 +114,23 @@ cd "$here" || exit 2
 real=$repo
 # ---- the pipeline over stand-ins
 gate=$here/rc-gate.sh
+treetargets() { # <name>: every target of gate_tree_tests as a stand-in binary that lists the filters asked of it and logs its arguments
+    local n=$1 t
+    for t in $(gate_tree_tests | awk '{print $3}' | sort -u); do
+        cat > "$work/tools/bin-$t" <<STUB
+#!/bin/sh
+case "\$*" in *--ignored*) cat "\$0.ignored" 2> /dev/null; exit 0 ;; esac
+case "\$1" in --list) cat "\$0.list"; exit 0 ;; esac
+echo "\$*" >> "$logs/tree-$t.args"
+case "\$1" in --exact) printf 'running 1 test\ntest %s ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n' "\$2" ;; esac
+exit 0
+STUB
+        chmod +x "$work/tools/bin-$t"
+        gate_tree_tests | awk -v t="$t" '$3 == t { for (i = 4; i <= NF; i++) print "mod::" $i "x: test" }' > "$work/tools/bin-$t.list"
+        printf '%s\t%s\t%s\n' "$t" "$work/tools/bin-$t" "$repo/rust/platform" >> "$work/L-$n/tests.tsv"
+    done
+}
+
 fixture() { # <name>: a stand-in repo with two shell groups, two crates with a test binary each, and result folders
     local n=$1
     repo=$work/$n logs=$work/L-$n
@@ -133,6 +156,7 @@ STUB
     cp "$work/tools/cargo" "$work/tools/julia"
     chmod +x "$work/tools/cargo" "$work/tools/julia"
     rm -f "$work/tools/cargo.log"
+    treetargets "$n"
 }
 pipeline() { # <name> <scope base or -> <scope lines>
     local n=$1 b=$2 sel=${3:-}
@@ -187,6 +211,144 @@ check "scoped: of two crates only the one with a library target is asked doc tes
 fixture sc7; mkdir -p "$work/sc7/rust/libonly" && printf '[package]\nname = "x"\n\n[ lib ]\npath = "x.rs"\n' > "$work/sc7/rust/libonly/Cargo.toml"
 pipeline sc7 b $'rust libonly'
 check "scoped: a crate whose library is only a [lib] table is asked doc tests" 'grep -q "libonly/Cargo.toml --locked --doc" "$work/tools/cargo.log"'
+# ---- the tests that read files outside their own crate: a scoped run whose paths yield a `tree` piece runs that piece's tests
+# whatever crates it selected (gate_tree_tests)
+treefix() { fixture "$1"; }
+treefix tr1; pipeline tr1 b $'rust backend\ntree rust'
+check "tree: a scoped run with a Rust path runs each Rust-reading test under a crate it did not select" '[ "$(rcof tr1 rust/bin-sot_platform__mod__test_scan__x)" = 0 ] && [ "$(rcof tr1 rust/bin-isolation_guards)" = 0 ] && [ "$(rcof tr1 rust/bin-dependents)" = 0 ]'
+check "tree: the platform scan runs by its filter, the capsule guards whole, and no other piece's test runs" 'grep -q "^--exact mod::test_scan::x " "$work/L-tr1/tree-sot_platform.args" && grep -qx "" "$work/L-tr1/tree-isolation_guards.args" && [ ! -e "$work/L-tr1/tree-unit_pin.args" ] && [ ! -e "$work/L-tr1/tree-sotd.args" ]'
+treefix tr2; pipeline tr2 b $'docs docs\nshell comm'
+check "tree: a scope with no tree piece runs none of them" '! ls "$work"/L-tr2/rust/*.rc > /dev/null 2>&1 && ! ls "$work"/L-tr2/tree-*.args > /dev/null 2>&1'
+treefix tr3; pipeline tr3 b $'rust platform\ntree rust'
+check "tree: a selected crate's own run is not doubled by the tree job" '[ ! -e "$work/L-tr3/rust/bin-sot_platform__mod__test_scan__x.rc" ] && [ "$(rcof tr3 rust/bin-platform)" = 0 ]'
+treefix tr4; rm -f "$work/L-tr4/tests.tsv"; pipeline tr4 b $'rust backend\ntree rust'
+check "tree: a test target the build no longer has is a failure" '[ "$(rcof tr4 steps/tree-dependents)" = 101 ] && grep -qx "tree-missing dependents" "$work/L-tr4/summary.txt"'
+check "unscoped: the tree jobs add nothing beside the ordinary binaries" '[ ! -e "$work/L-none/rust/bin-sot_platform__mod__test_scan__x.rc" ]'
+treefix tr8; : > "$work/tools/bin-sot_platform.list"; pipeline tr8 b $'rust backend\ntree rust'
+check "tree: a filter that selects no listed test is a failure, and its job never runs" '[ "$(rcof tr8 steps/tree-sot_platform-1)" = 101 ] && grep -q "^tree-missing sot_platform: no test is selected by test_scan::" "$work/L-tr8/summary.txt" && [ ! -e "$work/L-tr8/tree-sot_platform.args" ]'
+treefix tr11; : > "$work/tools/bin-sot_platform.list"; pipeline tr11 -
+check "tree: a whole run fails a row that selects no test, naming the row" '[ "$(rcof tr11 steps/tree-sot_platform-1)" = 101 ] && grep -q "^tree-missing sot_platform: no test is selected by test_scan::" "$work/L-tr11/summary.txt"'
+treefix tr12; : > "$work/tools/bin-sot_platform.list"; pipeline tr12 b $'shell comm'
+check "tree: a scoped run whose paths yield no tree piece still fails a row that selects no test" '[ "$(rcof tr12 steps/tree-sot_platform-1)" = 101 ]'
+treefix tr13; printf 'gate-x test unit_pin\n' > "$work/tr13/.github/test-shards.txt"; pipeline tr13 b $'tree docs-install'
+check "tree: a whole-binary row a gate-* shard runs whole is skipped and says so" 'grep -qx "tree-skipped unit_pin: a gate-\* shard runs it whole" "$work/L-tr13/summary.txt" && [ ! -e "$work/L-tr13/rust/bin-unit_pin.rc" ]'
+treefix tr5; pipeline tr5 b $'docs docs\ntree docs-install\ntree docs-keybindings'
+check "tree: a read docs file selects its tests alone, whole binaries and filtered ones" '[ "$(rcof tr5 rust/bin-unit_pin)" = 0 ] && grep -q "^--exact mod::ui::input::keybindings::tests::x " "$work/L-tr5/tree-sot.args" && [ ! -e "$work/L-tr5/tree-sot_chat.args" ] && [ ! -e "$work/L-tr5/tree-dependents.args" ]'
+treefix tr6; pipeline tr6 b $'shell comm\ntree stage-bin\ntree comm-lib'
+check "tree: two pieces of one binary's readers run it once" '[ "$(rcof tr6 rust/bin-comm_cli)" = 0 ] && [ "$(rcof tr6 rust/bin-shell_dial)" = 0 ] && grep -q "^--exact mod::client_wire_tests::x " "$work/L-tr6/tree-sot_protocol.args" && [ ! -e "$work/L-tr6/tree-selection.args" ]'
+treefix tr7; pipeline tr7 b $'julia julia/repl\ntree julia-repl'
+check "tree: a row's tests run each by its exact name" 'grep -q "^--exact mod::sidecars::repl::x " "$work/L-tr7/tree-sotd.args"'
+treefix tr9; printf 'gate-wgl bin sotd wgl\n' > "$work/tr9/.github/test-shards.txt"; echo "mod::sidecars::repl::wgl: test" >> "$work/tools/bin-sotd.list"; pipeline tr9 b $'rust backend\ntree julia-repl'
+check "tree: a test only the release gate runs is left out, as the ordinary run leaves it" 'grep -q "^--exact mod::sidecars::repl::x " "$work/L-tr9/tree-sotd.args" && ! grep -q wgl "$work/L-tr9/tree-sotd.args"'
+treefix tr10; echo "mod::sidecars::repl::ign: test" | tee -a "$work/tools/bin-sotd.list" > "$work/tools/bin-sotd.ignored"; pipeline tr10 b $'rust backend\ntree julia-repl'
+check "tree: an ignored test is left out and the others run" 'grep -q "^--exact mod::sidecars::repl::x " "$work/L-tr10/tree-sotd.args" && ! grep -q "::ign " "$work/L-tr10/tree-sotd.args"'
+
+# the files outside rust/ that a Rust test reads select the piece that runs it (a representative path of each piece)
+treepath() { gate_scope_piece "$co" "$1" | grep '^tree ' | sort | tr '\n' ';'; }
+tree_cases=(
+    "rust/platform/src/x.rs|tree rust;"
+    "docs/src/ref/keybindings.md|tree docs-keybindings;"
+    "logo-wordmark-dark.png|tree logo;"
+    "logo-dark.png|"
+    "logo.png|"
+    "logo.ico|"
+    "docs/src/ref/config.md|tree docs-config;"
+    "docs/src/start/install.md|tree docs-install;"
+    "docs/ENROLLING-A-HOST.md|tree docs-install;"
+    "docs/INSTALL-AGENT.md|tree docs-install;"
+    "docs/src/guide/troubleshooting.md|tree docs-install;"
+    "docs/src/ref/other.md|"
+    "comm/lib/comm-lib.sh|tree comm-lib;tree stage-bin;"
+    "comm/lib/CLAUDE.md|"
+    "comm/registry/x|tree stage-bin;"
+    "comm/work_state/hooks/x|tree stage-bin;"
+    "comm/mail/x|tree stage-bin;"
+    "comm/bin-folders.txt|tree stage-bin;"
+    "comm/tests/stage-bin.sh|tree stage-bin;"
+    "comm/tests/test-x.sh|"
+    "agents/sot-fe/x|tree stage-bin;"
+    "agents/spawn/x|tree stage-bin;"
+    "agents/worktree/x|tree stage-bin;"
+    "agents/sot-selection-hook.sh|tree selection-hook;tree stage-bin;"
+    "agents/codex/bin/ccx|tree ccx;"
+    "agents/tests/test-x.sh|"
+    "julia/repl/src/x.jl|tree julia-repl;"
+    "julia/kernel/src/x.jl|"
+    "julia/kernel/Project.toml|"
+    "scripts/sot-install-layout.ps1|"
+    "scripts/sot-local-daemon.ps1|tree local-daemon;"
+    "scripts/sot-apply.sh|"
+    "scripts/install.sh|"
+    "deploy/sotd.service|"
+)
+for row in "${tree_cases[@]}"; do
+    p=${row%%|*} want_line=${row#*|}
+    check "tree pieces of $p are '$want_line'" '[ "$(treepath "$p")" = "$want_line" ]'
+done
+check "every tree piece the list names is yielded by a path of the cases above" 'for pc in $(gate_tree_tests | awk "{print \$1}" | sort -u); do case $(printf "%s\n" "${tree_cases[@]}") in *"tree $pc;"*) ;; *) echo "no case yields tree $pc" >&2; exit 1 ;; esac; done'
+
+# every Rust file that reads outside its own crate is in the list. Four forms are searched: a walk of the workspace
+# (rust_sources, production_sources, a `cargo metadata` call); an include_str! or include_bytes! whose path, resolved from
+# its file, leaves the file's own crate (another crate, or outside rust/); and a file that names CARGO_MANIFEST_DIR or the
+# daemon-lifetime helper repo_file and holds a `../` or a `.parent()`; and a `"../..."` literal as the argument of a file
+# call (read_to_string, File::open, Path::new, ...). A reader that finds its file another way (a walk through a helper of
+# another name, a lookup through resource_dir) is not found, and its writer adds it to the list.
+tree_listed() { gate_tree_tests | awk '{print $2}'; }
+tree_root=$(cd "$here/../.." && pwd)
+check "the search needs python3, and a missing one fails the suite" 'command -v python3 > /dev/null'
+tree_walk=$(cd "$tree_root" && grep -rlE 'rust_sources\(|production_sources\(|\["metadata",' --include=*.rs rust)
+tree_inc=$(cd "$tree_root" && python3 -I - <<'PY'
+import os, re
+for d, _, names in os.walk('rust'):
+    crate = os.sep.join(d.split(os.sep)[:2]) + os.sep
+    for n in names:
+        if not n.endswith('.rs'):
+            continue
+        f = os.path.join(d, n)
+        text = open(f, encoding='utf-8').read()
+        for rel in re.findall(r'include_(?:str|bytes)!\(\s*"([^"]+)"', text):
+            if not (os.path.normpath(os.path.join(d, rel)) + os.sep).startswith(crate):
+                print(f)
+                break
+PY
+) || tree_inc=SEARCH-FAILED
+tree_up=$(cd "$tree_root" && grep -rlE 'CARGO_MANIFEST_DIR|repo_file\(' --include=*.rs rust | xargs grep -lE '\.\./|\.parent\(\)')
+# a path literal relative to the crate folder (cargo and the gate run tests there), as the argument of a file call
+tree_rel=$(cd "$tree_root" && grep -rlE '(read_to_string|read_dir|File::open|fs::read|Path::new|PathBuf::from|canonicalize)\([[:space:]]*&?"\.\./' --include=*.rs rust)
+tree_out=$(printf '%s\n%s\n%s\n%s\n' "$tree_walk" "$tree_inc" "$tree_up" "$tree_rel" | grep -v '^$' | LC_ALL=C sort -u)
+# read outside the crate but not by a test this gate can scope, each with its reason
+IFS= read -r -d '' tree_exempt <<'EXEMPT'
+rust/platform/src/test_scan.rs the walker's own definition
+rust/backend/tests/daemon_boot.rs scans the backend's own tests alone
+rust/platform/src/host/paths.rs the resource lookup of a running daemon, not a test
+rust/frontend/build.rs the window's icon at build time, and the workspace build runs in every scope
+rust/frontend/src/ui/render/surface.rs compiles the logo files in, which the workspace build covers in every scope; the decoding test is surface_tests.rs, listed
+rust/frontend/src/ui/init/mod.rs compiles logo.png in at build time, as above; no test decodes it
+rust/frontend/src/ui/result_tests.rs decodes logo.png, but the module is built only with the feature test-window-progress, which the gate never sets
+rust/frontend/src/net/transport/golden_tests.rs reads its own crate's testdata
+rust/frontend/src/ui/preview/markdown/tests.rs reads its own crate's testdata
+rust/backend/tests/ancestors.rs its tests are Windows-only; the gate runs on Linux, and the hosted Windows run covers it
+rust/updater/src/pending_tests.rs the one test that reads scripts/sot-install-layout.ps1 is Windows-only, as above
+rust/backend/src/install/unix_tests.rs reads the checkout's scripts/lib and deploy, both paths that widen the run
+rust/backend/tests/contained_job.rs scripts/tests/in-container.sh, a gate script, so its change widens the run
+rust/backend/src/install/publish_tests.rs the publish guard's scripts, which widen the run
+rust/backend/tests/daemon_lifetime/done.rs julia/pluto, which widens the run, and a release-gate test
+EXEMPT
+tree_exempt=${tree_exempt%$'\n'}
+# listed files the search cannot find (they read through an item another file defines), each with its reason
+IFS= read -r -d '' tree_byhand <<'HAND'
+rust/frontend/src/ui/render/surface_tests.rs decodes LOGO_WORDMARK_PNG, which surface.rs compiles in from logo-wordmark-dark.png
+HAND
+tree_byhand=${tree_byhand%$'\n'}
+check "the tree-reading list holds every Rust file that walks the workspace or reads outside its crate (the exemptions each name their reason)" '
+    [ "$tree_inc" != SEARCH-FAILED ] || { echo "the include search failed" >&2; exit 1; }
+    missing=$(printf "%s\n" "$tree_out" | while read -r f; do
+        tree_listed | grep -qxF "$f" || printf "%s\n" "$tree_exempt" | grep -q "^$f " || echo "$f"; done)
+    [ -z "$missing" ] || { echo "$missing" >&2; false; }'
+check "every file the list names is found by the search or named as read by hand" '
+    [ -n "$tree_out" ] || exit 1
+    for f in $(tree_listed); do
+        printf "%s\n" "$tree_out" | grep -qxF "$f" || printf "%s\n" "$tree_byhand" | grep -q "^$f " || { echo "$f" >&2; exit 1; }; done'
 fixture sc2; pipeline sc2 b $'julia julia/kernel\ndocs docs'
 check "scoped julia: only the selected package has a result" '[ "$(rcof sc2 steps/julia-julia-kernel)" = 0 ] && [ ! -e "$work/L-sc2/steps/julia-root.rc" ] && [ ! -e "$work/L-sc2/steps/julia-core.rc" ]'
 check "scoped julia: no crate test and no doc test" '! ls "$work"/L-sc2/rust/*.rc > /dev/null 2>&1 && ! grep -q -- "--doc" "$work/tools/cargo.log"'
@@ -277,7 +439,7 @@ check "longest first: with no times file 103 jobs keep the producer's order, pas
 printf 'bin:bin_backend\t50\nbin:bin_platform\t10\nbin:bin_gamma\t1\nbin:gone\t999\ngarbage\nbin:x\tabc\nbin:y\t5\textra\n' > "$times"
 ordfixture o2; CAP=1 pipeline o2 -
 check "longest first: B named longer than A starts before A; the key names the target, not the hashed file" '[ "$(starts o2)" = "bin-backend bin-platform gamma " ]'
-check "longest first: a job the file names that the run lacks, and a malformed line, add no job and no error" '[ "$(wc -l < "$work/order-o2")" -eq 3 ] && [ "$(ls "$work/L-o2/rust" | grep -c "^bin-.*rc$")" -eq 3 ] && ! grep -q "rc-gate:" "$work/o2.out"'
+check "longest first: a job the file names that the run lacks, and a malformed line, add no job and no error" '[ "$(wc -l < "$work/order-o2")" -eq 3 ] && [ "$(ls "$work/L-o2/rust" | grep -cE "^bin-(platform|backend|gamma-[0-9a-f]+)\.rc$")" -eq 3 ] && ! grep -q "rc-gate:" "$work/o2.out"'
 printf 'bin:bin_backend\t50\nbin:bin_platform\t10\n' > "$times"
 ordfixture o3; CAP=1 pipeline o3 -
 check "longest first: a job the file does not name starts before every named one" '[ "$(starts o3)" = "gamma bin-backend bin-platform " ]'
