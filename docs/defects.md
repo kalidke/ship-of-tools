@@ -726,13 +726,29 @@ owned by `docs/CLAUDE.md`.
 - **RELEASE-BUILD-SCROLL-FIXTURES** [note] Two native State fixtures, `a_preview_scroll_moves_over_frames_and_comes_to_rest`
   and `a_repl_wheel_tick_rolls_a_row_at_a_time`, failed 4 runs of 4 in a release build on a Linux host at the unchanged
   v0.7.1-rc.9 tree, and pass in the debug builds the gates run. Not chased; their timing may assume a debug build's pace.
+- **DRAWER-KEY-CYCLES** [feature] A drawer's key pressed again cycles the drawer: open, full height, closed. Asked
+  for by the maintainer for 0.7.3 (2026-11-19: "drawer cycles through open, full hiehgt, close on repeated eg
+  cntr-k"), which is the go-ahead. Today the key opens or closes (`LayoutHelp::toggle_drawer`), the height is one
+  setting for the window, and only `pane.maximize` enlarges a drawer. Not decided: whether full height fills the
+  drawer's own columns beside the agent pane or the whole window, and which drawers cycle.
+- **EDITOR-UP-DOWN-BY-PARAGRAPH** [person] In the preview's edit mode, Up and Down move the cursor by a whole line of
+  the file (`EditBuffer::move_up` and `move_down` in `preview/editor/buffer.rs`, "one logical line"), so in a wrapped
+  paragraph they leave it for the line before or after, and on the first or last line they go to the file's beginning
+  or end, never to the row above or below on screen. Seen by the maintainer (2026-11-19: "fix edit mode so that movin
+  up/dn in editor moves in the editor lines, not to begin/end of the paragraph"), for 0.7.3. A note from sizing it,
+  not seen: the edit view does not scroll to follow the cursor.
 - **PDF-TEXT-SELECTION** [feature] Text the person selects in a PDF preview is shared with the row's agent, as a text
   preview's selection is (`requirements.md`, "The agent sees what the user selects"). A PDF page is shown as a picture,
   so it needs the words and their positions per page from the PDF plugin, the window's mapping of a drag to them, and
-  the selection's page and text on the existing share. The maintainer asked whether it is listed (2026-11-10).
+  the selection's page and text on the existing share. The maintainer asked whether it is listed (2026-11-10), and
+  asked for it for 0.7.3 (2026-11-19: "select text in pdf in preivew pane"), which is the go-ahead. Read from the
+  system's poppler 22.02 on Linux that day: `pdftotext -bbox-layout` gives word boxes, no character boxes, in a
+  reading order it guesses and gets wrong on some two-column pages; whether Julia's copy of poppler, which a Windows
+  computer uses, holds `pdftotext` is unmeasured.
 - **DRAW-ON-PDF-PAGES** [feature] The person's drawing, shared with the agent, on a PDF page as on a picture. The
   maintainer, 2026-11-11, after using the drawing on a picture, a blank canvas and a markdown file: "Would like to have
-  on pdfs as well, but not if it delays 71 significantly." A PDF page is not a drawing base today: the window would
+  on pdfs as well, but not if it delays 71 significantly." He asked for it for 0.7.3 (2026-11-19: "draw on pdf in
+  preview pane"), which is the go-ahead. A PDF page is not a drawing base today: the window would
   take a shown page as one, keyed by its page, and the daemon would draw the ink over the page it renders.
 - **SELECT-MARKDOWN-PINS** [note] Rules of the rendered markdown selection that no test pins, found by its review by
   mutants that pass the whole suite: that the lines between a selection's two ends count (a drag from the blank line

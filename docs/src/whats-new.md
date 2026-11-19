@@ -3,6 +3,18 @@
 0.7.1 was released on 2026-11-18; 0.7.0 came before it. This page lists what 0.7.1 adds to 0.7.0, and one feature
 that 0.7.0 already had, marked so. On a Mac, press Cmd where this page says Ctrl.
 
+## 0.7.2
+
+0.7.2 was released on 2026-11-19. It is 0.7.1 with two faults fixed, both on a Mac; Linux and Windows behave as in
+0.7.1.
+
+- On a Mac running macOS 27, 0.7.1 opened no page in a browser: the browser showed that the server had dropped the
+  connection. Pages open again.
+- On a Mac, a window started from the Applications icon left no log to read. It now
+  keeps its log in a file; [Troubleshooting](guide/troubleshooting.md) says where.
+
+A Mac on macOS 27 gets both by [running the installer](guide/updating.md#updating) once.
+
 ## Slack
 
 - A project's Slack channel in a [Chat drawer](guide/chat.md#What-the-panel-shows) (`Ctrl+k`): messages, threads,

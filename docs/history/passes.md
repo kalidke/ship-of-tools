@@ -2896,3 +2896,36 @@ the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the sa
     the daemon lifetime premises, the scripts under bash 3.2) through a two-system matrix, eight more jobs in all. An
     edit by the session of one workflow file, with the contract's sentence. No run of it on macOS 27 exists at this
     commit; its first is the run before 0.7.2's cut, recorded with that cut.
+- v0.7.2, 2026-11-19, 06:53 to 10:07 for the cut, one conversation of the maintaining session. The maintainer's word in
+  its pane at 06:53: 0.7.2 if the tests pass, no candidate, and macOS 27 in the tests.
+  - The release gate's workflow with macOS 27 (the record above): whole local gate passed 07:03, landed 07:04 as
+    06d3cfdf4; its hosted run from that commit (44538431038) ended with 33 of 33 jobs green, the eight macOS 27 jobs
+    among them.
+  - The window's log file for an icon start on a Mac (MAC-WINDOW-LOG-NOWHERE), asked into the release at 07:00 when
+    the session had listed it as a known issue. Four commits, 6c18c93be, 267e26806, 43882e978 and f8bdba782, landed
+    09:03 after a whole local gate at the last. A first shape, the icon's launcher redirecting, was dropped at 07:17: an
+    update's apply does not rewrite an existing bundle. A second, the wrapper keeping the log when its output is
+    /dev/null, was refuted by a measurement on hosted macOS 26.7 and 27.0 (run 44542593525: a bundle's program has
+    pipes). The trigger that was built was measured there next (run 44543383860: the bundle's identifier in the
+    environment and parent process 1). Built by one builder in five rounds, 07:01 to 08:55. The whole local gate was
+    red once (08:08, six checks of `installer-wrapper.sh`: the new cases leaned on the builder shell's comm folder
+    variable; fixed in the tests). Reviewed adversarially in two rounds (to 08:27 and 08:53): round one found four
+    blockers (a wrapper that dials another computer's daemon is not re-rendered by an update, so the call moved to
+    `launch-sot.sh`; a detached start from inside the app was taken for an icon start, so a start whose output is a
+    terminal or a file is left alone; two false sentences in the records), round two one false reason in the contract;
+    90 ordinary starts were byte-identical to the base. The test that starts a real bundle with `open` passed on
+    hosted macOS 26.7 and 27.0 (runs 44550010161 and 44556992784). Hosted on 43882e978, the last commit that changes
+    product code: Rust 56 of 56 after a rerun of two jobs (44556992784), the release workflow without a tag 21 of 21
+    with every install smoke (44558634280), the release gate 33 of 33 (44558627800).
+  - A chat-mail test timed out once in that Rust run, on Windows (CHAT-MAIL-TESTS-SHARE-THE-REGISTRY-TURN): diagnosed
+    by a forced red on Linux as three test fixtures sharing the registry lock's turn, fixed in the fixtures, whole
+    local gate passed 10:06, landed as 11bc3b47f. That the hosted red was this is inferred: its log does not print
+    why the filing failed.
+  - Cut 10:07 from 11bc3b47f as d70c8b06a, tag v0.7.2; the line after it is 0.7.3-dev. The tag's release run
+    (44573809834) ended 10:40 with its 22 jobs green, the builds, the smokes and the twelve install smokes; published
+    10:40 with hand-written notes, on the 06:53 word, which asked for the release by name. On `main` at 11bc3b47f the
+    hosted Rust run (44573622225) had one job red at that time, a macOS 26 job whose shard-coverage step was still
+    compiling at its three-minute bound; no test failed, and the job was run again.
+  - About three and three quarter hours from the word to the publish, where a cut of `main` as it stood would have
+    taken about one: the log file, asked into the release at 07:00, took two hours with its two refuted shapes and
+    two review rounds, and the tag's build 33 minutes against the 21 the release skill states.

@@ -173,8 +173,21 @@ earlier text of the sections above and the integration-test assignment by pass.
 
 ## State
 
-v0.7.1 is published (2026-11-18), and a plain install moves a computer to it; `docs/UPDATE-AGENT.md` is the one update
-procedure an agent follows, from any 0.6 or 0.7 install. It is rc.14's code under a new version stamp, cut from `main`
+v0.7.2 is published (2026-11-19), and a plain install moves a computer to it; `docs/UPDATE-AGENT.md` is the one update
+procedure an agent follows, from any 0.6 or 0.7 install. It is 0.7.1 with two faults on a Mac fixed, cut from `main`
+on the maintainer's word with no candidate once the tests had passed: the whole local gate at the commit that was cut,
+and, on the last commit that changes product code, the hosted Rust tests and the release gate's hosted run, both with
+their macOS jobs on macOS 26 and on macOS 27, and the release workflow's builds and install smokes without a tag,
+every job green (the Rust run after a second run of two jobs). The
+first fault: on macOS 27 the kernel's TCP table shows a process no other process's connection, so 0.7.1 refuses
+every browser there and opens no page (seen by a person on a Mac); the owner lookup now walks the account's processes
+(platform's guarantee 6 has the rule and its limits). The second: a window started from the app's icon on a Mac left
+its log nowhere; the launch wrapper now keeps it in `frontend.log` beside the daemon's log, with the launch before it,
+when macOS started it as the app (distribution's contract, under "Installers", has the rule, its measurement and its
+limits),
+and an update brings that to an existing install. The hosted Rust tests and the release gate's run now run their
+macOS jobs on macOS 27 as well as macOS 26. Proven on hosted macOS 26.7 and 27.0 only: no person's Mac has run
+either fix. v0.7.1 was published 2026-11-18. It is rc.14's code under a new version stamp, cut from `main`
 the same morning on the maintainer's word after the whole local gate, and published on his word with hand-written
 notes once the release workflow's builds, smokes and install smokes had passed and the release gate's hosted run had
 ended with 22 of 25 jobs green; its three red jobs were faults in tests, corrected on `main` after the tag and green
@@ -233,11 +246,9 @@ attach client that keeps reading with input around an attach never sent blind or
 unit no longer restarting forever against another daemon; two parts no test reproduced stay open
 (RELAY-SOCKET-HANG's long wait, KEYS-DROPPED-WHILE-A-ROW-ATTACHES's window warning). rc.4 (2026-11-11) carried the
 preview that follows its row, the pane's copy and the chat drawer's look (rc.3 the drawer; rc.1 and rc.2 selection and
-drawing). `main` carries 0.7.2-dev: 0.7.1, the two test corrections,
-and the macOS owner lookup by a walk of the account's processes (2026-11-18): on macOS 27 the kernel's TCP table shows
-a process no other process's connection, so 0.7.1 refuses every browser there and opens no page (seen by a person on a
-Mac; platform's guarantee 6 has the rule and its limits), and the hosted Rust tests now run on macOS 27 beside macOS
-26. No release carries that change yet, and no person's Mac has run it. rc.14 holds what a person's use of rc.13
+drawing). `main` carries 0.7.3-dev, which is 0.7.2 and nothing more; asked for it by the maintainer (2026-11-19) and
+not started: a drawer's key cycling open, full height and closed, Up and Down in edit mode by the row on screen, and
+drawing on and selecting text in a PDF page (`docs/defects.md`, fe-ui). rc.14 holds what a person's use of rc.13
 found (2026-11-17 and 18), each seen by him unless marked: the Chat drawer's foot explains how a post appears only until
 this computer's first post; a key's letter is written lowercase everywhere in the window; the refusal to draw shows in
 the preview's box only; words that follow a person's action stay on the status line 10 s against background writes (the
