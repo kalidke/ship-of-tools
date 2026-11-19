@@ -711,24 +711,28 @@ impl State {
         }
         self.witness_pump(events, sent, &mut daemon)?;
         self.witness_settle(&mut frames, &newest, "the second picture")?;
-        // A layout with no preview pane shows nothing, whatever ends covering it: `Primary+u` posts nothing and says so, and
-        // a picture opened says it has nowhere to show.
+        // A layout with no preview pane is the person's choice: nothing can be uncovered there, so a picture asked for leaves
+        // the full height alone and says it cannot be shown, and `Primary+u` goes on as it did, posting what the preview
+        // source holds (here a chat picture, which it refuses in its own words).
         let saved = (self.settings.ultrawide.clone(), self.settings.laptop.clone(), self.settings.portrait.clone());
         for preset in [&mut self.settings.ultrawide, &mut self.settings.laptop, &mut self.settings.portrait] {
             preset.columns.retain(|c| c.slot != crate::ui::persist::settings::Slot::Preview);
         }
-        self.witness_frame(&mut frames, &newest, "no preview column")?;
+        self.witness_full(DrawerContent::Chat, &mut frames, &newest)?;
         anyhow::ensure!(self.preview_covered() && !self.preview_possible(), "the preset still has a preview pane");
         while sent.try_recv().is_ok() {}
         self.witness_primary("u", Some(Action::ChatPostFile))?;
-        anyhow::ensure!(posts(sent) == 0 && self.status.text().starts_with("not posted: this layout has no preview pane"), "with no preview pane: {:?}", self.status.text());
-        let png = {
-            let mut bytes = std::io::Cursor::new(Vec::new());
-            image::RgbaImage::from_pixel(8, 6, image::Rgba([1, 2, 3, 255])).write_to(&mut bytes, image::ImageFormat::Png)?;
-            bytes.into_inner()
-        };
-        self.settle_chat_picture(crate::ui::preview::image::svg_run::Outcome::Picture { w: 8, h: 6, png });
-        anyhow::ensure!(self.status.text().contains("no preview pane to show it"), "a picture opened with no preview pane: {:?}", self.status.text());
+        anyhow::ensure!(self.full_drawer_shown() && self.status.text().contains("a picture opened from the chat"),
+            "with no preview pane the post key said {:?} (full {})", self.status.text(), self.full_drawer_shown());
+        let third = self.witness_open(host, events, sent, &mut daemon)?;
+        anyhow::ensure!(self.full_drawer_shown(), "a picture's request ended the full height where there is no preview pane");
+        if let Some(evt) = daemon.answer(third) {
+            events.send((host.clone(), IncomingEvt::Chat(evt))).map_err(|_| anyhow::anyhow!("the fixture's event channel closed"))?;
+        }
+        self.witness_pump(events, sent, &mut daemon)?;
+        self.witness_settle(&mut frames, &newest, "the third picture")?;
+        anyhow::ensure!(self.full_drawer_shown() && self.status.text() == "picture not shown: this layout has no preview pane",
+            "a picture with no preview pane: {:?} (full {})", self.status.text(), self.full_drawer_shown());
         (self.settings.ultrawide, self.settings.laptop, self.settings.portrait) = saved;
         self.witness_frame(&mut frames, &newest, "preview column back")?;
         // The REPL's `Primary+l`, the drawer swapped to the REPL keeping its height.

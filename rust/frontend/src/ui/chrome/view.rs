@@ -224,7 +224,20 @@ impl ChromeView<'_> {
 
         // What the border already says, left of the status: the drawer's title, or the focus hint's lead when it has the focus.
         let lead = if repl_focus { format!(" {} · ", self.help_context.title()) } else { repl_title.clone() };
-        let border_status = (nav_frame_rect.width == 0).then(|| self.border_status(area, repl_rect, &lead)).flatten();
+        let status_after = |lead: &str| (nav_frame_rect.width == 0).then(|| self.border_status(area, repl_rect, lead)).flatten();
+        let mut border_status = status_after(&lead);
+        // The words answer a person's action, the title's state words matter less: where the words would be cut or lost
+        // beside the whole title, the title shrinks to its first word (the focused drawer's hint gives way on its own).
+        if !repl_focus && border_status.as_ref().is_none_or(|(_, t)| t.trim_end().ends_with('…')) {
+            let short = format!("{} ", repl_title.split(" · ").next().unwrap_or("").trim_end());
+            if let Some(s) = status_after(&short) {
+                for x in repl_rect.x..repl_rect.x + repl_rect.width {
+                    buf[(x, repl_rect.y.saturating_sub(1))].set_symbol("─").set_style(border_style);
+                }
+                write_title(buf, repl_rect.x + 1, repl_rect.y.saturating_sub(1), &short, title_w(repl_rect), title_style_for(false));
+                border_status = Some(s);
+            }
+        }
         self.paint_focus_hint(buf, nav_frame_rect, preview_rect, llm_rect, repl_rect, border_status.as_ref().map(|s| s.0), border_style, focus_title_style);
         if let Some((x, text)) = border_status {
             write_title(buf, x, repl_rect.y.saturating_sub(1), &text, repl_rect.x + repl_rect.width - x, Style::default().fg(Color::LightGreen));

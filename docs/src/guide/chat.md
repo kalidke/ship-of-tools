@@ -45,7 +45,7 @@ changed; see [Keybindings](../ref/keybindings.md).
 | typing, `Ctrl+v` | Write the message at the panel's foot; a paste is added whole. |
 | `Shift+Enter` | Start a new line in the message. |
 | `Enter` | Post the message. With nothing typed in a project that has no channel, open the channel list. |
-| `Ctrl+u` | Post the file the preview pane shows, with the message as its comment. Where the panel covers the preview (full height or maximized), the first press shows it and posts nothing. |
+| `Ctrl+u` | Post the file the preview pane shows, with the message as its comment. Where the panel covers the preview (full height or maximized), the first press shows it and posts nothing, and the next posts; in a layout with no preview pane it posts at once. |
 | `ArrowUp`, `ArrowDown` | Mark a message (a highlight that the keys below act on): the first `ArrowUp` marks the newest, then each press marks the next older or newer one. |
 | `ArrowRight` | Open the marked message's thread. |
 | `ArrowLeft` | Close the open thread, while nothing is typed. |
@@ -284,6 +284,8 @@ messages to be missed, the top line says `not up to date`.
 | `not posted: close the screen open in the chat first` | Close the channel list or the screen shown, then post. |
 | `not posted: the chat name is not valid; ...` | Fix the `name =` line under `[chat]` in `settings.toml`. |
 | `draft is full: nothing added` | The message is at its limit. |
+| `the preview was covered: it shows now; press Ctrl+u again to post the file it shows` | The panel covered the preview; it is shown now, and nothing was posted. Press `Ctrl+u` again to post the file you see. |
+| `picture not shown: this layout has no preview pane` | The layout you chose has no preview pane, so a picture opened from the chat has nowhere to show; use a layout with one. |
 | `not posted: the preview shows no file` | Select a file in Files mode, then press `Ctrl+u`. |
 | `not posted: the preview shows a picture opened from the chat, ...` | Select a file in Files mode, then press `Ctrl+u`. |
 | `not posted: the file is not a readable file in the project's folder`, `not posted: the file is larger than the chat carries` | Post a file of the project's folder, at most 16 MiB. |

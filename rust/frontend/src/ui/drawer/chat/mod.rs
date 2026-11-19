@@ -134,17 +134,13 @@ impl State {
     /// `chat.post_file`: posts the file the preview shows, the row the chat shows being the preview's (both follow the selected
     /// row), with the draft as its comment; a refusal goes to the status line.
     pub(in crate::ui) fn send_chat_file(&mut self) {
-        // The file posted is the previewed one: where the preview is covered (a full-height or maximized drawer), this
-        // press shows it and posts nothing; where the layout has no preview pane, nothing can be shown and nothing is posted.
-        if self.preview_covered() {
-            let words = if self.preview_possible() {
-                let key = self.bindings.first_label(Action::ChatPostFile);
-                self.reveal_preview();
-                format!("the preview was covered: it shows now; press {key} again to post the file it shows")
-            } else {
-                "not posted: this layout has no preview pane, so the file it would post cannot be seen".to_string()
-            };
-            self.status.set(words);
+        // The file posted is the previewed one: where a preview pane exists and is covered (a full-height or maximized
+        // drawer), this press shows it and posts nothing. A layout with no preview pane is the person's choice, and the
+        // key posts as it always did.
+        if self.preview_covered() && self.preview_possible() {
+            let key = self.bindings.first_label(Action::ChatPostFile);
+            self.reveal_preview();
+            self.status.set(format!("the preview was covered: it shows now; press {key} again to post the file it shows"));
             self.window.request_redraw();
             return;
         }

@@ -954,14 +954,18 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   hold ends and the connection line replaces it; before that, the drawer at its own height shows it whole in the nav.
   No word ends full height (a refused post's reason, a copy, the REPL's `Primary+l`, a notify). Only an answer that is
   the preview does, decided by what the last frame drew (`State::reveal_preview`: no preview pane drawn, while some
-  other pane is), not by the layout state: it ends whatever covers the preview, full height and maximize together
+  other pane is, and the layout has a preview column), not by the layout state: it ends whatever covers the preview, full height and maximize together
   (`LayoutHelp::uncover_preview`; the next full height comes from the drawer's key). The callers: a chat picture's
   original asked for (`Primary+o`, a tile's release; `with_chat` sees the request go out) and its arrival
   (`install_chat_picture`, so a drawer made full or maximized again before it came is undone); and `Primary+u`, which
   with the preview covered, at full height or maximized or both, shows it, says so and posts nothing, and posts at once
-  where the preview is drawn (a layout whose full height leaves it in view, a dead step). Where the layout has no
-  preview column at all (`State::preview_possible`) nothing can show it: `Primary+u` posts nothing and says there is
-  no preview pane, and an opened picture says it has nowhere to show (`settle_chat_picture`). While Help is over the
+  where the preview is drawn (a layout whose full height leaves it in view, a dead step). A layout with no preview
+  column at all (`State::preview_possible`) is the person's choice and has nothing to uncover: the drawer keeps its
+  height, `Primary+u` posts as it always did (the file the preview source holds, which follows the nav cursor), and an
+  opened picture says `picture not shown: this layout has no preview pane` (`settle_chat_picture`). The border's words
+  take the room from the drawer's title (the focus hint's lead when it has the focus, giving way on its own): with the
+  focus elsewhere the title is cut to its first word where the whole one would leave the words cut or lost
+  (`ChromeView::paint`), so beside the agent pane the words show from about 56 columns on the laptop layout. While Help is over the
   drawer the Chat's keys are not live, so none of this is reached. A search of the key and click paths found no other
   that puts something in the preview while the nav, which would move its cursor, is covered; what the daemon or an
   agent sends (`show-result`, a preview command, a changed file) is nobody at this window asking and leaves the height.
@@ -981,11 +985,12 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   `an_uncovered_preview_ends_the_full_height_and_maximize_and_the_key_goes_full_again`,
   `chrome::view::tests::{every_tenant_fills_the_rect_a_full_height_drawer_stands_in,
   the_status_line_is_on_the_full_drawers_border_and_in_the_nav_otherwise, a_long_status_is_cut_on_the_border_and_whole_in_the_nav,
-  the_borders_words_fill_their_room_and_keep_their_marker}` (widths 46 to 200) and the native State fixture
+  the_borders_words_fill_their_room_and_keep_their_marker, the_words_on_the_border_take_the_room_from_the_title_beside_the_agent_pane}`
+  (widths 46 to 200; 56 to 70 with the focus on the agent pane) and the native State fixture
   `a_full_height_drawer_shrinks_only_for_an_answer_that_is_the_preview` (a refused post, a copy, a notify and the REPL's
   `Primary+l` leave the height; `Primary+o`, the picture's arrival after the drawer went full again, and `Primary+u`
-  end it, in a full and in a maximized drawer; a drawn preview is not said covered; a layout with no preview pane says
-  so).
+  end it, in a full and in a maximized drawer; a drawn preview is not said covered; in a layout with no preview pane a picture asked for leaves the full height and says it
+  cannot be shown, and the post key goes on as before).
 - Maximize follows focus, yields to a leave line without clearing, and leaves spatial navigation on the preset.
   Context-admitted restore peels maximize before gated wide restoration. Wide enable bounces only Llm; admitted
   agent reveal clears wide before focus/paste without dismissing prompts. Help resets browsing, saves only the first

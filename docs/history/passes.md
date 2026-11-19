@@ -2978,3 +2978,7 @@ the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the sa
     session's reading of the diff. The leak test's Windows readers use the daemon's own in-process snapshot in place
     of a whole-table PowerShell listing, which had run past 30 s twice on hosted Windows. One hosted Windows run of
     the change passed the test. Left as notes: the product's installer still lists the whole table on Windows.
+  - Round five's three notes on the full-height drawer, one commit by the same builder, read by the landing session:
+    a layout with no preview pane posts as it did before the status line's landing took that away, a picture opened
+    there no longer ends the full height, and beside the agent pane the drawer's title shrinks to its first word
+    where its whole length would cut the status words.

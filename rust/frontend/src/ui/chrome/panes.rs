@@ -167,11 +167,11 @@ impl State {
     /// returns to its height or leaves maximize. Decided by what is drawn, not by the layout state, so a layout whose full height leaves
     /// the preview in view keeps it. Words never come here: the status line is on the drawer's border.
     pub(in crate::ui) fn reveal_preview(&mut self) {
-        if self.preview_covered() { self.layout_help.uncover_preview(); }
+        if self.preview_covered() && self.preview_possible() { self.layout_help.uncover_preview(); }
     }
 
     /// Whether the layout has a preview pane to show: a preset with no preview column (the portrait preset has one)
-    /// can show nothing there, whatever ends covering it.
+    /// can show nothing there, so nothing is uncovered for it.
     pub(in crate::ui) fn preview_possible(&self) -> bool {
         let base = self.settings.resolve_preset(self.monitor_aspect);
         self.layout_help.effective_preset(base).columns.iter().any(|c| c.slot == crate::ui::persist::settings::Slot::Preview)

@@ -511,7 +511,24 @@ fn the_borders_words_fill_their_room_and_keep_their_marker() {
         let b = border(width, "copied chat text", PaneFocus::Repl);
         assert!(!b.contains("copi") || b.contains("copied chat text") || b.contains('…'), "{width} columns: {b}");
     }
-    assert!(!border(46, "copied chat text", PaneFocus::Repl).contains("copi"), "46 columns: no room for a word: {}", border(46, "copied chat text", PaneFocus::Repl));
+    assert!(!border(30, "copied chat text", PaneFocus::Repl).contains("copi"), "30 columns: no room for a word: {}", border(30, "copied chat text", PaneFocus::Repl));
+}
+
+/// With the focus on the agent pane the drawer's title keeps no room the words need: from 56 to 70 columns on the laptop
+/// preset, where the whole title left none, the words show beside a title cut to its first word; where the whole title
+/// leaves room for them whole, it stays whole.
+#[test]
+fn the_words_on_the_border_take_the_room_from_the_title_beside_the_agent_pane() {
+    let border = |width: u16| {
+        let frame = NavFrame { full: true, focus: Some(PaneFocus::Llm), ..NavFrame::default() };
+        let (rows, _, _, _, cells, ..) = paint_chrome_nav((width, 60), "copied chat text", Vec::new(), (String::new(), Vec::new(), 0, DrawerContent::Chat), None, frame);
+        rows[cells.y as usize - 1].split('┬').next().unwrap().to_string()
+    };
+    for width in [56, 62, 70] {
+        let b = border(width);
+        assert!(b.contains("copied chat text") && b.contains(" chat ") && !b.contains("reading"), "{width} columns: {b}");
+    }
+    assert!(border(90).contains("chat · C1 reading…") && border(90).contains("copied chat text"), "90 columns: {}", border(90));
 }
 
 #[test]
