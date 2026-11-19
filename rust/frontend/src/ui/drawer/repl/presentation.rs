@@ -317,7 +317,11 @@ pub(in crate::ui) fn input_lines(input: &str, pkg_mode: bool, focused: bool, col
         let cursor = Span::styled("\u{2588}", colors::cursor(pkg_mode));
         match rows.last_mut() {
             Some(last) if cols == 0 || last.width() < cols => last.spans.push(cursor),
-            _ => rows.push(RtLine::from(vec![Span::raw(" ".repeat(if pkg_mode { 5 } else { 7 })), cursor])),
+            _ => {
+                // Under the code; in a pane no wider than the prompt, in its last cell.
+                let hang = if pkg_mode { 5 } else { 7 };
+                rows.push(RtLine::from(vec![Span::raw(" ".repeat(hang.min(cols.saturating_sub(1)))), cursor]));
+            }
         }
     }
     rows
@@ -346,10 +350,7 @@ fn project_lines<I>(
         starts.push((entry.eval_id, out.len()));
         marks.push((out.len(), entry.eval_id, usize::MAX));
         if let Some(label) = &entry.origin {
-            out.push(RtLine::from(vec![Span::styled(
-                format!("⟨{}⟩", cell_row(label)),
-                colors::origin(),
-            )]));
+            out.extend(wrap::one(&format!("⟨{}⟩", cell_row(label)), colors::origin(), wrap.cols));
         } else {
             out.extend(wrap::code_rows(&entry.code, entry.pkg_mode, wrap.cols, colors::scrollback_prompt(entry.pkg_mode)));
         }
@@ -404,13 +405,8 @@ fn project_lines<I>(
                 }
                 ReplFrame::Done { .. } => {}
                 ReplFrame::Browser { url, .. } => {
-                    out.push(RtLine::from(vec![Span::styled(
-                        format!(
-                            "↗ interactive figure · {}",
-                            cell_row(&crate::browser_open::origin_of(url))
-                        ),
-                        colors::browser_link(),
-                    )]));
+                    let text = format!("↗ interactive figure · {}", cell_row(&crate::browser_open::origin_of(url)));
+                    out.extend(wrap::one(&text, colors::browser_link(), wrap.cols));
                 }
                 ReplFrame::Started { .. } => {}
                 ReplFrame::Lifecycle { .. } => {}
@@ -441,33 +437,21 @@ fn project_lines<I>(
                             out.push(RtLine::from(""));
                         }
                     } else {
-                        out.push(RtLine::from(vec![Span::styled(
-                            format!("[image · {} · {} bytes]", cell_row(mime), bytes),
-                            colors::image_note(),
-                        )]));
+                        let text = format!("[image · {} · {} bytes]", cell_row(mime), bytes);
+                        out.extend(wrap::one(&text, colors::image_note(), wrap.cols));
                     }
                 }
             }
         }
         if entry.in_flight {
             if repl_starting {
-                out.push(RtLine::from(vec![Span::styled(
-                    "(julia starting — precompiling this workspace's environment; \
-                     a first run can take minutes…)"
-                        .to_string(),
-                    colors::starting(),
-                )]));
+                let note = "(julia starting — precompiling this workspace's environment; a first run can take minutes…)";
+                out.extend(wrap::one(note, colors::starting(), wrap.cols));
             } else {
-                out.push(RtLine::from(vec![Span::styled(
-                    "(running…)".to_string(),
-                    colors::running(),
-                )]));
+                out.extend(wrap::one("(running…)", colors::running(), wrap.cols));
             }
         } else if entry.elapsed_ms > 0 {
-            out.push(RtLine::from(vec![Span::styled(
-                format!("  ({} ms)", entry.elapsed_ms),
-                colors::elapsed(),
-            )]));
+            out.extend(wrap::one(&format!("  ({} ms)", entry.elapsed_ms), colors::elapsed(), wrap.cols));
         }
     }
     (out, slots, starts, marks)

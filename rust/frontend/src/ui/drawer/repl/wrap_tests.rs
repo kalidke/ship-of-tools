@@ -89,3 +89,13 @@ fn a_cluster_is_never_cut_and_no_row_overfills_the_pane_as_it_is_drawn() {
 fn rows_of(text: &[&str], cols: usize) -> Rows {
     rows(&lines(text), Style::default(), cols, None, 0)
 }
+
+#[test]
+fn a_newline_in_a_line_with_wide_text_is_cut_not_a_panic() {
+    // No caller passes one (`cell_lines` ends rows at it), but the cut must not trust that: the segmentation skips a
+    // newline, so the offsets are read from the text itself.
+    for width in 1..=6 {
+        let pieces = cut("ab\ncd中ef", width, width);
+        assert_eq!(pieces.concat(), "ab\ncd中ef", "{width}");
+    }
+}

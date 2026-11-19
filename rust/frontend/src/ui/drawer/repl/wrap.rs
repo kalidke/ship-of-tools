@@ -27,14 +27,17 @@ fn cut(text: &str, first: usize, rest: usize) -> Vec<&str> {
             (start, limit) = (start + limit, rest);
         }
     } else {
-        let (span, mut at, mut used) = (Span::raw(text), 0, 0);
+        let (span, mut used) = (Span::raw(text), 0);
         for g in span.styled_graphemes(Style::default()) {
+            // The cluster's offset in `text`, read from where it points: the segmentation skips a newline, so adding up
+            // lengths would drift off a character boundary past one.
+            let at = g.symbol.as_ptr() as usize - text.as_ptr() as usize;
             let w = Span::raw(g.symbol).width();
             if used + w > limit && at > start {
                 out.push(&text[start..at]);
                 (start, used, limit) = (at, 0, rest);
             }
-            (at, used) = (at + g.symbol.len(), used + w);
+            used += w;
         }
     }
     out.push(&text[start..]);
@@ -60,6 +63,11 @@ pub(super) fn rows(lines: &[String], style: Style, cols: usize, prefix: Option<S
         }
     }
     (out, starts)
+}
+
+/// The rows of one line of text in one style, for a pane `cols` cells wide: the drawer's notes and markers.
+pub(super) fn one(text: &str, style: Style, cols: usize) -> Vec<RtLine<'static>> {
+    rows(&[text.to_string()], style, cols, None, 0).0
 }
 
 /// The prompt's rows of typed code: the prompt (in `prompt_style`) first, the code under it at the same column.

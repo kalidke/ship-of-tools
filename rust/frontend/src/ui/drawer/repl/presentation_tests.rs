@@ -865,3 +865,59 @@ fn a_row_switch_forgets_the_view_anchor_of_the_row_left() {
     owner.apply_effects(&super::super::ReplEffects { reset_build_anchor: true, ..Default::default() });
     assert!(owner.view_anchor.is_none());
 }
+
+/// Every row the drawer builds goes through the one cut: a log with one row of each kind, in a pane narrower than every
+/// one of them, draws no row wider than the pane and loses no text. The stack frame's row is the one named exception.
+#[test]
+fn every_kind_of_row_is_cut_by_the_one_wrap_and_loses_nothing() {
+    
+    let entry = |code: &str, frames: Vec<ReplFrame>| ReplEntry {
+        eval_id: 1, code: code.into(), frames, elapsed_ms: 0, in_flight: false, pkg_mode: false, origin: None,
+        own_frames: Vec::new(),
+    };
+    let origin = ReplEntry { origin: Some("session ▸ run /home/someone/analysis.jl".into()), ..entry("", vec![]) };
+    let elapsed = ReplEntry { elapsed_ms: 123_456, ..entry("1", vec![]) };
+    let running = ReplEntry { in_flight: true, ..entry("1", vec![]) };
+    let notice = ReplEntry {
+        own_frames: vec![0], ..entry("1", vec![ReplFrame::Stderr { text: "the connection is back, and this eval is still running".into() }])
+    };
+    let browser = ReplFrame::Browser { url: "http://127.0.0.1:54321/page".into(), open: false, fe: None };
+    let browser_text = format!("↗ interactive figure · {}", crate::browser_open::origin_of("http://127.0.0.1:54321/page"));
+    let image = ReplFrame::Image { mime: "image/png".into(), data_base64: String::new(), bytes: 12345 };
+    let kinds: Vec<(&str, ReplEntry, bool, String)> = vec![
+        ("origin marker", origin, false, "⟨session ▸ run /home/someone/analysis.jl⟩".into()),
+        ("typed code", entry("let a_long_name = 1 + 2", vec![]), false, "julia> let a_long_name = 1 + 2".into()),
+        ("stdout", entry("1", vec![ReplFrame::Stdout { text: "some long standard output".into() }]), false, "some long standard output".into()),
+        ("stderr", entry("1", vec![ReplFrame::Stderr { text: "some long error output".into() }]), false, "some long error output".into()),
+        ("value", entry("1", vec![ReplFrame::Value { mime: "text/plain".into(), text: "a long shown value".into() }]), false, "a long shown value".into()),
+        ("error message", entry("1", vec![ReplFrame::Error { message: "a long error message".into(), stacktrace: vec![] }]), false, "ERROR: a long error message".into()),
+        ("window's own note", notice, false, "the connection is back, and this eval is still running".into()),
+        ("browser link", entry("1", vec![browser]), false, browser_text),
+        ("image caption", entry("1", vec![image]), false, "[image · image/png · 12345 bytes]".into()),
+        ("starting note", running.clone(), true, "(julia starting — precompiling this workspace's environment; a first run can take minutes…)".into()),
+        ("running note", running, false, "(running…)".into()),
+        ("elapsed note", elapsed, false, "  (123456 ms)".into()),
+    ];
+    for (name, entry, starting, expected) in kinds {
+        let mut owner = Owner::default();
+        owner.set_cols(8);
+        let rows = text(&owner.build(&row("host", "row"), &[entry], starting, 8.0, 16.0, 0).0);
+        assert!(rows.iter().all(|r| Span::raw(r.clone()).width() <= 8), "{name}: a row is wider than the pane: {rows:?}");
+        let blob: String = rows.concat().chars().filter(|c| *c != ' ').collect();
+        let want: String = expected.chars().filter(|c| *c != ' ').collect();
+        assert!(blob.contains(&want), "{name}: text lost: {rows:?}");
+    }
+}
+
+#[test]
+fn the_cursor_stays_in_a_pane_no_wider_than_the_prompt() {
+    for cols in 1..=10 {
+        let rows = super::input_lines("", false, true, cols);
+        let last = rows.last().unwrap();
+        assert!(last.spans.last().unwrap().content == "\u{2588}", "{cols}: the last row ends in the cursor");
+        let before: usize = last.spans[..last.spans.len() - 1].iter().map(|s| s.width()).sum();
+        assert!(before < cols.max(8), "{cols}: the cursor sits inside the pane (or the prompt's own row): {before}");
+    }
+    let rows = super::input_lines("", false, true, 6);
+    assert_eq!(text(&rows), ["julia> ", "     █"], "a 6-cell pane: the cursor in its last cell");
+}

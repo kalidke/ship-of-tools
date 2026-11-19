@@ -42,9 +42,13 @@ so a new width needs one more frame, which it asks for). The cut is lossless and
 is cut at the edge, in the middle of a word (the drawer is a terminal's view, not the preview's text); a grapheme cluster (a flag,
 a family emoji, a letter with its marks) is never cut, and a cluster that does not fit starts the next row, a cluster wider than
 the pane still takes a row. Clusters and cells are measured as ratatui's buffer draws them (its segmentation and its
-`unicode-width` 0.2, through `Span`, not the frontend's own `unicode-width` 0.1, which three other places still use), so a row
-fills the pane exactly as far as it is drawn; with the pane no wider than the prompt (7 cells, 5 for `pkg> `), or an `ERROR: ` label,
-the width left is 0 and the line is not cut. Typed code's continuation rows sit under the code, an error's under its first column.
+`unicode-width` 0.2, through `Span`, not the frontend's own `unicode-width` 0.1, which eleven other files outside the REPL drawer
+still use: WIDTH-CRATE-TWO-VERSIONS), so a row fills the pane exactly as far as it is drawn; with the pane no wider than the prompt
+(7 cells, 5 for `pkg> `), or an `ERROR: ` label, the width left is 0 and that line is not cut, and the cursor, under the code, sits in
+the pane's last cell. Every row the drawer builds goes through the one cut (`wrap::rows`, or `wrap::one` for a line of one style):
+typed code, stdout, stderr, a value, an error's message, the window's own note, the origin marker of a run another session
+started, the browser link, the image caption, the starting, running and elapsed notes, and the live input; the figures' blank
+rows are empty; the one row that does not is a stack frame's. Typed code's continuation rows sit under the code, an error's under its first column.
 The line being typed wraps the same way (`presentation::input_lines`, drawn by `chrome/view.rs`): the prompt first, the rows under
 the code, the cursor block on the last row, on a row of its own under the code when that row is full; the input's height is its
 wrapped rows, up to the cap `drawer_layout` sets (the drawer's height less one row of scrollback), and past the cap its last rows
@@ -55,7 +59,9 @@ for the width and text length they were made for and dropped when the log no lon
 rebuilt every row of the whole log on every redraw (15 ms for 10,000 lines of 200 characters, a release build); a redraw that changes
 nothing now copies cached rows (1.7 ms; 3.2 to 3.5 ms for a log of many small frames), and a new width re-wraps the whole log once
 (17 ms for one frame of that size, 18 to 26 ms measured by the review on a loaded machine and for many frames, against 12.7 to 14.7 ms
-for the old redraw: a drag frame costs up to twice what every redraw cost before). A width of 0 (no drawer rect yet) keeps the last known width; before any, a
+for the old redraw: a drag frame costs up to twice what every redraw cost before, for ASCII lines; a line with one non-ASCII
+character is segmented by ratatui and costs 3 to 4 times as much, 54 to 61 ms for 10,000 lines of 200 characters, 4 to 5 times the
+old redraw, and nothing is cached across widths). A width of 0 (no drawer rect yet) keeps the last known width; before any, a
 frame is drawn unwrapped, as before, and the width's arrival moves nothing. What anchors a scrolled-up view: the source of its bottom
 row (eval, frame, logical line), kept at each build; a build for a new width finds that line's first row and scrolls to put it at the
 bottom, and any other change keeps the tail-growth pin. Limits: a stack frame's `at fn (file:line)` row is not wrapped and the pane
@@ -70,9 +76,12 @@ a_row_switch_forgets_the_view_anchor_of_the_row_left}`, `wrap::tests::{a_line_is
 a_wide_glyph_or_a_tab_at_the_edge_is_neither_split_nor_lost, width_zero_returns_the_text_whole,
 the_prefix_takes_the_first_row_and_the_hang_the_rest, a_frame_changing_nothing_is_not_wrapped_again,
 a_cluster_is_never_cut_and_no_row_overfills_the_pane_as_it_is_drawn}`, `chrome::view::tests::{the_live_input_wraps_at_the_drawers_width_and_keeps_its_cursor_in_view,
-the_cursor_takes_its_own_row_when_the_last_row_is_full, the_inputs_rows_count_wrapped_rows_and_are_capped}`; the `commit_layout`
-call in `monitor_drive.rs` is pinned as a call (a deleted call fails the layout test) and its argument, the cell rect's width,
-rests on reading.
+the_cursor_takes_its_own_row_when_the_last_row_is_full, the_inputs_rows_count_wrapped_rows_and_are_capped}`,
+`presentation::tests::{every_kind_of_row_is_cut_by_the_one_wrap_and_loses_nothing, the_cursor_stays_in_a_pane_no_wider_than_the_prompt}`,
+`wrap::tests::a_newline_in_a_line_with_wide_text_is_cut_not_a_panic`; the `commit_layout` call in `monitor_drive.rs`, in the one State
+method that has the cell rect, rests on reading: no test reaches it (State needs a display, and the native fixture
+`monitor_native_fixture_tests.rs` calls `layout_drawer_px` without asking what the presentation holds), so a deleted call or a
+width of 0 there fails nothing, while `the_layout_commit_carries_the_width_the_next_build_wraps_for` pins the owner's side of it.
 `input::FocusPrompts` owns window-wide focus, nav prompts, captured scale focus, stayed notice and quit hint.
 `input::LayoutHelp` owns drawer selection (the shown row's; each row's is parked in its view), maximize/wide flags, Help browsing, return origin and startup requests.
 `preview::requests::PreviewRequests` owns both request clocks, the fired preview target and its page transport, concept
