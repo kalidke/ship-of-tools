@@ -24,7 +24,9 @@ set -euo pipefail
 mk_wrapper() {
     local d="$1" codes="$2" owned="$3" pending="$4" apply="${5:-log}" prefix="$1/prefix" lib
     lib="$prefix/repo/current/scripts/lib"
-    mkdir -p "$d/stubs" "$d/home/.local/bin" "$d/home/.config/systemd/user" "$prefix/bin" "$prefix/updates" "$lib"
+    # The comm home exists, so the wrapper's comm refresh (a julia call, or a warning where julia is not on PATH) does
+    # nothing and says nothing: no case depends on the box's julia or comm install.
+    mkdir -p "$d/stubs" "$d/home/.local/bin" "$d/home/.config/systemd/user" "$prefix/bin" "$prefix/updates" "$lib" "$d/home/.sot-comm/bin"
     mk_stubs "$d/stubs"
     cat > "$d/stubs/systemctl" <<'SC'
 #!/bin/sh
@@ -119,7 +121,7 @@ standin_end() {  # <dir>: prints "<daemon> <decoy>"
 run_wrapper() {  # <dir>: sets WR_RC
     local d="$1"
     WR_RC=0
-    ( HOME="$d/home" PATH="$d/stubs:$TOOLS" STUB_LOG="$d/log" "$d/home/.local/bin/sot-launch" ) >/dev/null 2>&1 || WR_RC=$?
+    ( HOME="$d/home" SOT_COMM_HOME="$d/home/.sot-comm" PATH="$d/stubs:$TOOLS" STUB_LOG="$d/log" "$d/home/.local/bin/sot-launch" ) >/dev/null 2>&1 || WR_RC=$?
 }
 
 # ---------------------------------------------------------------------------
@@ -237,7 +239,7 @@ check "an apply that leaves the pointer re-execs nothing and spawns once" \
 run_as() {
     local d="$1" how="$2" l="${3:-$1/home/.local/bin/sot-launch}"
     WR_RC=0
-    local env=(env HOME="$d/home" PATH="$d/stubs:$TOOLS" STUB_LOG="$d/log")
+    local env=(env HOME="$d/home" SOT_COMM_HOME="$d/home/.sot-comm" PATH="$d/stubs:$TOOLS" STUB_LOG="$d/log")
     [ -z "${ICON_ENV:-}" ] || env=("${env[@]}" __CFBundleIdentifier="$ICON_ENV")
     case "$how" in
         null) "${env[@]}" "$l" >/dev/null 2>&1 || WR_RC=$? ;;

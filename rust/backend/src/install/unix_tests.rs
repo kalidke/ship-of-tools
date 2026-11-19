@@ -478,9 +478,10 @@ fn icon_bundle(root: &Path) -> (PathBuf, PathBuf, std::os::unix::net::UnixListen
         std::time::Duration::from_secs(30),
     );
     rendered.ok();
-    // The stand-in wrapper path: the account's folder is the test's own, then the rendered wrapper takes this process over.
+    // The stand-in wrapper path: the account's folder and its comm home (which exists, so the comm refresh does nothing and
+    // says nothing) are the test's own, whatever this process's environment holds, then the rendered wrapper takes this process over.
     let outer = root.join("sot-launch");
-    sot_platform::test_exec::write_executable(&outer, format!("#!/bin/sh\nHOME='{}'\nexport HOME\nexec '{}'\n", home.display(), inner.display()));
+    sot_platform::test_exec::write_executable(&outer, format!("#!/bin/sh\nHOME='{0}'\nSOT_COMM_HOME='{0}/.sot-comm'\nexport HOME SOT_COMM_HOME\nexec '{1}'\n", home.display(), inner.display()));
     let contents = root.join("Ship of Tools.app/Contents");
     std::fs::create_dir_all(contents.join("MacOS")).unwrap();
     let id = lib(&tree(), "sot_bundle_id", &[]).first_line();
