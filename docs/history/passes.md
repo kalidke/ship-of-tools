@@ -2929,3 +2929,14 @@ the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the sa
   - About three and three quarter hours from the word to the publish, where a cut of `main` as it stood would have
     taken about one: the log file, asked into the release at 07:00, took two hours with its two refuted shapes and
     two review rounds, and the tag's build 33 minutes against the 21 the release skill states.
+- After 0.7.2, 2026-11-19, the same conversation. The macOS 26 job of the Rust run on `main` at 11bc3b47f passed when
+  run again (56 of 56).
+  - The Windows launcher under a user name that holds a space (WIN-LAUNCHER-SPACE-ARGV), reported by the maintainer
+    at 11:06 with no more than that it did not work. Diagnosed by reading (to 11:32; no Windows computer and no
+    PowerShell on the hub): three `Start-Process` calls of `launch-sot.ps1` passed argument arrays, which Windows
+    PowerShell 5.1 joins unquoted. The diagnosis's diff applied by the session as two commits, the test case alone
+    and then the fix. Shown on a hosted Windows runner under Windows PowerShell 5.1 through a throwaway workflow on
+    two branches since deleted: the test alone red in its three new checks as predicted, 96 others green (run
+    44589123562); with the fix 99 of 99 (run 44589220459). Scoped gate passed 11:43. Reviewed by reading and by a
+    model of the Windows argument split (to 11:59): no blocker, one wording fix taken, eleven notes. No suite runs
+    the whole launcher under a profile whose name holds a space, and the person who reported it has not run the fix.
