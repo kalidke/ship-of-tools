@@ -239,7 +239,7 @@ case_each_outcome_has_its_words_and_exit_code() {
 {"outcome":"posted","ts":"1700000000.000100"}|0|posted 1700000000.000100
 {"outcome":"posted","ts":"1700000000.000100","unlinked":[{"name":"Zed","why":"no_member"},{"name":"channel","why":"channel_wide"},{"name":"cy","why":"later_reason"}]}|0|posted 1700000000.000100; not linked: @Zed (no member), @channel (a session never notifies a whole channel), @cy (not linked)
 {"outcome":"posted","ts":"1700000000.000100","mentioned":["Ada Example","Ben Sample"]}|0|posted 1700000000.000100; mentioned Ada Example, Ben Sample
-{"outcome":"posted","ts":"1700000000.000100","mentioned":["Ada Example"],"unlinked":[{"name":"Zed","why":"no_member"}]}|0|posted 1700000000.000100; mentioned Ada Example; not linked: @Zed (no member)
+{"outcome":"posted","ts":"1700000000.000100","mentioned":["Ada (Ann Dee)"],"unlinked":[{"name":"Zed","why":"no_member"}]}|0|posted 1700000000.000100; mentioned Ada (Ann Dee); not linked: @Zed (no member)
 {"outcome":"refused","code":"busy"}|2|refused busy the chat is busy; try again in a moment
 {"outcome":"refused","code":"bad_request"}|2|refused bad_request the request is not valid (empty or over-long text, or a name that is not this session's)
 {"outcome":"limited","retry_after_secs":12,"assumed":false}|2|limited, wait 12 s

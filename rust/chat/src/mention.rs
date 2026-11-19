@@ -20,6 +20,8 @@ const CHANNEL_WIDE: [(&str, &str); 3] = [("channel", "<!channel>"), ("here", "<!
 pub(crate) struct Member {
     id: String,
     shown: String,
+    /// What the reply's `mentioned` says of them: `display (real)` when both exist and differ ignoring case, else `shown`.
+    told: String,
     keys: Vec<(String, bool)>,
 }
 
@@ -35,9 +37,13 @@ impl Member {
         };
         let (display, real) = (field(raw.get("profile"), "display_name"), field(raw.get("profile"), "real_name"));
         let shown = display.clone().or_else(|| real.clone()).or_else(|| field(Some(raw), "name"))?;
+        let told = match (&display, &real) {
+            (Some(d), Some(r)) if d.to_lowercase() != r.to_lowercase() => clean(&format!("{d} ({r})"), MAX_NAME).0,
+            _ => shown.clone(),
+        };
         let first = real.as_deref().and_then(|r| r.split_once(char::is_whitespace)).map(|(f, _)| (f.to_string(), false));
         let whole = [display, real].into_iter().flatten().map(|k| (k, true));
-        Some(Member { id: id.into(), shown, keys: whole.chain(first).collect() })
+        Some(Member { id: id.into(), shown, told, keys: whole.chain(first).collect() })
     }
 }
 
@@ -73,9 +79,9 @@ pub(crate) const MAX_READ: usize = 50;
 pub(crate) struct Linked {
     pub(crate) text: String,
     pub(crate) unlinked: Vec<ChatUnlinked>,
-    /// Each member linked, as `(id, shown name)`, in the text's order: the name cache's, and the reply's `mentioned`.
+    /// Each member linked, as `(id, shown name)`, for the name cache.
     pub(crate) linked: Vec<(String, String)>,
-    /// The names Slack shows for the members linked, in the text's order, at most `MAX_MENTIONS` (an empty last name: more).
+    /// The members linked, in the text's order, each as its `told` name, at most `MAX_MENTIONS` (an empty last name: more).
     pub(crate) mentioned: Vec<String>,
     /// A name reached the member list: `members` mattered.
     pub(crate) wanted: bool,
@@ -117,6 +123,7 @@ pub(crate) fn link(text: &str, kind: PostKind, members: Result<&Index, ChatUnlin
                 match matched(rest, index) {
                     Found::One(one, len) => {
                         l.linked.push((one.id.clone(), one.shown.clone()));
+                        l.mentioned.push(one.told.clone());
                         (len, format!("<@{}>", one.id))
                     }
                     Found::Nobody => {
@@ -142,6 +149,7 @@ pub(crate) fn link(text: &str, kind: PostKind, members: Result<&Index, ChatUnlin
     if l.text.len() > room {
         l.text = escape_text(text);
         l.linked.clear();
+        l.mentioned.clear();
         let reverted = made.into_iter().map(|name| unlinked(name, ChatUnlinkedWhy::TooLong));
         l.unlinked = reverted.chain(std::mem::take(&mut l.unlinked)).collect();
     }
@@ -151,8 +159,8 @@ pub(crate) fn link(text: &str, kind: PostKind, members: Result<&Index, ChatUnlin
         l.unlinked.truncate(MAX_MENTIONS - 1);
         l.unlinked.push(unlinked("", ChatUnlinkedWhy::More));
     }
-    l.mentioned = l.linked.iter().take(MAX_MENTIONS).map(|(_, shown)| shown.clone()).collect();
-    if l.linked.len() > MAX_MENTIONS {
+    if l.mentioned.len() > MAX_MENTIONS {
+        l.mentioned.truncate(MAX_MENTIONS);
         l.mentioned[MAX_MENTIONS - 1] = String::new();
     }
     l

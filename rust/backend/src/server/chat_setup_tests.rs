@@ -1124,7 +1124,7 @@ fn two_workspaces_from_nothing_each_project_reads_and_posts_in_its_own() {
         let posted = conn.ask(13, op::CHAT_POST, json!({"target": tb, "kind": "person", "name": "tester", "text": "hello @Ben and @Ada"})).await;
         assert_eq!(posted["outcome"], "posted", "{posted}");
         assert_eq!(posted["unlinked"], json!([{"name": "Ada", "why": "no_member"}]), "{posted}");
-        assert_eq!(posted["mentioned"], json!(["Ben"]), "{posted}");
+        assert_eq!(posted["mentioned"], json!(["Ben (Ben Sample)"]), "{posted}");
         let sent: Vec<_> = w.teams.fake().seen().into_iter().filter(|s| s.path().ends_with("/chat.postMessage")).collect();
         assert_eq!(sent.len(), 1);
         assert_eq!(sent[0].authorization.as_deref(), Some(&*format!("Bearer {}", w.teams.user(B))));

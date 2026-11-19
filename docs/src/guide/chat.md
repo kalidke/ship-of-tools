@@ -148,7 +148,8 @@ they have none), their full name, or just their first name, in any capitals. For
 picked them in Slack's own list.
 
 After the post, the status line says whom it mentioned, so you can see at once that it reached the right person:
-`posted; mentioned Ada Example`.
+`posted; mentioned Ada Example`. A member whose display name differs from their full name is shown with both, the full
+name in parentheses: `posted; mentioned Ada (Ann Dee)`.
 
 A comma, a period, a hyphen or `'s` may follow the name, and `_`, `*` or `~` may surround it (`_@Ada_`). Nothing is
 looked up inside `` `code` ``, a fenced code block, a line that starts with `>`, or an address such as
@@ -170,8 +171,8 @@ Some mistakes the rule cannot catch, which the `mentioned` names on the status l
   `@Ada Lovelace`, with only Ada Example in the workspace, says `mentioned Ada Example` and leaves `Lovelace` as text.
 - A word after the name that completes another member's name mentions that member: `@Ben sample size`, with a member
   `Ben Sample`, mentions Ben Sample.
-- A member shown as just `Ada` takes `@Ada` from a member shown as `Ada Example`, and the status line then says
-  `mentioned Ada`.
+- A member shown as just `Ada` takes `@Ada` from a member shown as `Ada Example`; the status line then names the
+  member it reached by both names, for example `mentioned Ada (Ann Dee)`.
 - Ship of Tools reads the workspace's member list again at most every 10 minutes, so for a few minutes after someone
   joins or changes their name, the old names still apply.
 

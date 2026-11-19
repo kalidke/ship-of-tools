@@ -768,14 +768,14 @@ fn a_post_made_names_whom_it_mentioned_and_what_was_not_linked() {
         entry("Ben", ChatUnlinkedWhy::SeveralMembers, &["Ben Smith", "Ben Sample"]),
         entry("Cy", ChatUnlinkedWhy::SeveralMembers, &["Cy One", "Cy Two", "Cy Three", "Cy Four", ""]),
     ];
-    let mentioned = vec!["Ada Example".to_string(), "Ben Sample".to_string()];
+    let mentioned = vec!["Ada (Ann Dee)".to_string(), "Ben Sample".to_string()];
     d.edit(Some(&r), Edit::Text("hi @Ada, @Ben Sample, @Zed, @Ben and @Cy")).unwrap();
     let req = posted(d.send(Some(&r), Some("Ada"), at).unwrap());
     reply(&mut d, &req, ChatReply::Done(ChatPostRes::Posted { ts: ts.clone(), unlinked, mentioned }), at);
     assert_eq!(d.draft(), None, "a post made clears its draft");
     assert_eq!(
         d.take_notice().as_deref(),
-        Some("posted; mentioned Ada Example, Ben Sample; not linked: @Zed (no member), @Ben (several members: Ben Smith, Ben Sample), @Cy (several members: Cy One, Cy Two, Cy Three, Cy Four, and more)")
+        Some("posted; mentioned Ada (Ann Dee), Ben Sample; not linked: @Zed (no member), @Ben (several members: Ben Smith, Ben Sample), @Cy (several members: Cy One, Cy Two, Cy Three, Cy Four, and more)")
     );
     d.edit(Some(&r), Edit::Text("hi")).unwrap();
     let req = posted(d.send(Some(&r), Some("Ada"), at).unwrap());

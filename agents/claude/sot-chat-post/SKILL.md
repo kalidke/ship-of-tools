@@ -76,8 +76,9 @@ backquotes or a code block, on a line that starts with `>`, or in an address lik
 Slack's own markup (`<@U123>`, `<!channel>`): it arrives as literal text.
 
 The output says whom the post mentioned and which names stayed text:
-`posted <ts>; mentioned Ada Example; not linked: @Zed (no member), @Ben (several members: Ben Smith, Ben Sample)`.
-Read the `mentioned` names back to the person every time, so they can see it reached the people they meant: a first
+`posted <ts>; mentioned Ada (Ann Dee); not linked: @Zed (no member), @Ben (several members: Ben Smith, Ben Sample)`.
+A member whose display name differs from their full name is named `display (full name)`. Read the `mentioned` names back
+to the person every time, so they can see it reached the people they meant: a first
 name can reach the only member who has it even when the person meant someone else. The reasons a name stays text are
 `no member`, `several members` (the members it could be follow; the full name tells them apart), `the member list could
 not be read`, `the member list is too large` and `the post would be too long`; `and more` ends a list longer than the

@@ -163,7 +163,7 @@ fn a_name_that_extends_another_by_punctuation_never_takes_the_mention() {
     assert_eq!(link("@Ada- thanks", ROW, Ok(&index(&ada)), MAX_TEXT).text, "<@U0ADA>- thanks");
     // The stated limit: a name that is another's and a further word takes the mention typed with that word, and says so.
     let l = link("@Ada please review", PERSON, Ok(&index(&people)), MAX_TEXT);
-    assert_eq!((l.text.as_str(), l.mentioned.as_slice()), ("<@U0MAL> review", ["Ada please".to_string()].as_slice()));
+    assert_eq!((l.text.as_str(), l.mentioned.as_slice()), ("<@U0MAL> review", ["Ada please (Mal Lory)".to_string()].as_slice()));
 }
 
 /// Every text of up to four tokens over a small alphabet of names, joiners and words, for a person and a row: each mention
@@ -206,7 +206,7 @@ fn every_mention_made_is_to_a_member_one_of_whose_names_is_spelled_there() {
                 let fits = |len: usize| if last { &typed[len..] == following } else { typed[len..].starts_with(following) };
                 let len = member.keys.iter().filter_map(|(k, _)| spelled(typed, k)).filter(|&len| fits(len)).max();
                 let len = len.unwrap_or_else(|| panic!("{text:?} -> {sent}: no name of {} is spelled there", member.id));
-                shown.push(member.shown.clone());
+                shown.push(member.told.clone());
                 (inp, out) = (&typed[len..], after);
                 made += 1;
             }
@@ -215,6 +215,25 @@ fn every_mention_made_is_to_a_member_one_of_whose_names_is_spelled_there() {
         }
     }
     assert!(texts.len() > 30_000 && made > 10_000, "{} texts, {made} mentions", texts.len());
+}
+
+/// `mentioned` shows a member whose display name and real name both exist and differ, ignoring case, as `display (real)`,
+/// so a display name that is another member's first name does not hide whom a post reached; otherwise the one name, and
+/// the whole entry within `MAX_NAME`.
+#[test]
+fn mentioned_shows_the_real_name_beside_a_display_name_that_differs() {
+    let long = "x".repeat(158);
+    let people = [
+        Members::person("U0ADA", "Ada", "Ann Dee"),
+        Members::person("U0BEN", "ben sample", "Ben Sample"),
+        Members::person("U0CY", "", "Cy One"),
+        Members::person("U0DEE", "Dee", ""),
+        Members::person("U0LONG", "Long", &long),
+    ];
+    let l = link("@Ada @Ben Sample @Cy One @Dee @Long", ROW, Ok(&index(&people)), MAX_TEXT);
+    let cut = format!("Long ({long}");
+    let cut = &cut[..sot_protocol::chat::MAX_NAME];
+    assert_eq!(l.mentioned, ["Ada (Ann Dee)", "ben sample", "Cy One", "Dee", cut]);
 }
 
 /// A combining mark is part of the word it follows: `Ada` and a decomposed accent is not Ada.
@@ -349,7 +368,7 @@ fn the_names_left_as_text_are_at_most_max_mentions_and_each_once() {
     assert_eq!(names(&l).last(), Some(&("", More)), "the names past the cap are one `more` entry, never silence");
     // Past sixteen mentions, the last name told is empty: and more.
     let l = linked(&"@Ada ".repeat(17), ROW);
-    assert_eq!((l.mentioned.len(), l.mentioned[0].as_str(), l.mentioned[15].as_str()), (16, "Ada", ""));
+    assert_eq!((l.mentioned.len(), l.mentioned[0].as_str(), l.mentioned[15].as_str()), (16, "Ada (Ada Example)", ""));
     // Exactly the cap: every name, no `more`.
     let typed: String = (0..16).map(|n| format!("@z{n} ")).collect();
     assert!(names(&linked(&typed, ROW)).iter().all(|(_, why)| *why == NoMember));
@@ -419,7 +438,7 @@ async fn a_person_and_a_row_mention_in_a_channel_and_a_thread() {
         let fake = fake_with(people(), None).await;
         let api = api(&fake);
         let (outcome, Told { unlinked, mentioned }) = api.post_linked("C0CHAN", None, PERSON, "", "hi @Ada & @Zed").await.unwrap();
-        assert_eq!(mentioned, ["Ada"], "the members mentioned, by the name Slack shows");
+        assert_eq!(mentioned, ["Ada (Ada Example)"], "the members mentioned, by the display name and the real name");
         assert!(posted(&outcome), "{outcome:?}");
         assert_eq!(unlinked.iter().map(|u| (u.name.as_str(), u.why)).collect::<Vec<_>>(), [("Zed", NoMember)]);
         let (outcome, Told { unlinked, .. }) = api.post_linked("C0CHAN", Some("1700000100.000000"), ROW, "alpha-h", "@Ben Sample see").await.unwrap();
