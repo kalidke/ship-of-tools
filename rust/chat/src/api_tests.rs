@@ -926,6 +926,8 @@ async fn slow_mentions() -> FakeSlack {
 async fn fill_names_looks_up_authors_before_mentions() {
     bounded(async {
         let fake = slow_mentions().await;
+        // One names deadline covers the whole lookup group by design, so the author's own (answered) lookup must finish
+        // inside it: a lookup takes about 44 ms here, and 1 s leaves 20 times that.
         let api = new_api(&fake).with_deadlines(Duration::from_secs(20), Duration::from_secs(20), Duration::from_millis(1000));
         let mut records = vec![member_record("U0AUTH")];
         records[0].text = mentions(5);
@@ -1236,6 +1238,8 @@ async fn a_channel_mention_without_a_label_is_looked_up_once() {
             Reply::json(&json!({"ok": true, "user": {"profile": {"display_name": format!("Name-{user}")}}}))
         })
         .await;
+        // As above: the group's one deadline covers the answered author and person lookups (two round trips) and the
+        // hung channel lookups.
         let api = new_api(&fake).with_deadlines(Duration::from_secs(20), Duration::from_secs(20), Duration::from_millis(1000));
         let mut records = vec![member_record("U0AUTH")];
         records[0].text = "<#C0AAA> <@U0ONE> <#C0BBB>".into();
@@ -2336,12 +2340,18 @@ async fn only_the_share_can_be_unknown() {
             assert!(matches!(got, Ok(FileOutcome::Refused(_))), "{before_the_share}: {got:?}");
         }
         for before_the_share in ["hang1", "hang2"] {
+            let start = Instant::now();
             assert_eq!(post(before_the_share).await, Ok(FileOutcome::Refused("timeout".into())), "{before_the_share}");
+            // Ended at its own step's 300 ms, not at the 10 s of a step that was not meant to hang.
+            assert!(start.elapsed() < Duration::from_secs(5), "{before_the_share} ended at {:?}", start.elapsed());
         }
+        assert!(fake.seen().iter().any(|s| s.path() == "/upload/hang2"), "hang2 timed out at the upload, not before it");
         assert_eq!(shared(&fake), 0, "no share is sent after a failure before it");
 
         for at_the_share in ["drop3", "hang3", "five", "noid"] {
+            let start = Instant::now();
             assert_eq!(post(at_the_share).await, Ok(FileOutcome::Unknown), "{at_the_share}");
+            assert!(start.elapsed() < Duration::from_secs(5), "{at_the_share} ended at {:?}", start.elapsed());
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
         assert_eq!(shared(&fake), 4, "each share sent once, never again");

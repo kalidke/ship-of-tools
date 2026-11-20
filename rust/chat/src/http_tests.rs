@@ -460,7 +460,8 @@ async fn chat_secrets_stay_inside_daemon_boundaries() {
             ("hang", HttpError::Timeout),
         ];
         for (kind, error) in cases {
-            let request = Request::get(fake.url("files.slack.com", &tail(kind)), SHORT).bearer(bearer());
+            // The short bound is only for the request that hangs; an answered one is not cut by a slow computer.
+            let request = Request::get(fake.url("files.slack.com", &tail(kind)), if kind == "hang" { SHORT } else { LONG }).bearer(bearer());
             note(format!("{request:?}"));
             let got = http.send(request).await;
             assert_eq!(got.as_ref().unwrap_err(), &error, "{kind}");
@@ -468,7 +469,7 @@ async fn chat_secrets_stay_inside_daemon_boundaries() {
             note(got.unwrap_err().to_string());
         }
         // A transport error: an unknown name; a TLS error: the rogue identity; a credential that is no header value.
-        let request = Request::get(private(&fake, "unlisted.slack.com"), SHORT).bearer(bearer());
+        let request = Request::get(private(&fake, "unlisted.slack.com"), LONG).bearer(bearer());
         let got = http.send(request).await.unwrap_err();
         assert_eq!(got, HttpError::Connect);
         note(format!("{got} {got:?}"));

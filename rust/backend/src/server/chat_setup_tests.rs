@@ -2137,7 +2137,9 @@ async fn a_connect_replies_before_its_mapped_channels_are_read() {
 /// was read and is readable.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_reads_of_the_channels_an_app_cannot_read_end_at_their_bound() {
-    let wait = std::time::Duration::from_millis(400);
+    // One wait covers every read of the connect by design, so the answered read of the other channel must finish inside
+    // it (a read takes about 44 ms here): 1 s leaves it 20 times that.
+    let wait = std::time::Duration::from_secs(1);
     let cases = [(PUBLIC, None, Some(json!([{"id": PRIVATE, "name": "lab-private"}]))), (PRIVATE, None, None), (PRIVATE, Some(429), None)];
     for (stall, status, told) in cases {
         let (fake, _, stalled) = two_apps().await;

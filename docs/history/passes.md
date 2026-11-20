@@ -3073,5 +3073,8 @@ the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the sa
     test-only. One builder. A file-post test gave every step a 300 ms deadline so its hang cases would end fast, and
     a step that hangs nowhere timed out; a mail test restored an unreadable inbox in two calls, and an absent inbox
     reads as empty in between. Each short deadline is now on the one step its case hangs at, and the unreadable
-    inbox is a second one that a single removal makes readable. The same two assumptions were searched for in every
-    crate's tests: three more deadlines were widened.
+    inbox is restored while a second unreadable one keeps every read failing, and one removal ends both. The class was
+    searched in the chat tests of the chat crate and the daemon (every deadline or wait under 2 s, each judged by
+    whether an answered step shares it) and a review's forcing found two the first search missed; the fe-net,
+    capsule and platform tests were read by grep only, and no site of the same shape was found there. Four sites
+    are widened to 1 s and not freed of the clock, since one deadline covers the hung and the answered steps.
