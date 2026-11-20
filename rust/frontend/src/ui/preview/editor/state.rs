@@ -62,13 +62,14 @@ pub(in crate::ui) struct EditState {
     goal: Option<f32>,
 }
 
-/// Everything the shaped text is made of besides the body's text: the selection's tint cuts the body's spans and
-/// the footer's words follow the selection, the unsaved edits and the banners. A key that leaves all of it as it
-/// was, a motion with no selection before or after, leaves the shaped text as it is, and the bar moves over it.
+/// Everything the shaped text is made of besides the body's text: the footer's words, which follow whether there is
+/// a selection, the unsaved edits and the banners. The selection itself is not in the text (the window draws it as
+/// bands under the rows, `Editor::selection_bands`), so a key that leaves all of this as it was, a motion or a
+/// selection that grows or shrinks, leaves the shaped text as it is, and the bar and the bands move over it.
 #[derive(Clone, Copy, PartialEq)]
 struct Drawn {
     rev: u64,
-    selection: Option<(usize, usize)>,
+    selecting: bool,
     dirty: bool,
     stale: bool,
     confirm: bool,
@@ -76,8 +77,8 @@ struct Drawn {
 
 impl EditState {
     fn drawn(&self) -> Drawn {
-        Drawn { rev: self.buf.rev(), selection: self.buf.selection_range(), dirty: self.is_dirty(), stale: self.stale_banner,
-            confirm: self.confirm_discard }
+        Drawn { rev: self.buf.rev(), selecting: self.buf.selection_range().is_some(), dirty: self.is_dirty(),
+            stale: self.stale_banner, confirm: self.confirm_discard }
     }
 
     fn is_dirty(&self) -> bool {
@@ -119,10 +120,10 @@ impl EditState {
     ///   - editable body
     ///   - blank line + status footer ("modified" if dirty; modal
     ///     prompt when `confirm_discard` is up)
-    fn spans(&self, bindings: &KeyBindings) -> Vec<(String, bool)> {
-        // Compose styled spans: header, body (optional selection tint), footer. Concatenated text is what renders; the
-        // `bool` flags the selected run so `new_plain_spans` tints it.
-        let mut spans: Vec<(String, bool)> = Vec::new();
+    fn spans(&self, bindings: &KeyBindings) -> Vec<String> {
+        // The cursor and the selection are not in the text: the window draws them over the shaped rows
+        // (`Editor::cursor_place`, `Editor::selection_bands`), so the rows on screen are the body's own.
+        let mut spans: Vec<String> = Vec::new();
         if let Some(header) = &self.header {
             let mut h = String::new();
             for line in header.lines() {
@@ -131,46 +132,31 @@ impl EditState {
                 h.push('\n');
             }
             h.push('\n');
-            spans.push((h, false));
+            spans.push(h);
         }
-        let body = self.buf.body();
-        let has_sel = self.buf.selection_range().is_some();
-        match self.buf.selection_range() {
-            // Tint the selected run amber. The cursor is not in the text: the window draws it over the shaped rows
-            // (`Editor::cursor_place`), so the rows on screen are the body's own.
-            Some((a, b)) => {
-                spans.push((body[..a].to_string(), false));
-                spans.push((body[a..b].to_string(), true));
-                spans.push((body[b..].to_string(), false));
-            }
-            None => spans.push((body.to_string(), false)),
-        }
-        // Footer: blank line + status. Modal overrides everything — when the
-        // user is confirming, that's the only thing they should read.
-        // Priority: stale > discard-confirm > selection > modified > clean.
-        let mut footer = String::from("\n\n");
-        if self.stale_banner {
-            footer.push_str(&format!(
-                "── STALE: file changed on disk. {} reload (discard edits) · {} keep editing ──",
-                bindings.labels(Action::StaleReload), bindings.labels(Action::StaleKeep)));
-
-        } else if self.confirm_discard {
-            footer.push_str(&format!(
-                "── DISCARD UNSAVED EDITS? {} discard · another key keeps editing ──",
-                bindings.labels(Action::DiscardConfirm)));
-
-        } else if has_sel {
-            footer.push_str(&format!("── edit mode · selection · {} copy · {} cut · {} save ──",
-                bindings.first_label(Action::EditCopy), bindings.first_label(Action::EditCut), bindings.first_label(Action::EditSave)));
-        } else if self.is_dirty() {
-            footer.push_str(&format!("── edit mode · modified · {} save · {} discard ──",
-                bindings.first_label(Action::EditSave), bindings.first_label(Action::Cancel)));
-        } else {
-            footer.push_str(&format!("── edit mode · clean · {} save · {} exit ──",
-                bindings.first_label(Action::EditSave), bindings.first_label(Action::Cancel)));
-        }
-        spans.push((footer, false));
+        spans.push(self.buf.body().to_string());
+        spans.push(format!("\n\n{}", self.footer(bindings)));
         spans
+    }
+
+    /// The footer's words, the last line the edit draws (a blank line above it). The prompt overrides everything: when
+    /// the person is confirming, that is the only thing they should read. Priority: stale, discard prompt, selection,
+    /// modified, clean.
+    fn footer(&self, bindings: &KeyBindings) -> String {
+        if self.stale_banner {
+            format!("── STALE: file changed on disk. {} reload (discard edits) · {} keep editing ──",
+                bindings.labels(Action::StaleReload), bindings.labels(Action::StaleKeep))
+        } else if self.confirm_discard {
+            format!("── DISCARD UNSAVED EDITS? {} discard · another key keeps editing ──", bindings.labels(Action::DiscardConfirm))
+        } else if self.buf.selection_range().is_some() {
+            format!("── edit mode · selection · {} copy · {} cut · {} save ──",
+                bindings.first_label(Action::EditCopy), bindings.first_label(Action::EditCut), bindings.first_label(Action::EditSave))
+        } else if self.is_dirty() {
+            format!("── edit mode · modified · {} save · {} discard ──",
+                bindings.first_label(Action::EditSave), bindings.first_label(Action::Cancel))
+        } else {
+            format!("── edit mode · clean · {} save · {} exit ──", bindings.first_label(Action::EditSave), bindings.first_label(Action::Cancel))
+        }
     }
 }
 
@@ -353,7 +339,7 @@ impl Editor {
     /// Re-shape the buffer from the edit through `shape`, which is given the edit's spans; without an edit the
     /// shaped buffer goes.
     pub(in crate::ui) fn reshape(
-        &mut self, bindings: &KeyBindings, shape: impl FnOnce(&[(String, bool)]) -> MarkdownPreview,
+        &mut self, bindings: &KeyBindings, shape: impl FnOnce(&[String]) -> MarkdownPreview,
     ) {
         self.shaped = self.edit.as_ref().map(|edit| shape(&edit.spans(bindings)));
         self.index = self.edit.as_ref().zip(self.shaped.as_ref())
@@ -425,6 +411,14 @@ impl Editor {
     pub(in crate::ui) fn cursor_place(&self) -> Option<rows::Place> {
         let (edit, (shaped, index)) = (self.edit.as_ref()?, self.view()?);
         rows::place(&shaped.buffer, index, edit.buf.body(), edit.buf.rev(), edit.buf.cursor())
+    }
+
+    /// The selection as bands, `(x, top, w, h)` px in the shaped buffer's layout, on the rows whose tops are in
+    /// `y0..y1` (`rows::selection`); none without one, or where the buffer is not the edit's text.
+    pub(in crate::ui) fn selection_bands(&self, y0: f32, y1: f32) -> Vec<(f32, f32, f32, f32)> {
+        let Some((edit, (shaped, index))) = self.edit.as_ref().zip(self.view()) else { return Vec::new() };
+        let Some(range) = edit.buf.selection_range() else { return Vec::new() };
+        rows::selection(&shaped.buffer, index, edit.buf.body(), edit.buf.rev(), range, (y0, y1))
     }
 
     /// Scroll `view` just far enough to show the row the cursor is on, in a pane `visible_px` tall; a cursor already

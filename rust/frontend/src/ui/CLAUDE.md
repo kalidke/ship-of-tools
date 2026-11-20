@@ -361,9 +361,8 @@ The remaining concepts below still reach shared fields through `impl State` bloc
     splitting. A CRLF is one position: the buffer's motions (Left, Right, Home, End, Up, Down, the page keys, a
     landing from `rows::vertical`) and its removals (Backspace and Delete take both characters; a removal that brings
     a CR and an LF together leaves the cursor before the pair) never leave the cursor or a selection edge between the
-    `\r` and the `\n`, and End stops before the `\r`; so the spans of the drawn text (header, the body cut at the
-    selection's edges, footer) are never cut inside a line end, which the shaper would show as a line the file does
-    not have. Undo and redo restore a cursor that was live in the restored body, so they need no such step.
+    `\r` and the `\n`, and End stops before the `\r`; so no selection edge stands inside a line end. Undo and redo
+    restore a cursor that was live in the restored body, so they need no such step.
   - The index and the place. The rows are read through one `rows::Index`, built when the buffer is shaped
     (`Editor::reshape`) or laid out again (`Editor::relayout`) and never by a key, a frame, the follow or the bar. It
     is of one body, named by its revision (`EditBuffer::rev`, a number no buffer has had, taken again at every change
@@ -387,11 +386,23 @@ The remaining concepts below still reach shared fields through `impl State` bloc
     holds right-to-left text, or the shaped buffer is not the body's text, that one step is the file's line (a Hebrew
     word on a row sends the steps onto and off it to the file's next line; the rest of the file is unaffected; the bar
     is still drawn there). Home and End stay on the file's line.
+  - The selection. It is not in the shaped text (`EditState::spans` is the header, the body and the footer, every line
+    in the default color): the render pass draws it as bands under the glyphs in the brush the preview's and the
+    agent pane's selections use (`Solid::SelectionBg`, in `paint_text_selections`, before the bar), from the rows of
+    the index (`rows::selection`, through `Editor::selection_bands` and `State::edit_selection_rects`, which read only
+    the rows in view). On each row a band covers each run of selected glyphs side by side (a glyph is selected where
+    any of its bytes is; a row that mixes directions can have two), and a line whose end is selected has a band half
+    an em wide after its last glyph (before its first on a right-to-left line), so a selected empty line shows; a
+    selection that ends at a line end has none for it; the space a wrap drops has no glyph and no band. Each band is
+    clipped vertically as the bar is and cut at the pane's left and right edges (`rows::band`). The copied text and
+    the selection's range rules are the buffer's (`EditBuffer::selection_range`). The bar is in the same brush, so at
+    the selection's moving edge it reads as the band's edge.
   - What a key re-shapes. After a key the window re-shapes only when the shaped text is no longer what the edit draws
-    (`Editor::needs_reshape`: the body's revision, the selection's range, the unsaved edits and the banners, which
-    cut the spans and change the footer): a motion with no selection before or after, the keys held for scrolling a
-    file, changes none of them, so the bar moves over the same text and nothing is shaped. A selection that changes,
-    and every edit, re-shape the whole file (limits below). The decision is in one place: `apply_editor_outcome` (what
+    (`Editor::needs_reshape`: the body's revision, whether there is a selection, the unsaved edits and the banners,
+    which change the footer's words): a motion, and a selection that grows or shrinks, the keys held for scrolling a
+    file or for selecting, change none of them, so the bar and the bands move over the same text and nothing is
+    shaped. A selection that begins or ends changes the footer, and every edit changes the text: those re-shape the
+    whole file (limits below). The decision is in one place: `apply_editor_outcome` (what
     the window does for an outcome) re-shapes if owed after every outcome alike, the landed save's reply does too
     (the footer then says clean), and the frame checks again before it draws, so the discard prompt's raising and
     dismissal, the stale banner and a save each reach the screen at the next frame. A pane with no width (a
@@ -434,7 +445,11 @@ The remaining concepts below still reach shared fields through `impl State` bloc
     `the_row_list_is_built_once_per_shaping_and_not_by_a_key_a_frame_or_a_follow`,
     `a_new_pane_width_lays_the_buffer_out_again_and_the_rows_are_those_of_a_fresh_shaping`,
     `the_edit_buffer_fits_a_pane_by_width_by_scale_or_not_at_all`,
-    `a_motion_with_no_selection_owes_no_reshape_and_a_selection_or_an_edit_does`,
+    `a_motion_with_no_selection_owes_no_reshape_and_a_selection_or_an_edit_does`. The selection:
+    `the_selection_is_drawn_as_bands_under_its_text_on_every_row_it_spans` (the rest of a line and its end, an empty
+    line, the rows of a wrapped paragraph whole and in part, a selection ending at a line end, a right-to-left word,
+    only the rows asked for, and no color in the shaped text) and `a_selection_band_is_clipped_as_the_text_is`. The
+    re-shapes:
     `a_landed_save_changes_the_footer_and_owes_a_reshape`,
     `escape_on_an_edited_buffer_draws_the_discard_prompt_and_any_other_key_takes_it_down` (through `Editor::press`, the
     key's own path under a key event) and `a_pane_with_no_width_is_not_shaped_for_and_is_when_it_returns`. Lines and CRLF:
@@ -476,12 +491,10 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   - Limits. The tests press through `edit_buffer_key` because a winit `KeyEvent` cannot be built outside the event
     loop, so `Editor::key`'s hand-off, `editor_key`'s call of `apply_editor_outcome` and the paint of the bar (the render pass, no
     pure test reaches it) rest on reading. A key itself costs 0.02 ms on a 465 KB file (release build), and a motion
-    with no selection shapes nothing (it was 496 ms there before). Not yet so: a key that changes the selection or the
-    text re-shapes the whole file, about 500 ms at 465 KB and 50 ms at 46 KB (EDIT-KEY-RESHAPES-WHOLE-FILE). Drawing
-    the selection as rectangles over the rows, from the index as the bar is drawn, would let a selection that grows
-    skip it too, but it changes the selection's look (today it is amber text with no ground, and the bar's brush is a
-    pale yellow that a gold letter would not read on) and is more than the 40 lines it was meant to take, so it is
-    not done; a selection that begins or ends changes the footer's words besides, which is shaped text. A pane under
+    with no selection, and a selection that grows or shrinks, shape nothing (each was 496 ms there before). Not yet
+    so: a key that changes the text, and a selection that begins or ends (the footer's words), re-shape the whole
+    file, about 500 ms at 465 KB and 50 ms at 46 KB (EDIT-KEY-RESHAPES-WHOLE-FILE). The paint of the bands (the
+    render pass) rests on reading, as the bar's does. A pane under
     about 44 px tall hides a row that is off the preview's line grid, text and bar alike (the whole-line clip). No person has used it yet.
 - `ConceptSlot` privately owns the concept slot: the last `concept.read` (`ConceptInfo`, its fields private), its
   shaped body and the rect it is shaped for. A reply installs the read and its shape together; a follow's commit and a

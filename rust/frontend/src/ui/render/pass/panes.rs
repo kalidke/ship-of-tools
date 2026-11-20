@@ -84,7 +84,7 @@ impl State {
         mut rpass: &mut wgpu::RenderPass<'_>,
         llm_selection: Option<((u16, u16), (u16, u16))>,
         show_md: bool,
-        edit_cursor: Option<ScreenRect>,
+        edit_marks: Vec<ScreenRect>,
     ) -> Result<()> {
         // LLM-pane selection highlight — render a pastel-yellow rect
         // for each row of the selection before text.render so glyphs
@@ -92,9 +92,9 @@ impl State {
         // be partial (start_col..pane_cols and 0..=end_col); middle
         // rows are full-width.
         let mut row_rects = if show_md { self.shaped.selection_rects() } else { Vec::new() };
-        // The editor's cursor is a bar in the same brush, under the glyphs like a selection, never a character of the
-        // text (so it cannot move a wrap).
-        row_rects.extend(edit_cursor);
+        // The editor's selection is bands in the same brush and its cursor a bar, under the glyphs, never part of the
+        // text (so neither can move a wrap or color a letter).
+        row_rects.extend(edit_marks);
         if let Some(sel) = llm_selection {
             let (a, b) = sel;
             let (start, end) = if a <= b { (a, b) } else { (b, a) };

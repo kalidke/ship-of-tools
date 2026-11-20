@@ -194,36 +194,21 @@ impl MarkdownPreview {
         }
     }
 
-    /// Plain monospace buffer like `new_plain`, but each span carries a
-    /// `selected` flag — selected spans render in an accent foreground so the
-    /// concept editor can show a Shift+motion selection without a cell grid.
-    /// Concatenated span text is the rendered string (same composition as
-    /// `new_plain`: header, body+cursor, footer).
+    /// Plain monospace buffer like `new_plain`, from the edit's spans (header, body, footer), each line-normalized
+    /// alone (`normalize_newlines`), in the default color: the editor's selection and cursor are drawn over the rows,
+    /// not in the text. The whole-text shaping the editor's in-place updates are held equal to.
     pub fn new_plain_spans(
         font_system: &mut FontSystem,
-        spans: &[(String, bool)],
+        spans: &[String],
         width: f32,
         scale: f32,
     ) -> Self {
         let metrics = Metrics::new(BODY_SIZE * scale, CODE_LINE_H * scale);
         let mut buffer = Buffer::new(font_system, metrics);
         buffer.set_size(font_system, Some(width.max(1.0)), None);
-        // Amber selection tint — distinct from the default body colour and
-        // from anything the plain-rendered body might contain.
-        let sel_color = Color::rgb(0xFF, 0xD7, 0x4A);
-        let owned: Vec<(String, Attrs<'static>)> = spans
-            .iter()
-            .map(|(text, selected)| {
-                let mut a = Attrs::new().family(Family::Monospace).metrics(metrics);
-                if *selected {
-                    a = a.color(sel_color);
-                }
-                (normalize_newlines(text).into_owned(), a)
-            })
-            .collect();
-        let default_attrs = Attrs::new().family(Family::Monospace).metrics(metrics);
-        let iter = owned.iter().map(|(s, a)| (s.as_str(), *a));
-        set_buffer_rich_text(&mut buffer, font_system, iter, default_attrs, Shaping::Advanced);
+        let attrs = Attrs::new().family(Family::Monospace).metrics(metrics);
+        let owned: Vec<std::borrow::Cow<'_, str>> = spans.iter().map(|text| normalize_newlines(text)).collect();
+        set_buffer_rich_text(&mut buffer, font_system, owned.iter().map(|s| (s.as_ref(), attrs)), attrs, Shaping::Advanced);
         buffer.shape_until_scroll(font_system, false);
         Self {
             buffer,

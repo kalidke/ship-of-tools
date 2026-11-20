@@ -15,7 +15,7 @@ struct Harness {
 impl Harness {
     fn new(content: &str, cells: usize) -> Self {
         let mut fs = FontSystem::new();
-        let one = MarkdownPreview::new_plain_spans(&mut fs, &[("m".into(), false)], 1000.0, 1.0);
+        let one = MarkdownPreview::new_plain_spans(&mut fs, &["m".into()], 1000.0, 1.0);
         let cell = one.buffer.layout_runs().next().unwrap().glyphs[0].w;
         let mut editor = Editor::default();
         editor.arm_file("files:x".into());
@@ -110,7 +110,7 @@ impl Harness {
     /// The number of rows the body shapes to on the line `line`.
     fn rows_of_line(&mut self, line: usize) -> usize {
         let body = format!("{}\n", self.edit().buf.body());
-        let shaped = MarkdownPreview::new_plain_spans(&mut self.fs, &[(body, false)], self.width, 1.0);
+        let shaped = MarkdownPreview::new_plain_spans(&mut self.fs, &[body], self.width, 1.0);
         shaped.buffer.layout_runs().filter(|r| r.line_i == line).count()
     }
 }
@@ -121,7 +121,7 @@ const PARAGRAPH: &str = "alpha beta gamma delta epsilon zeta eta theta iota kapp
 fn a_long_texts_shaped_rows_reach_its_last_line() {
     let mut fs = FontSystem::new();
     let body = (0..1000).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
-    let shaped = MarkdownPreview::new_plain_spans(&mut fs, &[(body, false)], 400.0, 1.0);
+    let shaped = MarkdownPreview::new_plain_spans(&mut fs, &[body], 400.0, 1.0);
     assert_eq!(shaped.buffer.layout_runs().map(|r| r.line_i).max(), Some(999));
 }
 
@@ -644,9 +644,9 @@ fn the_kept_column_survives_a_change_of_scale() {
     let (a, b, c) = ("a".repeat(60), "b".repeat(10), "c".repeat(60));
     let body = format!("{a}\n{b}\n{c}");
     let shaped = |fs: &mut FontSystem, scale: f32| {
-        let one = MarkdownPreview::new_plain_spans(fs, &[("m".into(), false)], 1000.0, scale);
+        let one = MarkdownPreview::new_plain_spans(fs, &["m".into()], 1000.0, scale);
         let width = one.buffer.layout_runs().next().unwrap().glyphs[0].w * 100.5;
-        MarkdownPreview::new_plain_spans(fs, &[(body.clone(), false), ("\n\n-".into(), false)], width, scale)
+        MarkdownPreview::new_plain_spans(fs, &[body.clone(), "\n\n-".into()], width, scale)
     };
     let mut fs = FontSystem::new();
     let small = shaped(&mut fs, 1.0);
@@ -1014,15 +1014,98 @@ fn a_motion_with_no_selection_owes_no_reshape_and_a_selection_or_an_edit_does() 
     }
     assert_eq!(built() - before, 0, "40 held Downs and ten other motions shaped nothing");
     assert!(h.cursor() > 0 && h.editor.cursor_place().is_some());
-    // A selection tints the text and changes the footer; an edit changes the text.
+    // A selection that begins changes the footer's words; one that grows changes nothing shaped (its bands are drawn
+    // over the rows); dropping it changes the footer again; an edit changes the text.
     h.press(Key::Named(NamedKey::ArrowDown), Some(Action::EditDown), true, 3);
     assert_eq!(built() - before, 1);
     h.press(Key::Named(NamedKey::ArrowDown), Some(Action::EditDown), true, 3);
-    assert_eq!(built() - before, 2, "a selection that grows is drawn from the text's spans");
+    assert!(!h.editor.needs_reshape());
+    assert_eq!(built() - before, 1, "a selection that grows is drawn over the shaped text");
     h.act(Action::EditRight);
-    assert_eq!(built() - before, 3, "dropping it re-shapes once");
+    assert_eq!(built() - before, 2, "dropping it re-shapes once");
     h.type_char("x");
-    assert_eq!(built() - before, 4);
+    assert_eq!(built() - before, 3);
+}
+
+/// The bands `rows::selection` gives row by row, each `(x0, x1)`, for the selection `a..b` put in `h`.
+fn bands_by_row(h: &mut Harness, a: usize, b: usize) -> Vec<(f32, Vec<(f32, f32)>)> {
+    h.put(a);
+    h.edit().buf.set_selecting(true);
+    h.edit().buf.set_cursor(b);
+    if h.editor.needs_reshape() {
+        h.reshape();
+    }
+    let mut rows: Vec<(f32, Vec<(f32, f32)>)> = Vec::new();
+    for (x, top, w, _) in h.editor.selection_bands(f32::MIN, f32::MAX) {
+        match rows.last_mut() {
+            Some((t, bands)) if *t == top => bands.push((x, x + w)),
+            _ => rows.push((top, vec![(x, x + w)])),
+        }
+    }
+    h.edit().buf.clear_selection();
+    rows
+}
+
+#[test]
+fn the_selection_is_drawn_as_bands_under_its_text_on_every_row_it_spans() {
+    let content = format!("before\n\n{PARAGRAPH}\nabc\n{HEBREW}\nafter");
+    let mut h = Harness::new(&content, 24);
+    let em_half = h.editor.shaped().unwrap().buffer.metrics().font_size / 2.0;
+    let x = |h: &mut Harness, at: usize| { h.put(at); h.place().x };
+    let (para, abc) = (8, 9 + PARAGRAPH.len());
+    // From inside the first line to inside the paragraph's third row: the rest of `before` and its line end, the empty
+    // line's end, the paragraph's first two rows whole and its third up to the selection's end.
+    assert!(h.rows_of_line(2) >= 4);
+    let ends: Vec<(usize, usize)> = h.editor.shaped().unwrap().buffer.layout_runs().filter(|r| r.line_i == 2)
+        .map(|r| (para + r.glyphs.iter().map(|g| g.start).min().unwrap(), para + r.glyphs.iter().map(|g| g.end).max().unwrap())).collect();
+    let b = ends[2].0 + 3;
+    let bands = bands_by_row(&mut h, 3, b);
+    assert_eq!(bands.len(), 5, "{bands:?}");
+    let (x3, x6) = (x(&mut h, 3), x(&mut h, 6));
+    assert_eq!(bands[0].1, [(x3, x6), (x6, x6 + em_half)], "the rest of the first line and its end");
+    assert_eq!(bands[1].1, [(0.0, em_half)], "the empty line's end");
+    for (row, (s, e)) in ends.iter().take(2).enumerate() {
+        let (x0, x1) = (x(&mut h, *s), x(&mut h, *e));
+        assert_eq!(bands[2 + row].1, [(x0, x1)], "the paragraph's row {row} whole");
+    }
+    let (x0, x1) = (x(&mut h, ends[2].0), x(&mut h, b));
+    assert_eq!(bands[4].1, [(x0, x1)], "the third row up to the selection's end");
+    // A selection that ends at a line end has no band for it.
+    let bands = bands_by_row(&mut h, abc, abc + 3);
+    assert_eq!(bands.len(), 1);
+    assert_eq!(bands[0].1, [(0.0, x(&mut h, abc + 3))]);
+    // A right-to-left word: its band runs from the word's end, at the left, to its start, at the right.
+    let (heb, word) = (abc + 4, HEBREW.find(' ').unwrap());
+    let bands = bands_by_row(&mut h, heb, heb + word);
+    assert_eq!(bands.len(), 1);
+    let (right, left) = (x(&mut h, heb), x(&mut h, heb + word));
+    assert!(left < right);
+    let (b0, b1) = bands[0].1[0];
+    assert!(bands[0].1.len() == 1 && (b0 - left).abs() < 0.01 && (b1 - right).abs() < 0.01, "{bands:?} against {left}..{right}");
+    // Only the rows asked for are read.
+    h.put(0);
+    h.edit().buf.set_selecting(true);
+    h.edit().buf.set_cursor(content.len());
+    let (all, place) = (h.editor.selection_bands(f32::MIN, f32::MAX).len(), h.editor.cursor_place().unwrap());
+    assert!(h.editor.selection_bands(place.top - 1.0, place.top + 1.0).len() < all);
+    // The text keeps its own color: nothing of the selection is in the shaped text.
+    h.reshape();
+    assert!(h.editor.shaped().unwrap().buffer.lines.iter().all(|l| l.attrs_list().spans().is_empty()));
+}
+
+#[test]
+fn a_selection_band_is_clipped_as_the_text_is() {
+    let pane = ScreenRect { x: 50.0, y: 40.0, w: 300.0, h: 100.0 };
+    let pad = crate::ui::render::text::EXTRA_TOP_PAD_PX;
+    let clip_bottom = pane.y + pad + 95.0;
+    let band = |b| rows::band(b, pane, 0.0, clip_bottom);
+    assert_eq!(band((10.0, 38.0, 40.0, 19.0)).map(|r| (r.x, r.y, r.w, r.h)), Some((60.0, pane.y + pad + 38.0, 40.0, 19.0)));
+    // Cut at the pane's right and left edges, and at its top and the foot of the last whole line, as the bar is.
+    assert_eq!(band((280.0, 38.0, 40.0, 19.0)).map(|r| (r.x + r.w, r.w)), Some((pane.x + pane.w, 20.0)));
+    assert_eq!(band((-10.0, 38.0, 40.0, 19.0)).map(|r| (r.x, r.w)), Some((pane.x, 30.0)));
+    assert_eq!(band((10.0, -pad - 5.0, 40.0, 19.0)).map(|r| (r.y, r.h)), Some((pane.y, 14.0)));
+    assert_eq!(band((10.0, 85.0, 40.0, 19.0)).map(|r| (r.y + r.h, r.h)), Some((clip_bottom, 10.0)));
+    assert!(band((310.0, 38.0, 40.0, 19.0)).is_none() && band((10.0, 95.0, 40.0, 19.0)).is_none());
 }
 
 /// Every cursor position the buffer allows in `body`: a char boundary that is not inside a CRLF.
@@ -1207,4 +1290,57 @@ fn discarding_with_the_confirm_key_closes_the_edit_as_a_clean_escape_does() {
     h.press_key(Some(Action::Cancel), None);
     assert!(matches!(h.press_key(Some(Action::EditLeft), None), Some(EditorKey::DiscardAnswered)));
     assert!(h.editor.is_editing());
+}
+
+/// A file of `lines` lines of about 90 characters each, words of several lengths.
+fn big_file(lines: usize) -> String {
+    let words = ["alpha", "be", "gamma", "delta", "epsilon", "mu", "omicron", "pi", "sigma", "tau", "upsilon", "x"];
+    (0..lines).map(|i| {
+        let mut line = format!("{i:05}");
+        let mut k = i;
+        while line.len() < 88 {
+            line.push(' ');
+            line.push_str(words[k % words.len()]);
+            k = k.wrapping_mul(7).wrapping_add(3);
+        }
+        line
+    }).collect::<Vec<_>>().join("\n")
+}
+
+/// The times of EDIT-KEY-RESHAPES-WHOLE-FILE on a 5,000-line file of about 90 characters a line: each key from its
+/// press to a buffer ready to draw, the mean of 20. A timing, so run by hand in a release build:
+/// `cargo test --release -p sot-frontend -- --ignored edit_keys_on_a_big_file --nocapture --test-threads 1`.
+#[test]
+#[ignore = "a timing, run by hand in a release build"]
+fn edit_keys_on_a_big_file() {
+    let text = big_file(5000);
+    let mut h = Harness::new(&text, 120);
+    let middle = text.len() / 2;
+    let middle = middle + text[middle..].find('\n').unwrap() + 40;
+    let ms = |h: &mut Harness, what: &str, key: &mut dyn FnMut(&mut Harness)| {
+        let started = Instant::now();
+        for _ in 0..20 {
+            key(h);
+        }
+        println!("{what:>16}: {:8.3} ms", started.elapsed().as_secs_f64() * 1000.0 / 20.0);
+    };
+    let owed = |h: &mut Harness| if h.editor.needs_reshape() { h.reshape() };
+    h.put(middle);
+    h.type_char("x");
+    ms(&mut h, "type a letter", &mut |h| h.type_char("y"));
+    ms(&mut h, "backspace", &mut |h| h.act(Action::EditBackspace));
+    ms(&mut h, "delete", &mut |h| { h.act(Action::EditLeft); h.act(Action::EditDelete) });
+    ms(&mut h, "enter", &mut |h| h.act(Action::EditNewline));
+    ms(&mut h, "paste a line", &mut |h| { h.edit().buf.insert_str("a pasted line of words\n"); owed(h) });
+    ms(&mut h, "undo", &mut |h| h.act(Action::EditUndo));
+    ms(&mut h, "redo", &mut |h| h.act(Action::EditRedo));
+    h.press(Key::Named(NamedKey::ArrowRight), Some(Action::EditRight), true, 3);
+    ms(&mut h, "selection step", &mut |h| h.press(Key::Named(NamedKey::ArrowRight), Some(Action::EditRight), true, 3));
+    ms(&mut h, "motion", &mut |h| h.act(Action::EditRight));
+    let (shaped, body, rev) = (h.editor.shaped.as_ref().unwrap(), h.editor.edit.as_ref().unwrap().buf.body(), h.editor.edit.as_ref().unwrap().buf.rev());
+    let started = Instant::now();
+    for _ in 0..20 {
+        std::hint::black_box(rows::Index::new(&shaped.buffer, body, rev));
+    }
+    println!("{:>16}: {:8.3} ms", "index rebuild", started.elapsed().as_secs_f64() * 1000.0 / 20.0);
 }

@@ -147,6 +147,16 @@ impl State {
         super::rows::bar(self.editor.cursor_place()?, pane, scroll_px, clip_bottom)
     }
 
+    /// The edit's selection as bands on screen, in the pane `pane` scrolled `scroll_px`, clipped as the text is
+    /// (`rows::band`): only the rows in view are read.
+    pub(in crate::ui) fn edit_selection_rects(&self, pane: ScreenRect, scroll_px: f32) -> Vec<ScreenRect> {
+        let Some(shaped) = self.editor.shaped() else { return Vec::new() };
+        let clip_bottom = shaped.clip_bottom(pane, scroll_px);
+        let from = scroll_px - crate::ui::render::text::EXTRA_TOP_PAD_PX;
+        self.editor.selection_bands(from, from + pane.h).into_iter()
+            .filter_map(|band| super::rows::band(band, pane, scroll_px, clip_bottom)).collect()
+    }
+
     /// What the pane shows this frame, decided after the pane is laid out and the edit buffer fitted to it
     /// (`reshape_edit_to_pane`): deciding first would draw the read-only file for the frame that gives an edit its
     /// shaped text, and ask for no other.

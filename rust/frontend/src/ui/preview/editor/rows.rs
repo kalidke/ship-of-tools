@@ -199,8 +199,59 @@ pub(super) fn vertical(
 /// clip.
 pub(in crate::ui) fn bar(place: Place, pane: ScreenRect, scroll_px: f32, clip_bottom: f32) -> Option<ScreenRect> {
     let w = (place.height * 0.12).max(2.0);
-    let top = pane.y + crate::ui::render::text::EXTRA_TOP_PAD_PX + place.top - scroll_px;
-    let (y0, y1) = (top.max(pane.y.floor()), (top + place.height).min(clip_bottom.ceil()));
+    let (y0, y1) = clip_rows(place.top, place.height, pane, scroll_px, clip_bottom);
     let inside = (-w..=pane.w + w).contains(&place.x) && pane.w >= w;
     (inside && y1 > y0).then(|| ScreenRect { x: (pane.x + place.x - w / 2.0).clamp(pane.x, pane.x + pane.w - w), y: y0, w, h: y1 - y0 })
+}
+
+/// A band of the selection at `(x, top, w, h)` px in the layout, on screen in the pane `pane` with its text scrolled
+/// `scroll_px`: clipped vertically as the bar is and the text is, and horizontally at the pane's edges; `None` where
+/// nothing of it is inside.
+pub(in crate::ui) fn band((x, top, w, h): (f32, f32, f32, f32), pane: ScreenRect, scroll_px: f32, clip_bottom: f32) -> Option<ScreenRect> {
+    let (y0, y1) = clip_rows(top, h, pane, scroll_px, clip_bottom);
+    let (x0, x1) = ((pane.x + x).max(pane.x), (pane.x + x + w).min(pane.x + pane.w));
+    (x1 > x0 && y1 > y0).then(|| ScreenRect { x: x0, y: y0, w: x1 - x0, h: y1 - y0 })
+}
+
+/// The part on screen of a row `top..top + height` px in the layout, as the text is clipped: drawn from
+/// `pane.y + EXTRA_TOP_PAD_PX - scroll_px` and cut at the pane's top edge and at `clip_bottom`, in whole pixels.
+fn clip_rows(top: f32, height: f32, pane: ScreenRect, scroll_px: f32, clip_bottom: f32) -> (f32, f32) {
+    let top = pane.y + crate::ui::render::text::EXTRA_TOP_PAD_PX + top - scroll_px;
+    (top.max(pane.y.floor()), (top + height).min(clip_bottom.ceil()))
+}
+
+/// The selection `a..b` of `body` (of revision `rev`) as bands, `(x, top, w, h)` px in the layout of `buffer`, on the
+/// rows whose tops are in `y0..y1`: on each row one band for each run of selected glyphs side by side (a row that mixes
+/// directions can have more than one), a glyph selected where any of its bytes is; and for a line whose end is
+/// selected, a band half an em wide after the last glyph of its last row (before the first, on a right-to-left line),
+/// so a selected empty line shows. None where the index is not of this body.
+pub(super) fn selection(buffer: &Buffer, index: &Index, body: &str, rev: u64, (a, b): (usize, usize), (y0, y1): (f32, f32)) -> Vec<(f32, f32, f32, f32)> {
+    let Some(layout) = Rows::new(buffer, index, body, rev) else { return Vec::new() };
+    let body_rows = layout.body_rows();
+    let mut bands = Vec::new();
+    for i in index.rows.partition_point(|r| r.top + r.height <= y0).max(body_rows.start)..body_rows.end {
+        let row = &index.rows[i];
+        if row.top >= y1 {
+            break;
+        }
+        let (Some(start), Some(&(_, end))) = (layout.to_body(row.line, 0), index.lines.get(row.line - index.first)) else { continue };
+        let glyphs = layout.glyphs(i);
+        let mut run: Option<(f32, f32)> = None;
+        for g in glyphs {
+            if start + g.start < b && start + g.end > a {
+                run = Some(run.map_or((g.x, g.x + g.w), |(x0, x1)| (x0.min(g.x), x1.max(g.x + g.w))));
+            } else if let Some((x0, x1)) = run.take() {
+                bands.push((x0, row.top, x1 - x0, row.height));
+            }
+        }
+        bands.extend(run.map(|(x0, x1)| (x0, row.top, x1 - x0, row.height)));
+        let last_row = index.rows.get(i + 1).is_none_or(|next| next.line != row.line);
+        if last_row && a <= end && end < b {
+            let w = buffer.metrics().font_size / 2.0;
+            let rtl = buffer.lines[row.line].shape_opt().as_ref().is_some_and(|s| s.rtl);
+            let (lo, hi) = glyphs.iter().fold(None, |e: Option<(f32, f32)>, g| Some(e.map_or((g.x, g.x + g.w), |(lo, hi)| (lo.min(g.x), hi.max(g.x + g.w))))).unwrap_or((0.0, 0.0));
+            bands.push((if rtl { lo - w } else { hi }, row.top, w, row.height));
+        }
+    }
+    bands
 }

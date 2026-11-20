@@ -39,7 +39,14 @@ impl State {
         let cell_backs = self.brushes.prepare_backs(&cell_backs, &self.gpu)?;
         self.rebuild_fatal_if_shown(show_fatal);
         let preview_scroll_px = self.clamp_preview_scroll(show_edit, md_rect, preview_rect);
-        let edit_cursor = if show_edit { self.edit_cursor_rect(preview_rect, preview_scroll_px) } else { None };
+        // The edit's selection and its cursor are drawn under the glyphs, the bar over the bands.
+        let edit_marks: Vec<ScreenRect> = if show_edit {
+            let mut marks = self.edit_selection_rects(preview_rect, preview_scroll_px);
+            marks.extend(self.edit_cursor_rect(preview_rect, preview_scroll_px));
+            marks
+        } else {
+            Vec::new()
+        };
         let media_paint_targets = self.prepare_media(show_md, md_rect, preview_scroll_px);
         let (scalebar_draw, media_paint_targets) = self.prepare_preview_text(lines, media_paint_targets,
             preview_rect, image_rect, png_rect, md_rect, preview_scroll_px, show_md, show_edit, show_fatal, &caption_draw)?;
@@ -81,7 +88,7 @@ impl State {
             self.paint_repl_figures(&mut rpass)?;
             self.paint_chat_thumbs(&mut rpass)?;
             self.paint_code_panels(&mut rpass, show_md, preview_rect, md_rect, preview_scroll_px)?;
-            self.paint_text_selections(&mut rpass, llm_selection, show_md, edit_cursor)?;
+            self.paint_text_selections(&mut rpass, llm_selection, show_md, edit_marks)?;
             self.paint_media_blocks(&mut rpass, preview_rect, media_paint_targets)?;
             self.paint_strike_lines(&mut rpass, show_md, preview_rect, md_rect, preview_scroll_px)?;
             self.paint_brand(&mut rpass, strip_logo_rects)?;
