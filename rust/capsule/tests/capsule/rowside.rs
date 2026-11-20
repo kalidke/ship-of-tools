@@ -16,6 +16,11 @@ pub struct RowSide {
 
 impl RowSide {
     pub fn new() -> Self {
+        Self::over(RowRun::new("run-one", "ready"))
+    }
+
+    /// As [`Self::new`], serving `row`, which the caller can feed as the run's loop does.
+    pub fn over(row: Arc<RowRun>) -> Self {
         // The challenge refuses a peer that started in the clock tick it connects in (a pid reused inside one tick
         // cannot be told apart), and this test binary's one process is both ends: the first test waits until the
         // process is older.
@@ -28,7 +33,6 @@ impl RowSide {
         let path = sot_capsule::row::socket_path_in(dir.path(), &name).expect("a short path fits");
         #[cfg(windows)]
         let path = sot_capsule::row::row_socket_path(&name).expect("a pipe name");
-        let row = RowRun::new("run-one", "ready");
         let signals = Arc::new(RunSignals::default());
         signals.attach_row(Arc::clone(&row));
         let server = RowServer::bind(&path, row).expect("bind the row socket");

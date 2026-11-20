@@ -3065,3 +3065,7 @@ the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the sa
     edit view has a band of its own at 8 to 1. Left open: a key still shapes its whole line, so a file that is one
     long line is as slow as before (EDIT-KEY-RESHAPES-A-LONG-LINE), and the other panes' selected text reads under
     1.5 to 1 against their band (SELECTION-BAND-HIDES-ITS-TEXT). No person has used it.
+  - The Windows mid-stream attach test (WIN-ATTACH-TEST-LINES-VIEWERS-UP-FROM-THEIR-ENDS), test-only. A diagnoser
+    found the cause from one hosted red and wrote the diff; the landing session applied it. The test compared two
+    viewers' streams from their ends after stopping one on a clock; it now reads both to an end marker and compares
+    frame for frame. Filed open: WIN-VIEWER-TRAILS-ANOTHER, the lag that exposed it, unmeasured.

@@ -124,27 +124,34 @@ fn collect_snapshot(client: &mut sot_capsule::row::RowClient, within: Duration) 
     panic!("no snapshot within {within:?}");
 }
 
+/// A frame no producer here prints. Published through the row's fan-out once the run has returned, it is the last frame
+/// each viewer is sent, so both viewers are read to the same end, whatever either connection still has in flight.
+const END_OF_RUN: &[u8] = b"\r\n[sot test: the run has returned]\r\n";
+
 /// Test 7: a viewer that attaches mid-stream, on a producer emitting escape sequences and multibyte UTF-8
 /// continuously, is sent a snapshot and then exactly the bytes after it: the output of a viewer attached from the start
 /// is its from-scratch reference. The producer is `sot-conpty-helper --script` (a deterministic byte emitter that
 /// `--linger`s, so it is alive for every step and the run ends by the test's `Kill`).
 ///
 /// Three things are proved:
-/// 1. The late viewer's output is the exact byte-for-byte tail of the reference viewer's total output: nothing was
-///    dropped, duplicated or reordered across the snapshot's cut.
+/// 1. The late viewer's output frames are the reference viewer's last frames, frame for frame, once both are read to
+///    the end marker: nothing was dropped, duplicated or reordered across the snapshot's cut.
 /// 2. Its snapshot is byte-identical to a checkpoint computed independently by feeding a fresh parser the reference's
 ///    own start snapshot and the prefix before the cut (checkpoint bytes are a pure function of screen state).
 /// 3. The snapshot carries a nonempty scrollback ring, and a parser restored from it and fed the suffix reaches the
 ///    same checkpoint as a from-scratch parser fed the whole reference stream.
 ///
 /// A resync would send a viewer a second snapshot and break the reference, so the reference viewer is read
-/// continuously and the test fails if it sees one.
+/// continuously and the test fails if it sees one. Each viewer is read to `END_OF_RUN`, never stopped by a clock: two
+/// connections deliver the same frames, each at its own pace (a reference stopped one second after the late viewer
+/// went quiet was found without the run's last frames, hosted Windows, 2026-11-19).
 #[test]
 fn attach_mid_stream_snapshot_reproduces_reference_screen() {
     use sot_capsule::row::RowEvent;
     let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
-    let side = rowside::RowSide::new();
+    let row = sot_capsule::row::RowRun::new("run-one", "ready");
+    let side = rowside::RowSide::over(Arc::clone(&row));
     let argv = vec![HELPER_EXE.to_string(), "--script".to_string(), "1000".to_string(), "--linger".to_string()];
     let (rows, cols) = (25u16, 80u16);
     let mut cfg = config(dir.path(), "midattach1", argv, cols, rows);
@@ -152,23 +159,27 @@ fn attach_mid_stream_snapshot_reproduces_reference_screen() {
     let (tx, rx) = mpsc::channel();
     let handle = std::thread::spawn(move || capsule::run::<P>(cfg, rx));
 
-    // The reference: a viewer attached at the very start, read continuously until told to stop.
+    // The reference: a viewer attached at the very start, read continuously to the end marker (and when it saw it), or
+    // until the test gives up on it.
     let mut early = side.watcher(cols, rows);
     let early_snapshot = collect_snapshot(&mut early, Duration::from_secs(20));
-    let stop = Arc::new(AtomicBool::new(false));
+    let give_up = Arc::new(AtomicBool::new(false));
     let reference = {
-        let stop = Arc::clone(&stop);
+        let give_up = Arc::clone(&give_up);
         std::thread::spawn(move || {
             let mut frames: Vec<Vec<u8>> = Vec::new();
             let mut resynced = false;
-            while !stop.load(Ordering::Acquire) {
+            while !give_up.load(Ordering::Acquire) {
                 match early.next_event(Duration::from_millis(100)).expect("the reference viewer stays up") {
+                    Some(RowEvent::Output(bytes)) if bytes == END_OF_RUN => {
+                        return (frames, resynced, Some(Instant::now()));
+                    }
                     Some(RowEvent::Output(bytes)) => frames.push(bytes),
                     Some(RowEvent::Snapshot { .. }) => resynced = true,
                     _ => {}
                 }
             }
-            (frames, resynced)
+            (frames, resynced, None)
         })
     };
 
@@ -179,48 +190,83 @@ fn attach_mid_stream_snapshot_reproduces_reference_screen() {
     let mut late = side.watcher(cols, rows);
     let snapshot = collect_snapshot(&mut late, Duration::from_secs(20));
 
-    // Let more output flow after the cut, then end the run and read until the row has been quiet for a second.
-    let mut suffix: Vec<u8> = Vec::new();
-    let read_for = |late: &mut sot_capsule::row::RowClient, suffix: &mut Vec<u8>, quiet: Duration, at_most: Duration| {
-        let (start, mut last_output) = (Instant::now(), Instant::now());
-        while start.elapsed() < at_most && last_output.elapsed() < quiet {
-            match late.next_event(Duration::from_millis(100)).expect("the late viewer stays up") {
-                Some(RowEvent::Output(bytes)) => {
-                    suffix.extend(bytes);
-                    last_output = Instant::now();
-                }
-                Some(RowEvent::Snapshot { .. }) => panic!("the late viewer was resynced"),
-                _ => {}
+    // One event of the late viewer: its output frame kept, a resync refused; whether it was the end marker.
+    let pump = |late: &mut sot_capsule::row::RowClient, frames: &mut Vec<Vec<u8>>| -> bool {
+        match late.next_event(Duration::from_millis(50)).expect("the late viewer stays up") {
+            Some(RowEvent::Output(bytes)) if bytes == END_OF_RUN => true,
+            Some(RowEvent::Output(bytes)) => {
+                frames.push(bytes);
+                false
             }
+            Some(RowEvent::Snapshot { .. }) => panic!("the late viewer was resynced"),
+            _ => false,
         }
     };
-    read_for(&mut late, &mut suffix, Duration::from_secs(60), Duration::from_millis(300));
+    // Let more output flow after the cut, then end the run, reading the late viewer all along.
+    let mut late_frames: Vec<Vec<u8>> = Vec::new();
+    let flowing = Instant::now();
+    while flowing.elapsed() < Duration::from_millis(300) {
+        pump(&mut late, &mut late_frames);
+    }
     tx.send(Command::Kill).unwrap();
-    read_for(&mut late, &mut suffix, Duration::from_secs(1), Duration::from_secs(30));
-    let summary = wait_for_join(handle, Duration::from_secs(30))
-        .expect("run did not return within the teardown bound")
-        .unwrap();
+    let teardown = Instant::now();
+    while !handle.is_finished() {
+        assert!(teardown.elapsed() < Duration::from_secs(30), "run did not return within the teardown bound");
+        pump(&mut late, &mut late_frames);
+    }
+    let summary = handle.join().unwrap().unwrap();
     assert_eq!(summary.exit_kind, ExitKind::Requested);
-    stop.store(true, Ordering::Release);
-    let (early_frames, resynced) = reference.join().unwrap();
-    assert!(!resynced, "the reference viewer was resynced, so it is no reference");
-    let total: Vec<u8> = early_frames.iter().flatten().copied().collect();
 
-    assert!(!suffix.is_empty(), "expected at least some output after the snapshot");
-    assert!(suffix.len() <= total.len(), "the late viewer received more output than the reference ever saw");
-    let split = total.len() - suffix.len();
-    assert_eq!(
-        &total[split..],
-        suffix.as_slice(),
-        "the output after the snapshot must be the exact byte-for-byte tail of the reference stream"
+    // The run has returned, and it published every chunk before it did: one more frame through the same fan-out is the
+    // last frame either viewer is sent, and each is read to it.
+    let sent = Instant::now();
+    row.output(END_OF_RUN, &vt100_ctt::Parser::new(rows, cols, 0));
+    while !pump(&mut late, &mut late_frames) {
+        assert!(sent.elapsed() < Duration::from_secs(30), "the late viewer was never sent the end marker");
+    }
+    let late_reached = sent.elapsed();
+    while !reference.is_finished() && sent.elapsed() < Duration::from_secs(30) {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    give_up.store(true, Ordering::Release);
+    let (early_frames, resynced, reference_reached) = reference.join().unwrap();
+    let reference_reached = reference_reached.map(|at| at.saturating_duration_since(sent));
+    eprintln!(
+        "capsule_win mid-attach finding: the end marker reached the late viewer in {late_reached:?} and the \
+         reference in {reference_reached:?}"
     );
-    let prefix = &total[..split];
+    assert!(!resynced, "the reference viewer was resynced, so it is no reference");
+    assert!(
+        reference_reached.is_some(),
+        "the reference viewer was never sent the end marker within 30 s ({} frames held)",
+        early_frames.len()
+    );
+    assert!(!late_frames.is_empty(), "expected at least some output after the snapshot");
+    let total: Vec<u8> = early_frames.concat();
+    let suffix: Vec<u8> = late_frames.concat();
+
+    // One `RowRun::output` sends each chunk to every live viewer as the same frame, the late viewer from the first
+    // chunk after its screen was cut, and both streams were read to the same last frame: the late viewer's frames are
+    // the reference's last frames, and the cut is a frame boundary of the reference's stream.
+    let tail = |bytes: &[u8]| String::from_utf8_lossy(&bytes[bytes.len().saturating_sub(96)..]).into_owned();
+    assert!(
+        early_frames.ends_with(&late_frames),
+        "the late viewer's frames must be the reference's last frames: the reference held {} frames ({} bytes), \
+         the late viewer {} ({} bytes); the reference ends {:?}, the late viewer {:?}",
+        early_frames.len(),
+        total.len(),
+        late_frames.len(),
+        suffix.len(),
+        tail(&total),
+        tail(&suffix)
+    );
+    let prefix: Vec<u8> = early_frames[..early_frames.len() - late_frames.len()].concat();
 
     // The snapshot against an independently replayed prefix. The reference parser's scrollback capacity must match the
     // capsule's own (`CAPSULE_SCROLLBACK_ROWS`), or it would disagree about how much of the ring survives.
     let mut at_cut = vt100_ctt::Parser::new(rows, cols, capsule::CAPSULE_SCROLLBACK_ROWS);
     at_cut.restore_screen(&early_snapshot).expect("the early snapshot must decode");
-    at_cut.process(prefix);
+    at_cut.process(&prefix);
     assert_eq!(
         snapshot,
         at_cut.screen().checkpoint().expect("the prefix screen must be representable"),
