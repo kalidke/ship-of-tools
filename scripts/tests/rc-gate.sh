@@ -374,6 +374,9 @@ producer() {
   echo unrun > "$L/steps/release-features-check.rc"
   emit cargo-chain cargo-chain
   emit_shell "$D/scripts/tests/test-defects-check.sh" # docs/defects.md: every run, scoped or not
+  # the suite that proves lib-gate-scope.sh's lists: every whole run, and a scoped one that yields `gate scope-suite`; its job is
+  # a shell job like the rest (SE: env -i, so none of this run's RCG_ variables reach the suite's own runs of this script)
+  want gate scope-suite && emit_shell "$D/scripts/tests/test-rc-gate-scope.sh"
   for s in lib-bins all-targets windows-tests; do emit "lint:$s" "$(printf 'lint\t%s' "$s")" "$L/steps/lint-$s.rc"; done
   if [ -n "${RCG_BASH32:-}" ]; then
     [ "${RCG_UB_PARSE:-1}" = 0 ] || emit under-bash:parse "$(printf 'under-bash\tparse')" "$L/steps/under-bash-parse.rc"

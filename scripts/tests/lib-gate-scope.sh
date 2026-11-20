@@ -80,6 +80,16 @@ gate_tree_tests() {
     echo "local-daemon rust/topology/src/endpoint_tests.rs sot_topology endpoint::tests::"
 }
 
+# gate_suite_pieces <path>: the piece `gate scope-suite` for a path that can change the verdict of test-rc-gate-scope.sh,
+# the suite that proves this file's lists: any Rust source or crate manifest (a new or changed test may read outside its
+# crate, and the suite fails on one the list lacks) and any file under scripts/tests/. A whole run runs the suite always
+# (`want` is true unscoped and when widened); a scoped run, only when this piece is yielded: not for docs or Julia alone.
+gate_suite_pieces() {
+    case $1 in
+        rust/*/*.rs|rust/*/Cargo.toml|scripts/tests/*) echo "gate scope-suite" ;;
+    esac
+}
+
 # gate_scope_piece <checkout> <path>: the piece lines of a path (one, or more where a suite drives the code)
 gate_scope_piece() {
     local out
@@ -87,6 +97,7 @@ gate_scope_piece() {
     printf '%s\n' "$out"
     case $out in whole\ *) return ;; esac
     gate_tree_pieces "$2"
+    gate_suite_pieces "$2"
 }
 gate_scope_owner() {
     local d=$1 p=$2 c

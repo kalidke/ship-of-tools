@@ -21,36 +21,37 @@ co=$work/co
 mkdir -p "$co/rust/platform" "$co/rust/backend" "$co/rust/updater" "$co/rust/frontend" "$co/rust/clippy-tests"
 : > "$co/rust/frontend/Cargo.toml"; : > "$co/rust/platform/Cargo.toml"; : > "$co/rust/backend/Cargo.toml"; : > "$co/rust/updater/Cargo.toml"
 table=(
-    "rust/platform/src/lib.rs|rust platform;tree rust"
-    "rust/backend/tests/x.rs|rust backend;tree rust"
+    "rust/platform/src/lib.rs|rust platform;tree rust;gate scope-suite"
+    "rust/backend/tests/x.rs|rust backend;tree rust;gate scope-suite"
     "rust/backend/CLAUDE.md|rust backend"
-    "rust/backend/Cargo.toml|rust backend;tree rust;shell comm;shell agents;shell scripts;julia root"
-    "rust/frontend/build.rs|rust frontend;tree rust"
-    "rust/frontend/src/ui/x.rs|rust frontend;tree rust"
+    "rust/backend/Cargo.toml|rust backend;tree rust;shell comm;shell agents;shell scripts;julia root;gate scope-suite"
+    "rust/frontend/build.rs|rust frontend;tree rust;gate scope-suite"
+    "rust/frontend/src/ui/x.rs|rust frontend;tree rust;gate scope-suite"
     "rust/frontend/CLAUDE.md|rust frontend"
     "rust/Cargo.toml|whole rust/Cargo.toml"
     "rust/Cargo.lock|whole rust/Cargo.lock"
     "rust/clippy-tests/clippy.toml|whole rust/clippy-tests/clippy.toml"
     "rust/clippy.toml|whole rust/clippy.toml"
     "rust/gone/src/lib.rs|whole rust/gone/src/lib.rs"
-    "rust/backend/src/comm/x.rs|rust backend;shell comm;julia root;tree rust"
-    "rust/backend/src/rows/x.rs|rust backend;shell comm;julia root;tree rust"
-    "rust/backend/src/agents/x.rs|rust backend;shell agents;tree rust"
-    "rust/backend/src/install/x.rs|rust backend;shell scripts;julia root;tree rust"
-    "rust/backend/src/update.rs|rust backend;shell scripts;julia root;tree rust"
-    "rust/backend/src/topology/x.rs|rust backend;shell scripts;julia root;tree rust"
-    "rust/backend/src/main.rs|rust backend;shell comm;shell agents;shell scripts;julia root;tree rust"
-    "rust/backend/src/clients_show.rs|rust backend;shell comm;shell agents;shell scripts;julia root;tree rust"
-    "rust/backend/src/server/x.rs|rust backend;tree rust"
-    "rust/updater/src/lib.rs|rust updater;shell scripts;julia root;tree rust"
-    "rust/platform/src/lib.rs|rust platform;tree rust"
+    "rust/backend/src/comm/x.rs|rust backend;shell comm;julia root;tree rust;gate scope-suite"
+    "rust/backend/src/rows/x.rs|rust backend;shell comm;julia root;tree rust;gate scope-suite"
+    "rust/backend/src/agents/x.rs|rust backend;shell agents;tree rust;gate scope-suite"
+    "rust/backend/src/install/x.rs|rust backend;shell scripts;julia root;tree rust;gate scope-suite"
+    "rust/backend/src/update.rs|rust backend;shell scripts;julia root;tree rust;gate scope-suite"
+    "rust/backend/src/topology/x.rs|rust backend;shell scripts;julia root;tree rust;gate scope-suite"
+    "rust/backend/src/main.rs|rust backend;shell comm;shell agents;shell scripts;julia root;tree rust;gate scope-suite"
+    "rust/backend/src/clients_show.rs|rust backend;shell comm;shell agents;shell scripts;julia root;tree rust;gate scope-suite"
+    "rust/backend/src/server/x.rs|rust backend;tree rust;gate scope-suite"
+    "rust/updater/src/lib.rs|rust updater;shell scripts;julia root;tree rust;gate scope-suite"
+    "rust/platform/src/lib.rs|rust platform;tree rust;gate scope-suite"
     "comm/lib/x.sh|shell comm;tree comm-lib;tree stage-bin"
     "comm/CLAUDE.md|shell comm"
     "agents/spawn|shell agents;tree stage-bin"
     "scripts/install.sh|shell scripts"
     "scripts/CLAUDE.md|shell scripts"
-    "scripts/tests/installer-state.sh|shell scripts"
-    "scripts/tests/test-pre-push.sh|shell scripts"
+    "scripts/tests/installer-state.sh|shell scripts;gate scope-suite"
+    "scripts/tests/test-pre-push.sh|shell scripts;gate scope-suite"
+    "scripts/tests/test-x.sh|shell scripts;gate scope-suite"
     "scripts/tests/rc-gate.sh|whole scripts/tests/rc-gate.sh"
     "scripts/tests/lib-gate-scope.sh|whole scripts/tests/lib-gate-scope.sh"
     "scripts/tests/test-rc-gate-scope.sh|whole scripts/tests/test-rc-gate-scope.sh"
@@ -89,12 +90,14 @@ git init -q -b main . && git add -A && git -c user.name=t -c user.email=t@t comm
 mkdir -p docs comm && echo a > docs/a.md && echo b > comm/b.sh && echo c > rust/platform/c.rs
 git add -A && git -c user.name=t -c user.email=t@t commit -q -m one
 check "a diff maps to its sorted pieces" '[ "$(gate_scope "$repo" HEAD~1)" = "docs docs
+gate scope-suite
 rust platform
 shell comm
 tree rust" ]'
 mkdir -p rust/backend/src/comm && echo r > rust/backend/src/comm/r.rs
 git add -A && git -c user.name=t -c user.email=t@t commit -q -m comm
-check "a Rust path a shell suite proves adds the suite's piece" '[ "$(gate_scope "$repo" HEAD~1)" = "julia root
+check "a Rust path a shell suite proves adds the suite's piece" '[ "$(gate_scope "$repo" HEAD~1)" = "gate scope-suite
+julia root
 rust backend
 shell comm
 tree rust" ]'
@@ -143,6 +146,8 @@ fixture() { # <name>: a stand-in repo with two shell groups, two crates with a t
     : > "$repo/.github/test-shards.txt"
     for t in comm/tests/test-c agents/tests/test-a; do printf '#!/bin/sh\nexit 0\n' > "$repo/$t.sh"; done
     printf '#!/bin/sh\nexit 0\n' > "$repo/scripts/tests/test-defects-check.sh"
+    # a stand-in for this very suite: the gate's own job for it must not start the real one again; it records where it ran and its environment
+    printf '#!/bin/sh\n{ echo "ran $0"; env; } > "$(dirname "$0")/scope-suite.rec"\nexit 0\n' > "$repo/scripts/tests/test-rc-gate-scope.sh"
     printf '#!/bin/sh\necho "$*" >> "$(dirname "$0")/features-args.log"\nexit 0\n' > "$repo/scripts/tests/release-features-check.sh"
     for t in platform backend; do
         printf '#!/bin/sh\nexit 0\n' > "$work/tools/bin-$t"; chmod +x "$work/tools/bin-$t"
@@ -357,6 +362,16 @@ args_ok() { local n; for n in "$@"; do grep -qx -- "--prove $work/$n/rust" "$wor
 check "the release features check runs unscoped, scoped to a crate and scoped to docs alone" '[ "$(rcof none steps/release-features-check)" = 0 ] && [ "$(rcof sc1 steps/release-features-check)" = 0 ] && [ "$(rcof sc2 steps/release-features-check)" = 0 ]'
 check "the release features check is run with --prove over the checkout's rust folder every time" 'args_ok none sc1 sc2'
 check "the defects check runs unscoped, scoped to a crate and scoped to docs alone" '[ "$(rcof none steps/scripts-tests-test-defects-check)" = 0 ] && [ "$(rcof sc1 steps/scripts-tests-test-defects-check)" = 0 ] && [ "$(rcof sc2 steps/scripts-tests-test-defects-check)" = 0 ]'
+# this suite is a job of the gate's own: every whole run, and a scoped one that yields `gate scope-suite` (a Rust source or crate
+# manifest, a file under scripts/tests/); never for docs or Julia alone. The job in a fixture is a stand-in, so it never starts itself again
+check "the scope suite's job runs unscoped" '[ "$(rcof none steps/scripts-tests-test-rc-gate-scope)" = 0 ]'
+fixture sg1; pipeline sg1 b $'gate scope-suite\nrust platform'
+check "the scope suite's job runs in a scope that yields gate scope-suite" '[ "$(rcof sg1 steps/scripts-tests-test-rc-gate-scope)" = 0 ]'
+check "the scope suite's job is not run for a crate piece, a docs piece or a Julia piece alone" '[ ! -e "$work/L-sc1/steps/scripts-tests-test-rc-gate-scope.rc" ] && [ ! -e "$work/L-sc2/steps/scripts-tests-test-rc-gate-scope.rc" ] && [ ! -e "$work/sc1/scripts/tests/scope-suite.rec" ] && [ ! -e "$work/sc2/scripts/tests/scope-suite.rec" ]'
+fixture sg2; GATE_TOOLS_DIR=/sg RCG_TOOLS=/sg RCG_NODE_DIR=/sg RCG_SCOPE=HEAD RCG_FULL_MARK=1 JULIA_DEPOT_PATH=/sg CARGO_HOME=/sg pipeline sg2 b $'gate scope-suite'
+check "the scope suite's job runs the checkout's suite and gets none of the run's RCG_, GATE_, CARGO_ or JULIA_ variables" 'grep -qx "ran $work/sg2/scripts/tests/test-rc-gate-scope.sh" "$work/sg2/scripts/tests/scope-suite.rec" && ! grep -q "^\(RCG_\|GATE_\|CARGO_\|JULIA_\)" "$work/sg2/scripts/tests/scope-suite.rec" && grep -q "^HOME=$work/L-sg2/home$" "$work/sg2/scripts/tests/scope-suite.rec"'
+fixture sg3; printf '#!/bin/sh\necho "FAIL: stand-in"\nexit 1\n' > "$work/sg3/scripts/tests/test-rc-gate-scope.sh"; pipeline sg3 -
+check "a failing scope suite is the run's failure: its rc, its summary line and its own log" '[ "$(rcof sg3 steps/scripts-tests-test-rc-gate-scope)" = 1 ] && grep -qx "scripts-tests-test-rc-gate-scope rc=1 " "$work/L-sg3/summary.txt" && grep -q "FAIL: stand-in" "$work/L-sg3/scripts-tests-test-rc-gate-scope.log"'
 
 # ---- under-bash: the scans as one job, each suite as its own, only for what changed (UB32 names a bash, UBP and UBS the flags
 # the main flow sets from gate_ub_decide)
@@ -408,7 +423,7 @@ check "under-bash: a whole run emits the scans and one job per suite of all thre
 fixture sc3; pipeline sc3 b $'whole rust/Cargo.toml'
 check "widened: everything runs as unscoped" '[ "$(rcof sc3 rust/bin-backend)" = 0 ] && [ -e "$work/L-sc3/steps/agents-tests-test-a.rc" ] && [ -e "$work/L-sc3/steps/julia-root.rc" ]'
 
-check "widened: the install smoke runs" '[ -e "$work/L-sc3/steps/install-smoke.rc" ]'
+check "widened: the install smoke and the scope suite run" '[ -e "$work/L-sc3/steps/install-smoke.rc" ] && [ "$(rcof sc3 steps/scripts-tests-test-rc-gate-scope)" = 0 ]'
 
 fixture sc4; rm "$work/sc4/julia/kernel/Project.toml"; rm "$work/sc4/agents/tests/test-a.sh"
 pipeline sc4 b $'julia julia/kernel\nshell agents'

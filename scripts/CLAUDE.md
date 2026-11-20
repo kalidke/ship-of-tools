@@ -108,6 +108,14 @@ Guarantees, each with the mechanism it rests on:
   one resolve sot-protocol's `test-support` feature, which builds `ChatRecord::fixture`, the one record every crate's chat tests start from. It reads
   `cargo tree --workspace -e normal,build` for the release targets; `tests/test-rc-gate-scope.sh` pins that it runs with
   `--prove` over the checkout's rust folder. A depot missing the release targets' packages needs `cargo fetch --locked` once.
+- The gate also runs `tests/test-rc-gate-scope.sh`, the suite that proves the scope lists above (among them that every Rust
+  file that reads outside its crate is in `gate_tree_tests`), as one of its parallel shell jobs: in every whole or widened
+  run, and in a scoped run whose paths yield the piece `gate scope-suite` (`gate_suite_pieces`: a Rust source or crate
+  `Cargo.toml`, any file under `tests/`), never for docs or Julia alone. It is a shell job like the others, so it runs under
+  `env -i`: none of the run's `RCG_` variables, scope or tool overrides reach the runs of `rc-gate.sh` it makes over stand-ins,
+  and its scratch tree is its own under `/tmp`, not the run's result folder. A fixture's copy of it is a stand-in, so it never
+  starts itself again. Its failure is the run's (`ALLDONE FAILED`), bounded by the job's 1200 s. About 50 s alone; the hosted
+  checks job still runs it.
 - Every gate run, scoped or not, also runs `tests/test-defects-check.sh`, which runs `tests/defects-check.sh` on the
   checkout: it fails with the id when a landing record of `docs/history/passes.md` names an item that is not in
   `docs/defects.md`, and when a tracked `CLAUDE.md` cites an item id there that is not one. The rule that tells an id from
