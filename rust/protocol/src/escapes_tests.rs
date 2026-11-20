@@ -1,7 +1,7 @@
 use super::{open_tail, pieces, strip_escapes, Piece, Piece::*, MAX_SEQUENCE};
 use std::time::{Duration, Instant};
 
-/// The cases `julia/repl/test/escape_cases.tsv` holds.
+/// The cases `julia/repl/test/escape_cases.tsv` holds, which the REPL child's tests read too.
 fn cases() -> Vec<(String, String, String)> {
     parse(include_str!("../../../julia/repl/test/escape_cases.tsv"))
 }
@@ -107,7 +107,7 @@ fn escaped(s: &str) -> String {
 }
 
 /// Random texts of the characters that make and break sequences, the same on every run (a fixed seed), with the strip and
-/// the held tail the grammar gives each: `julia/repl/test/escape_random.tsv`.
+/// the held tail the grammar gives each: `julia/repl/test/escape_random.tsv`, which the REPL child's tests hold its hold to.
 fn generated() -> String {
     let parts = [
         "\u{1b}", "\u{1b}[", "\u{1b}]", "\u{1b}P", "\u{1b}X", "\u{1b}^", "\u{1b}_", "\u{1b}\\", "\u{7}", "[", "]", "\\", "(", ")",

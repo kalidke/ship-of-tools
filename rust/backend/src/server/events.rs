@@ -295,13 +295,15 @@ where
 /// closed (keep the connection alive); a lagged one writes `bus.lost`. The `frame` value is
 /// otherwise passed through verbatim — its `{kind, ...}` shape is
 /// kernel-defined, so the backend stays oblivious to new frame kinds — except
-/// the one rewrite `repl_frame_for` makes to a page every frontend would open.
+/// the two rewrites `repl_frame_for` makes: a page every frontend would open, and the escapes of a connection that
+/// does not read them.
 pub(super) async fn write_repl_frame<W>(
     tx: &mut W,
     msg: Result<ReplFrameMsg, broadcast::error::RecvError>,
     my_serial: Option<u64>,
     clients: &Clients,
     numbers: &crate::sidecars::repl::numbers::CallerNumbers,
+    reads_color: bool,
 ) -> Result<bool>
 where
     W: tokio::io::AsyncWrite + Unpin,
@@ -314,7 +316,7 @@ where
             let payload = serde_json::json!({
                 "eval_id": m.eval_id,
                 "workspace_id": m.workspace_id,
-                "frame": repl_frame_for(&m, my_serial, clients),
+                "frame": repl_frame_for(&m, my_serial, clients, reads_color),
             });
             let frame = Frame::evt(op::REPL_FRAME, payload);
             write_frame_to(tx, &frame, None).await?;
@@ -339,9 +341,24 @@ where
 /// the window a person used last is away: a browser open goes to the window a person is at, and two browsers on one
 /// `wglshow` figure resize its one scene against each other.
 /// The window is chosen once per frame, by the first connection that writes it (`ReplFrameMsg::opener`), and every
-/// other connection is sent the frame with `open: false` and no `fe`. Every other frame is written as it came.
-fn repl_frame_for(m: &ReplFrameMsg, my_serial: Option<u64>, clients: &Clients) -> serde_json::Value {
+/// other connection is sent the frame with `open: false` and no `fe`.
+/// A connection whose hello did not say it reads terminal escapes (`HelloReq::reads_terminal_color`) is sent the text of a
+/// `stdout`, `stderr`, `value` or `error` frame with its whole escape sequences taken out, the color of an eval a person
+/// typed among them, and any ESC left (one that starts no whole sequence) a space, so it is sent no ESC byte at all.
+/// Every other frame is written as it came.
+fn repl_frame_for(m: &ReplFrameMsg, my_serial: Option<u64>, clients: &Clients, reads_color: bool) -> serde_json::Value {
     let mut frame = m.frame.clone();
+    if !reads_color && matches!(frame["kind"].as_str(), Some("stdout" | "stderr" | "value" | "error")) {
+        for field in ["text", "message"] {
+            if let Some(serde_json::Value::String(text)) = frame.get_mut(field) {
+                if text.contains('\u{1b}') {
+                    // A whole sequence goes; an ESC that starts none (a program's own byte, or the half of a sequence
+                    // two writes split) is drawn by v0.7.2's cell rule as a space, so it is sent as one.
+                    *text = sot_protocol::escapes::strip_escapes(text).replace('\u{1b}', " ");
+                }
+            }
+        }
+    }
     if frame["kind"] != "browser" || frame.get("open").is_some_and(|open| open != true) {
         return frame;
     }

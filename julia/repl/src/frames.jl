@@ -6,6 +6,8 @@ struct EvalStdout <: IO end
 Base.unsafe_write(::EvalStdout, p::Ptr{UInt8}, n::UInt) = unsafe_write(stdout, p, n)
 Base.write(::EvalStdout, b::UInt8) = write(stdout, b)
 Base.flush(::EvalStdout) = flush(stdout)
+# `display(x)` takes the color of the eval's stdout, as `show` into it does.
+Base.get(::EvalStdout, key, default) = get(stdout, key, default)
 
 # Only the shim's own locked writer reaches the wire (`io_out`, which holds its own descriptor). Julia's startup
 # `TextDisplay(stdout)` holds the wire, so each is swapped, in place so the stack's order holds, for a real `TextDisplay`
@@ -29,7 +31,9 @@ Run `f()` with stdout/stderr captured via async-drained pipes, emitting each
 output chunk as a `stdout`/`stderr` frame *as it arrives* (incremental), then a
 trailing `value` (last expression's result via `MIME"text/plain"`) or `error`
 frame (if `f()` threw — including `InterruptException` from `repl.interrupt`).
-`f` is first so call sites can pass it as a `do` block (`stream_eval_frames(emit) do … end`).
+`f` is first so call sites can pass it as a `do` block (`stream_eval_frames(emit) do … end`). Whether the eval takes color is `EVAL_COLOR[]`, which the
+entry point that accepted the eval set and which is read for the whole eval: no argument or type parameter of this function or of the ones above it names it, because each is
+printed in every stack trace user code prints or an agent reads.
 
 Julia 1.12's `redirect_stdout` doesn't accept `IOBuffer`, hence the `Pipe`
 plumbing. The redirect is process-global, so overlapping evals are rejected by
@@ -46,6 +50,13 @@ the single-eval guard in `handle_eval` / `handle_run_file`.
 # at a time (`eval_in_progress`). `ANNOUNCED_BROWSER_URLS` dedups so a
 # BrowserView that IS also returned doesn't open the browser twice.
 const CURRENT_EMIT = Ref{Union{Function,Nothing}}(nothing)
+
+# Whether the eval about to run is a person's and takes color: set by the entry point that accepted it (`handle_eval`,
+# `handle_run_file`, after the single-eval guard: every eval is accepted by one of them, so each sets it afresh) and read by
+# `stream_eval_frames` and `value_frames_for`. A
+# state the eval reads, not an argument, because every argument of the functions the user's code runs under is printed in
+# the stack an agent reads: this keeps that stack what it was.
+const EVAL_COLOR = Ref(false)
 const ANNOUNCED_BROWSER_URLS = Set{String}()
 
 # Dedupe key for the per-eval announce set. Keyed on (url, open) — not url
@@ -106,6 +117,7 @@ function revise_loaded()
 end
 
 function stream_eval_frames(f, emit)
+    color = EVAL_COLOR[]
     CURRENT_EMIT[] = emit
     empty!(ANNOUNCED_BROWSER_URLS)
     pipe_out = Pipe()
@@ -116,15 +128,18 @@ function stream_eval_frames(f, emit)
     old_stdout = stdout
     old_stderr = stderr
     drop_held_signal()
-    reader_out = @async held_task(() -> stream_pipe(pipe_out, emit, "stdout"))
-    reader_err = @async held_task(() -> stream_pipe(pipe_err, emit, "stderr"))
+    reader_out = @async held_task(() -> stream_pipe(pipe_out, emit, "stdout"; hold = color))
+    reader_err = @async held_task(() -> stream_pipe(pipe_err, emit, "stderr"; hold = color))
 
     frames = Dict[]
     threw = nothing
     local_bt = Base.StackTraces.StackFrame[]
     try
-        redirect_stdout(pipe_out)
-        redirect_stderr(pipe_err)
+        # An eval a person typed says its streams take color, as a terminal's do, so the logging macros, `printstyled` and
+        # the packages that ask `get(stdout, :color, false)` print it; the window draws it. The write end is wrapped, so
+        # the streams stay as readable (or not) as before. An eval an agent submitted runs as it always did.
+        redirect_stdout(color ? IOContext(pipe_out.in, :color => true) : pipe_out)
+        redirect_stderr(color ? IOContext(pipe_err.in, :color => true) : pipe_err)
         revise_loaded()
         try
             # The value's display is user code too, so it renders in the
@@ -164,7 +179,7 @@ function stream_eval_frames(f, emit)
         # invokelatest: `serve`'s world is older than the startup file and every eval, which may define the `showerror`.
         msg = threw isa InterruptException ?
             "InterruptException: eval interrupted by repl.interrupt" :
-            past_interrupts(() -> Base.invokelatest(sprint, showerror, threw))
+            past_interrupts(() -> Base.invokelatest(sprint, showerror, threw; context = color ? (:color => true) : nothing))
         past_interrupts(() -> emit(Dict(:kind => "error", :message => msg, :stacktrace => stack)))
     else
         for fr in frames
@@ -175,29 +190,58 @@ function stream_eval_frames(f, emit)
 end
 
 """
-    stream_pipe(pipe, emit, kind)
+    stream_pipe(pipe, emit, kind; hold = false)
 
 Drain `pipe` to eof, emitting `{kind, text}` frames as bytes arrive. Only a
 character that a `readavailable` chunk cut waits for its other bytes
 (`utf8_prefix`); any other invalid byte is program output and goes on at once,
-and `write_json_string` writes it as U+FFFD. An interrupt that lands here (the
-daemon's signal, sent for the eval's code as that code ended) does not stop the drain.
+and `write_json_string` writes it as U+FFFD. With `hold` (an eval that prints color) a terminal escape sequence the
+chunk ends in the middle of waits for the rest too (`escape_prefix`, the grammar's one forward pass), so no frame splits one.
+Nothing waits longer than the program is quiet for `ESCAPE_HOLD_SECONDS` or than `MAX_ESCAPE_SEQUENCE` bytes of the
+stream, whichever comes first, so a person's output after an opener that never ends appears within a tenth of a second.
+An interrupt that lands here (the daemon's signal, sent for the eval's code as that code ended) does not stop the drain.
 """
-function stream_pipe(pipe, emit, kind)
+function stream_pipe(pipe, emit, kind; hold::Bool = false)
     leftover = UInt8[]
+    holding = false  # `leftover` starts with an unfinished escape sequence, waiting for the rest
+    emitted = 0      # the bytes of the stream already sent in frames: where what is held begins
+    held_at = -1     # where the sequence now held began, or -1
+    held_since = 0.0 # when that sequence began to wait: the hold's time is counted from there, not from the last byte
+    waiter = nothing # a task waiting for the pipe's next byte, while the hold's time runs
     frame = nothing  # a chunk read and not yet emitted: kept across an interrupt, so it is emitted again, never lost
     while true
         try
+            if frame === nothing && holding
+                waiter === nothing && (waiter = @async eof(pipe))
+                if timedwait(() -> istaskdone(waiter), max(0.0, ESCAPE_HOLD_SECONDS[] - (time() - held_since)); pollint = 0.01) === :timed_out
+                    # The program wrote nothing more in time: what waited is text, and goes on as it is.
+                    s, leftover = utf8_prefix(leftover)
+                    holding = false
+                    isempty(s) || (frame = Dict(:kind => kind, :text => s))
+                end
+            end
             if frame === nothing
-                eof(pipe) && break
+                (waiter === nothing ? eof(pipe) : fetch(waiter)) && break
+                waiter = nothing
                 data = readavailable(pipe)
                 isempty(data) && continue
                 append!(leftover, data)
                 s, leftover = utf8_prefix(leftover)
+                if hold
+                    s, held = escape_prefix(s)
+                    # The same sequence still waiting (it begins where the one held before did) keeps its time; a sequence
+                    # that begins elsewhere, after the first was let go or finished, starts its own.
+                    at = emitted + ncodeunits(s)
+                    isempty(held) || at == held_at || (held_since = time())
+                    held_at = isempty(held) ? -1 : at
+                    holding = !isempty(held)
+                    leftover = vcat(Vector{UInt8}(codeunits(held)), leftover)
+                end
                 isempty(s) || (frame = Dict(:kind => kind, :text => s))
             end
             if frame !== nothing
                 emit(frame)
+                emitted += ncodeunits(frame[:text])
                 frame = nothing
             end
         catch e
@@ -209,6 +253,108 @@ function stream_pipe(pipe, emit, kind)
         emit(Dict(:kind => kind, :text => String(leftover)))
     end
     return nothing
+end
+
+# The longest terminal escape sequence, in bytes from its ESC through its last: `sot_protocol::escapes::MAX_SEQUENCE`,
+# whose grammar `escape_open_from` reads. A longer one is data.
+const MAX_ESCAPE_SEQUENCE = 4096
+
+# How long text held for an unfinished escape sequence waits for the rest before it goes on as it is.
+const ESCAPE_HOLD_SECONDS = Ref(0.1)
+
+# Where `text` ends in the middle of a terminal escape sequence the next chunk could finish: the byte offset of its ESC,
+# or the length of `text` when it ends in none. The one forward pass of `sot_protocol::escapes::open_tail`, which the
+# cases in `test/escape_cases.tsv` and `test/escape_random.tsv` hold both to: from the start, each ESC is a whole
+# sequence (skipped to its end, so an opener inside it is its own and no tail), or data (the scan goes on after it,
+# after a string's introducer), or the first it cannot tell yet, the text ending with room left within the bound.
+function escape_open_from(text::AbstractString)
+    b = codeunits(text)
+    n = length(b)
+    B(k) = @inbounds b[k + 1]                   # the byte at 0-based offset k
+    st = SeekCache()
+    bel = SeekCache()
+    open = n
+    i = 0
+    while true
+        e = findnext(==(0x1b), b, i + 1)
+        e === nothing && return open
+        pos = e - 1
+        limit = min(pos + MAX_ESCAPE_SEQUENCE, n)
+        room = n - pos < MAX_ESCAPE_SEQUENCE        # a terminator could still fit within the bound
+        next = pos + 1
+        if pos + 1 >= n
+            open == n && (open = pos)               # an ESC alone at the end
+        else
+            c = B(pos + 1)
+            if c == UInt8('[')
+                j = pos + 2
+                while j < limit && 0x30 <= B(j) <= 0x3f; j += 1; end
+                while j < limit && 0x20 <= B(j) <= 0x2f; j += 1; end
+                if j == limit
+                    room && open == n && (open = pos)
+                elseif 0x40 <= B(j) <= 0x7e
+                    next = j + 1                    # a whole CSI
+                end
+            elseif c in (UInt8(']'), UInt8('P'), UInt8('X'), UInt8('^'), UInt8('_'))
+                by_st = seek!(st, b, pos + 2, k -> B(k) == 0x1b && k + 1 < n && B(k + 1) == UInt8('\\'))
+                by_bel = c == UInt8(']') ? seek!(bel, b, pos + 2, k -> B(k) == 0x07) : nothing
+                ends = filter(!isnothing, (by_st === nothing ? nothing : by_st + 2, by_bel === nothing ? nothing : by_bel + 1))
+                if isempty(ends)
+                    room && open == n && (open = pos)
+                    next = pos + 2
+                elseif minimum(ends) - pos <= MAX_ESCAPE_SEQUENCE
+                    next = minimum(ends)            # a whole string
+                else
+                    next = pos + 2
+                end
+            elseif 0x20 <= c <= 0x2f
+                j = pos + 2
+                while j < limit && 0x20 <= B(j) <= 0x2f; j += 1; end
+                if j == limit
+                    room && open == n && (open = pos)
+                elseif 0x30 <= B(j) <= 0x7e
+                    next = j + 1
+                end
+            elseif 0x30 <= c <= 0x7e
+                next = pos + 2                      # ESC and one final byte
+            end
+        end
+        i = next
+    end
+end
+
+# Where the next byte satisfying `hit` is, at or after 0-based `from`, searched forward only: the position found stays
+# the answer until the scan passes it, and "none after here" is kept, so however many openers ask, the text is read once.
+mutable struct SeekCache
+    searched_from::Int
+    found::Union{Int,Nothing}
+    known::Bool
+    SeekCache() = new(0, nothing, false)
+end
+
+function seek!(c::SeekCache, b, from::Int, hit)
+    if c.known && from >= c.searched_from && (c.found === nothing || c.found >= from)
+        return c.found
+    end
+    c.found = nothing
+    for k in from:(length(b) - 1)
+        if hit(k)
+            c.found = k
+            break
+        end
+    end
+    c.searched_from = from
+    c.known = true
+    return c.found
+end
+
+# Split `s` into (its text up to the tail it ends in the middle of a terminal escape sequence at, that tail): no frame
+# splits a sequence, and the tail waits for the rest (at most `ESCAPE_HOLD_SECONDS`, and no more than the bound's bytes).
+function escape_prefix(s::AbstractString)
+    k = escape_open_from(s)
+    k == ncodeunits(s) && return (String(s), "")
+    b = codeunits(s)
+    return (String(b[1:k]), String(b[(k + 1):end]))
 end
 
 # Split `buf` into (its bytes up to an incomplete character at its end, as a
@@ -237,6 +383,7 @@ what makes CairoMakie figures, `Plots.Plot`s, etc. flow through as `image`
 frames. Falls through to `text/plain`.
 """
 function value_frames_for(result)
+    color = EVAL_COLOR[]
     out = Dict[]
     # ADR 0032: a BrowserView is a live browser-served artifact, not a static
     # value — emit a `browser` frame the frontend opens in the OS browser.
@@ -288,7 +435,7 @@ function value_frames_for(result)
     end
     valbuf = IOBuffer()
     try
-        Base.invokelatest(show, valbuf, MIME"text/plain"(), result)
+        Base.invokelatest(show, color ? IOContext(valbuf, :color => true) : valbuf, MIME"text/plain"(), result)
     catch e
         e isa InterruptException && rethrow()
         print(valbuf, "<unshowable $(typeof(result)): $(Base.invokelatest(sprint, showerror, e))>")

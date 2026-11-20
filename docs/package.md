@@ -255,7 +255,9 @@ among the workspace's members and told back to the poster by name (the maintaine
 working"; no person has yet been notified by one, a stand-in answered for Slack); a skill that tells a session how to
 post to its project's channel; the REPL drawer in Julia's own colors, its long lines wrapped at the pane's width, and the escape sequences in text a
 program printed read by one linear grammar of at most 4096 bytes a sequence (the window's cell rule took minutes on a
-megabyte of unfinished openers); the
+megabyte of unfinished openers), and a person's eval in the drawer printing with color where an agent's runs as it did
+(color follows a flag the window's request carries, so `sot-fe repl run --fresh` has none; an older window is sent text
+with no escape byte); the
 Windows launcher starting for a user name with a space in it (the maintainer's report); Escape on an edited buffer
 drawing its discard question, and a discard showing the file as last saved; typing and selecting in edit mode shaping
 only the lines a key changes (under 1 ms a key on a 5,000-line file, release build, where each took most of a

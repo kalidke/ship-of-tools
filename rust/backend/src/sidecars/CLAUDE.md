@@ -316,6 +316,37 @@ R7. **Output reaches the window as `repl.frame`s, and a collected run's text is 
     the 1 MiB envelope bounds a reply, and a run whose frames exceed it fails there. A figure that cannot be written is
     logged and ends the spill, and the reply carries the figures written before it (none when the first fails); the
     drawer still shows every image.
+    **Color follows who asked for the eval, by the request's own flag.** `ReplEvalReq::color` and `ReplRunFileReq::color`
+    (default false) are set only by a window for a person's run; the daemon forwards the payload to the child as it came, so an
+    eval that does not carry it runs exactly as it did before color existed, whichever op carried it: `repl.execute` (`sot-fe
+    repl eval|run`) never has it, and neither has the `repl.run_file` of `sot-fe repl run --fresh`, which the drawer
+    therefore shows uncolored (a client that sets the flag by hand gets color: it asked). Without it the child prints
+    nothing differently: streams without `:color`, a value and an error message made without color, nothing held back, and
+    the collector keeps and strips nothing, so what an agent reads is what it read (a MethodError keeps its `!Matched::`
+    markers, which Julia prints only without color); the stack an agent's code prints is the base's, frame for frame with
+    each signature, for the choice is `EVAL_COLOR`, state `handle_eval` and `handle_run_file` set for each eval they accept and
+    `stream_eval_frames` reads, in no argument and no type parameter of a frame the user's code runs under (only the lines of the
+    shim's frames follow its source; pinned in the child's tests against the base's text for one fixed probe). With it, the streams are
+    `IOContext`s of the pipe's write end that say `:color => true` (`julia/repl/src/frames.jl`, `stream_eval_frames`), so the
+    logging macros, `printstyled`, `display` (through the shim's `EvalStdout`), `Pkg`'s output (`Pkg.status()` and a pkg-mode
+    eval alike) and the packages that ask `get(stdout, :color, false)` print terminal escapes; an error's message and a
+    shown value are made with `:color => true` too. No frame ends inside an escape sequence: the child holds back the tail a
+    chunk ends in the middle of, found by the grammar's one forward pass (`escape_prefix`, `sot_protocol::escapes::open_tail`:
+    an opener inside a whole string is the string's and holds nothing), so the held text is at most `MAX_ESCAPE_SEQUENCE` =
+    4096 bytes, and it waits at most `ESCAPE_HOLD_SECONDS` = 0.1 s from when that sequence began to wait: after that it goes
+    on as text, so nothing a program prints is delayed by more than a tenth of a second or by 4096 bytes of the stream,
+    however often the program writes meanwhile (`stream_pipe: nothing a program prints waits past the hold` (a sequence is the same one while it begins at the same place in the stream: one let go does not shorten the next one's wait)); cases in `julia/repl/test/escape_cases.tsv` and the 3,000
+    random ones of `escape_random.tsv`, which wire's tests read too. A window that does not say it reads escapes
+    (`HelloReq::reads_terminal_color`, every window of 0.7.2) is sent the same frames with every whole escape sequence taken
+    out of `stdout`, `stderr`, `value` and `error` text and any ESC left (one that starts no whole sequence, as `print("a\e[3")`
+    leaves) a space, per connection when the frame is written (`repl_frame_for`), so it is sent no ESC byte, and draws what
+    v0.7.2's cell rule drew of the same text; so is a connection that is no window. For user code a color eval's `stdout` and
+    `stderr` differ in their type (`IOContext{PipeEndpoint}` where there was a `PipeEndpoint`) and in `get(io, :color,
+    false)`; readable, `readavailable`, `close`, `displaysize`, `flush`, writes and a nested `redirect_stdout` behave as
+    before, and `.handle`, `Base._fd(stdout)` and `uv_status_string(stdout)` do not exist on the wrapper (probed on Julia
+    1.13). Limits: a value whose `show` prints other text when it is given color reads that way in the drawer; an eval's own
+    process stderr, the startup lines and the stalled-start error's tail are not colored; a sequence a program splits
+    across two writes more than 0.1 s apart reaches a connection that does not read escapes as two halves, each cleaned.
 
 Item 41 (a row's REPL outlives a daemon restart) is not built and not ordered; the result file says what it would take.
 
@@ -414,4 +445,4 @@ One per guarantee. Paths are under `rust/backend/src/sidecars/` unless they star
 | R4 | interrupt reaches only the running eval; non-yielding evals by signal | `repl/escalation_tests.rs`: all (`it_signals_only_the_running_eval_the_request_names`, `a_forced_request_for_the_same_eval_replaces_a_plain_escalation`, `a_forced_burst_ends_at_its_span_or_at_the_childs_first_line`, `each_answer_says_what_is_left`); `repl/interrupt_tests.rs`: `one_interrupt_stops_a_loop_with_a_safepoint`, `a_loop_with_no_safepoint_needs_the_force`, `an_interrupt_naming_another_eval_sends_no_signal`; `repl/ops_busy_tests.rs`: `an_interrupt_the_signal_does_not_stop_says_so`, `an_idle_repl_is_never_signalled`, `no_signal_follows_the_evals_done`; `julia/repl/test/interrupt_child.jl` (local gate and release gate) |
 | R5 | checked retirement | `repl/restart_tests.rs`: `restart_timeout_retains_owner_and_starts_no_replacement`, `cleanup_error_prevents_replacement` |
 | R6 | the port channel | `repl/ports_tests.rs`: `an_allow_is_applied_before_its_browser_frame_is_forwarded`, `a_refused_allow_withholds_the_frame_and_says_why`, `an_end_a_receiver_refuses_is_logged_and_changes_nothing`, `an_allow_the_cap_would_evict_at_once_is_refused` (pages), `a_repl_with_no_receiver_refuses_every_allow`, `a_new_repl_handle_starts_above_the_last_generation`; `repl/restart_tests.rs`: `retired_generation_cannot_grant`; pages' side, `src/pages/proxy_tests.rs`: `a_stale_generation_is_refused_by_the_table`, `an_older_childs_end_cannot_erase_its_replacements_grant`, `browser_ports_record_revoke_and_allowlist` |
-| R7 | output and its text cap | `repl/execute_tests.rs`: `repl_execute_reports_are_unchanged`, `a_collected_run_keeps_whole_the_frame_that_crosses_the_text_cap`, `a_field_past_its_cap_is_cut_and_marked`; `repl/numbers_tests.rs`: the window's-numbers tests; `a_figure_is_written_beneath_the_root_following_no_link` (which also pins the figures kept when a later one fails) |
+| R7 | output and its text cap | `repl/execute_tests.rs`: `repl_execute_reports_are_unchanged`, `a_collected_run_keeps_whole_the_frame_that_crosses_the_text_cap`, `a_field_past_its_cap_is_cut_and_marked`, `shell_table::a_run_carries_color_only_when_its_request_does` (called from `repl_execute_reports_are_unchanged`, which pins that an agent's payload carries none); `server/events_tests.rs`: `an_older_window_is_sent_no_escape_and_a_window_that_reads_them_is_sent_all`, `an_older_window_reads_clean_text` (v0.7.2's own stripping code on a Markdown link, a raw OSC 8 and a shrinking repaint), `an_esc_that_starts_no_whole_sequence_is_sent_as_the_space_v072_draws_it_as`; `julia/repl/test/runtests.jl`: `escape_prefix holds what the shared cases say and nothing else`, `escape_prefix: the bound is the grammar's`, `escape_prefix: an opener inside a whole string is the string's, and what never ends is held to the bound`, `stream_pipe: nothing a program prints waits past the hold, and a whole string's opener holds nothing`, `stream_eval_frames: an agent's error report has the frames it had before, a person's is no different`, `serve: the stack an agent's code prints has the shim's frames and signatures it had before color`, `serve: a run of a file takes color only when its request says so`, `stream_pipe: no frame splits a sequence, between writes and at a long cut`, `stream_eval_frames: an eval a person typed takes color; one an agent submitted is as it always was`, `stream_eval_frames: what user code sees of its streams`, `value_frames_for: ordinary values read exactly as they did without color`; `repl/numbers_tests.rs`: the window's-numbers tests; `a_figure_is_written_beneath_the_root_following_no_link` (which also pins the figures kept when a later one fails) |

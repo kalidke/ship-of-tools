@@ -283,6 +283,49 @@ mod shell_table {
             .unwrap_or_else(|| panic!("no request logged for eval {eval_id}"))
     }
 
+    /// Who gets color is the request's own flag, whichever op carries it: a `repl.eval` or `repl.run_file` the window sent
+    /// with `color: true` reaches the child with it, one without (an agent's `sot-fe repl run --fresh` sends none) reaches it
+    /// with no such field, and `repl.execute` (pinned above: its logged payload is exactly code, eval id and workspace)
+    /// never has it, so what an agent reads is what it always was.
+    async fn a_run_carries_color_only_when_its_request_does(workspaces: &Workspaces, session: &Session, dir: &Path, log: &Path) {
+        let (id, root) = add_row(workspaces, dir, "colorrow");
+        let numbers = crate::sidecars::repl::numbers::CallerNumbers::default();
+        let file = root.join("run.jl");
+        std::fs::write(&file, "1\n").unwrap();
+        let before = std::fs::read_to_string(log).unwrap_or_default().lines().count();
+        let path = file.to_string_lossy().to_string();
+        let sent = [
+            ("repl.eval", json!({ "workspace_id": id, "code": "case-ok", "eval_id": 5, "color": true }), true),
+            ("repl.eval", json!({ "workspace_id": id, "code": "case-ok", "eval_id": 6 }), false),
+            ("repl.run_file", json!({ "workspace_id": id, "path": path, "eval_id": 7, "color": true }), true),
+            ("repl.run_file", json!({ "workspace_id": id, "path": path, "fresh": false }), false),
+        ];
+        for (n, (op, payload, _)) in sent.iter().enumerate() {
+            let out = if *op == "repl.eval" {
+                crate::sidecars::repl::ops::handle_repl_eval(n as u64, payload.clone(), session, workspaces, &numbers).await
+            } else {
+                crate::sidecars::repl::ops::handle_repl_run_file(n as u64, payload.clone(), session, workspaces, &numbers).await
+            }
+            .unwrap();
+            assert_eq!(out[0].0.payload["accepted"], true, "{:?}", out[0].0.payload);
+            // One at a time: the child takes a request when the one before has answered.
+            let waited = std::time::Instant::now();
+            while std::fs::read_to_string(log).unwrap_or_default().lines().count() < before + n + 1
+                && waited.elapsed() < Duration::from_secs(30)
+            {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }
+        let requests: Vec<Value> =
+            std::fs::read_to_string(log).unwrap_or_default().lines().skip(before).filter_map(|l| serde_json::from_str(l).ok()).collect();
+        assert_eq!(requests.len(), 4, "{requests:?}");
+        for (request, (op, _, color)) in requests.iter().zip(sent.iter()) {
+            assert_eq!(request["op"], *op);
+            let got = &request["payload"]["color"];
+            assert!(if *color { got == &json!(true) } else { got.is_null() }, "{op}: color {got} for a request that {}", if *color { "said so" } else { "did not" });
+        }
+    }
+
     #[tokio::test]
     #[allow(clippy::too_many_lines, reason = "one test scenario: every repl.execute report checked against its pinned shape")]
     async fn repl_execute_reports_are_unchanged() {
@@ -431,6 +474,8 @@ mod shell_table {
         assert!(message.starts_with("repl submit failed: "), "{message}");
         r.reply["error"]["message"] = json!("repl submit failed: ...");
         assert_eq!(r.reply, refusal(&id, "repl_died", "repl submit failed: ..."));
+
+        a_run_carries_color_only_when_its_request_does(&workspaces, &session, &dir, &log).await;
 
         let _ = std::fs::remove_dir_all(&dir);
     }

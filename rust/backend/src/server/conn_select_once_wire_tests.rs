@@ -78,7 +78,7 @@ impl Wire {
             &mut self.ws_events_rx, &mut self.topo_changed_rx, &mut self.agent_events_rx,
             &mut self.link, &mut self.fe_command_rx, &mut self.repl_frame_rx,
             &mut self.monitor_rx, &mut self.chat_watch, &mut self.jobs, tokio::time::Instant::now(), false, true, &None,
-            &self.workspaces, &None, &Clients::new(), &Default::default(),
+            &self.workspaces, &None, &Clients::new(), &Default::default(), true,
         )
         .await
         .expect("select_once")
@@ -225,7 +225,7 @@ async fn an_expired_read_deadline_reaps_a_connection_whose_event_arms_are_always
             select_once(
                 &mut w.buf, &mut w.read_fut, &mut w.out_rx, &mut w.watcher_rx, &mut w.ws_events_rx, &mut w.topo_changed_rx,
                 &mut w.agent_events_rx, &mut w.link, &mut w.fe_command_rx, &mut w.repl_frame_rx, &mut w.monitor_rx,
-                &mut w.chat_watch, &mut w.jobs, past, true, true, &None, &w.workspaces, &None, &Clients::new(), &Default::default(),
+                &mut w.chat_watch, &mut w.jobs, past, true, true, &None, &w.workspaces, &None, &Clients::new(), &Default::default(), true,
             ),
         )
         .await
@@ -261,7 +261,7 @@ async fn a_bus_lost_frame_that_cannot_be_written_ends_the_connection() {
             &mut Broken, &mut w.read_fut, &mut w.out_rx, &mut w.watcher_rx, &mut w.ws_events_rx, &mut w.topo_changed_rx,
             &mut w.agent_events_rx, &mut w.link, &mut w.fe_command_rx, &mut w.repl_frame_rx, &mut w.monitor_rx,
             &mut w.chat_watch, &mut w.jobs, tokio::time::Instant::now(), false, true, &None, &w.workspaces, &None, &Clients::new(),
-            &Default::default(),
+            &Default::default(), true,
         ),
     )
     .await

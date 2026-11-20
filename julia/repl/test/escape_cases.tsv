@@ -1,6 +1,6 @@
-# Cases for the terminal-escape grammar, read by rust/protocol/src/escapes_tests.rs.
+# Cases for the terminal-escape grammar, read by rust/protocol/src/escapes_tests.rs and julia/repl/test/runtests.jl.
 # Columns, tab separated: the text a program printed; what is left of it when its whole sequences are taken out
-# (`strip_escapes`); the tail a stream holds back when the text is the end of a chunk (`open_tail`: the
+# (`strip_escapes`); the tail the REPL child holds back when the text is the end of a chunk (`open_tail`: the
 # first unfinished sequence at a sequence boundary within the bound, which the next chunk may finish; empty when nothing
 # is held).
 # Escapes in a column: \e is ESC, \a is BEL, \t a tab, \\ a backslash.

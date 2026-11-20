@@ -296,6 +296,7 @@ function handle_eval(io::IO, id, payload)
     eval_id = get(payload, :eval_id, UInt64(0))
     code = String(get(payload, :code, ""))
     mode = String(get(payload, :mode, "julia"))
+    color = get(payload, :color, false) === true    # the daemon sets it for an eval a window sent, never for an agent's
 
     if eval_in_progress()
         emit = make_emit(io, id, eval_id)
@@ -308,6 +309,7 @@ function handle_eval(io::IO, id, payload)
         return
     end
 
+    EVAL_COLOR[] = color
     spawn_eval(io, id, eval_id, "repl.eval", Dict(:eval_id => eval_id, :mode => mode)) do emit
         run_eval_streaming(emit, mode, code)
     end
@@ -417,6 +419,7 @@ persistent REPL's active project is the fallback. Streams frames like
 function handle_run_file(io::IO, id, payload)
     eval_id = get(payload, :eval_id, UInt64(0))
     path = String(get(payload, :path, ""))
+    color = get(payload, :color, false) === true
 
     if isempty(path)
         write_envelope(io, "res", id, "repl.run_file",
@@ -475,6 +478,7 @@ function handle_run_file(io::IO, id, payload)
         return
     end
 
+    EVAL_COLOR[] = color
     spawn_eval(io, id, eval_id, "repl.run_file", ack_payload) do emit
         run_file_streaming(emit, abs_path, dir, current_project_dir)
     end

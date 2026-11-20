@@ -369,6 +369,7 @@ where
     // requests its own folder cannot file, and reads its answers (`comm::mail::links`). It is attached before it is on
     // the roster, so a connection the roster lists is already offered filings.
     let hello_host = hello.hello().host.clone();
+    let reads_color = hello.hello().reads_terminal_color;
     let mut link = (hello.hello().role == sot_protocol::LINK_ROLE).then(|| services.links.attach(hello_host.clone().unwrap_or_default()));
 
     // Connected-client registry entry (ADR 0010/0013): registered here, after the bus subscriptions above so no
@@ -401,7 +402,7 @@ where
             tx, &mut read_fut, &mut out_rx, &mut watcher_rx, &mut ws_events_rx, &mut topo_changed_rx,
             &mut agent_events_rx, &mut link, &mut fe_command_rx, &mut repl_frame_rx, &mut monitor_rx,
             &mut chat_watch, &mut jobs, read_deadline, deadline_armed, monitor_subscribed, &active_workspace, &services.workspaces,
-            &client_guard, &services.clients, &shared.repl_numbers,
+            &client_guard, &services.clients, &shared.repl_numbers, reads_color,
         )
         .await?
         {
@@ -477,7 +478,7 @@ async fn select_once<R, W, F>(
     read_deadline: tokio::time::Instant, deadline_armed: bool, monitor_subscribed: bool,
     active_workspace: &Option<String>, workspaces: &Workspaces, client_guard: &Option<crate::clients::ClientGuard>,
     clients: &Clients,
-    repl_numbers: &crate::sidecars::repl::numbers::CallerNumbers,
+    repl_numbers: &crate::sidecars::repl::numbers::CallerNumbers, reads_color: bool,
 ) -> Result<Woke<R>>
 where
     W: AsyncWrite + Unpin,
@@ -528,7 +529,7 @@ where
             Ok(Woke::Again)
         }
         rf = repl_frame_rx.recv() => {
-            write_repl_frame(tx, rf, client_guard.as_ref().map(|g| g.serial()), clients, repl_numbers).await?;
+            write_repl_frame(tx, rf, client_guard.as_ref().map(|g| g.serial()), clients, repl_numbers, reads_color).await?;
             Ok(Woke::Again)
         }
         tick = recv_or_pending(monitor_rx) => {

@@ -139,7 +139,7 @@ of each.
     it goes nowhere; any other `fe.command`, a browser open included, goes by serial to the window in use
     (`ClientsSnapshot::window_for`, `in_use`); a `browser` REPL frame with `open` true goes as it came to the window in
     use and with `open: false` and no `fe` to every other connection, chosen once per frame by the first connection that
-    writes it (`repl_frame_for`, `ReplFrameMsg::opener`). "In use" ranks live windows and the windows away
+    writes it (`repl_frame_for`, `ReplFrameMsg::opener`). The same function takes every escape sequence out of the text of a `stdout`, `stderr`, `value` or `error` frame for a connection whose hello did not say `reads_terminal_color` (sidecars R7). "In use" ranks live windows and the windows away
     (`Inner::latest_away`, a window's stamp kept past its last connection) by their latest `fe.presence` stamp: when
     the winner is away and no live window shares its computer, a command that is not a preview-pane command goes to no
     window, publishes nothing, and its ack's `away` names that computer (`Route::Nowhere`; the maintainer, 2026-10-31,

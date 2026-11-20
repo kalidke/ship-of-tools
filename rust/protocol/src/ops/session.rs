@@ -68,6 +68,12 @@ pub struct HelloReq {
     /// Never an address, never part of a handle, never written anywhere.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub os_user: Option<String>,
+    /// This client reads terminal escape sequences in the text of a REPL run (colors), so the daemon sends it the
+    /// frames as the program printed them. Absent (`false`) for every client that does not, which is sent the same
+    /// text with its whole sequences taken out (`escapes::strip_escapes`) and any other ESC as a space, so it is sent no
+    /// ESC byte.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reads_terminal_color: bool,
 }
 
 /// The hello role of a connection that is about to become a byte pipe or a lease: its next frame is
@@ -99,6 +105,7 @@ impl HelloReq {
             instance: None,
             name: None,
             os_user: Some(os_user),
+            reads_terminal_color: false,
         })
     }
 }

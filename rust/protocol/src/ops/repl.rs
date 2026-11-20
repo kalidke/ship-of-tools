@@ -25,6 +25,11 @@ pub struct ReplEvalReq {
     /// leak into workspace B. Missing = default workspace.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_id: Option<String>,
+    /// The eval is a person's, typed in a window that draws terminal color: the REPL child prints it with color
+    /// (`julia/repl`). Only the window sets it; an agent's run (`sot-fe repl`, `repl.execute`) never does, and what
+    /// does not say so runs as it always did.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub color: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -66,6 +71,9 @@ pub struct ReplRunFileReq {
     /// The label of a run the daemon announces (`ReplExecuteReq::origin`); "session" when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<String>,
+    /// As `ReplEvalReq::color`: a person's run of a file from a window that draws terminal color.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub color: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

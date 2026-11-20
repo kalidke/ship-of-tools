@@ -264,7 +264,9 @@ name is in this crate's one op table.
     end of the text (at the bound a terminator cannot fit and it is data); an opener inside a whole string is the string's
     and is no tail, and cutting at the tail never changes what the whole text strips to. `julia/repl/test/escape_cases.tsv`
     (written by hand: a column for the strip, a column for the tail) and `escape_random.tsv` (3,000 cases a fixed seed makes;
-    `SOT_ESCAPE_REGEN=1` rewrites it) are the cases. Tests `escapes_tests.rs`:
+    `SOT_ESCAPE_REGEN=1` rewrites it) are the cases, and the REPL child's hold of an unfinished tail (`escape_prefix`, sidecars R7) reads the same bound and
+    both tables in its own tests, so the two sides cannot drift. `HelloReq::reads_terminal_color` (additive, defaulted false) is how a window says it reads these sequences in a REPL run's text; the daemon sends every other connection the text with them taken out. Tests `escapes_tests.rs`:
+    Tests `escapes_tests.rs`:
     `the_shared_cases_strip_and_split_as_the_table_says`, `colors_cursor_moves_titles_and_esc_forms_are_removed_whole`,
     `pieces_name_the_text_and_each_whole_sequence_in_order`, `a_sequence_longer_than_the_bound_is_data_from_its_esc_on`,
     `the_random_cases_are_what_the_grammar_gives_and_cutting_at_the_held_tail_never_splits_a_sequence`,

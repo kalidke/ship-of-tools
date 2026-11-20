@@ -59,3 +59,20 @@ fn workspace_list_entry_repl_state_round_trips() {
     let e: WorkspaceListEntry = serde_json::from_value(json).unwrap();
     assert_eq!(e.repl_state, "starting");
 }
+
+/// `color` is how a window says an eval is a person's: absent from every request that is not, so an older window's or an
+/// agent's request is what it was, and it reads back as false.
+#[test]
+fn the_color_flag_is_additive_and_written_only_when_set() {
+    use super::{ReplEvalReq, ReplRunFileReq};
+    let eval: ReplEvalReq = serde_json::from_value(serde_json::json!({"eval_id": 1, "code": "1"})).unwrap();
+    assert!(!eval.color);
+    assert!(serde_json::to_value(&eval).unwrap().get("color").is_none());
+    let run: ReplRunFileReq = serde_json::from_value(serde_json::json!({"path": "/a.jl"})).unwrap();
+    assert!(!run.color);
+    assert!(serde_json::to_value(&run).unwrap().get("color").is_none());
+    let said: ReplEvalReq = serde_json::from_value(serde_json::json!({"eval_id": 1, "code": "1", "color": true})).unwrap();
+    assert_eq!(serde_json::to_value(&said).unwrap()["color"], true);
+    let said: ReplRunFileReq = serde_json::from_value(serde_json::json!({"path": "/a.jl", "color": true})).unwrap();
+    assert_eq!(serde_json::to_value(&said).unwrap()["color"], true);
+}

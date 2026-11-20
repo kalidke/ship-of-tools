@@ -124,30 +124,155 @@ mod browser_opener {
         let served = json!({"kind": "browser", "url": "http://127.0.0.1:9/p", "open": false});
 
         let m = msg(&page);
-        assert_eq!(repl_frame_for(&m, b, &clients), page, "no window used: the one that connected last");
-        assert_eq!(repl_frame_for(&m, a, &clients), served, "never every window");
+        assert_eq!(repl_frame_for(&m, b, &clients, true), page, "no window used: the one that connected last");
+        assert_eq!(repl_frame_for(&m, a, &clients, true), served, "never every window");
 
         clients.touch_person_input(a.unwrap());
         let unset = json!({"kind": "browser", "url": "http://127.0.0.1:9/p"});
         let aimed = json!({"kind": "browser", "url": "http://127.0.0.1:9/p", "open": true, "fe": "fe@b"});
         for frame in [&page, &unset, &aimed] {
             let m = msg(frame);
-            assert_eq!(repl_frame_for(&m, a, &clients), *frame, "the window used last, as it came");
-            assert_eq!(repl_frame_for(&m, b, &clients), served, "{frame}");
-            assert_eq!(repl_frame_for(&m, None, &clients), served, "{frame}");
+            assert_eq!(repl_frame_for(&m, a, &clients, true), *frame, "the window used last, as it came");
+            assert_eq!(repl_frame_for(&m, b, &clients, true), served, "{frame}");
+            assert_eq!(repl_frame_for(&m, None, &clients, true), served, "{frame}");
         }
 
         let m = msg(&page);
-        assert_eq!(repl_frame_for(&m, a, &clients), page);
+        assert_eq!(repl_frame_for(&m, a, &clients, true), page);
         clients.touch_person_input(b.unwrap());
-        assert_eq!(repl_frame_for(&m, b, &clients), served, "one answer per frame");
-        assert_eq!(repl_frame_for(&msg(&page), b, &clients), page, "the next frame: the window used last now");
+        assert_eq!(repl_frame_for(&m, b, &clients, true), served, "one answer per frame");
+        assert_eq!(repl_frame_for(&msg(&page), b, &clients, true), page, "the next frame: the window used last now");
 
         let one = json!({"kind": "browser", "url": "http://127.0.0.1:9/p", "open": false, "fe": "fe@a"});
         let text = json!({"kind": "stdout", "text": "hi"});
         for frame in [&served, &one, &text] {
-            assert_eq!(repl_frame_for(&msg(frame), a, &clients), *frame);
-            assert_eq!(repl_frame_for(&msg(frame), b, &clients), *frame);
+            assert_eq!(repl_frame_for(&msg(frame), a, &clients, true), *frame);
+            assert_eq!(repl_frame_for(&msg(frame), b, &clients, true), *frame);
         }
+    }
+}
+
+// A window that does not say it reads terminal escapes is sent the text of a frame with every sequence taken out, a
+// window that does is sent it as the program printed it, and no other frame changes.
+mod escapes_for_older_windows {
+    use super::super::repl_frame_for;
+    use crate::clients::Clients;
+    use crate::sidecars::repl::ReplFrameMsg;
+    use serde_json::json;
+
+    fn written(frame: serde_json::Value, reads: bool) -> serde_json::Value {
+        let m = ReplFrameMsg { eval_id: 1, workspace_id: None, frame, opener: Default::default() };
+        repl_frame_for(&m, None, &Clients::new(), reads)
+    }
+
+    #[test]
+    fn an_older_window_is_sent_no_escape_and_a_window_that_reads_them_is_sent_all() {
+        let dirty = "a\u{1b}[31mred\u{1b}[39m \u{1b}]8;;http://x\u{1b}\\link\u{1b}]8;;\u{1b}\\\u{1b}(B\r\u{1b}[32m9 left\n";
+        let clean = "ared link\r9 left\n";
+        for (frame, field) in [
+            (json!({"kind": "stdout", "text": dirty}), "text"),
+            (json!({"kind": "stderr", "text": dirty}), "text"),
+            (json!({"kind": "value", "mime": "text/plain", "text": dirty}), "text"),
+            (json!({"kind": "error", "message": dirty, "stacktrace": []}), "message"),
+        ] {
+            assert_eq!(written(frame.clone(), true), frame, "a window that reads them: as it came");
+            assert_eq!(written(frame.clone(), false)[field], clean, "{frame}");
+            assert_eq!(written(frame.clone(), false)["kind"], frame["kind"]);
+        }
+        for frame in [json!({"kind": "done", "eval_id": 1, "elapsed_ms": 4}), json!({"kind": "image", "mime": "image/png", "data_base64": "\u{1b}[31m"})] {
+            assert_eq!(written(frame.clone(), false), frame, "no other frame changes");
+        }
+    }
+}
+
+// What a window of v0.7.2 draws from the frames this daemon sends it: v0.7.2's own `strip_csi`, `cell_lines` and
+// `stream_lines`, copied (`git show v0.7.2:rust/frontend/src/ui/chrome/status.rs` and `.../drawer/repl/presentation.rs`),
+// run on what `repl_frame_for` writes for a window that does not read escapes, on three texts the child prints when an
+// eval takes color. Fed the raw text, that window shows pieces of the sequences.
+mod an_older_window_reads_clean_text {
+    use super::super::repl_frame_for;
+    use crate::clients::Clients;
+    use crate::sidecars::repl::ReplFrameMsg;
+    use serde_json::json;
+
+    fn strip_csi(text: &str) -> String {
+        let (mut out, mut rest) = (String::new(), text);
+        while let Some(i) = rest.find("\u{1b}[") {
+            out.push_str(&rest[..i]);
+            let seq = &rest[i + 2..];
+            let params = seq.find(|c| !matches!(c, '\u{30}'..='\u{3f}')).unwrap_or(seq.len());
+            let end = seq[params..].find(|c| !matches!(c, '\u{20}'..='\u{2f}')).map_or(seq.len(), |k| params + k);
+            if matches!(seq[end..].chars().next(), Some('\u{40}'..='\u{7e}')) {
+                rest = &seq[end + 1..];
+            } else {
+                out.push('\u{1b}');
+                rest = &rest[i + 1..];
+            }
+        }
+        out.push_str(rest);
+        out
+    }
+
+    fn cell_lines(text: &str) -> Vec<String> {
+        strip_csi(text)
+            .replace("\r\n", "\n")
+            .replace(|c| matches!(c, '\r' | '\u{85}' | '\u{2028}' | '\u{2029}'), "\n")
+            .lines()
+            .map(|row| row.replace(char::is_control, " "))
+            .collect()
+    }
+
+    fn stream_lines(text: &str) -> Vec<String> {
+        text.replace("\r\n", "\n")
+            .lines()
+            .flat_map(|line| {
+                let mut row: Vec<char> = Vec::new();
+                for part in line.split('\r') {
+                    for (i, c) in part.chars().enumerate() {
+                        match row.get_mut(i) {
+                            Some(cell) => *cell = c,
+                            None => row.push(c),
+                        }
+                    }
+                }
+                let rows = cell_lines(&row.into_iter().collect::<String>());
+                if rows.is_empty() { vec![String::new()] } else { rows }
+            })
+            .collect()
+    }
+
+    fn old_window_rows(frame: serde_json::Value, stream: bool) -> Vec<String> {
+        let m = ReplFrameMsg { eval_id: 1, workspace_id: None, frame, opener: Default::default() };
+        let sent = repl_frame_for(&m, None, &Clients::new(), false);
+        let text = sent["text"].as_str().unwrap();
+        if stream { stream_lines(text) } else { cell_lines(text) }
+    }
+
+    /// An ESC that starts no whole sequence (a program's own byte, the half of a sequence two writes split) is sent as the
+    /// space v0.7.2's cell rule draws it as: no ESC byte reaches the connection, and the old window's rows are the same.
+    #[test]
+    fn an_esc_that_starts_no_whole_sequence_is_sent_as_the_space_v072_draws_it_as() {
+        for raw in ["tail\u{1b}[31", "a\u{1b}[3", "1mred\u{1b}[0", "x\u{1b}", "x\u{1b}\u{1}y", "\u{1b}]8;;http://x", "p\u{1b}Xabc\u{1b}[3", "e\u{1b}\u{e9}"] {
+            let frame = json!({"kind": "stdout", "text": raw});
+            let m = ReplFrameMsg { eval_id: 1, workspace_id: None, frame, opener: Default::default() };
+            let sent = repl_frame_for(&m, None, &Clients::new(), false)["text"].as_str().unwrap().to_string();
+            assert!(!sent.contains('\u{1b}'), "{raw:?} sent as {sent:?}");
+            assert_eq!(cell_lines(&sent), cell_lines(raw), "{raw:?}: the old window draws what it drew of the raw text");
+            assert_eq!(stream_lines(&sent), stream_lines(raw), "{raw:?}");
+        }
+    }
+
+    #[test]
+    fn a_link_an_osc_and_a_repaint_show_as_a_terminal_shows_them() {
+        // A Markdown value's link (`StyledStrings` writes OSC 8 once the stream says color).
+        let link = "see \u{1b}]8;;http://example.com\u{1b}\\link\u{1b}]8;;\u{1b}\\ here";
+        assert_eq!(old_window_rows(json!({"kind": "value", "mime": "text/plain", "text": link}), false), ["see link here"]);
+        // A raw OSC 8 printed to stdout.
+        let raw = "\u{1b}]8;;http://example.com\u{1b}\\link\u{1b}]8;;\u{1b}\\\n";
+        assert_eq!(old_window_rows(json!({"kind": "stdout", "text": raw}), true), ["link"]);
+        // A shrinking repaint: the old window applies `\r` before it strips, so on raw text it showed `9 leftm`.
+        let repaint = "\r\u{1b}[32m10 left\u{1b}[39m\r\u{1b}[32m9 left\u{1b}[39m\n";
+        assert_eq!(old_window_rows(json!({"kind": "stdout", "text": repaint}), true), ["9 leftt"]);
+        assert_eq!(stream_lines(repaint), ["9 leftm"], "the raw text, which is what the probe guards against");
     }
 }

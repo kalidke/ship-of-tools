@@ -8,6 +8,23 @@ const DR = ShipToolsRepl
 
 include("answer_then_next.jl")
 
+# A case column of escape_cases.tsv: \e is ESC, \a BEL, \t a tab, \\ a backslash.
+function unescape_case(col)
+    out = IOBuffer()
+    chars = collect(String(col))
+    i = 1
+    while i <= length(chars)
+        if chars[i] == '\\'
+            i += 1
+            write(out, Dict('e' => '\e', 'a' => '\a', 't' => '\t', '\\' => '\\')[chars[i]])
+        else
+            write(out, chars[i])
+        end
+        i += 1
+    end
+    String(take!(out))
+end
+
 # An output stream that counts the `write` calls that reach it.
 mutable struct CountingIO <: IO
     writes::Int
@@ -125,6 +142,225 @@ Base.flush(::CountingIO) = nothing
         @test !isempty(errs[1][:stacktrace])    # captured a backtrace
     end
 
+    # The terminal-escape grammar and its bound are `sot_protocol::escapes`'s; the cases are the same file its tests read.
+    cases_of(file) = [
+        (unescape_case(c[1]), unescape_case(length(c) >= 3 ? c[3] : ""))
+        for c in (split(l, '\t'; keepempty = true) for l in eachline(joinpath(@__DIR__, file)) if !startswith(l, '#'))
+        if length(c) >= 1
+    ]
+    @testset "escape_prefix holds what the shared cases say and nothing else" begin
+        # The hand-written table and the 3,000 random texts the Rust side's seeded generator makes: each text, as the end
+        # of a chunk, is cut where `sot_protocol::escapes::open_tail` says.
+        for (file, least) in (("escape_cases.tsv", 20), ("escape_random.tsv", 3000))
+            cases = cases_of(file)
+            @test length(cases) >= least
+            bad = [input for (input, held) in cases
+                   if DR.escape_prefix(input) != (String(codeunits(input)[1:ncodeunits(input)-ncodeunits(held)]), held)]
+            @test isempty(bad)
+        end
+    end
+
+    @testset "escape_prefix: an opener inside a whole string is the string's, and what never ends is held to the bound" begin
+        @test DR.escape_prefix("a\e]0;t\eXu\a") == ("a\e]0;t\eXu\a", "")
+        @test DR.escape_prefix("p\eXabc") == ("p", "\eXabc")
+        # A text that is linear to read: a megabyte of openers, with the cache of where the next terminator is.
+        @test @elapsed(DR.escape_prefix("\e]"^(1 << 19))) < 5
+    end
+
+    @testset "escape_prefix: the bound is the grammar's" begin
+        max = DR.MAX_ESCAPE_SEQUENCE
+        @test max == 4096
+        # A string that can still be finished within the bound is held, a longer one is data.
+        fits = "\e]8;;" * "u"^(max - 6)          # one byte short of the bound: a terminator would make it exactly `max`
+        @test DR.escape_prefix("a" * fits) == ("a", fits)
+        too_long = "\e]8;;" * "u"^(max - 5)
+        @test DR.escape_prefix("a" * too_long) == ("a" * too_long, "")
+        # An ESC far back is not examined, and an unfinished CSI is held up to the same bound.
+        @test DR.escape_prefix("\e[" * "1"^(max)) == ("\e[" * "1"^(max), "")
+        @test DR.escape_prefix("x"^70000 * "\e[1;3") == ("x"^70000, "\e[1;3")
+    end
+
+    @testset "stream_pipe: no frame splits a sequence, between writes and at a long cut" begin
+        ESC_HOLD = DR.ESCAPE_HOLD_SECONDS[]
+        DR.ESCAPE_HOLD_SECONDS[] = 5.0              # a loaded machine must not turn a pause into a release
+        for (chunks, whole) in (
+            (("a\e[3", "1mred\e", "[39m b \e]8;;ht", "tp://x\e\\link", "\e[0"), "a\e[31mred\e[39m b \e]8;;http://x\e\\link\e[0"),
+            (("x"^65236 * "\e]8;;http://example.com/" * "a"^400, "\e\\link\e]8;;\e\\\n"),
+             "x"^65236 * "\e]8;;http://example.com/" * "a"^400 * "\e\\link\e]8;;\e\\\n"),
+        )
+            pipe = Pipe()
+            Base.link_pipe!(pipe; reader_supports_async = true, writer_supports_async = true)
+            texts = String[]
+            reader = @async DR.stream_pipe(pipe, f -> push!(texts, f[:text]), "stdout"; hold = true)
+            for chunk in chunks
+                write(pipe.in, chunk); flush(pipe.in); sleep(0.05)
+            end
+            close(pipe.in)
+            wait(reader)
+            @test join(texts) == whole
+            for t in texts[1:end-1]
+                @test DR.escape_prefix(t) == (t, "")
+            end
+        end
+        DR.ESCAPE_HOLD_SECONDS[] = ESC_HOLD
+        # An eval an agent submitted holds nothing: its frames are cut where the bytes were.
+        pipe = Pipe()
+        Base.link_pipe!(pipe; reader_supports_async = true, writer_supports_async = true)
+        texts = String[]
+        reader = @async DR.stream_pipe(pipe, f -> push!(texts, f[:text]), "stdout")
+        write(pipe.in, "a\e[3"); flush(pipe.in); sleep(0.1)
+        @test texts == ["a\e[3"]
+        close(pipe.in); wait(reader)
+    end
+
+    @testset "stream_pipe: nothing a program prints waits past the hold, and a whole string's opener holds nothing" begin
+        # Output after an opener that never ends: held for the next bytes, released when the program is quiet for the hold.
+        pipe = Pipe()
+        Base.link_pipe!(pipe; reader_supports_async = true, writer_supports_async = true)
+        texts = String[]
+        reader = @async DR.stream_pipe(pipe, f -> push!(texts, f[:text]), "stdout"; hold = true)
+        t0 = time()
+        write(pipe.in, "\e]0;title\eXnot a string\aline 1\n"); flush(pipe.in)   # a whole OSC: nothing is held
+        sleep(0.05)
+        @test texts == ["\e]0;title\eXnot a string\aline 1\n"]
+        write(pipe.in, "\eXnever ends\nline 2\n"); flush(pipe.in)
+        for _ in 1:100
+            length(texts) >= 2 && break
+            sleep(0.01)
+        end
+        @test texts == ["\e]0;title\eXnot a string\aline 1\n", "\eXnever ends\nline 2\n"]
+        @test time() - t0 < 2                       # released by the hold's end, not by the end of the stream
+        close(pipe.in); wait(reader)
+        # A program that goes on writing does not hold the text longer: the hold's time runs from when the sequence began to wait.
+        pipe = Pipe()
+        Base.link_pipe!(pipe; reader_supports_async = true, writer_supports_async = true)
+        texts = String[]
+        reader = @async DR.stream_pipe(pipe, f -> push!(texts, f[:text]), "stdout"; hold = true)
+        t0 = time()
+        write(pipe.in, "\eP"); flush(pipe.in)
+        for i in 1:20
+            write(pipe.in, "line $i\n"); flush(pipe.in); sleep(0.03)
+        end
+        @test !isempty(texts) && startswith(join(texts), "\ePline 1")
+        @test time() - t0 < 2
+        close(pipe.in); wait(reader)
+        @test join(texts) == "\eP" * join("line $i\n" for i in 1:20)
+        # After one hold is let go, the next sequence is its own: it keeps its full time, and is not let go with the first's.
+        pipe = Pipe()
+        Base.link_pipe!(pipe; reader_supports_async = true, writer_supports_async = true)
+        texts = String[]
+        reader = @async DR.stream_pipe(pipe, f -> push!(texts, f[:text]), "stdout"; hold = true)
+        write(pipe.in, "\eXfirst"); flush(pipe.in)
+        for _ in 1:100
+            isempty(texts) || break
+            sleep(0.01)
+        end
+        @test texts == ["\eXfirst"]                  # the first, let go after its hold
+        write(pipe.in, "\e[3"); flush(pipe.in); sleep(0.03)
+        write(pipe.in, "2mgreen\n"); flush(pipe.in); sleep(0.05)
+        @test texts == ["\eXfirst", "\e[32mgreen\n"]   # not split: the new sequence waited its own time
+        close(pipe.in); wait(reader)
+        # The bound: past it nothing is held, whatever the program goes on to print.
+        pipe = Pipe()
+        Base.link_pipe!(pipe; reader_supports_async = true, writer_supports_async = true)
+        texts = String[]
+        DR.ESCAPE_HOLD_SECONDS[] = 30.0
+        reader = @async DR.stream_pipe(pipe, f -> push!(texts, f[:text]), "stdout"; hold = true)
+        write(pipe.in, "\eX" * "x"^(DR.MAX_ESCAPE_SEQUENCE - 3)); flush(pipe.in); sleep(0.1)
+        @test isempty(texts)
+        write(pipe.in, "yz\n"); flush(pipe.in); sleep(0.2)
+        @test join(texts) == "\eX" * "x"^(DR.MAX_ESCAPE_SEQUENCE - 3) * "yz\n"
+        DR.ESCAPE_HOLD_SECONDS[] = 0.1
+        close(pipe.in); wait(reader)
+    end
+
+    @testset "stream_eval_frames: an agent's error report has the frames it had before, a person's is no different" begin
+        # The shim's frames in an error's stack, from the base this work started on: the closure, `run_user_code`, then
+        # `stream_eval_frames` itself, with nothing between (a keyword-argument method adds `#stream_eval_frames#N`).
+        for color in (false, true)
+            frames = Dict[]
+            helper() = error("boom")
+            DR.EVAL_COLOR[] = color
+            DR.stream_eval_frames(x -> push!(frames, x)) do
+                helper()
+            end
+            names = [replace(string(sf[:fn]), r"#\d+$" => "#N", r"##\d+$" => "##N") for sf in only(f for f in frames if f[:kind] == "error")[:stacktrace]]
+            at = findfirst(==("run_user_code"), names)
+            @test at !== nothing
+            @test names[at-1:at+1] == ["#stream_eval_frames##N", "run_user_code", "stream_eval_frames"]
+            @test !any(n -> startswith(n, "#stream_eval_frames#") && !startswith(n, "#stream_eval_frames##"), names)
+            @test names[1:2] == ["error", "helper"]
+        end
+        DR.EVAL_COLOR[] = false
+    end
+
+    @testset "stream_eval_frames: an eval a person typed takes color; one an agent submitted is as it always was" begin
+        run_eval(color; f) = (frames = Dict[]; DR.EVAL_COLOR[] = color; DR.stream_eval_frames(f, x -> push!(frames, x)); frames)
+        body() = begin
+            println(get(stdout, :color, false), " ", get(stderr, :color, false))
+            printstyled("red"; color = :red)
+            @warn "careful"
+            ff(x::Int, y::Int) = x; ff(x::Float64, y::String) = x
+            try; ff(1, "a"); catch e; Base.showerror(stderr, e); end
+            ff(1, "a")
+        end
+        text(frames, kind) = join(f[:text] for f in frames if f[:kind] == kind)
+        colored = run_eval(true; f = body)
+        plain = run_eval(false; f = body)
+        @test startswith(text(colored, "stdout"), "true true\n")
+        @test occursin("\e[31mred\e[39m", text(colored, "stdout"))
+        @test occursin("\e[33m\e[1m", text(colored, "stderr")) && occursin("careful", text(colored, "stderr"))
+        @test occursin("\e[", only(f for f in colored if f[:kind] == "error")[:message])
+        # The agent's eval: no escape anywhere, and the error keeps the `!Matched` markers Julia prints without color.
+        @test startswith(text(plain, "stdout"), "false false\n")
+        @test !any(f -> any(v -> v isa String && occursin('\e', v), values(f)), plain)
+        @test occursin("!Matched::", only(f for f in plain if f[:kind] == "error")[:message])
+        @test occursin("!Matched::", text(plain, "stderr"))
+        # `display` takes the stream's color, as `show` into it does (the shim's display stack writes to `EvalStdout`).
+        struct Hue end
+        Base.show(io::IO, ::MIME"text/plain", ::Hue) = printstyled(io, "hue"; color = :green)
+        shown(color) = text(run_eval(color; f = () -> display(TextDisplay(DR.EvalStdout()), Hue())), "stdout")
+        @test shown(true) == "\e[32mhue\e[39m\n" && shown(false) == "hue\n"
+    end
+
+    @testset "stream_eval_frames: what user code sees of its streams" begin
+        for color in (false, true)
+            frames = Dict[]
+            DR.EVAL_COLOR[] = color
+            DR.stream_eval_frames(x -> push!(frames, x)) do
+                print("abc")
+                println(" ", stdout isa IOContext, " ", isreadable(stdout), " ", isopen(stdout), " ", displaysize(stdout))
+                flush(stdout)
+                redirect_stdout(devnull) do
+                    println("swallowed")
+                end
+                println("back")
+                try; readavailable(stdout); catch e; println("readavailable: ", typeof(e)); end
+            end
+            out = join(f[:text] for f in frames if f[:kind] == "stdout")
+            @test startswith(out, "abc $color false true (24, 80)\nback\n")      # nothing an eval printed is swallowed by a read
+            @test occursin("readavailable: ", out)
+        end
+        DR.EVAL_COLOR[] = false
+    end
+
+    @testset "value_frames_for: ordinary values read exactly as they did without color" begin
+        struct Pt; x::Int; y::Int; end
+        for v in (42, 3.5, "hello", "\e[31m", "tab\tand \"quote\"", [1, 2, 3], (a = 1, b = "x"), Pt(1, 2), :sym, nothing, 1:3, Dict(1 => "a"))
+            DR.EVAL_COLOR[] = true
+            text = DR.value_frames_for(v)[1][:text]
+            DR.EVAL_COLOR[] = false
+            @test text == sprint(show, MIME"text/plain"(), v)
+            @test text == DR.value_frames_for(v)[1][:text]
+        end
+        struct Hued end
+        Base.show(io::IO, ::MIME"text/plain", ::Hued) = printstyled(io, "hued"; color = :green)
+        DR.EVAL_COLOR[] = true
+        @test DR.value_frames_for(Hued())[1][:text] == "\e[32mhued\e[39m"
+        DR.EVAL_COLOR[] = false
+        @test DR.value_frames_for(Hued())[1][:text] == "hued"
+    end
+
     @testset "discover_project walks up to Project.toml" begin
         dir, toml, source = DR.discover_project(@__FILE__)
         @test source == :discovered
@@ -158,6 +394,37 @@ Base.flush(::CountingIO) = nothing
             get(env, :kind, "") == "res" && break
         end
         return envs
+    end
+
+    @testset "serve: the stack an agent's code prints has the shim's frames and signatures it had before color" begin
+        # The shim's own frames in a backtrace the eval prints itself, signatures included, from the base this work started on
+        # (one fixed probe through `repl.eval`; closure numbers and file lines normalized). The color choice is state the eval
+        # reads, so it is in no argument and no type parameter of a frame the user's code runs under.
+        shim = [
+            "#run_eval_streaming##N",
+            "(::ShipToolsRepl.var\"#stream_eval_frames##N#stream_eval_frames##N\"{ShipToolsRepl.var\"#run_eval_streaming##N#run_eval_streaming##N\"{Expr}})()",
+            "user_signals(f::ShipToolsRepl.var\"#stream_eval_frames##N#stream_eval_frames##N\"{ShipToolsRepl.var\"#run_eval_streaming##N#run_eval_streaming##N\"{Expr}})",
+            "run_user_code(f::ShipToolsRepl.var\"#stream_eval_frames##N#stream_eval_frames##N\"{ShipToolsRepl.var\"#run_eval_streaming##N#run_eval_streaming##N\"{Expr}})",
+            "stream_eval_frames(f::ShipToolsRepl.var\"#run_eval_streaming##N#run_eval_streaming##N\"{Expr}, emit::ShipToolsRepl.var\"#make_emit##N#make_emit##N\"{Base.BufferStream, Int64, Int64})",
+            "run_eval_streaming(emit::ShipToolsRepl.var\"#make_emit##N#make_emit##N\"{Base.BufferStream, Int64, Int64}, mode::String, code::String)",
+            "#handle_eval##N",
+            "(::ShipToolsRepl.var\"#spawn_eval##N#spawn_eval##N\"{ShipToolsRepl.var\"#handle_eval##N#handle_eval##N\"{String, String}, Base.BufferStream, Int64, Int64, String, Dict{Symbol, Any}})()",
+            "held_task(f::ShipToolsRepl.var\"#spawn_eval##N#spawn_eval##N\"{ShipToolsRepl.var\"#handle_eval##N#handle_eval##N\"{String, String}, Base.BufferStream, Int64, Int64, String, Dict{Symbol, Any}})",
+        ]
+        for color in (false, true)
+            bs_in, bs_out, _ = drive(String[])
+            payload = Dict(:eval_id => 5, :code => "try; error(\"boom\"); catch; Base.show_backtrace(stdout, catch_backtrace()); end")
+            color && (payload[:color] = true)
+            write(bs_in, sprint(DR.json_write, Dict(:v => 1, :id => 9, :op => "repl.eval", :payload => payload)) * "\n")
+            flush(bs_in)
+            envs = read_until_res(bs_out)
+            close(bs_in)
+            text = replace(join(e[:payload][:frame][:text] for e in envs if get(e, :op, "") == "repl.frame" && e[:payload][:frame][:kind] == "stdout"), r"\e\[[0-9;]*m" => "")
+            sigs = [replace(m.captures[1], r"#\d+" => "#N") for m in eachmatch(r"^\s*\[\d+\] (.*)$"m, text)]
+            at = findfirst(==(shim[1]), sigs)
+            @test at !== nothing
+            @test sigs[at:at+length(shim)-1] == shim
+        end
     end
 
     @testset "serve: repl.eval streams frames + terminal res" begin
@@ -254,6 +521,32 @@ Base.flush(::CountingIO) = nothing
         res = envs[end]
         @test res[:kind] == "res" && res[:op] == "repl.run_file"
         @test occursin("no such file", String(res[:payload][:error]))
+    end
+
+    @testset "serve: a run of a file takes color only when its request says so" begin
+        path = tempname() * ".jl"
+        write(path, "printstyled(\"red\"; color = :red); println(); println(get(stdout, :color, false))\n")
+        for color in (true, false)
+            bs_in, bs_out, _ = drive(String[])
+            payload = Dict(:eval_id => 61, :path => path)
+            color && (payload[:color] = true)
+            write(bs_in, sprint(DR.json_write, Dict(:v => 1, :id => 12, :op => "repl.run_file", :payload => payload)) * "\n")
+            flush(bs_in)
+            envs = read_until_res(bs_out)
+            # the res comes before the include ends; read on to its done frame
+            frames = [e[:payload][:frame] for e in envs if get(e, :op, "") == "repl.frame"]
+            while !any(f -> f[:kind] == "done", frames)
+                line = readline(bs_out)
+                isempty(line) && break
+                e = DR.json_read(line)
+                get(e, :op, "") == "repl.frame" && push!(frames, e[:payload][:frame])
+            end
+            close(bs_in)
+            text = join(f[:text] for f in frames if f[:kind] == "stdout")
+            @test occursin("\e[31mred\e[39m", text) == color
+            @test occursin("$color\n", text)
+        end
+        rm(path; force = true)
     end
 
     @testset "serve: run_file include announces a browser frame mid-include" begin

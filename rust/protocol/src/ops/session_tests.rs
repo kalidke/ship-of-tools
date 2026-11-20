@@ -148,6 +148,7 @@ mod hello_version_tests {
             instance: None,
             name: None,
             os_user: None,
+            reads_terminal_color: false,
         };
         let json = serde_json::to_string(&req).unwrap();
         let back: HelloReq = serde_json::from_str(&json).unwrap();
@@ -185,6 +186,7 @@ mod hello_version_tests {
             instance: None,
             name: Some("fe@host-a".into()),
             os_user: None,
+            reads_terminal_color: false,
         };
         let json = serde_json::to_string(&req).unwrap();
         assert!(!json.contains("fe_handle"));
@@ -207,6 +209,7 @@ mod hello_version_tests {
             instance: Some("i1".into()),
             name: Some("test-host-agent".into()),
             os_user: None,
+            reads_terminal_color: false,
         };
         let json = serde_json::to_string(&req).unwrap();
         assert!(json.contains("\"name\":\"test-host-agent\""));
