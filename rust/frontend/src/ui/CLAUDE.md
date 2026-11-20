@@ -332,7 +332,7 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   `LayoutHelp::enter_row_drawer`, and a first visit is closed. Every way of changing the shown row reaches that one
   save and restore, because `SelectedRow::select` is visible to the session module alone and `State::retarget_workspace` is
   its one caller (the capture harness's startup seed builds a new `SelectedRow`; tests point the window at a row with
-  `select_for_test`): the cycle keys, the nav pane's Enter (a click on a row only moves the cursor), `sot-fe goto` and the
+  `select_for_test`): the cycle keys, the nav pane's Enter (no pointer press reaches the nav tree, so a click is no way of changing the row), `sot-fe goto` and the
   other control commands, the move to a neighbor when a row closes, a created row. The row shown at start has no switch behind it: its drawer
   is whatever the window started with (closed, the Terminal after a relaunch, the Monitor under `--start-monitor`) and
   is parked when the row is first left. The one rare case: a relaunch whose resumed row is gone at the first list moves
@@ -342,15 +342,18 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   (`person_driven`: the row-step keys and the nav pane's Enter; `goto` and the other control commands, a row that closes
   and a created row pass false) and with no pane maximized. Any other arrival moves no focus, and the frame ends the
   height as it does for a focus on a covered pane by any path: a row's full height is forgotten when a request other than
-  the person's own step shows it while the keys are on a pane full height covers. In a layout with no full height the
+  the person's own step shows it while the keys are on a pane full height covers, and when a person's own step shows it
+  with a pane maximized. In a layout with no full height the
   drawer is shown open and the focus stays. The drawer's configured height (`drawer_height` of a preset), maximize and the wide preview stay
   window-wide, and the parked drawers are runtime memory (nothing of a row's drawer, its height included, is written to
   disk): a window restart starts every row closed but the one shown. Pinned by the native fixtures
   `a_rows_drawer_stays_with_its_row` and `a_rows_drawer_height_stays_with_its_row` (full height left and found again
-  from a row with no drawer and from one open at its own height, by each way of changing the row, and an edit open on the
-  arriving row shaped by the first frame), and by these `layout_help_tests`: `a_row_comes_back_to_its_drawer_at_the_height_it_left_it` (every tenant, with and without Help, on the laptop
+  from a row with no drawer and from one open at its own height, by each way of changing the row, the person's own step
+  and the requests nobody made from the nav pane, through `cycle_workspace` and `session_enter_key`, the handlers the
+  row-step keys and Enter call, and an edit open on the arriving row shaped by the first frame; that the key handler
+  `navigation_chords` hands `cycle_workspace` the person flag rests on reading, a winit key event being unbuildable), and by these `layout_help_tests`: `a_row_comes_back_to_its_drawer_at_the_height_it_left_it` (every tenant, with and without Help, on the laptop
   preset), `the_rules_of_full_height_hold_on_the_arrival_at_a_full_row` (every preset and focus, the Terminal only),
-  `an_arrival_nobody_asked_for_or_over_a_maximized_pane_moves_no_focus` and `a_row_left_with_the_focus_on_a_covered_pane_is_parked_at_its_own_height`.
+  `an_arrival_nobody_asked_for_or_over_a_maximized_pane_moves_no_focus`, `a_persons_step_under_help_opened_from_a_covered_pane_gives_the_full_drawer_the_focus` and `a_row_left_with_the_focus_on_a_covered_pane_is_parked_at_its_own_height`.
 - `SelectedRow` privately owns the selected host and workspace, the pending read mark, the two-press destroy arm and
   the time a `workspace.create` was sent. Readers see the host and workspace by reference; only a switch's retarget
   and the capture harness's startup seed select a row, both parts at once. Every switch replaces the read mark (armed

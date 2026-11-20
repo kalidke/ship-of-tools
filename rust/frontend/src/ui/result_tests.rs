@@ -1768,9 +1768,15 @@ impl State {
                 s.cycle_workspace(dir, true);
                 Ok(())
             } })),
-            ("the nav pane's Enter and a click", true, Box::new({ let host = host.clone(); move |s, slug| {
-                let target = s.row_directory.resolve(&host, slug).map_err(|e| anyhow::anyhow!(e))?;
-                s.switch_to_resolved_workspace(target, true);
+            ("the nav pane's Enter", true, Box::new({ let host = host.clone(); move |s, slug| {
+                // The Sessions list with the row under the cursor, and the handler the Enter key calls.
+                let mut row = node(&format!("sessions:{slug}"), slug, false);
+                row.kind = "session".into();
+                row.payload = serde_json::json!({"host": host, "workspace_id": format!("id-{slug}"), "slug": slug,
+                    "name": format!("{slug}-session")}).as_object().unwrap().clone();
+                s.nav.set_root(node("sessions:", "sessions", true), vec![row]);
+                s.nav.select(1);
+                let _ = session::keys::session_enter_key(s);
                 Ok(())
             } })),
             ("goto, the control command", false, Box::new({ let host = host.clone(); move |s, slug| {
@@ -1790,6 +1796,29 @@ impl State {
             way(self, "s2")?;
             self.probe_expect_frame(own(DrawerContent::Chat), &format!("{name}: the arrival at the row at its own height"))?;
         }
+        // The person's own example: s1 full with the keys in its drawer, a step to s2 with no drawer (the keys go to the nav
+        // pane), a step back. A person's step finds s1 full with the keys in its drawer; a request nobody at the window
+        // made leaves the keys where they were and shows s1 at its own height (the frame ends the height).
+        go(self, "s2");
+        self.probe_press_drawer_key(DrawerContent::Chat, 2);
+        for (name, person, way) in &ways {
+            go(self, "s1");
+            self.probe_expect_frame(full(DrawerContent::Repl), &format!("{name}: s1 full before the step away"))?;
+            go(self, "s2");
+            self.probe_expect_frame(own(DrawerContent::Closed), &format!("{name}: s2 has no drawer"))?;
+            self.focus_prompts.set_focus(PaneFocus::NavTree);
+            way(self, "s1")?;
+            if *person {
+                self.probe_expect_frame(full(DrawerContent::Repl), &format!("{name}: a step from the nav pane to the full row"))?;
+                anyhow::ensure!(self.focus_prompts.focus() == PaneFocus::Repl, "{name}: the keys did not go to the full drawer: {:?}", self.focus_prompts.focus());
+            } else {
+                self.probe_expect_frame(own(DrawerContent::Repl), &format!("{name}: a request nobody made, with the keys on the nav pane"))?;
+                anyhow::ensure!(self.focus_prompts.focus() == PaneFocus::NavTree, "{name}: a request nobody made moved the keys to {:?}", self.focus_prompts.focus());
+                self.probe_press_drawer_key(DrawerContent::Repl, 1);
+            }
+        }
+        go(self, "s2");
+        self.probe_press_drawer_key(DrawerContent::Chat, 1);
         // The default row, which a destroy with no neighbor shows, keeps its own: full while it is left, shown again
         // by the leave that has no neighbor.
         go(self, "default");

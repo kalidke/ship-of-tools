@@ -724,6 +724,25 @@ fn an_arrival_nobody_asked_for_or_over_a_maximized_pane_moves_no_focus() {
         assert_eq!((h.focus.focus(), h.layout.maximized()), (focus, true), "{focus:?}: a person's step with a pane maximized");
     }
 }
+/// A person's step made while Help is open: Help closes and gives the focus back to where it was opened from, and the
+/// full drawer takes the focus when that is a pane it covers (the restored focus decides, not the one Help held).
+#[test]
+fn a_persons_step_under_help_opened_from_a_covered_pane_gives_the_full_drawer_the_focus() {
+    let full = RowDrawer { content: DrawerContent::Chat, full: true };
+    for origin in [PaneFocus::NavTree, PaneFocus::Preview] {
+        let base = LayoutPreset::default_laptop();
+        let mut h = Harness::new(DrawerContent::Closed, origin, false);
+        h.open();
+        assert_eq!(h.focus.focus(), PaneFocus::Repl, "Help holds the focus");
+        h.enter(full, h.focus.focus());
+        assert_eq!(h.focus.focus(), PaneFocus::Repl, "{origin:?}: the full drawer has the keys");
+        assert!(h.layout.full_shown(&base, h.focus.focus()), "{origin:?}");
+        let mut h = Harness::new(DrawerContent::Closed, origin, false);
+        h.open();
+        h.enter_as(full, h.focus.focus(), &base, false);
+        assert_eq!(h.focus.focus(), origin, "{origin:?}: a step nobody made leaves the keys where Help found them");
+    }
+}
 /// The row left parks the height that is shown: with the focus put on a pane the full height covers and no frame
 /// between, the flag is stale, and the row comes back at its own height, with no focus taken.
 #[test]
