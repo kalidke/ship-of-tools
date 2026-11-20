@@ -258,15 +258,16 @@ async fn a_restart_after_live_filings_files_nothing_again() {
 #[tokio::test(flavor = "multi_thread")]
 async fn an_unreadable_inbox_at_start_files_nothing_until_it_reads() {
     let w = world(true).await;
-    // The other computer's filing of the first post is in an inbox that cannot be read now (a directory in its place).
-    // The first post is in the channel's history only: a pass is the one thing that could file it again.
+    // The other computer's filing of the first post is in an inbox that reads, and another inbox cannot be read now (a
+    // directory in its place). The first post is in the channel's history only: a pass is the one thing that could file
+    // it again. The unreadable inbox is a second one, so that making it readable is one removal no reader sees half
+    // done: restoring the first one in two calls would leave it absent between them, and an absent inbox reads as empty.
     serve(&w.lv, posts(&[1, 2]));
     let inbox = w.th.home.join("inbox").join("b.jsonl");
     let before = sot_chat::mail::body(&post_record(1));
     std::fs::write(&inbox, format!("{}\n", json!({"from": "#chat", "to": "b", "repo": "daemon", "msg": before, "ts": "2026-01-01T00:00:00Z"}))).unwrap();
-    let kept = std::fs::read(&inbox).unwrap();
-    std::fs::remove_file(&inbox).unwrap();
-    std::fs::create_dir(&inbox).unwrap();
+    let unreadable = w.th.home.join("inbox").join("c.jsonl");
+    std::fs::create_dir(&unreadable).unwrap();
     let _chat = w.start(&w.fake).await;
     send(&w.lv, 2, "e2");
     until("the event taken", || w.lv.acked.load(Ordering::SeqCst) >= 1).await;
@@ -274,8 +275,7 @@ async fn an_unreadable_inbox_at_start_files_nothing_until_it_reads() {
     tokio::time::sleep(Duration::from_millis(500)).await;
     assert_eq!((w.inbox(), w.boundary()), (Vec::<String>::new(), None), "a post was filed or passed while an inbox could not be read");
     // Once it reads, the first pass files nothing the inbox holds, and files the other post once.
-    std::fs::remove_dir(&inbox).unwrap();
-    std::fs::write(&inbox, kept).unwrap();
+    std::fs::remove_dir(&unreadable).unwrap();
     until("the first pass's commit", || w.boundary().is_some()).await;
     send(&w.lv, 3, "e3");
     until("the new post", || w.filed().contains(&stamp(3))).await;

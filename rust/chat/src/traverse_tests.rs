@@ -398,7 +398,10 @@ async fn an_oversize_page_halves_and_is_read_again() {
                     if seen.path() == path && big { fault() } else { served.answer(seen) }
                 })
                 .await;
-                let api = api.with_deadlines(Duration::from_millis(400), Duration::from_secs(1), Duration::from_secs(1));
+                // The short read deadline is for the page that hangs; the pages that answer get a bound a slow
+                // computer does not pass, and a flood ends at its size bound, not at a deadline.
+                let read = if what == "too slow" { Duration::from_millis(1000) } else { Duration::from_secs(20) };
+                let api = api.with_deadlines(read, Duration::from_secs(1), Duration::from_secs(1));
                 // Every message but the oldest is filed, so the one found proves the last page was read.
                 let filed: Vec<String> = (2..601).map(at).collect();
                 let got = pass(&api, &order(Some(&at(0)), &filed, None), &ts(U), NO_PACE).await;

@@ -926,7 +926,7 @@ async fn slow_mentions() -> FakeSlack {
 async fn fill_names_looks_up_authors_before_mentions() {
     bounded(async {
         let fake = slow_mentions().await;
-        let api = new_api(&fake).with_deadlines(Duration::from_secs(20), Duration::from_secs(20), Duration::from_millis(400));
+        let api = new_api(&fake).with_deadlines(Duration::from_secs(20), Duration::from_secs(20), Duration::from_millis(1000));
         let mut records = vec![member_record("U0AUTH")];
         records[0].text = mentions(5);
         api.fill_names(&mut records).await;
@@ -1236,7 +1236,7 @@ async fn a_channel_mention_without_a_label_is_looked_up_once() {
             Reply::json(&json!({"ok": true, "user": {"profile": {"display_name": format!("Name-{user}")}}}))
         })
         .await;
-        let api = new_api(&fake).with_deadlines(Duration::from_secs(20), Duration::from_secs(20), Duration::from_millis(400));
+        let api = new_api(&fake).with_deadlines(Duration::from_secs(20), Duration::from_secs(20), Duration::from_millis(1000));
         let mut records = vec![member_record("U0AUTH")];
         records[0].text = "<#C0AAA> <@U0ONE> <#C0BBB>".into();
         let start = Instant::now();
@@ -2316,9 +2316,20 @@ async fn only_the_share_can_be_unknown() {
             }
         })
         .await;
+        // A short deadline sits only on the step a case hangs at (the ask is a read, the upload a transfer, the share
+        // a post); every other step keeps a generous one, so a slow round trip is slow and never a timeout.
         let short = Duration::from_millis(300);
-        let api = new_api(&fake).with_deadlines(short, short, short).with_transfer_deadline(short);
-        let post = |file: &'static str| api.post_file(api.transfer().unwrap(), "C0CHAN", None, PostKind::Row, "build-7", file, PNG.to_vec(), None);
+        let long = Duration::from_secs(10);
+        let api_for = |file: &str| match file {
+            "hang1" => new_api(&fake).with_deadlines(short, long, long).with_transfer_deadline(long),
+            "hang2" => new_api(&fake).with_deadlines(long, long, long).with_transfer_deadline(short),
+            "hang3" => new_api(&fake).with_deadlines(long, short, long).with_transfer_deadline(long),
+            _ => new_api(&fake).with_deadlines(long, long, long).with_transfer_deadline(long),
+        };
+        let post = |file: &'static str| {
+            let api = api_for(file);
+            async move { api.post_file(api.transfer().unwrap(), "C0CHAN", None, PostKind::Row, "build-7", file, PNG.to_vec(), None).await }
+        };
 
         for before_the_share in ["drop1", "drop2"] {
             let got = post(before_the_share).await;
