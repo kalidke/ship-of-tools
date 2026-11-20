@@ -3051,3 +3051,8 @@ the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the sa
   - Records: the package page said `main` held 0.7.2 and nothing more through a day of landings; it now says what
     `main` holds. Filed open: AGENT-PANE-CURSOR-AHEAD-OF-TEXT (seen by a person, not reproduced),
     VT-AUTOWRAP-OFF-IGNORED, WIN-INSTALL-LISTS-WHOLE-PROCESS-TABLE and GATE-SCOPE-SHELL-READER-OF-RUST-FILE.
+  - The chat's watchers told before the chat is off (CHAT-WATCHERS-TOLD-BEFORE-THE-CHAT-IS-OFF). A diagnoser found
+    the cause from one red round in 60 on a hosted Mac, with a diff and a test that is red every time; the landing
+    session applied it. The owner's wait for the chat to read off with its code was half used up by the stop's own
+    join, so a stop the runtime ran late lost the race. Not reproduced by chance in 492 local runs; reproduced every
+    time with the stop held at a new hold point.

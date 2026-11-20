@@ -948,30 +948,41 @@ async fn an_ended_service_turns_the_chat_off_with_its_code_and_frees_its_lock() 
     assert!(ok_watch(&conn.ask(4, op::CHAT_WATCH, watch(&rig.alpha, "C0AAAA")).await));
 }
 
+/// Until a status event tells a watcher that a service is not running.
+async fn told_not_running(events: &mut tokio::sync::broadcast::Receiver<Evt>) {
+    loop {
+        match events.recv().await {
+            Ok(Evt::Status(told)) if told.iter().any(|(_, e)| !matches!(e.service, ChatService::Running)) => return,
+            Ok(_) => {}
+            Err(e) => panic!("{e}"),
+        }
+    }
+}
+
 /// A window told the service stopped resolves the row again, and the chat must already read off with the code then: it
-/// would otherwise read `Stopping`, which resolves as the mapping and never leads to the Connect step.
+/// would otherwise read `Stopping`, which resolves as the mapping, so the drawer shows no Connect step until a later
+/// refused watch makes it resolve again. The unit's turn off is held past the owner's earlier bound (`2 * STOP_WITHIN`,
+/// which a slow runner's scheduler once outlasted): no watcher is told while it is held, and the first told reads it off.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_chat_is_off_with_its_code_before_a_watcher_is_told_the_service_ended() {
-    for round in 0..60 {
-        let (fake, lv) = live().await;
-        *lv.bot_app.lock().unwrap() = Some("A0OWN".into());
-        *lv.hello_app.lock().unwrap() = Some("A0OTHER".into());
-        lv.hello.forget_permits(1000);
-        let rig = rig(&fake).await;
-        let hub = rig.services.chat.hub().clone();
-        let mut events = hub.subscribe();
-        let mut conn = connect(rig.services.clone()).await;
-        assert!(ok_watch(&conn.ask(2, op::CHAT_WATCH, watch(&rig.alpha, "C0AAAA")).await));
-        lv.hello.add_permits(1);
-        loop {
-            match bounded("a status event", events.recv()).await {
-                Ok(Evt::Status(told)) if told.iter().any(|(_, e)| !matches!(e.service, ChatService::Running)) => break,
-                Ok(_) => {}
-                Err(e) => panic!("round {round}: {e}"),
-            }
-        }
-        assert_eq!(rig.services.chat.status(), Status::Failed("wrong_app"), "round {round}");
-    }
+    let (fake, lv) = live().await;
+    *lv.bot_app.lock().unwrap() = Some("A0OWN".into());
+    *lv.hello_app.lock().unwrap() = Some("A0OTHER".into());
+    lv.hello.forget_permits(1000);
+    let rig = rig(&fake).await;
+    let hub = rig.services.chat.hub().clone();
+    let arm = Holds::here().arm("chat.unit.off").key(Arc::as_ptr(&hub) as usize).hold(1);
+    let mut events = hub.subscribe();
+    let mut conn = connect(rig.services.clone()).await;
+    assert!(ok_watch(&conn.ask(2, op::CHAT_WATCH, watch(&rig.alpha, "C0AAAA")).await));
+    lv.hello.add_permits(1);
+    arm.reached_async(0).await;
+    assert_eq!(rig.services.chat.status(), Status::Stopping, "the ended service's stop is held before the chat is off");
+    let early = tokio::time::timeout(4 * crate::chat::STOP_WITHIN, told_not_running(&mut events)).await;
+    assert!(early.is_err(), "a watcher was told the service ended while the chat read {:?}", rig.services.chat.status());
+    arm.release(0);
+    bounded("a status event", told_not_running(&mut events)).await;
+    assert_eq!(rig.services.chat.status(), Status::Failed("wrong_app"));
 }
 
 /// A service that ended before any owner took its `Watches` gives none, so no owner would see its end: the first start

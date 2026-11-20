@@ -838,6 +838,8 @@ impl<L: Listener> Chat<L> {
                     // The delivery ends first, its filing in flight returned, while the lock is still held.
                     hub.end_mail(&workspace).await;
                     l.stop(STOP_WITHIN).await;
+                    // A test's hold point, keyed by the hub's address, between the service's stop and the unit's turn off.
+                    sot_platform::hold_point_async!("chat.unit.off", Arc::as_ptr(&hub) as usize);
                     unit.set_off(ended);
                 };
                 match &self.handle {
