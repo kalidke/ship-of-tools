@@ -3069,3 +3069,9 @@ the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the sa
     found the cause from one hosted red and wrote the diff; the landing session applied it. The test compared two
     viewers' streams from their ends after stopping one on a clock; it now reads both to an end marker and compares
     frame for frame. Filed open: WIN-VIEWER-TRAILS-ANOTHER, the lag that exposed it, unmeasured.
+  - Two chat tests a slow hosted runner failed (CHAT-FILE-POST-TEST-SHORT-DEADLINES, CHAT-MAIL-TEST-INBOX-SWAP-GAP),
+    test-only. One builder. A file-post test gave every step a 300 ms deadline so its hang cases would end fast, and
+    a step that hangs nowhere timed out; a mail test restored an unreadable inbox in two calls, and an absent inbox
+    reads as empty in between. Each short deadline is now on the one step its case hangs at, and the unreadable
+    inbox is a second one that a single removal makes readable. The same two assumptions were searched for in every
+    crate's tests: three more deadlines were widened.
