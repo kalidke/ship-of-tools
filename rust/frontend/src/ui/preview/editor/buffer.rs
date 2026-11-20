@@ -71,6 +71,18 @@ pub struct EditBuffer {
     /// earlier text, or from another buffer's, is told from this one even when the lengths agree. A move of the
     /// cursor leaves it.
     rev: u64,
+    /// The bytes the text's changes since the last `take_change` cover, `None` after none (and at birth).
+    change: Option<Change>,
+}
+
+/// What the text's changes since revision `since` did: bytes `start..old_end` of that text are `start..new_end` of
+/// this one, and the rest is as it was (the bytes after `old_end` moved by the difference).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Change {
+    pub since: u64,
+    pub start: usize,
+    pub old_end: usize,
+    pub new_end: usize,
 }
 
 impl EditBuffer {
@@ -84,7 +96,48 @@ impl EditBuffer {
             last_edit_pos: None,
             anchor: None,
             rev: next_rev(),
+            change: None,
         }
+    }
+
+    /// The change since the last call (since birth, at the first), with the revision it starts from; `None` when the
+    /// text has not changed since.
+    pub fn take_change(&mut self) -> Option<Change> {
+        self.change.take()
+    }
+
+    /// Fold a change of bytes `start..old_end` of the text to `start..new_end` into `change`, under a new revision:
+    /// every change of the text is told here, so `change` covers them all.
+    fn record(&mut self, start: usize, old_end: usize, new_end: usize) {
+        let since = std::mem::replace(&mut self.rev, next_rev());
+        let c = self.change.unwrap_or(Change { since, start, old_end: start, new_end: start });
+        // `c` covers `c.start..c.new_end` of the text before this change; the union is mapped back past it.
+        let hi = c.new_end.max(old_end);
+        self.change = Some(Change { since: c.since, start: c.start.min(start), old_end: hi - c.new_end + c.old_end, new_end: hi - old_end + new_end });
+    }
+
+    /// Replace `range` of the body with `text`, the one way a key changes the text.
+    fn splice(&mut self, range: std::ops::Range<usize>, text: &str) {
+        self.record(range.start, range.end, range.start + text.len());
+        self.body.replace_range(range, text);
+    }
+
+    /// Make the body `body` (an undo or a redo), told as the bytes between the two texts' common start and end.
+    fn replace_body(&mut self, body: String) {
+        let (old, new) = (self.body.as_bytes(), body.as_bytes());
+        let mut start = old.iter().zip(new).take_while(|(a, b)| a == b).count();
+        let shorter = old.len().min(new.len()) - start;
+        let mut tail = old.iter().rev().zip(new.iter().rev()).take(shorter).take_while(|(a, b)| a == b).count();
+        // Both texts agree on the bytes either side, so a char boundary of one is a boundary of the other.
+        while !self.body.is_char_boundary(start) {
+            start -= 1;
+        }
+        while !self.body.is_char_boundary(old.len() - tail) {
+            tail -= 1;
+        }
+        let (old_end, new_end) = (old.len() - tail, new.len() - tail);
+        self.record(start, old_end, new_end);
+        self.body = body;
     }
 
     pub fn rev(&self) -> u64 {
@@ -108,8 +161,7 @@ impl EditBuffer {
                     body: self.body.clone(),
                     cursor: self.cursor,
                 });
-                self.rev = next_rev();
-                self.body = prev.body;
+                self.replace_body(prev.body);
                 self.cursor = prev.cursor.min(self.body.len());
                 self.last_kind = None;
                 self.last_edit_pos = None;
@@ -129,8 +181,7 @@ impl EditBuffer {
                     body: self.body.clone(),
                     cursor: self.cursor,
                 });
-                self.rev = next_rev();
-                self.body = next.body;
+                self.replace_body(next.body);
                 self.cursor = next.cursor.min(self.body.len());
                 self.last_kind = None;
                 self.last_edit_pos = None;
@@ -231,8 +282,7 @@ impl EditBuffer {
             self.undo.remove(0);
         }
         self.redo.clear();
-        self.rev = next_rev();
-        self.body.replace_range(s..e, "");
+        self.splice(s..e, "");
         self.cursor = off_crlf(&self.body, s);
         self.anchor = None;
         self.last_kind = None;
@@ -249,8 +299,7 @@ impl EditBuffer {
     /// Raw insertion with no undo bookkeeping — shared by `insert_char`
     /// (coalesced typing) and `insert_str` (atomic paste).
     fn insert_str_raw(&mut self, s: &str) {
-        self.rev = next_rev();
-        self.body.insert_str(self.cursor, s);
+        self.splice(self.cursor..self.cursor, s);
         self.cursor += s.len();
     }
 
@@ -314,8 +363,7 @@ impl EditBuffer {
         }
         self.checkpoint(EditKind::Delete);
         let prev = self.prev_boundary(self.cursor);
-        self.rev = next_rev();
-        self.body.replace_range(prev..self.cursor, "");
+        self.splice(prev..self.cursor, "");
         self.cursor = off_crlf(&self.body, prev);
         self.last_edit_pos = Some(self.cursor);
     }
@@ -332,8 +380,7 @@ impl EditBuffer {
         }
         self.checkpoint(EditKind::Delete);
         let next = self.next_boundary(self.cursor);
-        self.rev = next_rev();
-        self.body.replace_range(self.cursor..next, "");
+        self.splice(self.cursor..next, "");
         self.cursor = off_crlf(&self.body, self.cursor);
         self.last_edit_pos = Some(self.cursor);
     }
@@ -492,6 +539,20 @@ pub(super) fn lines(s: &str) -> impl Iterator<Item = (usize, usize)> + '_ {
         next = end_len(s, end).map(|len| end + len);
         Some((start, end))
     })
+}
+
+/// What `change` did to the lines of the text (`lines`): the lines `before` of the text it changed (indexes into `old`,
+/// that text's lines) are now `after` (byte ranges in `body`, the text now). The lines before `before` are as they
+/// were, and those after it are too but for moving by the change's length. A CR is read with the character after it
+/// (with an LF it is one end), so the line a CR ends just before the change is in `before`, and so is a line that
+/// starts where the change ends.
+pub(super) fn line_change(old: &[(usize, usize)], body: &str, change: &Change) -> (std::ops::Range<usize>, Vec<(usize, usize)>) {
+    let line_of = |at: usize| old.partition_point(|l| l.0 <= at) - 1;
+    let cr_before = change.start > 0 && body.as_bytes()[change.start - 1] == b'\r';
+    let (first, last) = (line_of(change.start - usize::from(cr_before)), line_of(change.old_end));
+    let from = old[first].0;
+    let after = lines(&body[from..]).map(|(s, e)| (from + s, from + e)).take_while(|l| l.0 <= change.new_end).collect();
+    (first..last + 1, after)
 }
 
 /// Byte index of the first char on the line containing `byte`: after the last line end before it, or 0.

@@ -40,6 +40,24 @@ fn the_shaper_gets_one_bidi_paragraph_per_line() {
     assert_eq!(splits, ['\n', '\r', '\u{1c}', '\u{1d}', '\u{1e}', '\u{85}', '\u{2029}']);
 }
 
+/// The edit buffer's in-place door makes one line of each text, each bidi paragraph separator and any line end in it a
+/// space, so the line it shapes holds one paragraph and the lines around it keep their shaping.
+#[test]
+fn a_replaced_line_is_one_bidi_paragraph() {
+    let mut fonts = FontSystem::new();
+    let mut buffer = Buffer::new(&mut fonts, Metrics::new(14.0, 18.0));
+    set_buffer_text(&mut buffer, &mut fonts, "kept\nreplaced\nkept", Attrs::new(), Shaping::Advanced);
+    buffer.shape_until_scroll(&mut fonts, false);
+    for c in ['\n', '\r', '\u{1c}', '\u{1d}', '\u{1e}', '\u{85}', '\u{2029}'] {
+        let text = format!("AA{c}אב");
+        replace_buffer_lines(&mut buffer, 1..2, [text.as_str()], Attrs::new());
+        assert!(buffer.lines[0].shape_opt().is_some() && buffer.lines[1].shape_opt().is_none(), "{c:?}: only the new line is to shape");
+        buffer.shape_until_scroll(&mut fonts, false);
+        let lines: Vec<&str> = buffer.lines.iter().map(|line| line.text()).collect();
+        assert_eq!(lines, ["kept", "AA אב", "kept"], "{c:?}");
+    }
+}
+
 /// The runs of flagged glyphs a renderer paints behind (inline code, strike, a chat badge) are found mid-line, at a
 /// line's end (the flush after the last glyph, the case a lost flush hides) and across a wrap, one rectangle per visual
 /// line, each at its line's top and height.

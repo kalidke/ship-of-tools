@@ -401,8 +401,8 @@ The remaining concepts below still reach shared fields through `impl State` bloc
     (`Editor::needs_reshape`: the body's revision, whether there is a selection, the unsaved edits and the banners,
     which change the footer's words): a motion, and a selection that grows or shrinks, the keys held for scrolling a
     file or for selecting, change none of them, so the bar and the bands move over the same text and nothing is
-    shaped. A selection that begins or ends changes the footer, and every edit changes the text: those re-shape the
-    whole file (limits below). The decision is in one place: `apply_editor_outcome` (what
+    shaped. A selection that begins or ends changes the footer, and every edit changes the text: those bring the
+    buffer to the edit in place (next). The decision is in one place: `apply_editor_outcome` (what
     the window does for an outcome) re-shapes if owed after every outcome alike, the landed save's reply does too
     (the footer then says clean), and the frame checks again before it draws, so the discard prompt's raising and
     dismissal, the stale banner and a save each reach the screen at the next frame. A pane with no width (a
@@ -415,6 +415,29 @@ The remaining concepts below still reach shared fields through `impl State` bloc
     (`Buffer::set_size`, as the preview's text does on a resize) and rebuilds the index, and only a new text scale
     (a zoom) or a text not yet shaped shapes it again; a pane with no width (a full-height drawer) is left alone. A
     key that arrives between a resize event and its frame reads the rows still on screen.
+  - In place. `Editor::reshape` edits the shaped buffer where it can and shapes it whole where it cannot. One record
+    says what the text's changes were: every change of the body goes through `EditBuffer::splice` or, for an undo and
+    a redo, `replace_body` (the bytes between the two texts' common start and end), and `record` folds each into one
+    `Change` since the revision of the last `take_change` (`since`, and bytes `start..old_end` of that text that are
+    `start..new_end` now), so edits made while the pane had no width are one change when it returns. `buffer::line_change`
+    turns it into lines by the one line-end rule: the old lines it touched (the line holding `start`, the line before
+    it too when a CR stands just before `start`, since a CR is read with the character after it, through the line
+    holding `old_end`, a line that starts there included) and the new lines that replace them (read by
+    `buffer::lines` from the first one's start to the one holding `new_end`); the lines either side are as they were,
+    those after moved by the change's length. `Editor::reshape_lines` replaces those body lines, shaped line
+    `first + k` for body line `k`, and the footer's line when its words differ, through `replace_buffer_lines`
+    (render/text.rs: `Buffer::lines.splice` of new `BufferLine`s, each with no shaping or layout, in the attributes the
+    whole-text shaping gave every line, `AttrsList::new` of the first line's defaults and `Shaping::Advanced`), then
+    `Buffer::shape_until_scroll`, which shapes and lays out only the lines with no cached shaping (cosmic-text's
+    `BufferLine` caches both per line; `set_text` and `set_rich_text` reset every line); the header's lines are never
+    touched. The index is then built again from the buffer's cached layout (0.44 ms on a 465 KB file, release build,
+    so it is not patched). The whole text is shaped (`MarkdownPreview::new_plain_spans`) where the buffer is not of
+    the text the change starts from, or of this text with no change (a new edit, a reload, a row's restored edit, the
+    first shaping), and where it is not of the pane's width and text scale; that whole-text shaping is the reference
+    the in-place buffer is held equal to. A typed letter shapes one line, Enter two, a paste of k lines k or k + 1, a
+    Backspace or Delete that joins two lines one, an undo or a redo the lines its change spans after it, a motion or
+    a selection step none, and the footer's line one more when its words change (a selection that begins or ends,
+    the first edit after a clean state, a save, a banner).
   - Discarding. The prompt's confirm key closes the edit and its outcome is `Closed`, as a clean buffer's Escape is
     (it was `DiscardAnswered`, which fetches nothing, in every version up to v0.7.2): the window's arm for `Closed`
     asks for the file's preview again, so after a save, more edits and a discard the preview shows the file as it is
@@ -448,7 +471,17 @@ The remaining concepts below still reach shared fields through `impl State` bloc
     `a_motion_with_no_selection_owes_no_reshape_and_a_selection_or_an_edit_does`. The selection:
     `the_selection_is_drawn_as_bands_under_its_text_on_every_row_it_spans` (the rest of a line and its end, an empty
     line, the rows of a wrapped paragraph whole and in part, a selection ending at a line end, a right-to-left word,
-    only the rows asked for, and no color in the shaped text) and `a_selection_band_is_clipped_as_the_text_is`. The
+    only the rows asked for, and no color in the shaped text) and `a_selection_band_is_clipped_as_the_text_is`. In
+    place: `every_edit_in_place_equals_a_fresh_shaping_of_its_text` (a walk of 2,000 random keys from fixed seeds,
+    1,500 under a concept's header at 30 cells and 500 in a file at 23, over paragraphs that wrap, Hebrew and Arabic,
+    Japanese, an emoji family, tabs, CRLF, a lone CR, a line and a paragraph separator and a file separator: letters
+    wide, right-to-left and joined, Enter, Backspace and Delete anywhere and at line ends, pastes of several lines with
+    CRs and LFs, undo, redo, selections replaced, edits made while the pane has no width, a save, the discard prompt
+    and the stale banner; every 50 keys and at the end the buffer's lines, attributes and layout runs, the index and
+    the cursor's place equal a fresh whole-text shaping's, positions within 0.01 px; red with `line_change`'s CR rule
+    removed, its last line taken from `old_end - 1`, its new lines cut before `new_end`, and `record`'s union of two
+    changes dropped), `an_edit_shapes_only_the_lines_it_changes` and `the_footers_words_change_with_one_line_shaped`
+    (the counts above, from a per-thread count of the lines handed the shaper; red with the in-place path off). The
     re-shapes:
     `a_landed_save_changes_the_footer_and_owes_a_reshape`,
     `escape_on_an_edited_buffer_draws_the_discard_prompt_and_any_other_key_takes_it_down` (through `Editor::press`, the
@@ -480,7 +513,8 @@ The remaining concepts below still reach shared fields through `impl State` bloc
     `a_follow_counts_the_distance_a_wheel_scroll_still_owes`; and in the window's own layout the native fixture
     `an_edit_view_follows_its_cursor` (`preview/editor/keys_native_fixture_tests.rs`, in `run_state_fixtures`, so only
     under a display; it puts the cursor and runs the key path's re-shape (when owed) and `follow_edit_cursor` with the
-    default easing on, resizes the canvas and back, and is red with `ShapedPreview::follow` made a no-op or eased, or
+    default easing on, draws a selection over four lines through the frame and finds its bands on its rows inside the
+    pane, a selection that grows owing no shaping, resizes the canvas and back, and is red with `ShapedPreview::follow` made a no-op or eased, or
     the frame's fit removed), and `an_edit_footer_says_what_the_edit_is` (the same file: an outcome through
     `apply_editor_outcome` and a save reply through `on_file_write_done` draw the prompt, take it down and say clean,
     and a pane with no width is not shaped for; red with the outcome's re-shape and the frame's check both removed,
@@ -490,11 +524,12 @@ The remaining concepts below still reach shared fields through `impl State` bloc
     `discarding_with_the_confirm_key_closes_the_edit_as_a_clean_escape_does` for the discard's outcome.
   - Limits. The tests press through `edit_buffer_key` because a winit `KeyEvent` cannot be built outside the event
     loop, so `Editor::key`'s hand-off, `editor_key`'s call of `apply_editor_outcome` and the paint of the bar (the render pass, no
-    pure test reaches it) rest on reading. A key itself costs 0.02 ms on a 465 KB file (release build), and a motion
-    with no selection, and a selection that grows or shrinks, shape nothing (each was 496 ms there before). Not yet
-    so: a key that changes the text, and a selection that begins or ends (the footer's words), re-shape the whole
-    file, about 500 ms at 465 KB and 50 ms at 46 KB (EDIT-KEY-RESHAPES-WHOLE-FILE). The paint of the bands (the
-    render pass) rests on reading, as the bar's does. A pane under
+    pure test reaches it) rest on reading. On a 5,000-line, 465 KB file (`edit_keys_on_a_big_file`, a timing run by
+    hand in a release build, on a second computer), a typed letter, a Backspace, a Delete, Enter, a paste of a line,
+    an undo and a redo each take 0.6 to 0.85 ms from the key to a buffer ready to draw, where each took 845 to 870 ms
+    shaped whole; a selection step and a motion shape nothing. The whole-text shaping remains for opening an edit,
+    a reload, a zoom and a row's restored edit (about 850 ms on that file there). The paint of the bands (the render
+    pass) rests on reading, as the bar's does: the native fixture draws frames with them and reads no pixel. A pane under
     about 44 px tall hides a row that is off the preview's line grid, text and bar alike (the whole-line clip). No person has used it yet.
 - `ConceptSlot` privately owns the concept slot: the last `concept.read` (`ConceptInfo`, its fields private), its
   shaped body and the rect it is shaped for. A reply installs the read and its shape together; a follow's commit and a
@@ -1330,11 +1365,12 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   `a_strip_name_is_one_bidi_paragraph` (chrome/strip/items_tests.rs),
   `a_paragraph_separator_starts_a_line_and_the_shaper_survives_it` (preview/markdown/tests.rs) and
   `a_control_character_in_a_name_leaves_the_chart_drawable` (drawer/monitor.rs).
-- Text enters a cosmic-text buffer only through `set_buffer_text` and `set_buffer_rich_text` (render/text.rs), which
-  make every bidi paragraph separator but `\n` and `\r` (U+001C, U+001D, U+001E, U+0085, U+2029) a space: cosmic-text
-  ends a buffer line only at `\r` and `\n` and panics on a line holding two paragraphs of different directions.
-  `rust/clippy.toml`'s text-into-the-shaper group refuses every other way in. Tests
-  `the_shaper_gets_one_bidi_paragraph_per_line` (render/text.rs), `a_plain_preview_is_one_bidi_paragraph_per_line` and
+- Text enters a cosmic-text buffer only through `set_buffer_text`, `set_buffer_rich_text` and `replace_buffer_lines`
+  (render/text.rs), which make every bidi paragraph separator but `\n` and `\r` (U+001C, U+001D, U+001E, U+0085,
+  U+2029) a space: cosmic-text ends a buffer line only at `\r` and `\n` and panics on a line holding two paragraphs of
+  different directions. `replace_buffer_lines`, the edit buffer's in-place door, makes one line of each text it is
+  given, so it makes a `\r` or `\n` a space too. `rust/clippy.toml`'s text-into-the-shaper group refuses every other
+  way in. Tests `the_shaper_gets_one_bidi_paragraph_per_line`, `a_replaced_line_is_one_bidi_paragraph` (render/text.rs), `a_plain_preview_is_one_bidi_paragraph_per_line` and
   `a_table_cell_is_one_bidi_paragraph_per_line` (preview/markdown/tests.rs). An SVG's text reaches usvg under the same
   rule, each separator written as itself or as a character reference (`one_paragraph_svg`, preview/image/svg.rs), since
   usvg draws only a text chunk's first paragraph: `svg_tree` is usvg's one way in (an `.svgz` unpacked first), and the

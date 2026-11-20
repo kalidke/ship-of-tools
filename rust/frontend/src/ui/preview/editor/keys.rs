@@ -194,10 +194,8 @@ impl State {
         }
     }
 
-    /// Re-shape the edit preview from the active edit buffer. Called
-    /// whenever a key mutates the buffer; cheap enough for a
-    /// few-KB annotation. Without an edit it clears the shaped
-    /// buffer so the next render falls back to the read-only path.
+    /// Bring the edit preview to the active edit (`Editor::reshape`: the lines an edit changed, in place, or the whole
+    /// text). Without an edit it clears the shaped buffer so the next render falls back to the read-only path.
     pub(in crate::ui) fn rebuild_edit_preview(&mut self) {
         // A pane with no width is not shaped for (a full-height drawer): the frame shapes when the width returns.
         if self.editor.is_editing() && self.concept.rect().w < 1.0 {
@@ -206,10 +204,8 @@ impl State {
         if self.editor.is_editing() { self.shaped.clear_selection(); }
         let width = self.concept.rect().w.max(1.0);
         let scale = self.canvas.scale() * self.canvas.text_scale_mult();
-        let canvas = &mut self.canvas;
-        self.editor.reshape(&self.bindings, |spans| {
-            canvas.shape(|fs| MarkdownPreview::new_plain_spans(fs, spans, width, scale))
-        });
+        let (editor, bindings) = (&mut self.editor, &self.bindings);
+        self.canvas.shape(|fs| editor.reshape(bindings, width, scale, fs));
     }
 }
 

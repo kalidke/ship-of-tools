@@ -5,16 +5,44 @@ use super::*;
 use cosmic_text::FontSystem;
 use std::time::{Duration, Instant};
 
+/// Font systems kept between this binary's tests: making one reads the computer's fonts (about 30 ms in a debug build),
+/// so a test takes one from here, or makes one when none is free, and gives it back when it ends.
+static FONTS: std::sync::Mutex<Vec<FontSystem>> = std::sync::Mutex::new(Vec::new());
+
+/// A font system from `FONTS`, given back when dropped.
+struct Fonts(Option<FontSystem>);
+
+impl Fonts {
+    fn take() -> Self {
+        Self(Some(FONTS.lock().unwrap_or_else(|e| e.into_inner()).pop().unwrap_or_else(FontSystem::new)))
+    }
+}
+
+impl std::ops::Deref for Fonts {
+    type Target = FontSystem;
+    fn deref(&self) -> &FontSystem { self.0.as_ref().unwrap() }
+}
+
+impl std::ops::DerefMut for Fonts {
+    fn deref_mut(&mut self) -> &mut FontSystem { self.0.as_mut().unwrap() }
+}
+
+impl Drop for Fonts {
+    fn drop(&mut self) {
+        FONTS.lock().unwrap_or_else(|e| e.into_inner()).extend(self.0.take());
+    }
+}
+
 /// An editor over `content`, shaped at `cells` monospace cells of width.
 struct Harness {
-    fs: FontSystem,
+    fs: Fonts,
     width: f32,
     editor: Editor,
 }
 
 impl Harness {
     fn new(content: &str, cells: usize) -> Self {
-        let mut fs = FontSystem::new();
+        let mut fs = Fonts::take();
         let one = MarkdownPreview::new_plain_spans(&mut fs, &["m".into()], 1000.0, 1.0);
         let cell = one.buffer.layout_runs().next().unwrap().glyphs[0].w;
         let mut editor = Editor::default();
@@ -36,8 +64,7 @@ impl Harness {
 
     /// The window's re-shape after a key: the edit's spans shaped at the pane's width.
     fn reshape(&mut self) {
-        let (fs, width) = (&mut self.fs, self.width);
-        self.editor.reshape(&KeyBindings::defaults(), |spans| MarkdownPreview::new_plain_spans(fs, spans, width, 1.0));
+        self.editor.reshape(&KeyBindings::defaults(), self.width, 1.0, &mut self.fs);
     }
 
     /// The cursor's place as the window draws it: re-shaped first only when the window would (a motion owes none).
@@ -119,7 +146,7 @@ const PARAGRAPH: &str = "alpha beta gamma delta epsilon zeta eta theta iota kapp
 
 #[test]
 fn a_long_texts_shaped_rows_reach_its_last_line() {
-    let mut fs = FontSystem::new();
+    let mut fs = Fonts::take();
     let body = (0..1000).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
     let shaped = MarkdownPreview::new_plain_spans(&mut fs, &[body], 400.0, 1.0);
     assert_eq!(shaped.buffer.layout_runs().map(|r| r.line_i).max(), Some(999));
@@ -305,10 +332,16 @@ impl Pane {
         Self { view: ShapedPreview::new(md, highlight, rect), visible }
     }
 
+    /// The same pane `visible` px high, scrolled to the top.
+    fn resize(&mut self, h: &mut Harness, visible: f32) {
+        self.view.layout(ScreenRect { x: 0.0, y: 0.0, w: 400.0, h: visible }, &mut h.fs);
+        self.view.scroll_to_top(Instant::now(), Duration::ZERO);
+        self.visible = visible;
+    }
+
     /// The key path's own steps after a key: re-shape, follow, then the frame's clamp.
     fn after_key(&mut self, h: &mut Harness) {
-        let (fs, width) = (&mut h.fs, h.width);
-        h.editor.reshape(&KeyBindings::defaults(), |spans| MarkdownPreview::new_plain_spans(fs, spans, width, 1.0));
+        h.reshape();
         h.editor.follow_cursor(&mut self.view, self.visible, Instant::now(), Duration::ZERO);
         self.frame(h);
     }
@@ -492,8 +525,9 @@ fn a_crlf_line_and_a_lone_cr_have_places_and_the_next_line_is_found_past_them() 
 fn the_drawn_cursor_moves_one_row_for_each_down_from_every_start_column() {
     let para = format!("{PARAGRAPH} {PARAGRAPH} {PARAGRAPH} {PARAGRAPH}");
     for cells in [40usize, 23] {
+        let mut h = Harness::new(&para, cells);
         for col in 0..cells {
-            let mut h = Harness::new(&para, cells);
+            h.retext(&para);
             h.put(col);
             let mut last = h.place();
             while h.cursor() < para.len() {
@@ -648,7 +682,7 @@ fn the_kept_column_survives_a_change_of_scale() {
         let width = one.buffer.layout_runs().next().unwrap().glyphs[0].w * 100.5;
         MarkdownPreview::new_plain_spans(fs, &[body.clone(), "\n\n-".into()], width, scale)
     };
-    let mut fs = FontSystem::new();
+    let mut fs = Fonts::take();
     let small = shaped(&mut fs, 1.0);
     let index = rows::Index::new(&small.buffer, &body, 7).unwrap();
     let down = rows::vertical(&small.buffer, &index, &body, 7, 40, None, 1).unwrap();
@@ -678,10 +712,12 @@ fn a_crlf_file_is_followed_row_by_row() {
 fn a_pane_shorter_than_two_rows_does_not_flip_the_view_on_any_row() {
     // The editor's rows are 19 px and the preview scrolls in 22 px lines: rows 1 to 9 start off the preview's
     // grid, and a pane of 14, 22, 30 or 37 px cannot hold some of them whole at any scroll.
+    let text = (0..12).map(|i| format!("row {i} of text here")).collect::<Vec<_>>().join("\n");
+    let mut h = Harness::new(&text, 40);
+    let mut pane = Pane::new(&mut h, 2.0);
     for visible in [2.0, 14.0, 22.0, 30.0, 37.0] {
-        let text = (0..12).map(|i| format!("row {i} of text here")).collect::<Vec<_>>().join("\n");
-        let mut h = Harness::new(&text, 40);
-        let mut pane = Pane::new(&mut h, visible);
+        h.retext(&text);
+        pane.resize(&mut h, visible);
         pane.after_key(&mut h);
         for row in 0..10 {
             h.put(text.split('\n').take(row).map(|l| l.len() + 1).sum::<usize>());
@@ -1290,6 +1326,178 @@ fn discarding_with_the_confirm_key_closes_the_edit_as_a_clean_escape_does() {
     h.press_key(Some(Action::Cancel), None);
     assert!(matches!(h.press_key(Some(Action::EditLeft), None), Some(EditorKey::DiscardAnswered)));
     assert!(h.editor.is_editing());
+}
+
+/// The lines the edit buffers of this thread handed the shaper while `f` ran.
+fn lines_shaped(h: &mut Harness, f: impl FnOnce(&mut Harness)) -> usize {
+    let before = SHAPED.with(|n| n.get());
+    f(h);
+    SHAPED.with(|n| n.get()) - before
+}
+
+/// The edit's buffer and index, brought to it in place key by key, against a fresh whole-text shaping of the same
+/// edit: the same lines (text and attributes), the same layout runs (glyph ranges and directions, positions within
+/// 0.01 px), the same index and the same place for the cursor.
+fn equals_a_fresh_shaping(h: &mut Harness, what: &str) {
+    let close = |a: f32, b: f32| (a - b).abs() < 0.01;
+    let edit = h.editor.edit.as_ref().unwrap();
+    let fresh = MarkdownPreview::new_plain_spans(&mut h.fs, &edit.spans(&KeyBindings::defaults()), h.width, 1.0);
+    let (body, rev) = (edit.buf.body(), edit.buf.rev());
+    let index = rows::Index::new(&fresh.buffer, body, rev).unwrap_or_else(|| panic!("{what}: a fresh shaping has no index"));
+    let shaped = h.editor.shaped.as_ref().unwrap();
+    let lines = |b: &cosmic_text::Buffer| b.lines.iter().map(|l| (l.text().to_string(), l.attrs_list().clone())).collect::<Vec<_>>();
+    assert_eq!(lines(&shaped.buffer), lines(&fresh.buffer), "{what}: the lines");
+    let runs = |b: &cosmic_text::Buffer| b.layout_runs().map(|r| ((r.line_i, r.line_top, r.line_height, r.line_w),
+        r.glyphs.iter().map(|g| (g.start, g.end, g.level.is_rtl(), g.x, g.y, g.w)).collect::<Vec<_>>())).collect::<Vec<_>>();
+    let (own, theirs) = (runs(&shaped.buffer), runs(&fresh.buffer));
+    assert_eq!(own.len(), theirs.len(), "{what}: the number of rows");
+    for (row, (a, b)) in own.iter().zip(&theirs).enumerate() {
+        let same = a.0.0 == b.0.0 && close(a.0.1, b.0.1) && close(a.0.2, b.0.2) && close(a.0.3, b.0.3) && a.1.len() == b.1.len()
+            && a.1.iter().zip(&b.1).all(|(g, f)| (g.0, g.1, g.2) == (f.0, f.1, f.2) && close(g.3, f.3) && close(g.4, f.4) && close(g.5, f.5));
+        assert!(same, "{what}: row {row} differs: {a:?} against {b:?}");
+    }
+    let ((own_lines, own_first, own_rows), (lines, first, rows)) = (h.editor.index.as_ref().unwrap().parts(), index.parts());
+    assert_eq!((own_lines, own_first), (lines, first), "{what}: the index's lines");
+    assert!(own_rows.len() == rows.len() && own_rows.iter().zip(&rows).all(|(a, b)| (a.0, a.1) == (b.0, b.1) && close(a.2, b.2) && close(a.3, b.3)),
+        "{what}: the index's rows");
+    let (own, theirs) = (h.editor.cursor_place(), rows::place(&fresh.buffer, &index, body, rev, edit.buf.cursor()));
+    assert!(match (own, theirs) { (Some(a), Some(b)) => close(a.x, b.x) && close(a.top, b.top) && close(a.height, b.height), _ => false },
+        "{what}: the cursor's place {own:?} against {theirs:?}");
+}
+
+/// A walk of `steps` random keys over `h` from a fixed seed, held equal to a fresh shaping every 50 keys and at the end.
+fn walk_against_fresh_shapings(h: &mut Harness, seed: u64, steps: usize) {
+    let mut state = seed;
+    let mut below = |n: usize| {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        (state % n as u64) as usize
+    };
+    let letters = ["a", "Z", " ", "あ", "ש", "ب", "e\u{301}", "👍", "\t"];
+    let pastes = ["one\ntwo", "x\r\ny\rz\n", "\r", "\n", "\r\n", "שלום\nwor ld", "\u{2028}a\u{85}", "\u{1c}"];
+    let motions = [Action::EditLeft, Action::EditRight, Action::EditUp, Action::EditDown, Action::EditHome, Action::EditEnd];
+    for step in 0..steps {
+        let body = h.body();
+        let what = format!("step {step}");
+        match below(17) {
+            0..=3 => { h.press_key(None, Some(letters[below(letters.len())])); }
+            4 => { h.press_key(Some(Action::EditNewline), None); }
+            5 => { h.press_key(Some(Action::EditBackspace), None); }
+            6 => { h.press_key(Some(Action::EditDelete), None); }
+            7 => {
+                h.edit().buf.insert_str(pastes[below(pastes.len())]);
+                h.press_key(Some(Action::EditRight), None);
+            }
+            8 => { h.press_key(Some(Action::EditUndo), None); }
+            9 => { h.press_key(Some(Action::EditRedo), None); }
+            10 | 11 => {
+                // Anywhere, or at a line's end or start, where Backspace and Delete meet the line ends.
+                let all = positions(&body);
+                let ends: Vec<usize> = super::super::buffer::lines(&body).flat_map(|(s, e)| [s, e]).collect();
+                let at = if below(2) == 0 { all[below(all.len())] } else { ends[below(ends.len())] };
+                h.put(at);
+            }
+            12 | 13 => h.press(Key::Named(NamedKey::ArrowDown), Some(motions[below(motions.len())]), below(2) == 0, 3),
+            14 => {
+                // The footer's words: a landed save, the discard prompt raised and answered, the stale banner kept.
+                match below(3) {
+                    0 => h.editor.mark_file_saved("v".into()),
+                    1 if h.edit().is_dirty() => { h.press_key(Some(Action::Cancel), None); }
+                    _ => h.editor.mark_stale(),
+                }
+                h.press_key(Some(Action::EditRight), None);
+                h.press_key(Some(Action::StaleKeep), None);
+            }
+            15 => {
+                // Edits while the pane has no width, at places apart, shaped together when it returns.
+                for _ in 0..=below(3) {
+                    let all = positions(&h.body());
+                    h.put(all[below(all.len())]);
+                    match below(3) {
+                        0 => h.edit().buf.insert_char('w'),
+                        1 => h.edit().buf.backspace(),
+                        _ => h.edit().buf.insert_str("v\n"),
+                    }
+                }
+            }
+            _ => {
+                // A selection replaced: Shift steps, then a letter or a paste.
+                for _ in 0..=below(4) {
+                    h.press(Key::Named(NamedKey::ArrowDown), Some(motions[below(motions.len())]), true, 3);
+                }
+                if below(2) == 0 { h.press_key(None, Some("q")); } else { h.edit().buf.insert_str("r\ns"); h.press_key(Some(Action::EditLeft), None); }
+            }
+        }
+        if h.editor.owes_shaping(h.width) {
+            h.reshape();
+        }
+        if step % 50 == 49 || step + 1 == steps {
+            equals_a_fresh_shaping(h, &what);
+        }
+    }
+}
+
+#[test]
+fn every_edit_in_place_equals_a_fresh_shaping_of_its_text() {
+    // Paragraphs that wrap at both widths, kept short: a key re-shapes the whole line it lands in.
+    let lorem = &LOREM[..80];
+    let paragraphs = format!("{lorem}\n\n{HEBREW} and {ARABIC} in a row of words\r\nA CRLF line\r\n\ttabbed\tline\rafter a lone CR\n\
+        日本語のテキストは{lorem}\u{2028}after a line separator\u{85}after a next line\n\u{1c}a file separator\n👩‍👩‍👧 family\r");
+    let mut h = Harness::concept(&format!("---\ntitle: a note\n---\n{paragraphs}"), 30);
+    walk_against_fresh_shapings(&mut h, 0x5eed_1234_abcd_0001, 1500);
+    let mut h = Harness::new(&paragraphs, 23);
+    walk_against_fresh_shapings(&mut h, 0x0dd_ba11_cafe_f00d, 500);
+}
+
+#[test]
+fn an_edit_shapes_only_the_lines_it_changes() {
+    let text = (0..300).map(|i| format!("line {i} of the file, with words")).collect::<Vec<_>>().join("\n");
+    // The start of line `k` of the body as it is now.
+    let line = |h: &mut Harness, k: usize| h.body().split('\n').take(k).map(|l| l.len() + 1).sum::<usize>();
+    let mut h = Harness::new("", 60);
+    assert_eq!(lines_shaped(&mut h, |h| h.retext(&text)), 302, "the first shaping is the whole text and the footer's two lines");
+    let at = line(&mut h, 3) + 5;
+    h.put(at);
+    h.type_char("x");
+    // The footer says modified from here on, so each count is the body's lines alone.
+    assert_eq!(lines_shaped(&mut h, |h| h.type_char("y")), 1, "a typed letter");
+    assert_eq!(lines_shaped(&mut h, |h| { let at = line(h, 10); h.put(at); h.type_char("y") }), 1, "a letter typed at a line's start");
+    assert_eq!(lines_shaped(&mut h, |h| h.act(Action::EditNewline)), 2, "Enter");
+    assert_eq!(lines_shaped(&mut h, |h| h.act(Action::EditBackspace)), 1, "a Backspace that joins two lines");
+    assert_eq!(lines_shaped(&mut h, |h| { let at = line(h, 20) - 1; h.put(at); h.act(Action::EditDelete) }), 1, "a Delete that joins two lines");
+    assert_eq!(lines_shaped(&mut h, |h| h.act(Action::EditDelete)), 1, "a Delete");
+    let paste = |h: &mut Harness, text: &str| { h.edit().buf.insert_str(text); h.reshape() };
+    assert_eq!(lines_shaped(&mut h, |h| paste(h, "a\nb\nc")), 3, "a paste of three lines");
+    assert_eq!(lines_shaped(&mut h, |h| paste(h, "a\nb\nc\n")), 4, "a paste of three lines with their ends");
+    assert_eq!(lines_shaped(&mut h, |h| h.act(Action::EditUndo)), 1, "an undo of it");
+    assert_eq!(lines_shaped(&mut h, |h| h.act(Action::EditRedo)), 4, "a redo of it");
+    assert_eq!(lines_shaped(&mut h, |h| h.act(Action::EditRight)), 0, "a motion");
+    let select = |h: &mut Harness| h.press(Key::Named(NamedKey::ArrowRight), Some(Action::EditRight), true, 3);
+    assert_eq!(lines_shaped(&mut h, select), 1, "a selection that begins: the footer");
+    assert_eq!(lines_shaped(&mut h, select), 0, "a selection step");
+    assert_eq!(lines_shaped(&mut h, |h| h.press(Key::Named(NamedKey::ArrowDown), Some(Action::EditDown), true, 3)), 0, "a selection step by a row");
+    assert_eq!(lines_shaped(&mut h, |h| h.type_char("z")), 2, "a selection replaced by a letter: its line and the footer");
+    equals_a_fresh_shaping(&mut h, "after the counted keys");
+}
+
+#[test]
+fn the_footers_words_change_with_one_line_shaped() {
+    let mut h = Harness::new(&long_text(), 40);
+    let footer = |h: &mut Harness| h.footer();
+    assert_eq!(lines_shaped(&mut h, |h| { h.press_key(None, Some("x")); }), 2, "a letter, and the footer says modified");
+    assert!(footer(&mut h).contains("modified"));
+    assert_eq!(lines_shaped(&mut h, |h| { h.press_key(Some(Action::Cancel), None); }), 1);
+    assert!(footer(&mut h).contains("DISCARD UNSAVED EDITS?"));
+    assert_eq!(lines_shaped(&mut h, |h| { h.press_key(Some(Action::EditRight), None); }), 1);
+    assert!(footer(&mut h).contains("modified"));
+    assert_eq!(lines_shaped(&mut h, |h| { h.editor.mark_file_saved("v2".into()); h.reshape() }), 1);
+    assert!(footer(&mut h).contains("clean"));
+    assert_eq!(lines_shaped(&mut h, |h| { h.editor.mark_stale(); h.reshape() }), 1);
+    assert!(footer(&mut h).contains("STALE"));
+    assert_eq!(lines_shaped(&mut h, |h| { h.press_key(Some(Action::StaleKeep), None); }), 1);
+    assert!(footer(&mut h).contains("clean"));
+    equals_a_fresh_shaping(&mut h, "after the footer's changes");
 }
 
 /// A file of `lines` lines of about 90 characters each, words of several lengths.

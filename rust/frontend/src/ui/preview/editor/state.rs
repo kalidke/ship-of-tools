@@ -3,7 +3,10 @@
 
 use crate::ui::*;
 use crate::ui::input::keypress::KeyPress;
+use super::buffer::Change;
 use super::rows;
+use crate::ui::render::text::replace_buffer_lines;
+use cosmic_text::FontSystem;
 use crate::ui::preview::shaped::ShapedPreview;
 use std::time::{Duration, Instant};
 
@@ -176,6 +179,12 @@ pub(in crate::ui) struct Editor {
     drawn: Option<Drawn>,
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many lines this thread's edit buffers handed the shaper, for the tests that count them per key.
+    pub(super) static SHAPED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// The shaped buffer the window draws with the index of its rows, as a key reads them.
 type Shaped<'a> = Option<(&'a MarkdownPreview, &'a rows::Index)>;
 
@@ -336,15 +345,50 @@ impl Editor {
     /// A row's restore brings back its parked edit; the caller re-shapes it.
     pub(in crate::ui) fn restore(&mut self, edit: Option<EditState>) { self.edit = edit; }
 
-    /// Re-shape the buffer from the edit through `shape`, which is given the edit's spans; without an edit the
-    /// shaped buffer goes.
-    pub(in crate::ui) fn reshape(
-        &mut self, bindings: &KeyBindings, shape: impl FnOnce(&[String]) -> MarkdownPreview,
-    ) {
-        self.shaped = self.edit.as_ref().map(|edit| shape(&edit.spans(bindings)));
+    /// Bring the shaped buffer to what the edit draws, for a pane `width` px wide at text `scale`: in place where the
+    /// buffer is of this edit at this width and scale and the text's change since it is known (`reshape_lines`), else
+    /// shaped whole (`MarkdownPreview::new_plain_spans`, which the in-place buffer equals); without an edit the shaped
+    /// buffer goes. The index is built again from the buffer either way.
+    pub(in crate::ui) fn reshape(&mut self, bindings: &KeyBindings, width: f32, scale: f32, font_system: &mut FontSystem) {
+        let change = self.edit.as_mut().and_then(|edit| edit.buf.take_change());
+        if !(self.fit(width, scale) == Fit::Fits && self.reshape_lines(change, bindings, font_system)) {
+            self.shaped = self.edit.as_ref().map(|edit| MarkdownPreview::new_plain_spans(font_system, &edit.spans(bindings), width, scale));
+            #[cfg(test)]
+            SHAPED.with(|n| n.set(n.get() + self.shaped.as_ref().map_or(0, |s| s.buffer.lines.len())));
+        }
         self.index = self.edit.as_ref().zip(self.shaped.as_ref())
             .and_then(|(edit, shaped)| rows::Index::new(&shaped.buffer, edit.buf.body(), edit.buf.rev()));
         self.drawn = self.edit.as_ref().map(EditState::drawn);
+    }
+
+    /// Bring the shaped buffer to the edit in place: the body's lines `change` touched (`buffer::line_change`) and the
+    /// footer, when its words differ, are replaced (`replace_buffer_lines`) and shaped, every other line keeping its
+    /// shaping and layout. `false`, with nothing done, where the buffer is not of the text `change` starts from (or of
+    /// this text, with no change): another edit's, a reload's, or none.
+    fn reshape_lines(&mut self, change: Option<Change>, bindings: &KeyBindings, font_system: &mut FontSystem) -> bool {
+        let (Some(edit), Some(shaped), Some(index), Some(drawn)) = (self.edit.as_ref(), self.shaped.as_mut(), self.index.as_ref(), self.drawn) else {
+            return false;
+        };
+        if change.map_or(edit.buf.rev(), |c| c.since) != drawn.rev {
+            return false;
+        }
+        let buffer = &mut shaped.buffer;
+        // The attributes every line was shaped in (`new_plain_spans` gives each its spans' one default).
+        let attrs = cosmic_text::AttrsOwned::new(buffer.lines[0].attrs_list().defaults());
+        let attrs = attrs.as_attrs();
+        if let Some(change) = change {
+            let (before, after) = super::buffer::line_change(index.lines(), edit.buf.body(), &change);
+            let lines = before.start + index.first()..before.end + index.first();
+            replace_buffer_lines(buffer, lines, after.iter().map(|&(s, e)| &edit.buf.body()[s..e]), attrs);
+        }
+        let (footer, last) = (edit.footer(bindings), buffer.lines.len() - 1);
+        if buffer.lines[last].text() != footer {
+            replace_buffer_lines(buffer, last..last + 1, [footer.as_str()], attrs);
+        }
+        #[cfg(test)]
+        SHAPED.with(|n| n.set(n.get() + buffer.lines.iter().filter(|l| l.shape_opt().is_none()).count()));
+        buffer.shape_until_scroll(font_system, false);
+        true
     }
 
     /// Whether the shaped text is no longer what the edit draws (its text, selection, footer or banners changed):
@@ -384,6 +428,16 @@ impl Editor {
     #[cfg(test)]
     pub(in crate::ui) fn put_cursor(&mut self, at: usize) {
         if let Some(edit) = self.edit.as_mut() { edit.buf.set_cursor(at); }
+    }
+
+    /// Select `from..to`, the cursor at `to`, as a native fixture's stand-in for the Shift keys it cannot press.
+    #[cfg(test)]
+    pub(in crate::ui) fn select_for_test(&mut self, from: usize, to: usize) {
+        if let Some(edit) = self.edit.as_mut() {
+            edit.buf.set_cursor(from);
+            edit.buf.set_selecting(true);
+            edit.buf.set_cursor(to);
+        }
     }
 
     /// How the shaped buffer fits a pane of `width` px at text `scale`: it is shaped for another scale (the text

@@ -50,6 +50,18 @@ impl State {
         ensure!(self.shaped.scroll() == 60.0 && !shown(self)?, "the wheel did not take the view from the cursor: {}", self.shaped.scroll());
         moved(self, 13)?;
         ensure!(shown(self)?, "the next motion did not bring the view back");
+        // A selection over three lines is drawn as bands in the frame, inside the pane, and its growth shapes nothing.
+        self.editor.select_for_test(13, 30);
+        self.reshape_edit_if_owed();
+        self.redraw()?;
+        let (pane, scroll) = (self.concept.rect(), self.shaped.scroll_px());
+        let bands = self.edit_selection_rects(pane, scroll);
+        ensure!(bands.len() >= 3 && bands.iter().all(|b| b.x >= pane.x && b.x + b.w <= pane.x + pane.w && b.y >= pane.y.floor()),
+            "the selection's bands are not on its rows in the pane: {bands:?} in {pane:?}");
+        self.editor.select_for_test(13, 40);
+        ensure!(!self.editor.needs_reshape(), "a selection that grows owes a shaping");
+        self.redraw()?;
+        moved(self, 13)?;
         // A resize: the frame shapes the edit buffer for the pane's new width before it draws, so the rows a key reads
         // are the rows the screen shows.
         let width = |s: &State| s.editor.shaped().and_then(|shaped| shaped.buffer.size().0);

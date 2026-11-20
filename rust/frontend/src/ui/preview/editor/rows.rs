@@ -54,6 +54,22 @@ impl Index {
         }
         Some(Self { rev, lines, first, rows })
     }
+
+    /// The body's lines, as `buffer::lines` gives them, at the shaping.
+    pub(super) fn lines(&self) -> &[(usize, usize)] {
+        &self.lines
+    }
+
+    /// The shaped line of the body's first line.
+    pub(super) fn first(&self) -> usize {
+        self.first
+    }
+
+    /// The index's lines, first line and rows (`(line, place among its rows, top, height)`), to hold it equal to another.
+    #[cfg(test)]
+    pub(super) fn parts(&self) -> (&[(usize, usize)], usize, Vec<(usize, usize, f32, f32)>) {
+        (&self.lines, self.first, self.rows.iter().map(|r| (r.line, r.layout, r.top, r.height)).collect())
+    }
 }
 
 /// The edit's shaped buffer read against its body through its index.

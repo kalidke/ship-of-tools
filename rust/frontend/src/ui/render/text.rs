@@ -43,6 +43,24 @@ pub(crate) fn set_buffer_text(
     buffer.set_text(font_system, &one_paragraph_per_line(text), attrs, shaping);
 }
 
+/// Replace lines `range` of `buffer` with one line for each of `lines`, each a line's text without its end, in `attrs`:
+/// the line `set_buffer_rich_text` makes of a span in its default attributes, through `one_paragraph_per_line`, with any
+/// CR or LF made a space as well, so each line is one bidi paragraph. The other lines keep their shaping and layout;
+/// the caller shapes the new ones (`Buffer::shape_until_scroll`).
+pub(crate) fn replace_buffer_lines<'s>(
+    buffer: &mut Buffer,
+    range: std::ops::Range<usize>,
+    lines: impl IntoIterator<Item = &'s str>,
+    attrs: Attrs,
+) {
+    let line = |text: &'s str| {
+        let text = one_paragraph_per_line(text).replace(['\r', '\n'], " ");
+        #[allow(clippy::disallowed_methods, reason = "text into the shaper: one line through one_paragraph_per_line, no line end in it")]
+        glyphon::cosmic_text::BufferLine::new(text, Default::default(), glyphon::cosmic_text::AttrsList::new(attrs), Shaping::Advanced)
+    };
+    buffer.lines.splice(range, lines.into_iter().map(line));
+}
+
 /// `Buffer::set_rich_text` with each span through `one_paragraph_per_line`.
 pub(crate) fn set_buffer_rich_text<'r, 's, I>(
     buffer: &mut Buffer,
