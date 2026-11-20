@@ -75,15 +75,19 @@ pub(in crate::ui) const SELECTION_BG_RGBA: [u8; 4] = [252, 240, 130, 140];
 /// The edit view's text color, and its cursor's bar: a warm gold, so the person sees the text is editable.
 pub(in crate::ui) const EDIT_TEXT_RGB: (u8, u8, u8) = (235, 215, 160);
 
+/// The edit view's selection band, opaque: the selection's tint at alpha 12 of 255 over the surface, blended in
+/// linear light, so the edit text over it reads 7.98 : 1 and the band against the ground 1.75 : 1. The shared tint is
+/// too light for text read before it is typed over (1.43 : 1).
+pub(in crate::ui) const EDIT_SELECTION_BG_RGB: (u8, u8, u8) = (61, 59, 37);
+
 /// The solid brushes each drawing stage paints rects with.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(in crate::ui) enum Solid {
     SelectionBg,
+    /// The edit view's selection bands, opaque in `EDIT_SELECTION_BG_RGB`.
+    EditSelectionBg,
     /// The edit cursor's bar, opaque in `EDIT_TEXT_RGB`.
     EditBar,
-    /// The edit cursor's edge, a pixel each side of the bar, opaque in the surface's color: it outlines the bar on a
-    /// selection's band, where the bar's own color hardly reads, and is not seen on the ground.
-    EditBarEdge,
     OverlayBack,
     CodeBg,
     CodeBorder,
@@ -106,9 +110,9 @@ pub(in crate::ui) struct Brushes {
     /// hurt readability per user feedback). Solid colour with full alpha
     /// — the chrome's near-black bg shows around glyph antialias edges.
     selection_bg: Quad,
-    /// The edit cursor's bar and its edge (`Solid::EditBar`, `Solid::EditBarEdge`).
+    /// The edit view's selection bands and its cursor's bar (`Solid::EditSelectionBg`, `Solid::EditBar`).
+    edit_selection_bg: Quad,
     edit_bar: Quad,
-    edit_bar_edge: Quad,
     /// A 1×1 near-opaque surface-navy RGBA texture: the backing strip
     /// under nav-spill overlay rows. Rendered AFTER the main text pass
     /// (so it covers preview glyphs and images alike), then the overlay
@@ -173,12 +177,12 @@ pub(in crate::ui) struct Brushes {
 impl Brushes {
     #[allow(clippy::too_many_arguments)]
     pub(in crate::ui) fn new(
-        pipeline: QuadPipeline, selection_bg: Quad, edit_bar: Quad, edit_bar_edge: Quad, overlay_back: Quad, code_bg: Quad,
+        pipeline: QuadPipeline, selection_bg: Quad, edit_selection_bg: Quad, edit_bar: Quad, overlay_back: Quad, code_bg: Quad,
         code_border: Quad, strike_line: Quad, scalebar_bar: Quad, scalebar_back: Quad, caption_back: Quad, canvas: Quad,
         logo: Option<(Quad, u32, u32)>, wordmark: Option<(Quad, u32, u32)>,
     ) -> Self {
         Self {
-            pipeline, selection_bg, edit_bar, edit_bar_edge, overlay_back, code_bg, code_border, strike_line, borders: HashMap::new(),
+            pipeline, selection_bg, edit_selection_bg, edit_bar, overlay_back, code_bg, code_border, strike_line, borders: HashMap::new(),
             scalebar_bar, scalebar_back, caption_back, canvas, logo, wordmark, help_back: None, backs: None,
         }
     }
@@ -192,8 +196,8 @@ impl Brushes {
     ) -> Result<()> {
         let quad = match brush {
             Solid::SelectionBg => &mut self.selection_bg,
+            Solid::EditSelectionBg => &mut self.edit_selection_bg,
             Solid::EditBar => &mut self.edit_bar,
-            Solid::EditBarEdge => &mut self.edit_bar_edge,
             Solid::OverlayBack => &mut self.overlay_back,
             Solid::CodeBg => &mut self.code_bg,
             Solid::CodeBorder => &mut self.code_border,

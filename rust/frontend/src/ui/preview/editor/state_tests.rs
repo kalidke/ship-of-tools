@@ -1165,40 +1165,46 @@ fn the_selection_is_drawn_as_bands_under_its_text_on_every_row_it_spans() {
     assert_eq!(h.editor.selection_bands(f32::MIN, f32::MAX).len(), 2, "`bc ` and the word's first two letters, apart");
 }
 
-/// WCAG's contrast of two colors, the band being the selection's brush blended over the surface in linear light, as an
-/// sRGB surface blends it.
+/// WCAG's contrast of two colors.
 fn contrast(a: (u8, u8, u8), b: (u8, u8, u8)) -> f64 {
-    let lum = |(r, g, b): (u8, u8, u8)| {
-        let lin = |c: u8| { let c = c as f64 / 255.0; if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) } };
-        0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
-    };
+    let lum = |(r, g, b): (u8, u8, u8)| 0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b);
     let (x, y) = (lum(a), lum(b));
     (x.max(y) + 0.05) / (x.min(y) + 0.05)
 }
 
-fn band_color() -> (u8, u8, u8) {
+/// An sRGB byte in linear light.
+fn linear(c: u8) -> f64 {
+    let c = c as f64 / 255.0;
+    if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+}
+
+/// The selection's tint at `alpha` of 255 over the surface, blended in linear light as an sRGB surface blends it.
+fn tint_over_the_surface(alpha: u8) -> (u8, u8, u8) {
     use crate::ui::render::{brushes::SELECTION_BG_RGBA as top, cells::SURFACE_RGB as ground};
-    let alpha = top[3] as f64 / 255.0;
-    let lin = |c: u8| { let c = c as f64 / 255.0; if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) } };
+    let a = alpha as f64 / 255.0;
     let enc = |l: f64| ((if l <= 0.0031308 { 12.92 * l } else { 1.055 * l.powf(1.0 / 2.4) - 0.055 }) * 255.0).round() as u8;
-    let mix = |t: u8, g: u8| enc(alpha * lin(t) + (1.0 - alpha) * lin(g));
+    let mix = |t: u8, g: u8| enc(a * linear(t) + (1.0 - a) * linear(g));
     (mix(top[0], ground.0), mix(top[1], ground.1), mix(top[2], ground.2))
 }
 
 #[test]
-fn the_cursor_is_painted_over_the_bands_in_colors_that_read_on_a_band_and_on_the_ground() {
-    use crate::ui::render::{brushes::{Solid, EDIT_TEXT_RGB}, cells::SURFACE_RGB};
-    let bar = ScreenRect { x: 100.0, y: 40.0, w: 2.5, h: 19.0 };
-    let paints = rows::bar_paints(bar);
-    assert_eq!(paints.map(|(brush, r)| (brush, (r.x, r.y, r.w, r.h))),
-        [(Solid::EditBarEdge, (99.0, 40.0, 4.5, 19.0)), (Solid::EditBar, (100.0, 40.0, 2.5, 19.0))],
-        "the edge first, a pixel each side, then the bar");
-    // The bar is the edit text's color, its edge the surface's: the bar reads on the ground, the edge on a band.
-    let band = band_color();
-    assert!(contrast(EDIT_TEXT_RGB, SURFACE_RGB) > 7.0 && contrast(SURFACE_RGB, band) > 7.0,
-        "bar on the ground {:.2}, edge on a band {:.2}", contrast(EDIT_TEXT_RGB, SURFACE_RGB), contrast(SURFACE_RGB, band));
-    // The bar alone on a band is why it has an edge: its color hardly reads there.
-    assert!(contrast(EDIT_TEXT_RGB, band) < 2.0, "{:.2}", contrast(EDIT_TEXT_RGB, band));
+fn the_selection_and_the_cursor_are_painted_in_colors_that_read() {
+    use crate::ui::render::{brushes::{Solid, EDIT_SELECTION_BG_RGB as band, EDIT_TEXT_RGB as text, SELECTION_BG_RGBA}, cells::SURFACE_RGB as ground};
+    let (b, bar) = (ScreenRect { x: 10.0, y: 40.0, w: 30.0, h: 19.0 }, ScreenRect { x: 40.0, y: 40.0, w: 2.5, h: 19.0 });
+    let rects = |rs: &[ScreenRect]| rs.iter().map(|r| (r.x, r.y, r.w, r.h)).collect::<Vec<_>>();
+    let paints = rows::edit_paints(vec![b], Some(bar));
+    assert_eq!(paints.iter().map(|(brush, rs)| (*brush, rects(rs))).collect::<Vec<_>>(),
+        [(Solid::EditSelectionBg, rects(&[b])), (Solid::EditBar, rects(&[bar]))], "the bands, then the bar over them");
+    // The band is the shared tint dimmed, at alpha 12, made opaque: the same hue, its own brush.
+    assert_eq!(band, tint_over_the_surface(12));
+    // The text reads on the band at 7 : 1 or better, and the band on the ground at 1.5 : 1 or better.
+    assert!(contrast(text, band) >= 7.0 && contrast(band, ground) >= 1.5,
+        "text on the band {:.2}, band on the ground {:.2}", contrast(text, band), contrast(band, ground));
+    // The bar, in the text's color, reads at 3 : 1 or better on both, by its color alone.
+    assert!(contrast(text, ground) >= 3.0 && contrast(text, band) >= 3.0);
+    // The shared tint, the other panes' band, would not do: the text reads 1.43 : 1 on it.
+    let shared = tint_over_the_surface(SELECTION_BG_RGBA[3]);
+    assert!(contrast(text, shared) < 1.5, "{:.2}", contrast(text, shared));
 }
 
 #[test]

@@ -346,12 +346,9 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   - The bar. The cursor is not a character of the shaped text (`EditState::spans` is the header, the body and the
     footer alone): the render pass draws it as a bar at `Editor::cursor_place` (`State::edit_cursor_rect`, in
     `paint_text_selections`, over the selection's bands and under the glyphs), so it cannot move a wrap. The bar is
-    opaque in the edit text's color (`EDIT_TEXT_RGB`, `Solid::EditBar`) over an edge a pixel wider on each side in the
-    surface's color (`Solid::EditBarEdge`; `rows::bar_paints`): on the ground the edge is not seen and the bar reads
-    13.9 : 1; on a band the bar's color alone reads 1.4 : 1, and the edge outlines it at 9.7 : 1, so the selection's
-    moving end is told from its anchor. The other panes' cursors are inverse cells under the selection's tint (the
-    Terminal drawer's a block in the cell's foreground), about 1.5 : 1 against a band, so the edge was chosen over
-    their treatment. `rows::bar` clips it vertically
+    opaque in the edit text's color (`EDIT_TEXT_RGB`, `Solid::EditBar`, painted after the bands: `rows::edit_paints`)
+    and reads by its color alone, 13.95 : 1 on the ground and 7.98 : 1 on the edit view's band, so the selection's
+    moving end is told from its anchor. `rows::bar` clips it vertically
     as the text it stands on is (the same origin, `pane.y + EXTRA_TOP_PAD_PX - scroll`, and the same cut at the pane's
     top edge and at the foot of the last whole line, `MarkdownPreview::clip_bottom`, which the text's own clip calls
     too) and keeps it whole horizontally, moved in as far as the pane's edges (the text has no gutter and a letter's
@@ -393,19 +390,21 @@ The remaining concepts below still reach shared fields through `impl State` bloc
     word on a row sends the steps onto and off it to the file's next line; the rest of the file is unaffected; the bar
     is still drawn there). Home and End stay on the file's line.
   - The selection. It is not in the shaped text (`EditState::spans` is the header, the body and the footer, every line
-    in the default color): the render pass draws it as bands under the glyphs in the brush the preview's and the
-    agent pane's selections use (`Solid::SelectionBg`, in `paint_text_selections`, before the bar), from the rows of
+    in the default color): the render pass draws it as bands under the glyphs in a brush of the edit view's own
+    (`Solid::EditSelectionBg`, in `paint_text_selections`, before the bar), from the rows of
     the index (`rows::selection`, through `Editor::selection_bands` and `State::edit_selection_rects`, which read only
     the rows in view). On each row a band covers each run of selected glyphs side by side (a glyph is selected where
     any of its bytes is; a row that mixes directions can have two), and a line whose end is selected has a band half
     an em wide after its last glyph (before its first on a right-to-left line), so a selected empty line shows; a
     selection that ends at a line end has none for it; the space a wrap drops has no glyph and no band. Each band is
     clipped vertically as the bar is and cut at the pane's left and right edges (`rows::band`). The copied text and
-    the selection's range rules are the buffer's (`EditBuffer::selection_range`). Legibility: selected text reads
-    1.43 : 1 against a band (the edit text (235, 215, 160) over the brush (252, 240, 130) at alpha 140 of 255 on the
-    surface (5, 9, 23), blended in linear light as an sRGB surface blends it; 2.56 : 1 where the surface blends in
-    sRGB), where the old amber selected text read 14.3 : 1 against the ground; the band reads 9.7 : 1 against the
-    ground. The preview's and the agent pane's selected text read 1.49 : 1 and 1.27 : 1 over the same band. A
+    the selection's range rules are the buffer's (`EditBuffer::selection_range`). Legibility: the band is opaque,
+    `EDIT_SELECTION_BG_RGB` (61, 59, 37), the hue of the shared selection tint (252, 240, 130) at alpha 12 of 255 over
+    the surface (5, 9, 23), blended in linear light as an sRGB surface blends it, so that the edit text (235, 215, 160)
+    over it reads 7.98 : 1 (the bound is 7 : 1: selected text is read before it is typed over) and the band against
+    the ground 1.75 : 1 (the bound is 1.5 : 1: the selection is plainly seen). Being opaque, it is the same on a surface
+    that blends in sRGB. The shared tint at its alpha 140 would leave the edit text at 1.43 : 1 (the old amber selected
+    text read 14.3 : 1 against the ground); the other panes keep it (SELECTION-BAND-HIDES-ITS-TEXT). A
     selected line end whose band falls past the pane's edge (a right-to-left line whose last row starts at the left
     edge, a full left-to-right row) shows nothing, the band cut away by the clip.
   - What a key re-shapes. After a key the window re-shapes only when the shaped text is no longer what the edit draws
@@ -501,9 +500,10 @@ The remaining concepts below still reach shared fields through `impl State` bloc
     `new_end`, `record`'s union of two changes dropped, the revision guard or the width-and-scale guard removed, and
     `replace_body`'s second char-boundary step removed), `an_edit_shapes_only_the_lines_it_changes` and
     `the_footers_words_change_with_one_line_shaped` (the counts above, from a per-thread count of the lines handed
-    the shaper; red with the in-place path off). The bar's paints:
-    `the_cursor_is_painted_over_the_bands_in_colors_that_read_on_a_band_and_on_the_ground` (the brushes and rects
-    `rows::bar_paints` hands the painter, and the colors' contrasts). The re-shapes:
+    the shaper; red with the in-place path off). The marks' paints:
+    `the_selection_and_the_cursor_are_painted_in_colors_that_read` (the brushes and rects `rows::edit_paints` hands
+    the painter, in order; the band the shared tint at alpha 12; text on the band at 7 : 1 or better, the band on the
+    ground at 1.5 : 1 or better, the bar at 3 : 1 or better on both). The re-shapes:
     `a_landed_save_changes_the_footer_and_owes_a_reshape`,
     `escape_on_an_edited_buffer_draws_the_discard_prompt_and_any_other_key_takes_it_down` (through `Editor::press`, the
     key's own path under a key event) and `a_pane_with_no_width_is_not_shaped_for_and_is_when_it_returns`. Lines and CRLF:

@@ -221,12 +221,11 @@ pub(in crate::ui) fn bar(place: Place, pane: ScreenRect, scroll_px: f32, clip_bo
     (inside && y1 > y0).then(|| ScreenRect { x: (pane.x + place.x - w / 2.0).clamp(pane.x, pane.x + pane.w - w), y: y0, w, h: y1 - y0 })
 }
 
-/// The edit cursor's paints over the selection's bands and under the glyphs, in order: its edge, a pixel wider on each
-/// side in the surface's color, then the bar in the edit text's color, both opaque. On the ground the edge is not seen
-/// and the bar reads by its own color; on a band, where the bar's color is about as light as the band, the dark edge
-/// outlines it, so the selection's moving end is told from its anchor.
-pub(in crate::ui) fn bar_paints(bar: ScreenRect) -> [(Solid, ScreenRect); 2] {
-    [(Solid::EditBarEdge, ScreenRect { x: bar.x - 1.0, w: bar.w + 2.0, ..bar }), (Solid::EditBar, bar)]
+/// The edit view's marks under the glyphs, in the order they are painted: the selection's bands in the edit view's own
+/// band brush, then the cursor's bar over them in the edit text's color, both opaque. The bar reads by its color on
+/// the band as on the ground, so the selection's moving end is told from its anchor.
+pub(in crate::ui) fn edit_paints(bands: Vec<ScreenRect>, bar: Option<ScreenRect>) -> [(Solid, Vec<ScreenRect>); 2] {
+    [(Solid::EditSelectionBg, bands), (Solid::EditBar, bar.into_iter().collect())]
 }
 
 /// A band of the selection at `(x, top, w, h)` px in the layout, on screen in the pane `pane` with its text scrolled
