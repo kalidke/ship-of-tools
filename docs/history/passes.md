@@ -3078,3 +3078,14 @@ the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the sa
     whether an answered step shares it) and a review's forcing found two the first search missed; the fe-net,
     capsule and platform tests were read by grep only, and no site of the same shape was found there. Four sites
     are widened to 1 s and not freed of the clock, since one deadline covers the hung and the answered steps.
+  - The REPL drawer's program colors and one row per line (REPL-DRAWER-PROGRAM-COLORS-DROPPED,
+    REPL-DRAWER-STACK-ROW-CLIPS, REPL-DRAWER-ONE-ROW-PER-WRITE). One builder, four commits (the wire's grammar; color
+    by the request's flag; the drawer's reader; one row per line); one reviewer, six rounds. The first design colored
+    by the op's name and was redesigned after five blockers: color follows a flag the window's request carries, and a
+    hello capability keeps every escape byte from an older window. Rounds 2 to 4 each found a cost that grew with the
+    row or a loss in code the round before had added (a `\r` repaint, lines after an unfinished string, erase in
+    line); the fix that held was the class: one table of what the reader honors, one budget test over every entry at
+    three row lengths, and a reference test against the vendored terminal emulator. Rounds 5 and 6 found only false
+    sentences in the manual, which is now a list of what the drawer does not do, each item pinned by a test row.
+    Lesson for a brief: a reader of a byte stream is asked for its cost invariant and its reference before its first
+    review, not after its third. No person has used it.
