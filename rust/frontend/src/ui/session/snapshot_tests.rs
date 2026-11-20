@@ -98,29 +98,3 @@ fn a_rows_drawing_comes_back_with_its_view() {
     layer.restore(parked.view(&a).map(|v| v.ink.clone()).unwrap_or_default());
     assert!(layer.strokes().is_empty() && !layer.is_on() && layer.base().is_none(), "a destroyed row's drawing is gone");
 }
-
-/// Every way of changing the shown row saves the row left and restores the row entered, because only one function
-/// selects a row: `retarget_workspace`, which snapshots first (`snapshot_current_workspace_ui`, the drawer and its height
-/// with it), and the capture harness's startup seed, which has no row to leave. A second caller of `SelectedRow::select`
-/// is a way of changing the row that parks nothing.
-#[test]
-fn only_the_one_switch_selects_a_row() {
-    let mut found = Vec::new();
-    let mut folders = vec![std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src")];
-    while let Some(folder) = folders.pop() {
-        for entry in std::fs::read_dir(&folder).unwrap() {
-            let path = entry.unwrap().path();
-            let name = path.file_name().unwrap().to_string_lossy().to_string();
-            if path.is_dir() {
-                folders.push(path);
-            } else if name.ends_with(".rs") && !name.ends_with("tests.rs") {
-                let text = std::fs::read_to_string(&path).unwrap();
-                let calls = text.lines().filter(|l| !l.trim_start().starts_with("//") && l.contains("selected.select(")).count();
-                if calls > 0 { found.push((path.strip_prefix(env!("CARGO_MANIFEST_DIR")).unwrap().display().to_string(), calls)); }
-            }
-        }
-    }
-    found.sort();
-    assert_eq!(found, [("src/ui/init/mod.rs".to_string(), 1), ("src/ui/session/switch.rs".to_string(), 1)],
-        "a row is selected outside `retarget_workspace`, so a switch there parks nothing");
-}

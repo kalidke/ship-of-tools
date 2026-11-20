@@ -25,7 +25,7 @@ impl State {
         let (a_tx, mut a_rx) = tokio::sync::mpsc::unbounded_channel();
         let (b_tx, mut b_rx) = tokio::sync::mpsc::unbounded_channel();
         let saved_conns = std::mem::replace(&mut self.conns, vec![(a.clone(), a_tx), (b.clone(), b_tx)]);
-        self.selected.select(a.clone(), None);
+        self.selected.select_for_test(a.clone(), None);
         let (mut row_a, mut row_b) = (ws_info("project", "stored-a"), ws_info("project", "stored-b"));
         (row_a.workspace_id, row_b.workspace_id) = ("id-a".into(), "id-b".into());
         self.on_workspaces(a.clone(), vec![row_a]);
@@ -107,7 +107,7 @@ impl State {
         // frame, and the person still sees what became of the reply.
         let (events, receiver) = std::sync::mpsc::channel();
         let saved_events = std::mem::replace(&mut self.evt_rx, receiver);
-        self.selected.select(b.clone(), None);
+        self.selected.select_for_test(b.clone(), None);
         let to_events = |evt| events.send((b.clone(), evt)).map_err(|_| anyhow::anyhow!("the fixture's event channel closed"));
         to_events(crate::net::transport::IncomingEvt::PageReplied {
             handle: "repo__box".into(),
@@ -126,7 +126,7 @@ impl State {
             self.status.text()
         );
         self.evt_rx = saved_events;
-        self.selected.select(a.clone(), None);
+        self.selected.select_for_test(a.clone(), None);
 
         self.reply_bar = ReplyBar::default();
         self.conns = saved_conns;

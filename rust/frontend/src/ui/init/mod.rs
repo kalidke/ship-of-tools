@@ -383,7 +383,7 @@ fn apply_harness_flags(state: &mut State, cli: &crate::cli::Cli) {
         &chrono::Utc::now().to_rfc3339(),
         std::time::Instant::now,
     ) {
-        state.selected.select(host, Some(slug));
+        state.selected = SelectedRow::new(host, Some(slug));
     }
     // `--start-monitor` (capture harness): the drawer was opened at
     // construction and holds its subscription from the start. The

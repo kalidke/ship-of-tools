@@ -25,7 +25,7 @@ impl State {
         let (a_tx, mut a_rx) = tokio::sync::mpsc::unbounded_channel();
         let (b_tx, mut b_rx) = tokio::sync::mpsc::unbounded_channel();
         self.conns = vec![(a.clone(), a_tx), (b.clone(), b_tx)];
-        self.selected.select(a.clone(), Some("project".into()));
+        self.selected.select_for_test(a.clone(), Some("project".into()));
         let mut row_a = ws_info("project", "stored-a");
         row_a.workspace_id = "id-a".into();
         let mut row_b = ws_info("project", "stored-b");
@@ -596,7 +596,7 @@ impl State {
         self.conns.push((host.clone(), tx));
         let (events, receiver) = std::sync::mpsc::channel();
         self.evt_rx = receiver;
-        self.selected.select(host.clone(), None);
+        self.selected.select_for_test(host.clone(), None);
         self.on_workspaces(
             host.clone(),
             vec![
@@ -1735,7 +1735,9 @@ impl State {
         default.agent = "none".into();
         let rows = vec![default, probe_row("s1", "id-s1", false), probe_row("s2", "id-s2", false)];
         self.on_workspaces(a.clone(), rows);
-        let go = |s: &mut State, slug: &str| s.switch_to_workspace(a.clone(), Some(slug.into()), None, false);
+        // A person's step, and a switch nobody at the window asked for.
+        let go = |s: &mut State, slug: &str| s.switch_to_workspace(a.clone(), Some(slug.into()), None, true);
+        let unasked = |s: &mut State, slug: &str| s.switch_to_workspace(a.clone(), Some(slug.into()), None, false);
         let (own, full) = (|t| (t, false), |t| (t, true));
         // s1's REPL at full height; the layout must have one for the rest to mean anything.
         go(self, "s1");
@@ -1757,8 +1759,8 @@ impl State {
         self.probe_expect_frame(own(DrawerContent::Chat), "s2 kept its own height beside a full s1")?;
         // The ways of changing the shown row, each from s2 to s1 and back: the one every way ends in saves and restores.
         let host = a.clone();
-        let ways: Vec<(&str, Box<dyn Fn(&mut State, &str) -> Result<()>>)> = vec![
-            ("the cycle keys", Box::new({ let host = host.clone(); move |s, slug| {
+        let ways: Vec<(&str, bool, Box<dyn Fn(&mut State, &str) -> Result<()>>)> = vec![
+            ("the cycle keys", true, Box::new({ let host = host.clone(); move |s, slug| {
                 let here = s.selected.workspace_id().clone();
                 let dir = [1, -1].into_iter()
                     .find(|d| s.row_presentation.next_row(*d, &host, here.as_deref()).is_some_and(|(h, w)| h == host && w == slug))
@@ -1766,23 +1768,25 @@ impl State {
                 s.cycle_workspace(dir, true);
                 Ok(())
             } })),
-            ("the nav pane's Enter and a click", Box::new({ let host = host.clone(); move |s, slug| {
+            ("the nav pane's Enter and a click", true, Box::new({ let host = host.clone(); move |s, slug| {
                 let target = s.row_directory.resolve(&host, slug).map_err(|e| anyhow::anyhow!(e))?;
                 s.switch_to_resolved_workspace(target, true);
                 Ok(())
             } })),
-            ("goto, the control command", Box::new({ let host = host.clone(); move |s, slug| {
+            ("goto, the control command", false, Box::new({ let host = host.clone(); move |s, slug| {
                 s.dispatch_fe_command(Some(&host), FeCommand::Workspace { slug: Some(slug.into()) });
                 Ok(())
             } })),
-            ("a row that closed, the move to its neighbor", Box::new({ let host = host.clone(); move |s, slug| {
+            ("a row that closed, the move to its neighbor", false, Box::new({ let host = host.clone(); move |s, slug| {
                 s.apply_leave(host.clone(), Leave::To((host.clone(), slug.into())));
                 Ok(())
             } })),
         ];
-        for (name, way) in &ways {
+        for (name, person, way) in &ways {
+            // The focus is in s2's open drawer, a pane full height leaves drawn, so every way finds the height.
             way(self, "s1")?;
             self.probe_expect_frame(full(DrawerContent::Repl), &format!("{name}: the arrival at the full row"))?;
+            anyhow::ensure!(self.focus_prompts.focus() == PaneFocus::Repl, "{name} (person {person}): the focus left the drawer");
             way(self, "s2")?;
             self.probe_expect_frame(own(DrawerContent::Chat), &format!("{name}: the arrival at the row at its own height"))?;
         }
@@ -1822,6 +1826,31 @@ impl State {
         self.probe_expect_frame(own(DrawerContent::Repl), "an answer that is the preview ends the full height")?;
         anyhow::ensure!(self.editor.is_editing() && self.editor.shaped().is_some() && !self.editor.needs_reshape(),
             "the edit was not shaped when the pane's width came back");
+        // A switch nobody asked for, with the focus on the nav pane or the preview, moves no focus and shows s1 at its own
+        // height (the frame ends the height a covered focus cannot keep); the chat's draft gets no key.
+        for focus in [PaneFocus::NavTree, PaneFocus::Preview] {
+            self.probe_press_drawer_key(DrawerContent::Repl, 1);
+            self.probe_expect_frame(full(DrawerContent::Repl), "s1 made full again")?;
+            go(self, "s2");
+            self.focus_prompts.set_focus(focus);
+            unasked(self, "s1");
+            anyhow::ensure!(self.focus_prompts.focus() == focus, "a switch nobody asked for moved the focus from {focus:?} to {:?}", self.focus_prompts.focus());
+            self.probe_expect_frame(own(DrawerContent::Repl), &format!("the arrival nobody asked for, focus on {focus:?}"))?;
+            anyhow::ensure!(self.focus_prompts.focus() == focus, "the frame moved the focus from {focus:?}");
+        }
+        // A person's step with a pane maximized: the maximize and the focus stay, and the drawer is not made the pane.
+        self.probe_press_drawer_key(DrawerContent::Repl, 1);
+        self.probe_expect_frame(full(DrawerContent::Repl), "s1 made full once more")?;
+        go(self, "s2");
+        self.focus_prompts.set_focus(PaneFocus::Preview);
+        let (context, gates) = (self.help_context(), self.layout_gates());
+        self.layout_help.layout_action(Some(crate::ui::input::keybindings::Action::MaximizePane), &context, PaneFocus::Preview, gates);
+        go(self, "s1");
+        anyhow::ensure!(self.focus_prompts.focus() == PaneFocus::Preview && self.layout_help.maximized(),
+            "a step with the preview maximized moved the focus to {:?} (maximized {})", self.focus_prompts.focus(), self.layout_help.maximized());
+        // The next fixture meets the window whole.
+        self.layout_help.uncover_preview();
+        anyhow::ensure!(!self.layout_help.maximized(), "the maximize was not restored");
         Ok(())
     }
 }
@@ -1987,7 +2016,7 @@ impl State {
         let result = self.connection_line_run(&near, &far, &events);
         let (conns, evt_rx, (host, row)) = saved;
         (self.conns, self.evt_rx) = (conns, evt_rx);
-        self.selected.select(host, row);
+        self.selected.select_for_test(host, row);
         result
     }
 
@@ -2064,7 +2093,7 @@ impl State {
         let result = self.carried_reconnect_run(&near, &far, &events);
         let (conns, evt_rx, (host, row)) = saved;
         (self.conns, self.evt_rx) = (conns, evt_rx);
-        self.selected.select(host, row);
+        self.selected.select_for_test(host, row);
         result
     }
 
@@ -2134,7 +2163,7 @@ impl State {
         let result = self.refetch_failure_run(&a, &mut rx, &events);
         let (conns, evt_rx, (host, row)) = saved;
         (self.conns, self.evt_rx) = (conns, evt_rx);
-        self.selected.select(host, row);
+        self.selected.select_for_test(host, row);
         self.preview_requests.forget_fired();
         self.preview_notice.clear();
         self.file_ops.abort_upload();

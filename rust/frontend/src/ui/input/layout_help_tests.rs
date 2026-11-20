@@ -27,9 +27,11 @@ impl Harness {
             events: Vec::new(), fail: false, manual: Vec::new(), html: String::new(),
             status: "unchanged".into(), pastes: Vec::new() }
     }
+    /// A switch a person made.
     fn enter(&mut self, row: RowDrawer, focus: PaneFocus) { self.enter_on(row, focus, &LayoutPreset::default_laptop()); }
-    fn enter_on(&mut self, row: RowDrawer, focus: PaneFocus, base: &LayoutPreset) {
-        let e = self.layout.enter_row_drawer(row, focus, base); e.apply(self, None);
+    fn enter_on(&mut self, row: RowDrawer, focus: PaneFocus, base: &LayoutPreset) { self.enter_as(row, focus, base, true); }
+    fn enter_as(&mut self, row: RowDrawer, focus: PaneFocus, base: &LayoutPreset, person_driven: bool) {
+        let e = self.layout.enter_row_drawer(row, focus, base, person_driven); e.apply(self, None);
     }
     fn open(&mut self) {
         let e = self.layout.open_help(self.context.clone(), self.focus.focus()); e.apply(self, None);
@@ -699,6 +701,47 @@ fn the_rules_of_full_height_hold_on_the_arrival_at_a_full_row() {
         assert!(!h.layout.full_shown(&base, h.focus.focus()), "{name} {focus:?}: an answer that is the preview ends it");
         assert_eq!(h.layout.drawer(), DrawerContent::Terminal);
     } }
+}
+/// A switch nobody at the window asked for (a goto, a control cycle, an urgent result, a row that closed, a created
+/// row), or one made with a pane maximized, brings the full drawer back without the focus: what the person is typing in
+/// stays theirs, and the frame ends the height for a focus on a covered pane as it does by any path.
+#[test]
+fn an_arrival_nobody_asked_for_or_over_a_maximized_pane_moves_no_focus() {
+    let full = RowDrawer { content: DrawerContent::Chat, full: true };
+    for (name, base) in presets() { for focus in FOCI {
+        let mut h = Harness::new(DrawerContent::Closed, focus, false);
+        h.enter_as(full, focus, &base, false);
+        assert_eq!(h.focus.focus(), focus, "{name} {focus:?}: an arrival nobody asked for moved the focus");
+        let (_, shown) = h.layout.frame_layout(&base, focus);
+        assert!(focus_is_drawn(&h.layout, &base, focus), "{name} {focus:?}");
+        let leaves = base.full_span().is_some_and(|n| focus == PaneFocus::Repl || base.columns[n..].iter().any(|c| c.slot == focus.slot()));
+        assert_eq!(shown, leaves, "{name} {focus:?}: full only where the focus is on a pane it leaves drawn");
+        assert_eq!(h.layout.drawer(), DrawerContent::Chat);
+    } }
+    for focus in [PaneFocus::NavTree, PaneFocus::Preview] {
+        let mut h = Harness::new(DrawerContent::Closed, focus, true);
+        h.enter(full, focus);
+        assert_eq!((h.focus.focus(), h.layout.maximized()), (focus, true), "{focus:?}: a person's step with a pane maximized");
+    }
+}
+/// The row left parks the height that is shown: with the focus put on a pane the full height covers and no frame
+/// between, the flag is stale, and the row comes back at its own height, with no focus taken.
+#[test]
+fn a_row_left_with_the_focus_on_a_covered_pane_is_parked_at_its_own_height() {
+    let base = LayoutPreset::default_laptop();
+    let mut h = Harness::new(DrawerContent::Closed, PaneFocus::NavTree, false);
+    h.cycle(DrawerContent::Chat); h.cycle(DrawerContent::Chat);
+    h.focus.set_focus(PaneFocus::NavTree);
+    let left = h.layout.park_drawer(&base, PaneFocus::NavTree);
+    assert_eq!(left, own_height(DrawerContent::Chat));
+    h.enter(own_height(DrawerContent::Terminal), PaneFocus::NavTree);
+    h.enter(left, PaneFocus::NavTree);
+    assert_eq!((h.layout.drawer(), h.focus.focus()), (DrawerContent::Chat, PaneFocus::NavTree));
+    assert!(!h.layout.full_shown(&base, PaneFocus::NavTree));
+    // With the focus in the drawer the record is full, as the drawer's key left it.
+    let mut h = Harness::new(DrawerContent::Closed, PaneFocus::NavTree, false);
+    h.cycle(DrawerContent::Chat); h.cycle(DrawerContent::Chat);
+    assert_eq!(h.layout.park_drawer(&base, PaneFocus::Repl), RowDrawer { content: DrawerContent::Chat, full: true });
 }
 /// Full height is drawn only while the focus is on a pane it leaves drawn, on every preset: the drawer, or a column
 /// right of the covered ones. Focus anywhere else shows the normal layout, whatever put it there, and the next press

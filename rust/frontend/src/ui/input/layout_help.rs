@@ -173,14 +173,22 @@ impl LayoutHelp {
     pub(in crate::ui) fn row_drawer(&self) -> RowDrawer {
         let shown = if self.drawer == DrawerContent::Help { self.help_origin.map_or(DrawerContent::Closed, |o| o.drawer) } else { self.drawer };
         let content = if shown == DrawerContent::Help { DrawerContent::Closed } else { shown };
-        RowDrawer { content, full: self.full && content.is_open() }
+        RowDrawer { content, full: self.full }
+    }
+    /// What the row being left parks: the height that is shown, not a flag the focus has since made stale (`settle`, as
+    /// the drawer's key runs it), so a row left with the focus on a pane the full height covers comes back at its own.
+    pub(in crate::ui) fn park_drawer(&mut self, base: &LayoutPreset, focus: PaneFocus) -> RowDrawer {
+        self.settle(base, focus);
+        self.row_drawer()
     }
     /// The entered row's own drawer replaces the left row's, at the height it was left at. Help is the window's, not a
     /// row's: it closes, and the layout it hid comes back with the focus it took (focus still in Help goes to where
     /// Help was opened from). Focus in the drawer moves to the tree only when the entered row's drawer is closed; a
     /// full-height drawer that the focus would leave covered takes the focus instead (focus never rests on a pane that
-    /// is not drawn, and the frame would otherwise end the full height at once).
-    pub(in crate::ui) fn enter_row_drawer(&mut self, row: RowDrawer, focus: PaneFocus, base: &LayoutPreset) -> LayoutEffect {
+    /// is not drawn, and the frame would otherwise end the full height at once), but only for a switch a person made
+    /// (`person_driven`) and with no pane maximized: any other arrival, or one that has the person reading a pane alone,
+    /// moves no focus and the frame ends the height, as it does for a focus that is on a covered pane by any path.
+    pub(in crate::ui) fn enter_row_drawer(&mut self, row: RowDrawer, focus: PaneFocus, base: &LayoutPreset, person_driven: bool) -> LayoutEffect {
         debug_assert!(row.content != DrawerContent::Help, "Help is not a row's drawer");
         let mut to = focus;
         if self.drawer == DrawerContent::Help {
@@ -193,7 +201,8 @@ impl LayoutHelp {
         self.help_origin = None;
         self.set_drawer(row.content);
         self.full = row.full && row.content.is_open();
-        if self.full && self.effective_preset(base).full_span().is_some() && !self.full_leaves_drawn(base, to) { to = PaneFocus::Repl; }
+        if person_driven && !self.maximized && self.full && self.effective_preset(base).full_span().is_some()
+            && !self.full_leaves_drawn(base, to) { to = PaneFocus::Repl; }
         if to == PaneFocus::Repl && !row.content.is_open() { to = PaneFocus::NavTree; }
         LayoutEffect { focus: (to != focus).then_some(to), monitor_sync: true, redraw: true }
     }

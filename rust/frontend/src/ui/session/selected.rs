@@ -29,9 +29,16 @@ impl SelectedRow {
     pub(in crate::ui) fn workspace_id(&self) -> &Option<String> { &self.workspace_id }
 
     /// Select another row. The read mark is untouched: the dwell drops a mark whose row is no longer selected.
-    pub(in crate::ui) fn select(&mut self, host: HostKey, workspace_id: Option<String>) {
+    /// Only the session module selects (`State::retarget_workspace`, which parks the row left first); the capture
+    /// harness's startup seed builds a new `SelectedRow`, and a test that points the window at a row with no switch has
+    /// `select_for_test`.
+    pub(in crate::ui::session) fn select(&mut self, host: HostKey, workspace_id: Option<String>) {
         self.host = host;
         self.workspace_id = workspace_id;
+    }
+    #[cfg(test)]
+    pub(in crate::ui) fn select_for_test(&mut self, host: HostKey, workspace_id: Option<String>) {
+        self.select(host, workspace_id);
     }
 
     /// Every switch replaces the mark: a person's switch arms one for the selected row, due `READ_DWELL` from `now`;

@@ -172,7 +172,7 @@ impl State {
             }
         };
         let old_tree_key = self.retarget_workspace(host, slug, session_name, person_driven);
-        let restored = self.restore_entering_workspace();
+        let restored = self.restore_entering_workspace(person_driven);
         self.load_entering_tree(old_tree_key);
         // Refresh the workspace list so kernel_running / new rows stay
         // current — cheap and not user-facing if Sessions mode isn't
@@ -275,7 +275,7 @@ impl State {
         old_tree_key
     }
 
-    fn restore_entering_workspace(&mut self) -> bool {
+    fn restore_entering_workspace(&mut self, person_driven: bool) -> bool {
         let key = self.active_ws_key();
         // Restore REPL state independently of the UI snapshot — they
         // travel in parallel and either may be missing (e.g. a first
@@ -285,7 +285,7 @@ impl State {
         // A row with no installed preview shows no text: the row left never shows under this row's title, whether
         // this is a first visit, a restore without bytes, or bytes that fail to render.
         self.clear_preview_text();
-        let restored = self.restore_workspace_ui(&key);
+        let restored = self.restore_workspace_ui(&key, person_driven);
         if !restored {
             // First visit — start from a clean slate.
             self.nav.set_mode(Mode::Files);
@@ -307,7 +307,7 @@ impl State {
             self.drift.clear();
             self.editor.close();
             self.ink.restore(Default::default());
-            self.enter_row_drawer(RowDrawer::default());
+            self.enter_row_drawer(RowDrawer::default(), person_driven);
         }
         restored
     }

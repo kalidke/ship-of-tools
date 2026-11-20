@@ -328,7 +328,7 @@ impl State {
         self.settings.smooth_scroll_ms = length;
         let (conns, evt_rx, (saved_host, saved_row), name, (drawer, focus)) = saved;
         (self.conns, self.evt_rx, self.settings.chat_name) = (conns, evt_rx, name);
-        self.selected.select(saved_host, saved_row);
+        self.selected.select_for_test(saved_host, saved_row);
         if self.layout_help.drawer() != drawer {
             let tenant = if drawer == DrawerContent::Closed { DrawerContent::Chat } else { drawer };
             self.layout_help.toggle_drawer(tenant, focus);
@@ -757,7 +757,7 @@ impl State {
         row.workspace_id = "ROW1".into();
         self.on_workspaces(host.clone(), vec![row]);
         // As the window's start selects its resumed row: no switch, so no preview is installed.
-        self.selected.select(host.clone(), Some("chat".into()));
+        self.selected.select_for_test(host.clone(), Some("chat".into()));
         self.layout_help.toggle_drawer(DrawerContent::Chat, self.focus_prompts.focus());
         self.set_focus(PaneFocus::Repl);
         events.send((host.clone(), connected())).map_err(|_| anyhow::anyhow!("the fixture's event channel closed"))?;

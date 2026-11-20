@@ -35,7 +35,7 @@ impl State {
         // The hub sorts second: only the declared hub, not the first connection, makes it the monitor host.
         self.conns = vec![(other.clone(), other_tx), (hub.clone(), hub_tx)];
         let original_hub = self.monitor.hub().map(str::to_owned);
-        self.selected.select(other.clone(), self.selected.workspace_id().clone());
+        self.selected.select_for_test(other.clone(), self.selected.workspace_id().clone());
         let (events, receiver) = std::sync::mpsc::channel();
         self.evt_rx = receiver;
         let rows = [

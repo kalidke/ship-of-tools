@@ -327,23 +327,30 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   dropped, and the default row's raw-slug key migrates to `<default>` with an existing `<default>` view winning. State
   composes and applies the view; the map is reached through nothing else. A view holds its row's drawer whole, one
   `RowDrawer` (closed, or the tenant shown, never Help, and whether it stands at full height, never true for a closed
-  one): `snapshot_current_workspace_ui` parks `LayoutHelp::row_drawer`, a return applies it through
+  one): `snapshot_current_workspace_ui` parks `LayoutHelp::park_drawer` (the height that is shown: it settles first, as
+  the drawer's key does, so a flag the focus has made stale is not parked), a return applies it through
   `LayoutHelp::enter_row_drawer`, and a first visit is closed. Every way of changing the shown row reaches that one
-  save and restore, because `State::retarget_workspace` is the only caller of `SelectedRow::select` but the capture
-  harness's startup seed (pinned by `session::snapshot_tests::only_the_one_switch_selects_a_row`): the cycle keys, the nav
-  pane's Enter, `sot-fe goto` and the other control commands, the move to a neighbor when a row closes, a created row. The row shown at start has no switch behind it: its drawer
+  save and restore, because `SelectedRow::select` is visible to the session module alone and `State::retarget_workspace` is
+  its one caller (the capture harness's startup seed builds a new `SelectedRow`; tests point the window at a row with
+  `select_for_test`): the cycle keys, the nav pane's Enter (a click on a row only moves the cursor), `sot-fe goto` and the
+  other control commands, the move to a neighbor when a row closes, a created row. The row shown at start has no switch behind it: its drawer
   is whatever the window started with (closed, the Terminal after a relaunch, the Monitor under `--start-monitor`) and
   is parked when the row is first left. The one rare case: a relaunch whose resumed row is gone at the first list moves
   to a neighbor as a first visit, so the Terminal closes there. A full-height drawer that the focus would leave
   covered (the focus on the nav pane or the preview, which it hides) takes the focus on the entry, the one case where an open
-  drawer takes it, since the frame would otherwise end the full height at once; in a layout with no full height the drawer
-  is shown open and the focus stays. The drawer's configured height (`drawer_height` of a preset), maximize and the wide preview stay
+  drawer takes it, since the frame would otherwise end the full height at once, but only for a switch a person made
+  (`person_driven`: the row-step keys and the nav pane's Enter; `goto` and the other control commands, a row that closes
+  and a created row pass false) and with no pane maximized. Any other arrival moves no focus, and the frame ends the
+  height as it does for a focus on a covered pane by any path: a row's full height is forgotten when a request other than
+  the person's own step shows it while the keys are on a pane full height covers. In a layout with no full height the
+  drawer is shown open and the focus stays. The drawer's configured height (`drawer_height` of a preset), maximize and the wide preview stay
   window-wide, and the parked drawers are runtime memory (nothing of a row's drawer, its height included, is written to
   disk): a window restart starts every row closed but the one shown. Pinned by the native fixtures
   `a_rows_drawer_stays_with_its_row` and `a_rows_drawer_height_stays_with_its_row` (full height left and found again
   from a row with no drawer and from one open at its own height, by each way of changing the row, and an edit open on the
-  arriving row shaped by the first frame), and by `layout_help_tests::{a_row_comes_back_to_its_drawer_at_the_height_it_left_it,
-  the_rules_of_full_height_hold_on_the_arrival_at_a_full_row}` (every tenant, under Help too, on every preset and focus).
+  arriving row shaped by the first frame), and by these `layout_help_tests`: `a_row_comes_back_to_its_drawer_at_the_height_it_left_it` (every tenant, with and without Help, on the laptop
+  preset), `the_rules_of_full_height_hold_on_the_arrival_at_a_full_row` (every preset and focus, the Terminal only),
+  `an_arrival_nobody_asked_for_or_over_a_maximized_pane_moves_no_focus` and `a_row_left_with_the_focus_on_a_covered_pane_is_parked_at_its_own_height`.
 - `SelectedRow` privately owns the selected host and workspace, the pending read mark, the two-press destroy arm and
   the time a `workspace.create` was sent. Readers see the host and workspace by reference; only a switch's retarget
   and the capture harness's startup seed select a row, both parts at once. Every switch replaces the read mark (armed
@@ -1235,8 +1242,9 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   window's, so it closes, its hidden maximize returns with the focus it took (focus still in Help goes back to where Help
   was opened from) and its origin goes; `row_drawer` parks what Help covered, with its height. The
   effect requests Monitor sync, so a drawer left or entered as Monitor takes or drops the subscription as a toggle does,
-  and moves focus to the tree only when the focus was in the drawer and the entered row's drawer is closed (an open one
-  never takes focus). The Chat's watch follows `chat_shown`, so it follows the restored drawer. Pinned by
+  and moves focus to the tree only when the focus was in the drawer and the entered row's drawer is closed; an open one
+  takes none, except a full-height drawer that the focus would leave covered, for a person's own switch with no pane
+  maximized (the row-drawer paragraph under `ParkedViews`). The Chat's watch follows `chat_shown`, so it follows the restored drawer. Pinned, for a drawer at its own height, by
   `entering_a_row_shows_its_drawer_and_moves_only_drawer_focus_off_a_closed_one` and
   `a_switch_while_help_shows_closes_help_and_keeps_the_layout_it_hid` and
   `a_switch_while_help_shows_returns_the_focus_help_took_and_never_moves_it_into_the_entered_drawer`.

@@ -116,7 +116,7 @@ impl State {
                 concept: self.concept.park(),
                 edit_state: self.editor.park(),
                 ink: self.ink.park(),
-                drawer: self.layout_help.row_drawer(),
+                drawer: self.layout_help.park_drawer(self.settings.resolve_preset(self.monitor_aspect), self.focus_prompts.focus()),
             },
         );
     }
@@ -126,7 +126,7 @@ impl State {
     /// re-fetch in that case and the preview repaints from the cached
     /// source. Returns `false` if there's no prior state for this
     /// workspace — caller falls back to fetching fresh.
-    pub(in crate::ui) fn restore_workspace_ui(&mut self, key: &WsKey) -> bool {
+    pub(in crate::ui) fn restore_workspace_ui(&mut self, key: &WsKey, person_driven: bool) -> bool {
         let Some(snap) = self.parked_views.view(key).cloned() else {
             return false;
         };
@@ -163,7 +163,7 @@ impl State {
         self.editor.restore(snap.edit_state);
         self.rebuild_edit_preview();
         self.ink.restore(snap.ink);
-        self.enter_row_drawer(snap.drawer);
+        self.enter_row_drawer(snap.drawer, person_driven);
         // Clear the stale Quads then repaint from the cached source.
         // render_preview_source rebuilds the shaped text/png/svg for the
         // restored mime; the switch emptied the text pane before this
@@ -193,9 +193,9 @@ impl State {
     }
 
     /// Show the entered row's drawer, with the focus and Monitor effects a toggle has.
-    pub(in crate::ui) fn enter_row_drawer(&mut self, drawer: RowDrawer) {
+    pub(in crate::ui) fn enter_row_drawer(&mut self, drawer: RowDrawer, person_driven: bool) {
         let base = self.settings.resolve_preset(self.monitor_aspect);
-        let effect = self.layout_help.enter_row_drawer(drawer, self.focus_prompts.focus(), base);
+        let effect = self.layout_help.enter_row_drawer(drawer, self.focus_prompts.focus(), base, person_driven);
         effect.apply(self, None);
     }
 
