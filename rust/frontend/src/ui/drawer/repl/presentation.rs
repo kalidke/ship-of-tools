@@ -284,24 +284,42 @@ fn pinned_repl_scroll(
     (scroll as i64 + delta).clamp(0, u16::MAX as i64) as u16
 }
 
-/// The rows of a stdout or stderr frame (`text` in `base`, from stderr or not), after the frames of its stream before it:
-/// the text is read as a terminal reads it (`\r` overwrites, SGR escapes color), wrapped and cached.
+/// A frame's text if it is stdout or stderr, else none.
+fn stream_text(frame: &ReplFrame) -> &str {
+    match frame {
+        ReplFrame::Stdout { text } | ReplFrame::Stderr { text } => text,
+        _ => "",
+    }
+}
+
+/// Where the writes that share a row with frame `start` end (exclusive): a program's text continues the line the write
+/// before it left open (no newline at its end), as a terminal's does, so `print("a"); print("b")` is one row, a `Pkg`
+/// status line written in pieces is one row, and a `\r` repaint overwrites the row it repaints. Only the same stream
+/// continues (another frame between, a note or the other stream, ends the line).
+fn open_run(frames: &[ReplFrame], own: &[usize], start: usize) -> usize {
+    let same = |a: &ReplFrame, b: &ReplFrame| matches!((a, b), (ReplFrame::Stdout { .. }, ReplFrame::Stdout { .. }) | (ReplFrame::Stderr { .. }, ReplFrame::Stderr { .. }));
+    let mut end = start + 1;
+    while end < frames.len() && !own.contains(&end) && same(&frames[start], &frames[end])
+        && !stream_text(&frames[end - 1]).ends_with('\n')
+    {
+        end += 1;
+    }
+    end
+}
+
+/// The rows of the writes `texts` of a stream (stdout or stderr: `base` and `stderr`), after the writes of its stream before
+/// them: read as a terminal reads them (`\r` overwrites, SGR escapes color), wrapped and cached by `Wrap::run`.
 fn stream_rows(
     wrap: &mut Wrap,
     states: &mut HashMap<(u64, bool), Sgr>,
     key: (WsKey, u64, usize),
-    (text, base, stderr): (&str, Style, bool),
+    texts: &[&str],
+    (base, stderr): (Style, bool),
     out: &mut Vec<RtLine<'static>>,
 ) {
     let slot = (key.1, stderr);
-    let start = states.get(&slot).copied().unwrap_or_default();
-    let made = |cols| {
-        let mut sgr = start;
-        let lines = sgr::styled_lines(text, base, &mut sgr, true);
-        (wrap::rows(&lines.into_iter().map(|runs| wrap::Logical { runs, head: None, indent: 0 }).collect::<Vec<_>>(), cols), sgr)
-    };
-    let (rows, end) = wrap.frame(key, text.len(), made);
-    out.extend(rows.0.iter().cloned());
+    let ((done, tail), end) = wrap.run(key, texts, base, states.get(&slot).copied().unwrap_or_default());
+    out.extend(done.0.iter().chain(&tail.0).cloned());
     states.insert(slot, end);
 }
 
@@ -353,7 +371,11 @@ fn project_lines<I>(
         } else {
             out.extend(wrap::code_rows(&entry.code, entry.pkg_mode, wrap.cols, colors::scrollback_prompt(entry.pkg_mode)));
         }
+        let mut joined_to = 0;
         for (frame_idx, frame) in entry.frames.iter().enumerate() {
+            if frame_idx < joined_to {
+                continue; // a write the row of the one before it already holds
+            }
             marks.push((out.len(), entry.eval_id, frame_idx));
             let fkey = (row.clone(), entry.eval_id, frame_idx);
             if let (true, ReplFrame::Stderr { text }) = (entry.own_frames.contains(&frame_idx), frame) {
@@ -367,8 +389,12 @@ fn project_lines<I>(
                 continue;
             }
             match frame {
-                ReplFrame::Stdout { text } => stream_rows(wrap, &mut states, fkey, (text, colors::plain(), false), &mut out),
-                ReplFrame::Stderr { text } => stream_rows(wrap, &mut states, fkey, (text, colors::stderr(), true), &mut out),
+                ReplFrame::Stdout { .. } | ReplFrame::Stderr { .. } => {
+                    joined_to = open_run(&entry.frames, &entry.own_frames, frame_idx);
+                    let (stderr, base) = if matches!(frame, ReplFrame::Stderr { .. }) { (true, colors::stderr()) } else { (false, colors::plain()) };
+                    let texts: Vec<&str> = entry.frames[frame_idx..joined_to].iter().map(stream_text).collect();
+                    stream_rows(wrap, &mut states, fkey, &texts, (base, stderr), &mut out);
+                }
                 ReplFrame::Value { mime, text } => {
                     let prefix = (mime != "text/plain").then(|| Span::raw(format!("[{}] ", cell_row(mime))));
                     let made = |cols| {

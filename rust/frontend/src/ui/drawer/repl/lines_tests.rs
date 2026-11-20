@@ -113,7 +113,8 @@ fn completed_entry_ignores_starting_flag() {
 
 #[test]
 fn a_carriage_return_in_output_overwrites_its_line() {
-    // Progress output: each frame starts with `\r`, and one frame overwrites part of its line.
+    // Progress output: each frame starts with `\r`, and the writes share one row, as a terminal's do: a `\r` writes over
+    // it from its start, the text after "abc" goes on after what is there, and a newline ends it.
     let mut e = entry(1, "run()", false);
     e.frames = ["\rProgress: 10%", "\rProgress: 20%", "abc\rxy\n", "\n", "done\r\n"]
         .into_iter()
@@ -122,7 +123,7 @@ fn a_carriage_return_in_output_overwrites_its_line() {
     let lines = build(&[e], false);
     let text = rendered_text(&lines);
     assert!(
-        text.contains("run()\nProgress: 10%\nProgress: 20%\nxyc\n\ndone"),
+        text.contains("run()\nxyogress: 20%abc\n\ndone"),
         "{text:?}"
     );
 }

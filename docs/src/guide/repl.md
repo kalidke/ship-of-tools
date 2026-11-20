@@ -25,16 +25,17 @@ apart from stdout in the log. A line longer than the drawer is wide continues on
 included, and so does a stack frame's row in an error. A drawer 7 cells wide or less is too narrow for that: a line that
 starts with a prompt or `ERROR:` is not cut there, and the pane clips it.
 
+Output a program prints in pieces shows as the one line a terminal shows: `print("a"); print("b")` is one line. A progress
+meter that returns to the start of the line for each update writes over its line instead of adding one, and one that also
+erases the rest of the line leaves no tail of a longer update. A line ends when the program ends it, or when output from the
+other stream, a value or one of the window's own notes comes between.
+
 Code you run from the drawer prints in color, as in a terminal: the `@info`, `@warn` and `@error` labels, `printstyled`,
 `Pkg`'s status and the colors of packages that ask whether the output takes color, and the module and argument colors of a
 stack trace that code prints itself. The stack under an error's own message is drawn without them. The drawer draws the 16
 colors, the 256-color and RGB forms, bold, dim and reverse. A color a program leaves on ends when its code finishes. Code an agent
 runs for you with `sot-fe repl`, `sot-fe repl run --fresh` included, prints without color, as before. Text on stderr that a
 program does not color is gray. Typed code has no syntax coloring.
-
-Each piece of output a program prints is drawn on a row of its own: `print("a"); print("b")` shows two rows. A return to the
-start of the line, and an erase of the rest of it, work as in a terminal only inside one piece, so a progress meter that
-repaints its line with each piece shows every repaint as a new row.
 
 What the drawer does not do with a program's output:
 
@@ -49,8 +50,9 @@ What the drawer does not do with a program's output:
   written over, so the new text can land a place off.
 - Erasing part of a line leaves plain spaces, never the background color the program chose.
 - Underline, italic and hidden text are drawn as plain text.
-- If a program prints a title, a link or a color in two pieces more than a tenth of a second apart, the drawer shows both
-  pieces as text.
+- A line longer than 65,536 characters goes on in a row of its own, with no mark at the break.
+- If a program prints the start of a title or a link and a line break, and prints its end more than a tenth of a second
+  later, the drawer shows that start as text.
 - The drawer cannot yet select or copy text.
 
 The REPL and the kernel run the `julia` that `SOT_JULIA_BIN` names, else

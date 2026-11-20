@@ -257,8 +257,9 @@ post to its project's channel; the REPL drawer in Julia's own colors, its long l
 program printed read by one linear grammar of at most 4096 bytes a sequence (the window's cell rule took minutes on a
 megabyte of unfinished openers), and a person's eval in the drawer printing with color where an agent's runs as it did
 (color follows a flag the window's request carries, so `sot-fe repl run --fresh` has none; an older window is sent text
-with no escape byte), the drawer drawing those colors by styled run (a stack frame's row wrapping too, erase in line honored, and a line a `\r`
-repaints costing what is written to it); the
+with no escape byte), the drawer drawing those colors by styled run (a stack frame's row wrapping too, erase in line honored, and a
+line a `\r` repaints costing what is written to it), and a program's writes of one line sharing one row as a terminal's do;
+the
 Windows launcher starting for a user name with a space in it (the maintainer's report); Escape on an edited buffer
 drawing its discard question, and a discard showing the file as last saved; typing and selecting in edit mode shaping
 only the lines a key changes (under 1 ms a key on a 5,000-line file, release build, where each took most of a

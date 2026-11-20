@@ -1,4 +1,4 @@
-use super::{colors, ReplImagePainter, ReplImageUpload, ReplPresentation};
+use super::{colors, sgr, wrap::Wrap, ReplImagePainter, ReplImageUpload, ReplPresentation};
 use crate::ui::*;
 use base64::Engine as _;
 use std::{cell::RefCell, io::Cursor, rc::Rc};
@@ -958,9 +958,9 @@ fn a_programs_colors_reach_the_cells_through_the_terminal_drawers_map() {
 #[test]
 fn a_color_carries_from_one_frame_of_a_stream_to_the_next_and_not_across_streams_or_evals() {
     let lines = frames_rows(80, vec![
-        ReplFrame::Stdout { text: "\u{1b}[31mone".into() },
-        ReplFrame::Stderr { text: "other".into() },
-        ReplFrame::Stdout { text: "two\u{1b}[39m".into() },
+        ReplFrame::Stdout { text: "\u{1b}[31mone\n".into() },
+        ReplFrame::Stderr { text: "other\n".into() },
+        ReplFrame::Stdout { text: "two\u{1b}[39m\n".into() },
         ReplFrame::Stdout { text: "three".into() },
     ]);
     assert_eq!(styled(&lines, "one")[0].1, Some(Color::Red));
@@ -1105,9 +1105,276 @@ fn the_limits_the_manual_lists_are_what_the_drawer_draws() {
     // Underline, italic and hidden text are drawn as plain text.
     let rows = frames_rows(80, vec![so("\u{1b}[4mu\u{1b}[3mi\u{1b}[8mh\n")]);
     assert_eq!(rows[1].spans.iter().map(|s| (s.content.to_string(), s.style.add_modifier)).collect::<Vec<_>>(), [("uih".to_string(), Modifier::empty())]);
-    // The start of a title waits for its end past the child's hold: each write is its own row here, so the start is text.
-    // (Frames as the real child sends them for `print("before \e]0;start"); sleep(0.3); print("\nend\a after\n")`.)
-    assert_eq!(out(vec![so("before "), so("\u{1b}]0;start"), so("\nend\u{7} after\n")]), ["before ", " ]0;start", "", "end  after"]);
-    // A program's writes are not one line in this drawer: each is a row, and a repaint overwrites only within its own write.
-    assert_eq!(out(vec![so("a"), so("b\n")]), ["a", "b"]);
+    // A line longer than 65,536 characters goes on in a row of its own, with no mark at the break.
+    let long = out(vec![so(&format!("{}\n", "x".repeat(65_536 + 1)))]);
+    let lens: Vec<usize> = long.iter().map(|r| r.chars().count()).collect();
+    assert_eq!(lens.iter().sum::<usize>(), 65_537);
+    assert_eq!(lens[lens.len() - 2..], [65_536 % 80, 1], "the 80-cell rows of the first 65,536 characters, then the one that is left over");
+    // The start of a title or a link and a line break, its end a wait past the child's hold later: the break closed the line,
+    // so the start is text and the end is a line of its own; the other order is one line, the title taken out. (Frames as
+    // the real child sends them for `print("before \e]0;start\n"); sleep(0.3); print("end\a after\n")` and for
+    // `print("before \e]0;start"); sleep(0.3); print("\nend\a after\n")`.)
+    assert_eq!(out(vec![so("before "), so("\u{1b}]0;start\n"), so("end\u{7} after\n")]), ["before  ]0;start", "end  after"]);
+    assert_eq!(out(vec![so("before "), so("\u{1b}]0;start"), so("\nend\u{7} after\n")]), ["before  after"]);
+    assert_eq!(out(vec![so("before "), so("\u{1b}]8;;http://x\n"), so("end\u{1b}\\ after\n")]), ["before  ]8;;http://x", "end after"]);
+    assert_eq!(out(vec![so("before "), so("\u{1b}]8;;http://x"), so("\nend\u{1b}\\ after\n")]), ["before  after"]);
+    // A program's writes are one line until a line break: a return to the start of the line and an erase act across them.
+    assert_eq!(out(vec![so("a"), so("b\n")]), ["ab"]);
+    assert_eq!(out(vec![so("10 left"), so("\r9 left\u{1b}[K\n")]), ["9 left"]);
+}
+
+/// The text of the rows of one eval's frames, the log's own rows left off.
+fn output_rows(cols: usize, frames: Vec<ReplFrame>) -> Vec<String> {
+    let rows = text(&frames_rows(cols, frames));
+    rows[1..].to_vec()
+}
+
+fn out(s: &str) -> ReplFrame {
+    ReplFrame::Stdout { text: s.into() }
+}
+
+fn err(s: &str) -> ReplFrame {
+    ReplFrame::Stderr { text: s.into() }
+}
+
+#[test]
+fn the_writes_of_one_line_share_one_row() {
+    // `print("a"); print("b")`, then a `Pkg.status`-shaped line written in pieces, then a repaint.
+    assert_eq!(output_rows(80, vec![out("a"), out("b"), out("\n"), out("c")]), ["ab", "c"]);
+    assert_eq!(
+        output_rows(80, vec![out("Status "), out("`/p/Project.toml`"), out("\n"), out("  [abc] "), out("Pkg v1\n")]),
+        ["Status `/p/Project.toml`", "  [abc] Pkg v1"]
+    );
+    let bar = (0..100).map(|i| out(&format!("\rProgress: {i:3}%"))).chain([out("\n")]).collect();
+    assert_eq!(output_rows(80, bar), ["Progress:  99%"]);
+    // The bar's rows are still cut by the pane: the whole line wraps, not each write.
+    assert_eq!(output_rows(4, vec![out("ab"), out("cd"), out("ef")]), ["abcd", "ef"]);
+}
+
+#[test]
+fn an_open_line_ends_at_any_other_frame_and_runs_are_per_stream() {
+    // The other stream, a note, or a value between two writes ends the line; both streams keep their own open line.
+    assert_eq!(output_rows(80, vec![out("a"), err("E"), out("b")]), ["a", "E", "b"]);
+    assert_eq!(output_rows(80, vec![out("a"), ReplFrame::Value { mime: "text/plain".into(), text: "v".into() }, out("b")]), ["a", "v", "b"]);
+    assert_eq!(output_rows(80, vec![err("x"), err("y\n"), out("z")]), ["xy", "z"]);
+}
+
+#[test]
+fn a_color_carries_through_the_writes_of_an_open_line_and_a_resize_keeps_the_reader() {
+    let lines = frames_rows(80, vec![out("\u{1b}[31ma"), out("b\u{1b}[39m"), out("c")]);
+    assert_eq!(styled(&lines, "abc"), [("ab".into(), Some(Color::Red), false), ("c".into(), None, false)]);
+    // A line of many writes is one logical line: a reader scrolled up in it keeps their place through a resize.
+    let key = row("host", "row");
+    let (mut model, mut owner) = (ReplModel::default(), Owner::default());
+    owner.set_cols(10);
+    model.edit_draft(DraftEdit::Replace("x".into()));
+    let plan = model.begin_eval(target(&key)).unwrap();
+    let id = plan.submission.eval_id();
+    model.complete_submission(plan.submission, Ok(()));
+    for i in 0..30 {
+        output(&mut model, &key, id, &format!("w{i:02}-------"));
+    }
+    output(&mut model, &key, id, "\nlast\n");
+    finish(&mut model, &key, id);
+    let (lines, now) = build(&mut owner, &model, &key, 5);
+    let rows = text(&lines);
+    let bottom = rows.len() - 1 - now as usize;
+    let before = rows[bottom].clone();
+    owner.set_cols(40);
+    let (lines, now) = build(&mut owner, &model, &key, 5);
+    let rows = text(&lines);
+    let logical = rows[..=rows.len() - 1 - now as usize].iter().rev().find(|r| r.starts_with('w')).unwrap().clone();
+    assert!(before.starts_with('w') || before == "last" || before.starts_with('-'), "{before}");
+    assert!(logical.starts_with("w00"), "the one logical line of all the writes: {logical:?}");
+}
+
+#[test]
+fn a_line_longer_than_the_cap_goes_on_in_a_row_of_its_own() {
+    // 70 KiB written 1 KiB at a time with no newline: the reader ends the line where it reaches 64 KiB, as if the program had,
+    // so the line a redraw cuts again is never longer than that.
+    let frames: Vec<ReplFrame> = (0..70).map(|_| out(&"x".repeat(1024))).collect();
+    let rows = output_rows(1_000_000, frames);
+    assert_eq!(rows.len(), 2, "{:?}", rows.iter().map(String::len).collect::<Vec<_>>());
+    assert_eq!(rows.iter().map(String::len).sum::<usize>(), 70 * 1024);
+    assert_eq!(rows[0].len(), 64 * 1024);
+}
+
+#[test]
+fn a_closed_line_is_never_joined_to_what_follows_so_its_rows_stay_cached() {
+    // Joining past a newline would change no row, and make every frame of a long log one run that is wrapped again
+    // whenever a write arrives: a run ends at the first frame whose text ends a line.
+    let frames = [out("a"), out("b\n"), out("c"), out("d\r\n"), out("e")];
+    assert_eq!([0, 1, 2, 3, 4].map(|at| super::open_run(&frames, &[], at)), [2, 2, 4, 4, 5]);
+    assert_eq!(super::open_run(&frames, &[1], 0), 1, "a note is its own frame");
+}
+
+/// One eval of the writes `writes`, drawn after each one, as a person watching a program run sees it: the bytes read in all
+/// by the readers of its runs, and the rows at the end.
+fn drawn_after_each(writes: &[String]) -> (usize, Vec<String>) {
+    let key = row("host", "row");
+    let (mut model, mut owner) = (ReplModel::default(), Owner::default());
+    owner.set_cols(60);
+    model.edit_draft(DraftEdit::Replace("x".into()));
+    let plan = model.begin_eval(target(&key)).unwrap();
+    let id = plan.submission.eval_id();
+    model.complete_submission(plan.submission, Ok(()));
+    let mut rows = Vec::new();
+    for w in writes {
+        output(&mut model, &key, id, w);
+        rows = text(&build(&mut owner, &model, &key, 0).0);
+    }
+    (owner.wrap.bytes_read(), rows)
+}
+
+#[test]
+fn a_line_that_grows_a_write_at_a_time_costs_what_each_write_adds() {
+    // The work, counted as bytes read: every byte is read once, whatever the redraws after each write. A
+    // `\r` and 3,000 colored pairs written a pair at a time took 210 s of the UI thread when each redraw read the line again
+    // (the counts do not depend on how many: these are a third of that, to keep a debug build quick).
+    let total = |w: &[String]| w.iter().map(String::len).sum::<usize>();
+    let pairs: Vec<String> = std::iter::once("\r".to_string()).chain((0..1000).map(|_| "\u{1b}[31mx\u{1b}[32my".to_string())).collect();
+    let (cells, rows) = drawn_after_each(&pairs);
+    assert!(cells == total(&pairs), "{cells} bytes read for {} bytes", total(&pairs));
+    // The eval is still running: its first row is the code, its last the running note, between them the line, cut at 60.
+    assert_eq!(rows[1..rows.len() - 1].concat(), "xy".repeat(1000));
+    let bar: Vec<String> = (0..2000).map(|i| format!("\rProgress: {:3}%", i % 100)).collect();
+    let (cells, rows) = drawn_after_each(&bar);
+    assert!(cells == total(&bar), "{cells} bytes read for {} bytes", total(&bar));
+    assert_eq!(rows[1], "Progress:  99%");
+    // Without a `\r` the line is text appended: the same count, and the rows are the line.
+    let plain: Vec<String> = (0..1000).map(|i| format!("w{i:04} ")).collect();
+    let (cells, rows) = drawn_after_each(&plain);
+    assert!(cells == total(&plain), "{cells} bytes read for {} bytes", total(&plain));
+    assert_eq!(rows[1..rows.len() - 1].concat(), plain.concat());
+}
+
+#[test]
+fn a_run_no_write_was_added_to_is_not_read_or_cut_again() {
+    let key = row("host", "row");
+    let (mut model, mut owner) = (ReplModel::default(), Owner::default());
+    owner.set_cols(20);
+    model.edit_draft(DraftEdit::Replace("x".into()));
+    let plan = model.begin_eval(target(&key)).unwrap();
+    let id = plan.submission.eval_id();
+    model.complete_submission(plan.submission, Ok(()));
+    output(&mut model, &key, id, "one \u{1b}[31mred");
+    output(&mut model, &key, id, " line");
+    finish(&mut model, &key, id);
+    let first = build(&mut owner, &model, &key, 0).0;
+    let read = owner.wrap.bytes_read();
+    for _ in 0..5 {
+        assert_eq!(text(&build(&mut owner, &model, &key, 0).0), text(&first));
+    }
+    assert_eq!(owner.wrap.bytes_read(), read, "a redraw that changes nothing reads nothing");
+    // A new width cuts what was read; it reads nothing again.
+    owner.set_cols(8);
+    assert_eq!(text(&build(&mut owner, &model, &key, 0).0)[1..3], ["one red ", "line"]);
+    assert_eq!(owner.wrap.bytes_read(), read);
+}
+
+#[test]
+fn text_after_a_stray_string_opener_and_the_text_before_it_are_drawn() {
+    // Held text is text with every line in it: the child's own test frame, a line before the opener, a value, an error.
+    let rows = |frames: Vec<ReplFrame>| output_rows(80, frames);
+    assert_eq!(rows(vec![out("\u{1b}Xnever ends\nline 2\n")]), [" Xnever ends", "line 2"]);
+    assert_eq!(rows(vec![out("start "), out("\u{1b}]0;t\nline 1\nline 2\n")]), ["start  ]0;t", "line 1", "line 2"]);
+    for opener in ["\u{1b}]", "\u{1b}P", "\u{1b}X", "\u{1b}^", "\u{1b}_"] {
+        let shown = opener.replace('\u{1b}', " ");
+        assert_eq!(rows(vec![out(&format!("a {opener}\nline 1\nline 2\n"))]), [format!("a {shown}"), "line 1".into(), "line 2".into()], "{opener:?}");
+        let value = ReplFrame::Value { mime: "text/plain".into(), text: format!("v1{opener}x\nv2\nv3") };
+        assert_eq!(rows(vec![value]), [format!("v1{shown}x"), "v2".into(), "v3".into()], "{opener:?}");
+        let error = ReplFrame::Error { message: format!("e1{opener}x\ne2\ne3"), stacktrace: vec![] };
+        assert_eq!(rows(vec![error]), [format!("ERROR: e1{shown}x"), "e2".into(), "e3".into()], "{opener:?}");
+    }
+    // Twenty ticks after a lone opener: none of them is lost.
+    let ticks: Vec<ReplFrame> = std::iter::once(out("\u{1b}P")).chain((0..20).map(|i| out(&format!("tick {i}\n")))).collect();
+    let drawn = rows(ticks);
+    assert_eq!(drawn[0], " Ptick 0", "the opener, as text, with the first tick on its line");
+    assert_eq!(drawn[1..], (1..20).map(|i| format!("tick {i}")).collect::<Vec<_>>()[..]);
+}
+
+#[test]
+fn a_run_fed_in_pieces_and_drawn_after_each_is_the_run_fed_whole() {
+    // Seeded random texts of words, newlines, `\r`, SGR, erase in line, every opener and terminator, wide glyphs: the rows of
+    // writes that arrive one at a time, with a redraw after each, are the rows of the same writes drawn once, and the same at
+    // another width. A few thousand cases.
+    let parts = [
+        "word", "ab", " ", "\n", "\r", "\t", "\u{1b}[31m", "\u{1b}[0m", "\u{1b}[K", "\u{1b}[1K", "\u{1b}[2K", "\u{1b}[1G", "\u{1b}]", "\u{1b}P", "\u{1b}X", "\u{1b}^", "\u{1b}_",
+        "\u{1b}[", "\u{1b}", "\u{7}", "\u{1b}\\", "\u{4e2d}", "\u{e9}", "1;", "m", "long long long words that wrap",
+    ];
+    let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+    let mut next = move |n: usize| {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        (state % n as u64) as usize
+    };
+    let rows_of = |wrap: &mut Wrap, texts: &[&str]| -> Vec<(String, Option<Color>)> {
+        let ((done, tail), _) = wrap.run((row("host", "row"), 7, 0), texts, colors::plain(), sgr::Sgr::default());
+        done.0.iter().chain(&tail.0).flat_map(|l| l.spans.iter().map(|s| (s.content.to_string(), s.style.fg)).chain([("\n".to_string(), None)])).collect()
+    };
+    for case in 0..2500 {
+        let writes: Vec<String> = (0..1 + next(5)).map(|_| (0..1 + next(8)).map(|_| parts[next(parts.len())]).collect()).collect();
+        let texts: Vec<&str> = writes.iter().map(String::as_str).collect();
+        for cols in [7, 40] {
+            let mut whole = Wrap::default();
+            whole.cols = cols;
+            whole.begin();
+            let want = rows_of(&mut whole, &texts);
+            let mut piecemeal = Wrap::default();
+            piecemeal.cols = cols;
+            let mut got = Vec::new();
+            for n in 1..=texts.len() {
+                piecemeal.begin();
+                got = rows_of(&mut piecemeal, &texts[..n]);
+                piecemeal.end();
+            }
+            assert_eq!(got, want, "case {case}, {cols} columns: {writes:?}");
+        }
+    }
+}
+
+#[test]
+fn held_text_that_reaches_the_line_cap_loses_no_line() {
+    // The line is at 65,534 bytes when the opener comes: the cap ends it inside the held text, and the lines after it are there.
+    let rows = output_rows(1_000_000, vec![out(&"x".repeat(65_534)), out("\u{1b}]ab\ncd\n")]);
+    assert_eq!(rows.len(), 3, "{:?}", rows.iter().map(String::len).collect::<Vec<_>>());
+    assert_eq!(rows[0], format!("{} ]", "x".repeat(65_534)));
+    assert_eq!(rows[1..], ["ab", "cd"]);
+}
+
+#[test]
+fn a_shorter_repaint_leaves_no_tail_of_the_longer_one() {
+    // What every `\r` progress meter sends after its repaint, through the window: the writes of one line, an erase after each.
+    assert_eq!(output_rows(80, vec![out("\r10 left\u{1b}[K"), out("\r9 left\u{1b}[K\n")]), ["9 left"]);
+    assert_eq!(output_rows(80, vec![out("\rprocessing long_file_name.jl"), out("\r\u{1b}[2Kdone\n")]), ["done"]);
+    let bar: Vec<ReplFrame> = (0..60).rev().map(|i| out(&format!("\rprocessing {}\u{1b}[K", "x".repeat(i)))).chain([out("\n")]).collect();
+    assert_eq!(output_rows(80, bar), ["processing "]);
+}
+
+#[test]
+fn a_reader_in_the_tail_of_a_run_stays_on_their_line_through_a_resize() {
+    // One run: five finished lines, then the lines a stray string opener holds (the tail's lines) and the open line. A reader
+    // whose bottom row is the first of a tail line is still there after the width changes: the tail's starts are counted
+    // from where its rows begin, after those of the finished lines.
+    let key = row("host", "row");
+    let (mut model, mut owner) = (ReplModel::default(), Owner::default());
+    owner.set_cols(20);
+    model.edit_draft(DraftEdit::Replace("x".into()));
+    let plan = model.begin_eval(target(&key)).unwrap();
+    let id = plan.submission.eval_id();
+    model.complete_submission(plan.submission, Ok(()));
+    output(&mut model, &key, id, &format!("{}\u{1b}]0;t\nheld first line, a long one\nheld second line, another long one\nopen line, still being written", "finished\n".repeat(5)));
+    for target in ["held second", "open line", "held first"] {
+        owner.set_cols(20);
+        let rows = text(&build(&mut owner, &model, &key, 0).0);
+        let at = rows.iter().position(|r| r.starts_with(target)).unwrap();
+        let scroll = (rows.len() - 1 - at) as u16;
+        let (lines, now) = build(&mut owner, &model, &key, scroll);
+        assert!(text(&lines)[lines.len() - 1 - now as usize].starts_with(target), "before the resize: {target}");
+        owner.set_cols(11);
+        let (lines, now) = build(&mut owner, &model, &key, scroll);
+        let rows = text(&lines);
+        assert!(rows[rows.len() - 1 - now as usize].starts_with(&target[..4]), "after the resize the reader is on `{target}`: {:?}", &rows[rows.len() - 1 - now as usize]);
+    }
 }

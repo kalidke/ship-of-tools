@@ -10,7 +10,7 @@ use sot_protocol::escapes::{open_tail, pieces, Piece};
 
 /// What the SGR escapes read so far have set, over the stream's own base style: a reset or a default color returns to
 /// the base, so stderr's gray stays under a program's `ESC [ 39 m`.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, PartialEq)]
 pub(super) struct Sgr {
     fg: Option<Color>,
     bg: Option<Color>,
@@ -146,6 +146,11 @@ impl Func {
     }
 }
 
+/// The most one line takes in before the reader ends it, as if the program had, counted in characters (cells), the unit a cursor
+/// column is in, whatever the way the row was written. A line past it goes on in a row of its own, so cutting the line a program
+/// has open costs a bounded row, whatever the program writes into it.
+const LINE_CAP: usize = 64 * 1024;
+
 /// The row being written, with one rule for every operation on it: an operation costs what its write was (the bytes of the
 /// text, the cells it names), amortized, and never the row so far. Styled runs while text only goes on at its end; one cell
 /// per character once a `\r` or an erase has made the cursor a place in the row, so a write over what is there costs what is
@@ -159,6 +164,8 @@ struct Row {
     col: usize,
     /// The cells below this index are spaces in the base style.
     blank_to: usize,
+    /// The characters in `runs`.
+    chars: usize,
     /// Something was written, or a `\r` came: the row exists, as a line of its own, even when it is empty.
     touched: bool,
 }
@@ -169,11 +176,14 @@ impl Row {
         self.touched = true;
         count(text.len());
         match &mut self.cells {
-            None => match self.runs.last_mut() {
-                _ if text.is_empty() => {}
-                Some((s, st)) if *st == style => s.push_str(text),
-                _ => self.runs.push((text.to_string(), style)),
-            },
+            None => {
+                self.chars += text.chars().count();
+                match self.runs.last_mut() {
+                    _ if text.is_empty() => {}
+                    Some((s, st)) if *st == style => s.push_str(text),
+                    _ => self.runs.push((text.to_string(), style)),
+                }
+            }
             Some(cells) => {
                 self.blank_to = self.blank_to.min(self.col);
                 for c in text.chars() {
@@ -185,6 +195,11 @@ impl Row {
                 }
             }
         }
+    }
+
+    /// The cursor's column, in characters.
+    fn cursor(&self) -> usize {
+        if self.cells.is_none() { self.chars } else { self.col }
     }
 
     /// The cursor goes to the start, and from now on the row is a vector of cells.
@@ -296,6 +311,11 @@ impl Reader {
         }
     }
 
+    /// The lines ended so far.
+    pub(super) fn lines(&self) -> &[Vec<Run>] {
+        &self.done
+    }
+
     /// The SGR state after what was read.
     pub(super) fn sgr(&self) -> Sgr {
         self.sgr
@@ -335,12 +355,30 @@ impl Reader {
         self.done
     }
 
+    /// Writes `text` at the cursor, ending the line where it reaches `LINE_CAP` characters.
+    fn put(&mut self, text: &str, style: Style) {
+        let mut rest = text;
+        loop {
+            let room = LINE_CAP.saturating_sub(self.row.cursor());
+            // `len` is at least the characters, so a text that fits in bytes fits; else the room-th character is where it cuts.
+            let cut = if rest.len() <= room { None } else { rest.char_indices().nth(room).map(|(at, _)| at) };
+            let Some(cut) = cut else {
+                self.row.write(rest, style);
+                return;
+            };
+            self.row.write(&rest[..cut], style);
+            let row = std::mem::take(&mut self.row);
+            self.done.push(row.runs(self.base));
+            rest = &rest[cut..];
+        }
+    }
+
     /// Does one function: the one place the reader's operations are dispatched, and the one the tests drive. `arg` is the text
     /// of `Text` and the parameters of `Sgr`.
     fn apply(&mut self, f: Func, arg: &str, style: Style) {
         match f {
-            Func::Text => self.row.write(arg, style),
-            Func::Control => self.row.write(" ", style),
+            Func::Text => self.put(arg, style),
+            Func::Control => self.put(" ", style),
             Func::Return if self.overwrite => self.row.home(),
             Func::Newline | Func::Return => {
                 let row = std::mem::take(&mut self.row);

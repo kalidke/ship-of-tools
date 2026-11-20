@@ -359,3 +359,33 @@ fn a_single_line_reads_as_the_terminal_emulator_reads_it_in_every_honored_functi
         assert_eq!(got.trim_end(), want.trim_end(), "case {case}: {text:?}");
     }
 }
+
+#[test]
+fn lines_the_size_of_the_cap_break_where_the_text_says_however_it_was_written() {
+    // One unit for the cap, characters, in every mode: seeded texts of multibyte and ASCII runs as long as the cap, with `\r`,
+    // erases and newlines among them, cut at random points, read the same as whole (it had depended on whether the row held
+    // bytes or cells: 196 of 50,000 such texts differed).
+    let parts: [&dyn Fn() -> String; 10] = [
+        &|| "\u{4e2d}".repeat(21_845), &|| "a".repeat(30_000), &|| "\u{e9}".repeat(40_000), &|| "w".to_string(), &|| "\r".to_string(),
+        &|| "\u{1b}[2K".to_string(), &|| "\u{1b}[1K".to_string(), &|| "\n".to_string(), &|| "\u{1b}[31m".to_string(), &|| "\u{4e2d}".to_string(),
+    ];
+    let mut next = rng(0x9e37_79b9_7f4a_7c15);
+    for case in 0..80 {
+        let text: String = (0..2 + next(5)).map(|_| parts[next(parts.len())]()).collect();
+        let mut whole = Reader::new(Style::default(), Sgr::default(), true);
+        whole.feed(&text);
+        let whole = whole.finish();
+        let mut cuts: Vec<usize> = (0..1 + next(3)).map(|_| next(text.len() + 1)).filter(|&c| text.is_char_boundary(c)).collect();
+        cuts.sort_unstable();
+        let mut r = Reader::new(Style::default(), Sgr::default(), true);
+        let mut from = 0;
+        for c in cuts.iter().copied().chain([text.len()]) {
+            r.feed(&text[from..c]);
+            from = c;
+        }
+        let pieces = r.finish();
+        assert!(pieces == whole, "case {case}: cut at {cuts:?}: {} lines against {}", pieces.len(), whole.len());
+        // No line is longer than the cap, in characters.
+        assert!(whole.iter().all(|l| l.iter().map(|(t, _)| t.chars().count()).sum::<usize>() <= LINE_CAP), "case {case}");
+    }
+}

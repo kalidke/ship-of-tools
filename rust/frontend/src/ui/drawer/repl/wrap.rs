@@ -2,7 +2,7 @@
 //! The log holds the text whole; only these rows are cut, so nothing here is ever the text a copy would take.
 
 use super::colors;
-use super::sgr::Sgr;
+use super::sgr::{Reader, Sgr};
 use crate::ui::*;
 
 /// A row's source: the eval, the frame (`usize::MAX` for the entry's own rows) and the logical line within the frame.
@@ -96,6 +96,11 @@ pub(super) fn uniform(lines: &[String], style: Style, prefix: Option<Span<'stati
     }).collect()
 }
 
+/// Plain lines of styled runs as logical lines with no head and no indent.
+pub(super) fn logical(lines: &[Vec<Run>]) -> Vec<Logical> {
+    lines.iter().map(|runs| Logical { runs: runs.clone(), head: None, indent: 0 }).collect()
+}
+
 /// The rows of one line of text in one style, for a pane `cols` cells wide: the drawer's notes and markers.
 pub(super) fn one(text: &str, style: Style, cols: usize) -> Vec<RtLine<'static>> {
     rows(&uniform(&[text.to_string()], style, None, 0), cols).0
@@ -118,12 +123,54 @@ struct Cached {
     end: Sgr,
 }
 
+/// What the window read of a run of writes that share a line, and wrapped: kept while the writes before stay what they
+/// were, so a write that arrives costs reading what it adds and cutting the line it is in, never the line so far.
+struct RunCache {
+    /// The state the run started in, and what it was read in (`Reader::new`): a different one is another run.
+    start: Sgr,
+    base: Style,
+    frames: usize,
+    bytes: usize,
+    reader: Reader,
+    /// The width the rows below were cut for, the lines of the reader already cut into `done`, and the rows of those.
+    cols: usize,
+    cut: usize,
+    done: Rows,
+    /// The rows of what the text would be if it ended here beyond the `done` lines (the lines its held text ends and the open
+    /// line), and whether they are still current.
+    tail: Rows,
+    fresh: bool,
+    seen: u64,
+}
+
+impl RunCache {
+    fn new(base: Style, start: Sgr) -> Self {
+        RunCache {
+            start,
+            base,
+            frames: 0,
+            bytes: 0,
+            reader: Reader::new(base, start, true),
+            cols: usize::MAX,
+            cut: 0,
+            done: Rows::default(),
+            tail: Rows::default(),
+            fresh: false,
+            seen: 0,
+        }
+    }
+}
+
 /// The wrapped rows of the log's text frames, so a frame that changes nothing costs a copy, not a re-wrap.
 #[derive(Default)]
 pub(super) struct Wrap {
     pub(super) cols: usize,
     pass: u64,
     frames: HashMap<(WsKey, u64, usize), Cached>,
+    runs: HashMap<(WsKey, u64, usize), RunCache>,
+    /// The bytes of writes fed to a reader in all, across every rebuild of a run (what the tests count: each is read once).
+    #[cfg(test)]
+    read: usize,
 }
 
 impl Wrap {
@@ -135,6 +182,56 @@ impl Wrap {
     pub(super) fn end(&mut self) {
         let pass = self.pass;
         self.frames.retain(|_, c| c.seen == pass);
+        self.runs.retain(|_, c| c.seen == pass);
+    }
+
+    /// The rows of the run of writes `texts` of one stream (stdout or stderr, in `base`) that begins at frame `key`, and
+    /// the SGR state it ends in, after the stream's state `start` before it. The run is read as a terminal reads it, a write
+    /// at a time: a write that arrives is fed to the reader kept for the run and the line it is in is cut again, the lines
+    /// it ended are cut once for a width, and a run no write was added to is the rows it had. A different `start` or a
+    /// different run before the writes kept (what never happens to a log, which only grows) reads the run again.
+    pub(super) fn run(&mut self, key: (WsKey, u64, usize), texts: &[&str], base: Style, start: Sgr) -> ((&Rows, &Rows), Sgr) {
+        let (cols, pass) = (self.cols, self.pass);
+        let c = self.runs.entry(key).or_insert_with(|| RunCache::new(base, start));
+        let kept: usize = texts.iter().take(c.frames).map(|t| t.len()).sum();
+        if c.frames > texts.len() || kept != c.bytes || c.start != start || c.base != base {
+            *c = RunCache::new(base, start);
+        }
+        for t in &texts[c.frames..] {
+            c.reader.feed(t);
+            #[cfg(test)]
+            {
+                self.read += t.len();
+            }
+            c.bytes += t.len();
+            c.fresh = false;
+        }
+        c.frames = texts.len();
+        if c.cols != cols {
+            (c.cols, c.cut, c.done, c.fresh) = (cols, 0, Rows::default(), false);
+        }
+        if !c.fresh {
+            let lines = c.reader.lines();
+            if c.cut < lines.len() {
+                let (rows, starts) = rows(&logical(&lines[c.cut..]), cols);
+                let at = c.done.0.len();
+                c.done.1.extend(starts.into_iter().map(|s| s + at));
+                c.done.0.extend(rows);
+                c.cut = lines.len();
+            }
+            let (mut pending, open) = c.reader.ended();
+            pending.extend(open);
+            c.tail = rows(&logical(&pending), cols);
+            c.fresh = true;
+        }
+        c.seen = pass;
+        ((&c.done, &c.tail), c.reader.sgr())
+    }
+
+    /// The bytes of writes read by any run's reader, rebuilds of a run included.
+    #[cfg(test)]
+    pub(super) fn bytes_read(&self) -> usize {
+        self.read
     }
 
     /// The rows of the frame `(row, eval_id, frame)` holding `len` bytes of text, and the SGR state it ends in, made by
@@ -158,15 +255,53 @@ impl Wrap {
     /// The source of row `at`, given where each entry and frame starts (`marks`).
     pub(super) fn anchor(&self, row: &WsKey, marks: &[(usize, u64, usize)], at: usize) -> Option<Anchor> {
         let (start, eval, frame) = marks[marks.partition_point(|m| m.0 <= at).checked_sub(1)?];
-        let starts = self.frames.get(&(row.clone(), eval, frame)).map(|c| &c.rows.1);
-        Some((eval, frame, starts.map_or(0, |s| s.partition_point(|&l| l <= at - start).saturating_sub(1))))
+        let line = self.starts(&(row.clone(), eval, frame)).map_or(0, |s| s.line_at(at - start));
+        Some((eval, frame, line))
     }
 
     /// The row where `anchor`'s logical line starts now.
     pub(super) fn find(&self, row: &WsKey, marks: &[(usize, u64, usize)], (eval, frame, line): Anchor) -> Option<usize> {
         let (start, ..) = marks.iter().rev().find(|m| m.1 == eval && m.2 == frame)?;
-        let cached = self.frames.get(&(row.clone(), eval, frame));
-        Some(start + cached.and_then(|c| c.rows.1.get(line).copied()).unwrap_or(0))
+        let starts = self.starts(&(row.clone(), eval, frame));
+        Some(start + starts.and_then(|s| s.start_of(line)).unwrap_or(0))
+    }
+
+    /// Where each logical line of the frame or run `key` starts, in its rows.
+    fn starts(&self, key: &(WsKey, u64, usize)) -> Option<Starts<'_>> {
+        match (self.frames.get(key), self.runs.get(key)) {
+            (Some(c), _) => Some(Starts { head: &c.rows.1, tail: &[], shift: 0 }),
+            (None, Some(c)) => Some(Starts { head: &c.done.1, tail: &c.tail.1, shift: c.done.0.len() }),
+            _ => None,
+        }
+    }
+}
+
+/// The starts of a frame's or run's logical lines: a run's are those of its finished lines and then those of the tail, which
+/// begin `shift` rows in.
+struct Starts<'a> {
+    head: &'a [usize],
+    tail: &'a [usize],
+    shift: usize,
+}
+
+impl Starts<'_> {
+    /// The logical line row `at` belongs to.
+    fn line_at(&self, at: usize) -> usize {
+        let in_head = self.head.partition_point(|&l| l <= at);
+        let n = if in_head < self.head.len() || self.tail.is_empty() {
+            in_head
+        } else {
+            in_head + self.tail.partition_point(|&l| l + self.shift <= at)
+        };
+        n.saturating_sub(1)
+    }
+
+    /// The row logical line `line` starts at.
+    fn start_of(&self, line: usize) -> Option<usize> {
+        match line.checked_sub(self.head.len()) {
+            None => self.head.get(line).copied(),
+            Some(k) => self.tail.get(k).map(|l| l + self.shift),
+        }
     }
 }
 
