@@ -246,11 +246,16 @@ attach client that keeps reading with input around an attach never sent blind or
 unit no longer restarting forever against another daemon; two parts no test reproduced stay open
 (RELAY-SOCKET-HANG's long wait, KEYS-DROPPED-WHILE-A-ROW-ATTACHES's window warning). rc.4 (2026-11-11) carried the
 preview that follows its row, the pane's copy and the chat drawer's look (rc.3 the drawer; rc.1 and rc.2 selection and
-drawing). `main` carries 0.7.3-dev, no release cut from it, all of it landed 2026-11-19 and none of it used by a
-person. Of the four things the maintainer asked of 0.7.3 that day, two are built: a drawer's own key cycles it open,
+drawing). v0.7.3-rc.1 (2026-11-19) is an unpublished draft, cut from `main` on the maintainer's word (his choice that
+day: 0.7.3 is a fixes release, cut as one candidate once its fixes were on `main`) after the whole local gate had passed
+at the commit that was cut; its release workflow's builds, smokes and install smokes passed. The hosted Rust run on that
+commit had two red jobs, both in tests the candidate's last landing added and neither in the product (a case file read
+with CRLF on Windows, a row missing from the scoped gate's list), corrected on `main` after the tag. No computer has
+installed it and no person has used it. `main` carries 0.7.3-rc.2-dev. Of the four things the maintainer asked of 0.7.3,
+two are built and in the candidate: a drawer's own key cycles it open,
 full height and closed, with the status line on a full-height drawer's border, and Up and Down in edit mode move by
 the row on screen under a cursor drawn over the text; drawing on a PDF page and selecting its text are not started
-(`docs/defects.md`, fe-ui). Also on `main`: a name after `@` in a chat post is a Slack mention, resolved by the daemon
+and wait for 0.7.4, on his word (`docs/defects.md`, fe-ui). Also in the candidate: a name after `@` in a chat post is a Slack mention, resolved by the daemon
 among the workspace's members and told back to the poster by name (the maintainer: "my @person in slack isn't
 working"; no person has yet been notified by one, a stand-in answered for Slack); a skill that tells a session how to
 post to its project's channel; the REPL drawer in Julia's own colors, its long lines wrapped at the pane's width, and the escape sequences in text a
