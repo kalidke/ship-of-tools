@@ -3099,3 +3099,14 @@ the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the sa
     runs: at the commit whose hosted checks went red the gate now ends failed and names the suite; at the head a
     whole run passes in the same 7 minutes as before. Filed open: HOSTED-ONLY-GATE-SUITES, the eleven other suites
     of the gate's scripts that only the hosted checks run.
+  - A row keeps its drawer's height (DRAWER-HEIGHT-NOT-KEPT-PER-ROW), the one defect of a person's use of
+    v0.7.3-rc.1 (2026-11-20). One builder, two reviewers, three rounds, about 80 minutes from the report to `main`;
+    about 110 product lines in the first two of three commits. The first build fixed the report in 62 lines; the reviews then found
+    what the fix had opened: a full drawer that took the keys on a switch nobody at the window asked for (typing meant
+    for another pane would have gone to a chat draft or a shell), a maximized pane lost to the arriving drawer, a
+    source-scanning test comparing paths that Windows spells otherwise (replaced by a visibility rule, so the
+    compiler holds what the scan read for), and three mutants no test caught. The third round was tests and record
+    sentences and was read by the landing session. The same use recorded as working: a mention in a chat post, the
+    drawer's cycle, edit mode, the REPL drawer's colors and a repainted line, a session's post to its channel.
+    Filed open from that use: CHAT-MENTION-NO-AUTOCOMPLETE. Lesson for a brief: a fix that moves the focus says for
+    which arrivals, a person's own or any, before the first review.
