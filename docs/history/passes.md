@@ -3089,3 +3089,8 @@ the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the sa
     sentences in the manual, which is now a list of what the drawer does not do, each item pinned by a test row.
     Lesson for a brief: a reader of a byte stream is asked for its cost invariant and its reference before its first
     review, not after its third. No person has used it.
+  - Two hosted reds on the REPL drawer's landing (WIN-ESCAPE-CASE-FILE-CRLF, GATE-SCOPE-LIST-MISSES-ESCAPES-TEST),
+    fixed by the landing session, no product change: a line-ending rule for the two terminal-escape case files, and
+    the tree-reading list's row for the wire's test that reads them. Both reds came after v0.7.3-rc.1 was cut from
+    that landing's commit; neither changes what the candidate does. Filed open: LOCAL-GATE-OMITS-ITS-SCOPE-SUITE,
+    which is why the local gate did not show the second.
