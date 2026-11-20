@@ -962,7 +962,7 @@ async fn told_not_running(events: &mut tokio::sync::broadcast::Receiver<Evt>) {
 /// A window told the service stopped resolves the row again, and the chat must already read off with the code then: it
 /// would otherwise read `Stopping`, which resolves as the mapping, so the drawer shows no Connect step until a later
 /// refused watch makes it resolve again. The unit's turn off is held past the owner's earlier bound (`2 * STOP_WITHIN`,
-/// which a slow runner's scheduler once outlasted): no watcher is told while it is held, and the first told reads it off.
+/// which was outlasted once on a hosted runner): no watcher is told while it is held, and the first told reads it off.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_chat_is_off_with_its_code_before_a_watcher_is_told_the_service_ended() {
     let (fake, lv) = live().await;

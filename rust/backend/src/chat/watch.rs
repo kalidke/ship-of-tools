@@ -611,11 +611,13 @@ impl Own {
         self.end_delivery().await;
         drop(ending);
         if self.service.ended().is_some() {
-            // The stop has bounds of its own: the delivery's end (at once here, the receiver being gone; `MAIL_END` at
-            // most) and the listener's join (`STOP_WITHIN`, then an abort). This wait is theirs and `STOP_WITHIN` more,
-            // so the watchers are told while the chat still stops only when the stop took longer than its own bounds
-            // allow, which a stop the runtime merely ran late no longer does within that room.
-            let _ = tokio::time::timeout(MAIL_END + 2 * super::STOP_WITHIN, self.chat.stopped_of(&self.workspace)).await;
+            // The stop has bounds of its own: the delivery's end (`MAIL_END` at most; here the receiver is gone, so it
+            // returns without waiting) and the listener's join (`STOP_WITHIN`, then an abort). This wait is their sum
+            // and `STOP_WITHIN` more, counted from here. When it runs out the watchers are told although the chat
+            // still reads `Stopping`: after a stop that overran its bounds, or one the runtime ran that late.
+            if tokio::time::timeout(MAIL_END + 2 * super::STOP_WITHIN, self.chat.stopped_of(&self.workspace)).await.is_err() {
+                tracing::warn!(workspace = %self.workspace, "project chat: an ended service's stop outlasted its wait; its watchers are told while the chat still stops");
+            }
         }
         self.end();
     }
