@@ -3094,3 +3094,8 @@ the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the sa
     the tree-reading list's row for the wire's test that reads them. Both reds came after v0.7.3-rc.1 was cut from
     that landing's commit; neither changes what the candidate does. Filed open: LOCAL-GATE-OMITS-ITS-SCOPE-SUITE,
     which is why the local gate did not show the second.
+  - The local gate runs the suite that proves its scope lists (LOCAL-GATE-OMITS-ITS-SCOPE-SUITE). One builder, one
+    reviewer, one round; 14 lines of gate script. The suite is one parallel shell job, chosen by a piece. Two real
+    runs: at the commit whose hosted checks went red the gate now ends failed and names the suite; at the head a
+    whole run passes in the same 7 minutes as before. Filed open: HOSTED-ONLY-GATE-SUITES, the eleven other suites
+    of the gate's scripts that only the hosted checks run.

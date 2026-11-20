@@ -112,7 +112,8 @@ Guarantees, each with the mechanism it rests on:
   file that reads outside its crate is in `gate_tree_tests`), as one of its parallel shell jobs: in every whole or widened
   run, and in a scoped run whose paths yield the piece `gate scope-suite` (`gate_suite_pieces`: a Rust source or crate
   `Cargo.toml`, any file under `tests/`), never for docs or Julia alone. It is a shell job like the others, so it runs under
-  `env -i`: none of the run's `RCG_` variables, scope or tool overrides reach the runs of `rc-gate.sh` it makes over stand-ins,
+  `env -i`: none of the run's `RCG_` variables or its scope reach the runs of `rc-gate.sh` it makes over stand-ins (the job's `PATH`
+  still leads with the gate's tool folders),
   and its scratch tree is its own under `/tmp`, not the run's result folder. A fixture's copy of it is a stand-in, so it never
   starts itself again. Its failure is the run's (`ALLDONE FAILED`), bounded by the job's 1200 s. About 50 s alone; the hosted
   checks job still runs it.

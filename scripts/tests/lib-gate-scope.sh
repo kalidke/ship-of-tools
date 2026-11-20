@@ -8,7 +8,7 @@
 # `whole <path>`: the run widens to everything, never to less. A scope with no differing path is also whole. Only test
 # jobs narrow; the lint and the workspace build run in every scope. A changed Rust source or crate manifest also adds the
 # piece `tree <name>` (gate_tree_pieces): the Rust tests that read files outside their own crate (gate_tree_tests) run
-# whatever crates were selected.
+# whatever crates were selected. The piece `gate scope-suite` (gate_suite_pieces) adds the suite that proves these lists.
 
 # gate_scope_proved_by <rust path>: the shell and Julia pieces whose suites drive that code through the `sotd` binary, one
 # line each, on top of the crate's own. The suites run `sotd comm`, `sotd install`, `sotd update`, `sotd topology`,
