@@ -263,6 +263,8 @@ pub(in crate::ui) fn build_text_grid(
 
 /// Field order is load-bearing: fields drop in declaration order and are declared in reverse order of creation, so a failed start drops them as `new`'s locals did.
 pub(in crate::ui) struct SolidQuads {
+    pub(in crate::ui) edit_bar_edge_quad: Quad,
+    pub(in crate::ui) edit_bar_quad: Quad,
     pub(in crate::ui) canvas_quad: Quad,
     pub(in crate::ui) caption_back_quad: Quad,
     pub(in crate::ui) scalebar_back_quad: Quad,
@@ -288,7 +290,7 @@ pub(in crate::ui) fn build_solid_quads(
     // green blur or force a fg-colour switch that the chrome
     // pipeline doesn't currently carry through selection state.
     let selection_bg_quad =
-        Quad::from_rgba8(&device, &queue, &quad_pipeline, &[252, 240, 130, 140], 1, 1)
+        Quad::from_rgba8(&device, &queue, &quad_pipeline, &super::brushes::SELECTION_BG_RGBA, 1, 1)
             .context("failed to build selection_bg_quad")?;
     // Nav-spill overlay backing: the surface's deep-navy tone
     // ((0.020, 0.035, 0.090) visible-srgb ≈ (5, 9, 23) u8) at
@@ -342,7 +344,14 @@ pub(in crate::ui) fn build_solid_quads(
             .context("failed to build caption_back_quad")?;
     let canvas_quad = Quad::from_rgba8(&device, &queue, &quad_pipeline, &[255, 255, 255, 255], 1, 1)
         .context("failed to build canvas_quad")?;
+    let (bar, edge) = (super::brushes::EDIT_TEXT_RGB, super::cells::SURFACE_RGB);
+    let edit_bar_quad = Quad::from_rgba8(&device, &queue, &quad_pipeline, &[bar.0, bar.1, bar.2, 255], 1, 1)
+        .context("failed to build edit_bar_quad")?;
+    let edit_bar_edge_quad = Quad::from_rgba8(&device, &queue, &quad_pipeline, &[edge.0, edge.1, edge.2, 255], 1, 1)
+        .context("failed to build edit_bar_edge_quad")?;
     Ok(SolidQuads {
+        edit_bar_edge_quad,
+        edit_bar_quad,
         quad_pipeline,
         selection_bg_quad,
         overlay_back_quad,

@@ -3,6 +3,7 @@
 //! never a character of that text: the render pass draws it at `place`.
 
 use crate::ui::ScreenRect;
+use crate::ui::render::brushes::Solid;
 use cosmic_text::{Buffer, LayoutGlyph};
 
 /// The least byte any glyph of the row starts at: the row's first byte, whichever way it runs.
@@ -218,6 +219,14 @@ pub(in crate::ui) fn bar(place: Place, pane: ScreenRect, scroll_px: f32, clip_bo
     let (y0, y1) = clip_rows(place.top, place.height, pane, scroll_px, clip_bottom);
     let inside = (-w..=pane.w + w).contains(&place.x) && pane.w >= w;
     (inside && y1 > y0).then(|| ScreenRect { x: (pane.x + place.x - w / 2.0).clamp(pane.x, pane.x + pane.w - w), y: y0, w, h: y1 - y0 })
+}
+
+/// The edit cursor's paints over the selection's bands and under the glyphs, in order: its edge, a pixel wider on each
+/// side in the surface's color, then the bar in the edit text's color, both opaque. On the ground the edge is not seen
+/// and the bar reads by its own color; on a band, where the bar's color is about as light as the band, the dark edge
+/// outlines it, so the selection's moving end is told from its anchor.
+pub(in crate::ui) fn bar_paints(bar: ScreenRect) -> [(Solid, ScreenRect); 2] {
+    [(Solid::EditBarEdge, ScreenRect { x: bar.x - 1.0, w: bar.w + 2.0, ..bar }), (Solid::EditBar, bar)]
 }
 
 /// A band of the selection at `(x, top, w, h)` px in the layout, on screen in the pane `pane` with its text scrolled

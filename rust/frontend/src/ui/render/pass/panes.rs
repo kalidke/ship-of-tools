@@ -84,7 +84,8 @@ impl State {
         mut rpass: &mut wgpu::RenderPass<'_>,
         llm_selection: Option<((u16, u16), (u16, u16))>,
         show_md: bool,
-        edit_marks: Vec<ScreenRect>,
+        edit_bands: Vec<ScreenRect>,
+        edit_bar: Option<ScreenRect>,
     ) -> Result<()> {
         // LLM-pane selection highlight — render a pastel-yellow rect
         // for each row of the selection before text.render so glyphs
@@ -92,9 +93,9 @@ impl State {
         // be partial (start_col..pane_cols and 0..=end_col); middle
         // rows are full-width.
         let mut row_rects = if show_md { self.shaped.selection_rects() } else { Vec::new() };
-        // The editor's selection is bands in the same brush and its cursor a bar, under the glyphs, never part of the
-        // text (so neither can move a wrap or color a letter).
-        row_rects.extend(edit_marks);
+        // The editor's selection is bands in the same brush, under the glyphs, never part of the text (so it cannot
+        // move a wrap or color a letter); its cursor's bar is painted over them below.
+        row_rects.extend(edit_bands);
         if let Some(sel) = llm_selection {
             let (a, b) = sel;
             let (start, end) = if a <= b { (a, b) } else { (b, a) };
@@ -134,6 +135,9 @@ impl State {
         }
         if !row_rects.is_empty() {
             self.brushes.paint(Solid::SelectionBg, &self.gpu, &mut rpass, &row_rects)?;
+        }
+        for (brush, rect) in edit_bar.map(crate::ui::preview::editor::rows::bar_paints).into_iter().flatten() {
+            self.brushes.paint(brush, &self.gpu, &mut rpass, &[rect])?;
         }
         Ok(())
     }

@@ -169,7 +169,7 @@ impl State {
                     clip_top: None,
                     // Warm gold tint so the user sees at a glance that
                     // this is editable, not the read-only annotation.
-                    color: (235, 215, 160),
+                    color: crate::ui::render::brushes::EDIT_TEXT_RGB,
                     scroll_y_px: preview_scroll_px,
                 });
             }

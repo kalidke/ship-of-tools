@@ -51,6 +51,10 @@ impl ShapedPreview {
     }
 
     pub(in crate::ui) fn md(&self) -> &MarkdownPreview { &self.md }
+
+    /// The highlighter back, for a test that keeps one between its panes (it is slow to make).
+    #[cfg(test)]
+    pub(in crate::ui) fn into_highlight(self) -> crate::ui::preview::markdown::highlight::HighlightService { self.highlight }
     pub(in crate::ui) fn rect(&self) -> ScreenRect { self.rect }
     pub(in crate::ui) fn highlighter(&self) -> &crate::ui::preview::markdown::highlight::HighlightService {
         &self.highlight

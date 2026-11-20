@@ -257,7 +257,7 @@ post to its project's channel; the REPL drawer in Julia's own colors, its long l
 Windows launcher starting for a user name with a space in it (the maintainer's report); Escape on an edited buffer
 drawing its discard question, and a discard showing the file as last saved; typing and selecting in edit mode shaping
 only the lines a key changes (under 1 ms a key on a 5,000-line file, release build, where each took most of a
-second), with the selection drawn as a band under the text; and the scoped local gate running the tests that read
+second; a file of one long line is as slow as before), with the selection drawn as a band under the text; and the scoped local gate running the tests that read
 files outside their own crate. rc.14 holds what a person's use of rc.13
 found (2026-11-17 and 18), each seen by him unless marked: the Chat drawer's foot explains how a post appears only until
 this computer's first post; a key's letter is written lowercase everywhere in the window; the refusal to draw shows in

@@ -37,6 +37,7 @@ impl Drop for Fonts {
 struct Harness {
     fs: Fonts,
     width: f32,
+    scale: f32,
     editor: Editor,
 }
 
@@ -48,7 +49,7 @@ impl Harness {
         let mut editor = Editor::default();
         editor.arm_file("files:x".into());
         editor.open_file("files:x", true, content.to_string(), "v".into());
-        let mut h = Self { fs, width: cell * cells as f32 + 0.5, editor };
+        let mut h = Self { fs, width: cell * cells as f32 + 0.5, scale: 1.0, editor };
         h.reshape();
         h
     }
@@ -64,7 +65,7 @@ impl Harness {
 
     /// The window's re-shape after a key: the edit's spans shaped at the pane's width.
     fn reshape(&mut self) {
-        self.editor.reshape(&KeyBindings::defaults(), self.width, 1.0, &mut self.fs);
+        self.editor.reshape(&KeyBindings::defaults(), self.width, self.scale, &mut self.fs);
     }
 
     /// The cursor's place as the window draws it: re-shaped first only when the window would (a motion owes none).
@@ -315,21 +316,44 @@ fn a_body_ending_in_a_newline_is_walked_by_rows() {
     assert_eq!(h.cursor(), PARAGRAPH.len() + 1, "the empty line after the final newline is a row");
 }
 
+/// Highlighters kept between this binary's tests, as `FONTS` keeps font systems: making one compiles six grammars'
+/// queries (about 0.35 s in a debug build), and a pane needs one but never highlights here.
+static HIGHLIGHTS: std::sync::Mutex<Vec<crate::ui::preview::markdown::highlight::HighlightService>> = std::sync::Mutex::new(Vec::new());
+
+/// A pane's preview, its highlighter given back to `HIGHLIGHTS` when dropped.
+struct View(Option<ShapedPreview>);
+
+impl std::ops::Deref for View {
+    type Target = ShapedPreview;
+    fn deref(&self) -> &ShapedPreview { self.0.as_ref().unwrap() }
+}
+
+impl std::ops::DerefMut for View {
+    fn deref_mut(&mut self) -> &mut ShapedPreview { self.0.as_mut().unwrap() }
+}
+
+impl Drop for View {
+    fn drop(&mut self) {
+        HIGHLIGHTS.lock().unwrap_or_else(|e| e.into_inner()).extend(self.0.take().map(ShapedPreview::into_highlight));
+    }
+}
+
 /// A pane over the editor: a preview whose line is taller than the editor's (prose, 22 px against 19), `visible` px
 /// of text high, which each cursor move scrolls as the window's key path does and then lays out as a frame does.
 struct Pane {
-    view: ShapedPreview,
+    view: View,
     visible: f32,
 }
 
 impl Pane {
     fn new(h: &mut Harness, visible: f32) -> Self {
-        let highlight = crate::ui::preview::markdown::highlight::HighlightService::new().unwrap();
+        let highlight = HIGHLIGHTS.lock().unwrap_or_else(|e| e.into_inner()).pop()
+            .unwrap_or_else(|| crate::ui::preview::markdown::highlight::HighlightService::new().unwrap());
         let md = MarkdownPreview::new(&mut h.fs, "text", 400.0, visible, 1.0, &Default::default(), &Default::default(),
             &highlight, &Default::default(), false);
         let rect = ScreenRect { x: 0.0, y: 0.0, w: 400.0, h: visible };
         assert!(md.line_height() > 19.0, "the preview's line must be taller than the editor's");
-        Self { view: ShapedPreview::new(md, highlight, rect), visible }
+        Self { view: View(Some(ShapedPreview::new(md, highlight, rect))), visible }
     }
 
     /// The same pane `visible` px high, scrolled to the top.
@@ -1065,6 +1089,7 @@ fn a_motion_with_no_selection_owes_no_reshape_and_a_selection_or_an_edit_does() 
 
 /// The bands `rows::selection` gives row by row, each `(x0, x1)`, for the selection `a..b` put in `h`.
 fn bands_by_row(h: &mut Harness, a: usize, b: usize) -> Vec<(f32, Vec<(f32, f32)>)> {
+    h.edit().buf.clear_selection();
     h.put(a);
     h.edit().buf.set_selecting(true);
     h.edit().buf.set_cursor(b);
@@ -1127,6 +1152,53 @@ fn the_selection_is_drawn_as_bands_under_its_text_on_every_row_it_spans() {
     // The text keeps its own color: nothing of the selection is in the shaped text.
     h.reshape();
     assert!(h.editor.shaped().unwrap().buffer.lines.iter().all(|l| l.attrs_list().spans().is_empty()));
+    // A selection that starts at a line end shows that end, and an empty line selected from its start shows.
+    assert_eq!(bands_by_row(&mut h, 6, 7), [(0.0, vec![(x6, x6 + em_half)])], "the first line's end alone");
+    let empty = bands_by_row(&mut h, 7, 8);
+    assert!(empty.len() == 1 && empty[0].1 == [(0.0, em_half)], "the empty line from its start: {empty:?}");
+    // On a row that mixes directions the bands part where right-to-left letters lie unselected between selected ones.
+    h.retext(&format!("abc {HEBREW} def"));
+    h.put(1);
+    h.edit().buf.set_selecting(true);
+    h.edit().buf.set_cursor(8);
+    bands_cover_the_selected_glyphs(&mut h, "a mixed row");
+    assert_eq!(h.editor.selection_bands(f32::MIN, f32::MAX).len(), 2, "`bc ` and the word's first two letters, apart");
+}
+
+/// WCAG's contrast of two colors, the band being the selection's brush blended over the surface in linear light, as an
+/// sRGB surface blends it.
+fn contrast(a: (u8, u8, u8), b: (u8, u8, u8)) -> f64 {
+    let lum = |(r, g, b): (u8, u8, u8)| {
+        let lin = |c: u8| { let c = c as f64 / 255.0; if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) } };
+        0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
+    };
+    let (x, y) = (lum(a), lum(b));
+    (x.max(y) + 0.05) / (x.min(y) + 0.05)
+}
+
+fn band_color() -> (u8, u8, u8) {
+    use crate::ui::render::{brushes::SELECTION_BG_RGBA as top, cells::SURFACE_RGB as ground};
+    let alpha = top[3] as f64 / 255.0;
+    let lin = |c: u8| { let c = c as f64 / 255.0; if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) } };
+    let enc = |l: f64| ((if l <= 0.0031308 { 12.92 * l } else { 1.055 * l.powf(1.0 / 2.4) - 0.055 }) * 255.0).round() as u8;
+    let mix = |t: u8, g: u8| enc(alpha * lin(t) + (1.0 - alpha) * lin(g));
+    (mix(top[0], ground.0), mix(top[1], ground.1), mix(top[2], ground.2))
+}
+
+#[test]
+fn the_cursor_is_painted_over_the_bands_in_colors_that_read_on_a_band_and_on_the_ground() {
+    use crate::ui::render::{brushes::{Solid, EDIT_TEXT_RGB}, cells::SURFACE_RGB};
+    let bar = ScreenRect { x: 100.0, y: 40.0, w: 2.5, h: 19.0 };
+    let paints = rows::bar_paints(bar);
+    assert_eq!(paints.map(|(brush, r)| (brush, (r.x, r.y, r.w, r.h))),
+        [(Solid::EditBarEdge, (99.0, 40.0, 4.5, 19.0)), (Solid::EditBar, (100.0, 40.0, 2.5, 19.0))],
+        "the edge first, a pixel each side, then the bar");
+    // The bar is the edit text's color, its edge the surface's: the bar reads on the ground, the edge on a band.
+    let band = band_color();
+    assert!(contrast(EDIT_TEXT_RGB, SURFACE_RGB) > 7.0 && contrast(SURFACE_RGB, band) > 7.0,
+        "bar on the ground {:.2}, edge on a band {:.2}", contrast(EDIT_TEXT_RGB, SURFACE_RGB), contrast(SURFACE_RGB, band));
+    // The bar alone on a band is why it has an edge: its color hardly reads there.
+    assert!(contrast(EDIT_TEXT_RGB, band) < 2.0, "{:.2}", contrast(EDIT_TEXT_RGB, band));
 }
 
 #[test]
@@ -1341,7 +1413,7 @@ fn lines_shaped(h: &mut Harness, f: impl FnOnce(&mut Harness)) -> usize {
 fn equals_a_fresh_shaping(h: &mut Harness, what: &str) {
     let close = |a: f32, b: f32| (a - b).abs() < 0.01;
     let edit = h.editor.edit.as_ref().unwrap();
-    let fresh = MarkdownPreview::new_plain_spans(&mut h.fs, &edit.spans(&KeyBindings::defaults()), h.width, 1.0);
+    let fresh = MarkdownPreview::new_plain_spans(&mut h.fs, &edit.spans(&KeyBindings::defaults()), h.width, h.scale);
     let (body, rev) = (edit.buf.body(), edit.buf.rev());
     let index = rows::Index::new(&fresh.buffer, body, rev).unwrap_or_else(|| panic!("{what}: a fresh shaping has no index"));
     let shaped = h.editor.shaped.as_ref().unwrap();
@@ -1363,6 +1435,31 @@ fn equals_a_fresh_shaping(h: &mut Harness, what: &str) {
     let (own, theirs) = (h.editor.cursor_place(), rows::place(&fresh.buffer, &index, body, rev, edit.buf.cursor()));
     assert!(match (own, theirs) { (Some(a), Some(b)) => close(a.x, b.x) && close(a.top, b.top) && close(a.height, b.height), _ => false },
         "{what}: the cursor's place {own:?} against {theirs:?}");
+    bands_cover_the_selected_glyphs(h, what);
+}
+
+/// The selection's bands against the glyphs (an oracle, not another run of `rows::selection`): every glyph with a
+/// selected byte lies under a band on its row, and no other glyph does.
+fn bands_cover_the_selected_glyphs(h: &mut Harness, what: &str) {
+    let edit = h.editor.edit.as_ref().unwrap();
+    let Some((a, b)) = edit.buf.selection_range() else { return };
+    let bands = h.editor.selection_bands(f32::MIN, f32::MAX);
+    let lines: Vec<(usize, usize)> = super::super::buffer::lines(edit.buf.body()).collect();
+    let first = h.editor.index.as_ref().unwrap().first();
+    for run in h.editor.shaped().unwrap().buffer.layout_runs() {
+        let Some(&(start, _)) = run.line_i.checked_sub(first).and_then(|k| lines.get(k)) else { continue };
+        for g in run.glyphs.iter().filter(|g| g.w > 0.0) {
+            let (selected, mid) = (start + g.start < b && start + g.end > a, g.x + g.w / 2.0);
+            let covered = bands.iter().any(|&(x, top, w, _)| top == run.line_top && x < mid && mid < x + w);
+            assert_eq!(selected, covered, "{what}: the glyph {:?} of line {} selected {a}..{b}", &run.text[g.start..g.end], run.line_i);
+        }
+    }
+}
+
+/// `h` shaped as the window would, which must be the whole text: the count of the lines handed the shaper is every line.
+fn shaped_whole(h: &mut Harness, what: &str) {
+    let shaped = lines_shaped(h, |h| h.reshape());
+    assert_eq!(shaped, h.editor.shaped().unwrap().buffer.lines.len(), "{what}: not shaped whole");
 }
 
 /// A walk of `steps` random keys over `h` from a fixed seed, held equal to a fresh shaping every 50 keys and at the end.
@@ -1377,10 +1474,11 @@ fn walk_against_fresh_shapings(h: &mut Harness, seed: u64, steps: usize) {
     let letters = ["a", "Z", " ", "あ", "ש", "ب", "e\u{301}", "👍", "\t"];
     let pastes = ["one\ntwo", "x\r\ny\rz\n", "\r", "\n", "\r\n", "שלום\nwor ld", "\u{2028}a\u{85}", "\u{1c}"];
     let motions = [Action::EditLeft, Action::EditRight, Action::EditUp, Action::EditDown, Action::EditHome, Action::EditEnd];
+    let (width, mut other) = (h.width, None);
     for step in 0..steps {
         let body = h.body();
         let what = format!("step {step}");
-        match below(17) {
+        match below(20) {
             0..=3 => { h.press_key(None, Some(letters[below(letters.len())])); }
             4 => { h.press_key(Some(Action::EditNewline), None); }
             5 => { h.press_key(Some(Action::EditBackspace), None); }
@@ -1409,6 +1507,8 @@ fn walk_against_fresh_shapings(h: &mut Harness, seed: u64, steps: usize) {
                 h.press_key(Some(Action::EditRight), None);
                 h.press_key(Some(Action::StaleKeep), None);
             }
+            // The events below shape the whole text, the walk's dearest steps: a quarter of their draws are kept.
+            16..=18 if below(4) != 0 => { h.press_key(None, Some(letters[below(letters.len())])); }
             15 => {
                 // Edits while the pane has no width, at places apart, shaped together when it returns.
                 for _ in 0..=below(3) {
@@ -1419,6 +1519,38 @@ fn walk_against_fresh_shapings(h: &mut Harness, seed: u64, steps: usize) {
                         1 => h.edit().buf.backspace(),
                         _ => h.edit().buf.insert_str("v\n"),
                     }
+                }
+            }
+            16 => {
+                // A reload, with a header of another length for an annotation: the whole text, never the buffer of the
+                // text before it.
+                if h.editor.file_node_id().is_some() {
+                    h.editor.arm_file("files:x".into());
+                    h.editor.open_file("files:x", true, format!("{body}z"), "v".into());
+                } else {
+                    let more = "more: x\n".repeat(below(3));
+                    h.editor.reload_concept(true, &format!("---\ntitle: reloaded\n{more}---\n{body}z"));
+                }
+                shaped_whole(h, &what);
+            }
+            17 => {
+                // A change pending at a new width or a new text scale: the whole text.
+                h.edit().buf.insert_char('k');
+                if below(2) == 0 {
+                    h.width = if h.width == width { width * 0.8 } else { width };
+                } else {
+                    h.scale = if h.scale == 1.0 { 1.25 } else { 1.0 };
+                }
+                shaped_whole(h, &what);
+            }
+            18 => {
+                // Another row's edit brought back: the whole text, unless it is the very text shaped.
+                let parked = h.editor.park();
+                if let Some(back) = std::mem::replace(&mut other, parked) {
+                    let shaped_from = h.editor.drawn.map(|d| d.rev);
+                    let same = Some(EditState::drawn(&back).rev) == shaped_from;
+                    h.editor.restore(Some(back));
+                    if same { h.reshape() } else { shaped_whole(h, &what) }
                 }
             }
             _ => {
@@ -1432,7 +1564,7 @@ fn walk_against_fresh_shapings(h: &mut Harness, seed: u64, steps: usize) {
         if h.editor.owes_shaping(h.width) {
             h.reshape();
         }
-        if step % 50 == 49 || step + 1 == steps {
+        if step % 25 == 24 || step + 1 == steps {
             equals_a_fresh_shaping(h, &what);
         }
     }
@@ -1445,9 +1577,28 @@ fn every_edit_in_place_equals_a_fresh_shaping_of_its_text() {
     let paragraphs = format!("{lorem}\n\n{HEBREW} and {ARABIC} in a row of words\r\nA CRLF line\r\n\ttabbed\tline\rafter a lone CR\n\
         日本語のテキストは{lorem}\u{2028}after a line separator\u{85}after a next line\n\u{1c}a file separator\n👩‍👩‍👧 family\r");
     let mut h = Harness::concept(&format!("---\ntitle: a note\n---\n{paragraphs}"), 30);
-    walk_against_fresh_shapings(&mut h, 0x5eed_1234_abcd_0001, 1500);
+    walk_against_fresh_shapings(&mut h, 0x5eed_1234_abcd_0001, 700);
     let mut h = Harness::new(&paragraphs, 23);
-    walk_against_fresh_shapings(&mut h, 0x0dd_ba11_cafe_f00d, 500);
+    walk_against_fresh_shapings(&mut h, 0x0dd_ba11_cafe_f00d, 300);
+    // An undo or a redo between texts that share bytes across a multi-byte line end (each case a selection replaced,
+    // then undone, redone and undone): PS and `é` share their last byte, NEL and `Å` theirs, LS and PS their first two.
+    let cases: [(&str, (usize, usize), &str, bool); 8] = [
+        ("a\u{2029}b", (1, 4), "é", true), ("a\u{85}b", (1, 3), "Å", true), ("a\u{2028}b", (1, 4), "\u{2029}", false),
+        ("xé\ny", (1, 3), "\u{2029}", false), ("x\u{2029}\u{2029}y", (1, 4), "©", true), ("q\u{2028}r\n", (1, 4), "\u{85}", false),
+        ("a\rb", (2, 3), "\n", false), ("a\r\u{2029}b", (2, 5), "\nz", false),
+    ];
+    for (text, (a, b), with, typed) in cases {
+        h.retext(text);
+        h.put(a);
+        h.edit().buf.set_selecting(true);
+        h.edit().buf.set_cursor(b);
+        if typed { h.press_key(None, Some(with)); } else { h.edit().buf.insert_str(with); h.reshape(); }
+        equals_a_fresh_shaping(&mut h, &format!("{text:?} replaced"));
+        for (i, key) in [Action::EditUndo, Action::EditRedo, Action::EditUndo].into_iter().enumerate() {
+            h.press_key(Some(key), None);
+            equals_a_fresh_shaping(&mut h, &format!("{text:?} after {key:?} {i}"));
+        }
+    }
 }
 
 #[test]

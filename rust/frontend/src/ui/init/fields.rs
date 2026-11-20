@@ -43,7 +43,7 @@ impl State {
         let SolidQuads {
             quad_pipeline, selection_bg_quad, overlay_back_quad, code_bg_quad, code_border_quad,
             strike_line_quad, scalebar_bar_quad, scalebar_back_quad, caption_back_quad,
-            canvas_quad,
+            canvas_quad, edit_bar_quad, edit_bar_edge_quad,
         } = solid;
         let LogoQuads { logo_quad, wordmark_quad } = logos;
         let PreviewContent {
@@ -56,7 +56,7 @@ impl State {
             gpu: crate::ui::render::gpu::Gpu::new(surface, device, queue, config, initial_background(surface_format)),
             canvas: crate::ui::render::canvas::Canvas::new(text, terminal, scale, cell_w, cell_h, chrome_origin_x, chrome_origin_y),
             brushes: crate::ui::render::brushes::Brushes::new(
-                quad_pipeline, selection_bg_quad, overlay_back_quad, code_bg_quad, code_border_quad,
+                quad_pipeline, selection_bg_quad, edit_bar_quad, edit_bar_edge_quad, overlay_back_quad, code_bg_quad, code_border_quad,
                 strike_line_quad, scalebar_bar_quad, scalebar_back_quad, caption_back_quad, canvas_quad, logo_quad, wordmark_quad,
             ),
             raster: RasterView::new(preview_png),

@@ -40,12 +40,10 @@ impl State {
         self.rebuild_fatal_if_shown(show_fatal);
         let preview_scroll_px = self.clamp_preview_scroll(show_edit, md_rect, preview_rect);
         // The edit's selection and its cursor are drawn under the glyphs, the bar over the bands.
-        let edit_marks: Vec<ScreenRect> = if show_edit {
-            let mut marks = self.edit_selection_rects(preview_rect, preview_scroll_px);
-            marks.extend(self.edit_cursor_rect(preview_rect, preview_scroll_px));
-            marks
+        let (edit_bands, edit_bar) = if show_edit {
+            (self.edit_selection_rects(preview_rect, preview_scroll_px), self.edit_cursor_rect(preview_rect, preview_scroll_px))
         } else {
-            Vec::new()
+            (Vec::new(), None)
         };
         let media_paint_targets = self.prepare_media(show_md, md_rect, preview_scroll_px);
         let (scalebar_draw, media_paint_targets) = self.prepare_preview_text(lines, media_paint_targets,
@@ -88,7 +86,7 @@ impl State {
             self.paint_repl_figures(&mut rpass)?;
             self.paint_chat_thumbs(&mut rpass)?;
             self.paint_code_panels(&mut rpass, show_md, preview_rect, md_rect, preview_scroll_px)?;
-            self.paint_text_selections(&mut rpass, llm_selection, show_md, edit_marks)?;
+            self.paint_text_selections(&mut rpass, llm_selection, show_md, edit_bands, edit_bar)?;
             self.paint_media_blocks(&mut rpass, preview_rect, media_paint_targets)?;
             self.paint_strike_lines(&mut rpass, show_md, preview_rect, md_rect, preview_scroll_px)?;
             self.paint_brand(&mut rpass, strip_logo_rects)?;

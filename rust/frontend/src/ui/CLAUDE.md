@@ -344,8 +344,14 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   shaped buffer or the armed read; a first visit closes it. State sends, re-shapes (`rebuild_edit_preview`) and
   repaints.
   - The bar. The cursor is not a character of the shaped text (`EditState::spans` is the header, the body and the
-    footer alone): the render pass draws it as a bar in the selection's brush at `Editor::cursor_place`
-    (`State::edit_cursor_rect`, in `paint_text_selections`), so it cannot move a wrap. `rows::bar` clips it vertically
+    footer alone): the render pass draws it as a bar at `Editor::cursor_place` (`State::edit_cursor_rect`, in
+    `paint_text_selections`, over the selection's bands and under the glyphs), so it cannot move a wrap. The bar is
+    opaque in the edit text's color (`EDIT_TEXT_RGB`, `Solid::EditBar`) over an edge a pixel wider on each side in the
+    surface's color (`Solid::EditBarEdge`; `rows::bar_paints`): on the ground the edge is not seen and the bar reads
+    13.9 : 1; on a band the bar's color alone reads 1.4 : 1, and the edge outlines it at 9.7 : 1, so the selection's
+    moving end is told from its anchor. The other panes' cursors are inverse cells under the selection's tint (the
+    Terminal drawer's a block in the cell's foreground), about 1.5 : 1 against a band, so the edge was chosen over
+    their treatment. `rows::bar` clips it vertically
     as the text it stands on is (the same origin, `pane.y + EXTRA_TOP_PAD_PX - scroll`, and the same cut at the pane's
     top edge and at the foot of the last whole line, `MarkdownPreview::clip_bottom`, which the text's own clip calls
     too) and keeps it whole horizontally, moved in as far as the pane's edges (the text has no gutter and a letter's
@@ -395,8 +401,13 @@ The remaining concepts below still reach shared fields through `impl State` bloc
     an em wide after its last glyph (before its first on a right-to-left line), so a selected empty line shows; a
     selection that ends at a line end has none for it; the space a wrap drops has no glyph and no band. Each band is
     clipped vertically as the bar is and cut at the pane's left and right edges (`rows::band`). The copied text and
-    the selection's range rules are the buffer's (`EditBuffer::selection_range`). The bar is in the same brush, so at
-    the selection's moving edge it reads as the band's edge.
+    the selection's range rules are the buffer's (`EditBuffer::selection_range`). Legibility: selected text reads
+    1.43 : 1 against a band (the edit text (235, 215, 160) over the brush (252, 240, 130) at alpha 140 of 255 on the
+    surface (5, 9, 23), blended in linear light as an sRGB surface blends it; 2.56 : 1 where the surface blends in
+    sRGB), where the old amber selected text read 14.3 : 1 against the ground; the band reads 9.7 : 1 against the
+    ground. The preview's and the agent pane's selected text read 1.49 : 1 and 1.27 : 1 over the same band. A
+    selected line end whose band falls past the pane's edge (a right-to-left line whose last row starts at the left
+    edge, a full left-to-right row) shows nothing, the band cut away by the clip.
   - What a key re-shapes. After a key the window re-shapes only when the shaped text is no longer what the edit draws
     (`Editor::needs_reshape`: the body's revision, whether there is a selection, the unsaved edits and the banners,
     which change the footer's words): a motion, and a selection that grows or shrinks, the keys held for scrolling a
@@ -431,10 +442,11 @@ The remaining concepts below still reach shared fields through `impl State` bloc
     `Buffer::shape_until_scroll`, which shapes and lays out only the lines with no cached shaping (cosmic-text's
     `BufferLine` caches both per line; `set_text` and `set_rich_text` reset every line); the header's lines are never
     touched. The index is then built again from the buffer's cached layout (0.44 ms on a 465 KB file, release build,
-    so it is not patched). The whole text is shaped (`MarkdownPreview::new_plain_spans`) where the buffer is not of
+    so it is not patched; the cost is linear in the lines, about 0.1 µs a line). The whole text is shaped (`MarkdownPreview::new_plain_spans`) where the buffer is not of
     the text the change starts from, or of this text with no change (a new edit, a reload, a row's restored edit, the
     first shaping), and where it is not of the pane's width and text scale; that whole-text shaping is the reference
-    the in-place buffer is held equal to. A typed letter shapes one line, Enter two, a paste of k lines k or k + 1, a
+    the in-place buffer is held equal to. A typed letter shapes one line (the whole line it lands in, however long),
+    Enter two, a paste of k lines k or k + 1, a
     Backspace or Delete that joins two lines one, an undo or a redo the lines its change spans after it, a motion or
     a selection step none, and the footer's line one more when its words change (a selection that begins or ends,
     the first edit after a clean state, a save, a banner).
@@ -471,18 +483,27 @@ The remaining concepts below still reach shared fields through `impl State` bloc
     `a_motion_with_no_selection_owes_no_reshape_and_a_selection_or_an_edit_does`. The selection:
     `the_selection_is_drawn_as_bands_under_its_text_on_every_row_it_spans` (the rest of a line and its end, an empty
     line, the rows of a wrapped paragraph whole and in part, a selection ending at a line end, a right-to-left word,
-    only the rows asked for, and no color in the shaped text) and `a_selection_band_is_clipped_as_the_text_is`. In
-    place: `every_edit_in_place_equals_a_fresh_shaping_of_its_text` (a walk of 2,000 random keys from fixed seeds,
-    1,500 under a concept's header at 30 cells and 500 in a file at 23, over paragraphs that wrap, Hebrew and Arabic,
+    only the rows asked for, no color in the shaped text, a selection that starts at a line end, an empty line selected
+    from its start, and a mixed row whose bands part at unselected right-to-left letters) and
+    `a_selection_band_is_clipped_as_the_text_is`. In
+    place: `every_edit_in_place_equals_a_fresh_shaping_of_its_text` (a walk of 1,000 random keys from fixed seeds,
+    700 under a concept's header at 30 cells and 300 in a file at 23, over paragraphs that wrap, Hebrew and Arabic,
     Japanese, an emoji family, tabs, CRLF, a lone CR, a line and a paragraph separator and a file separator: letters
     wide, right-to-left and joined, Enter, Backspace and Delete anywhere and at line ends, pastes of several lines with
-    CRs and LFs, undo, redo, selections replaced, edits made while the pane has no width, a save, the discard prompt
-    and the stale banner; every 50 keys and at the end the buffer's lines, attributes and layout runs, the index and
-    the cursor's place equal a fresh whole-text shaping's, positions within 0.01 px; red with `line_change`'s CR rule
-    removed, its last line taken from `old_end - 1`, its new lines cut before `new_end`, and `record`'s union of two
-    changes dropped), `an_edit_shapes_only_the_lines_it_changes` and `the_footers_words_change_with_one_line_shaped`
-    (the counts above, from a per-thread count of the lines handed the shaper; red with the in-place path off). The
-    re-shapes:
+    CRs and LFs, undo, redo, selections replaced, edits made while the pane has no width, a save, the discard prompt,
+    the stale banner, and the guards' cases, each asserted shaped whole by the count of lines shaped: a reload (an
+    annotation's with a header of another length), a change pending at a new width or a new scale, another row's
+    edit restored; every 25 keys and at the end the buffer's lines, attributes and layout runs, the index and the
+    cursor's place equal a fresh whole-text shaping's, positions within 0.01 px, and the selection's bands cover
+    exactly the glyphs with a selected byte (`bands_cover_the_selected_glyphs`, an oracle over the glyphs); then eight
+    undos and redos between texts whose bytes agree across a multi-byte line end, a PS replaced by `é` among them;
+    red with `line_change`'s CR rule removed, its last line taken from `old_end - 1`, its new lines cut before
+    `new_end`, `record`'s union of two changes dropped, the revision guard or the width-and-scale guard removed, and
+    `replace_body`'s second char-boundary step removed), `an_edit_shapes_only_the_lines_it_changes` and
+    `the_footers_words_change_with_one_line_shaped` (the counts above, from a per-thread count of the lines handed
+    the shaper; red with the in-place path off). The bar's paints:
+    `the_cursor_is_painted_over_the_bands_in_colors_that_read_on_a_band_and_on_the_ground` (the brushes and rects
+    `rows::bar_paints` hands the painter, and the colors' contrasts). The re-shapes:
     `a_landed_save_changes_the_footer_and_owes_a_reshape`,
     `escape_on_an_edited_buffer_draws_the_discard_prompt_and_any_other_key_takes_it_down` (through `Editor::press`, the
     key's own path under a key event) and `a_pane_with_no_width_is_not_shaped_for_and_is_when_it_returns`. Lines and CRLF:
@@ -526,8 +547,12 @@ The remaining concepts below still reach shared fields through `impl State` bloc
     loop, so `Editor::key`'s hand-off, `editor_key`'s call of `apply_editor_outcome` and the paint of the bar (the render pass, no
     pure test reaches it) rest on reading. On a 5,000-line, 465 KB file (`edit_keys_on_a_big_file`, a timing run by
     hand in a release build, on a second computer), a typed letter, a Backspace, a Delete, Enter, a paste of a line,
-    an undo and a redo each take 0.6 to 0.85 ms from the key to a buffer ready to draw, where each took 845 to 870 ms
-    shaped whole; a selection step and a motion shape nothing. The whole-text shaping remains for opening an edit,
+    an undo and a redo each take under 1 ms from the key to a buffer ready to draw, where each took 845 to 870 ms
+    shaped whole; a selection step and a motion shape nothing. Not so: a key shapes the whole line it lands in, so a
+    file of one long line costs what the whole file did (853 ms a key on a 446 KiB line, release build, measured by
+    the review; EDIT-KEY-RESHAPES-A-LONG-LINE); and a key's cost still grows with the file's lines, about 0.1 µs a
+    line, from the index's rebuild and `shape_until_scroll`'s walk of every line (5.5 ms a key at 50,000 lines, 4.9
+    ms of it the index). The whole-text shaping remains for opening an edit,
     a reload, a zoom and a row's restored edit (about 850 ms on that file there). The paint of the bands (the render
     pass) rests on reading, as the bar's does: the native fixture draws frames with them and reads no pixel. A pane under
     about 44 px tall hides a row that is off the preview's line grid, text and bar alike (the whole-line clip). No person has used it yet.

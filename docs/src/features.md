@@ -183,7 +183,8 @@ end of the whole line of the file, which for a wrapped paragraph is the
 paragraph. Hold `Shift` with any of these to extend the selection. A row of
 right-to-left text is the exception: a step onto or off it goes by the file's
 line. The cursor is a thin bar drawn over the text, on every row, at the edge of
-the letter it stands before, and the selection is a tinted band under the
+the letter it stands before, in the text's color with a thin dark edge so it
+shows on a selection too, and the selection is a tinted band under the
 selected text, as a selection is in the other panes. A line end written as CR and LF is one position
 for the cursor, and a CR alone ends a line as a line feed does. The view follows the cursor: when
 a key moves it above or below the pane, the text scrolls just far enough to
