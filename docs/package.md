@@ -253,10 +253,15 @@ commit had two red jobs, both in tests the candidate's last landing added and ne
 with CRLF on Windows, a row missing from the scoped gate's list), corrected on `main` after the tag. It was installed
 by archive on 2026-11-20, on the maintainer's word in a session's pane, by the maintaining session on the hub (the
 daemon restarted and every row was there after it) and by its own session on one window computer, whose window runs
-it. The maintainer used it that day in the hub's window: a mention in a chat post, the drawer's cycle, edit mode's
+it. The maintainer used it that day on the hub's sessions: a mention in a chat post, the drawer's cycle, edit mode's
 Up and Down, typing and selection, the REPL drawer's colors and a line a program repaints, and a session asked to post
 to its channel all worked, and one thing did not: a drawer's full height was lost when he moved between sessions.
-`main` carries 0.7.3-rc.2-dev. Of the four things the maintainer asked of 0.7.3,
+v0.7.3-rc.2 (2026-11-20) is an unpublished draft, cut from `main` the same day on his word after the whole local gate
+had passed at the commit that was cut; it is rc.1 with that one fault fixed (a row keeps its drawer's height), and its
+release workflow's builds, smokes and install smokes passed. It was installed by archive, on his word in a session's
+pane, by the maintaining session on the hub (the daemon restarted, ending the one open REPL, and every row was there
+after it) and by its own session on one window computer; no person's use of it is recorded yet.
+`main` carries 0.7.3-rc.3-dev. Of the four things the maintainer asked of 0.7.3,
 two are built and in the candidate: a drawer's own key cycles it open,
 full height and closed, with the status line on a full-height drawer's border, and Up and Down in edit mode move by
 the row on screen under a cursor drawn over the text; drawing on a PDF page and selecting its text are not started
@@ -274,9 +279,8 @@ Windows launcher starting for a user name with a space in it (the maintainer's r
 drawing its discard question, and a discard showing the file as last saved; typing and selecting in edit mode shaping
 only the lines a key changes (under 1 ms a key on a 5,000-line file, release build, where each took most of a
 second; a file of one long line is as slow as before), with the selection drawn as a band under the text; and the scoped local gate running the tests that read
-files outside their own crate. `main` past the candidate keeps a drawer's height with its row, which the cycle's full height did not (the maintainer, using the candidate: the
-height was lost moving between sessions); built, and no person has used it; a second candidate carrying it is to be
-cut on his word. rc.14 holds what a person's use of rc.13
+files outside their own crate. The second candidate keeps a drawer's height with its row, which the first one's full height did not (the maintainer, using the first: the
+height was lost moving between sessions); built, and no person has used it. rc.14 holds what a person's use of rc.13
 found (2026-11-17 and 18), each seen by him unless marked: the Chat drawer's foot explains how a post appears only until
 this computer's first post; a key's letter is written lowercase everywhere in the window; the refusal to draw shows in
 the preview's box only; words that follow a person's action stay on the status line 10 s against background writes (the
