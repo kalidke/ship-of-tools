@@ -3056,3 +3056,12 @@ the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the sa
     session applied it. The owner's wait for the chat to read off with its code was half used up by the stop's own
     join, so a stop the runtime ran late lost the race. Not reproduced by chance in 492 local runs; reproduced every
     time with the stop held at a new hold point.
+  - Typing in edit mode shapes only what changed (EDIT-KEY-RESHAPES-WHOLE-FILE). One builder, four commits; the
+    editor's reviewer, one round. The shaped buffer is edited in place, a line at a time, and the selection is
+    tinted bands from the row index, so an edit key costs under a millisecond on a 5,000-line file where it cost
+    most of a second, and a selection step costs nothing. A seeded walk compares the in-place buffer with a fresh
+    shaping; the reviewer's own walks, about 42,000 keys, found no difference. The review found five rules no test
+    held, a cursor that could not be told from the band, and selected text at 1.4 to 1 against the shared tint: the
+    edit view has a band of its own at 8 to 1. Left open: a key still shapes its whole line, so a file that is one
+    long line is as slow as before (EDIT-KEY-RESHAPES-A-LONG-LINE), and the other panes' selected text reads under
+    1.5 to 1 against their band (SELECTION-BAND-HIDES-ITS-TEXT). No person has used it.
