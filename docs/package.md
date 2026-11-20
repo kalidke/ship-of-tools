@@ -250,8 +250,10 @@ drawing). v0.7.3-rc.1 (2026-11-19) is an unpublished draft, cut from `main` on t
 day: 0.7.3 is a fixes release, cut as one candidate once its fixes were on `main`) after the whole local gate had passed
 at the commit that was cut; its release workflow's builds, smokes and install smokes passed. The hosted Rust run on that
 commit had two red jobs, both in tests the candidate's last landing added and neither in the product (a case file read
-with CRLF on Windows, a row missing from the scoped gate's list), corrected on `main` after the tag. No computer has
-installed it and no person has used it. `main` carries 0.7.3-rc.2-dev. Of the four things the maintainer asked of 0.7.3,
+with CRLF on Windows, a row missing from the scoped gate's list), corrected on `main` after the tag. It was installed
+by archive on 2026-11-20, on the maintainer's word in a session's pane, by the maintaining session on the hub (the
+daemon restarted and every row was there after it) and by its own session on one window computer, whose window runs
+it; no person's use of it is recorded yet. `main` carries 0.7.3-rc.2-dev. Of the four things the maintainer asked of 0.7.3,
 two are built and in the candidate: a drawer's own key cycles it open,
 full height and closed, with the status line on a full-height drawer's border, and Up and Down in edit mode move by
 the row on screen under a cursor drawn over the text; drawing on a PDF page and selecting its text are not started
