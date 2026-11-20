@@ -24,7 +24,7 @@ pub(in crate::ui) fn chord_types_text(ctrl: bool, alt: bool, super_: bool) -> bo
 mod typing_tests;
 
 pub(in crate::ui) mod layout_help;
-pub(in crate::ui) use layout_help::LayoutHelp;
+pub(in crate::ui) use layout_help::{LayoutHelp, RowDrawer};
 
 #[cfg(test)]
 mod layout_help_tests;

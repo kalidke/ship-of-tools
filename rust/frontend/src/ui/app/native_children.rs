@@ -119,7 +119,7 @@ impl ApplicationHandler for FixturesDriver {
 }
 
 fn run_state_fixtures(state: &mut State) -> Result<()> {
-    let fixtures: [(&str, fn(&mut State) -> Result<()>); 35] = [
+    let fixtures: [(&str, fn(&mut State) -> Result<()>); 36] = [
         // First: the window's start-up picture is still the preview's.
         (
             "primary_u_over_the_start_picture_says_the_preview_shows_no_file",
@@ -171,6 +171,7 @@ fn run_state_fixtures(state: &mut State) -> Result<()> {
             State::a_preview_message_is_on_the_status_line_and_boxed_and_a_row_switch_drops_it,
         ),
         ("a_rows_drawer_stays_with_its_row", State::a_rows_drawer_stays_with_its_row),
+        ("a_rows_drawer_height_stays_with_its_row", State::a_rows_drawer_height_stays_with_its_row),
         (
             "a_row_left_before_its_preview_came_back_shows_its_own",
             State::a_row_left_before_its_preview_came_back_shows_its_own,

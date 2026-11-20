@@ -12,6 +12,9 @@ const DRAWERS: [DrawerContent; 6] = [DrawerContent::Closed, DrawerContent::Repl,
     DrawerContent::Terminal, DrawerContent::Monitor, DrawerContent::Help, DrawerContent::Chat];
 const TENANTS: [DrawerContent; 4] = [DrawerContent::Repl, DrawerContent::Terminal, DrawerContent::Monitor, DrawerContent::Chat];
 
+/// A row's drawer at its own height.
+fn own_height(content: DrawerContent) -> RowDrawer { RowDrawer { content, full: false } }
+
 struct Harness {
     layout: LayoutHelp, focus: FocusPrompts, bindings: KeyBindings, context: help::Context,
     now: Instant, events: Vec<String>, fail: bool, manual: Vec<String>, html: String,
@@ -23,6 +26,10 @@ impl Harness {
             bindings: KeyBindings::defaults(), context: help::Context::default(), now: Instant::now(),
             events: Vec::new(), fail: false, manual: Vec::new(), html: String::new(),
             status: "unchanged".into(), pastes: Vec::new() }
+    }
+    fn enter(&mut self, row: RowDrawer, focus: PaneFocus) { self.enter_on(row, focus, &LayoutPreset::default_laptop()); }
+    fn enter_on(&mut self, row: RowDrawer, focus: PaneFocus, base: &LayoutPreset) {
+        let e = self.layout.enter_row_drawer(row, focus, base); e.apply(self, None);
     }
     fn open(&mut self) {
         let e = self.layout.open_help(self.context.clone(), self.focus.focus()); e.apply(self, None);
@@ -462,9 +469,9 @@ fn a_rows_drawer_is_what_its_tenant_shows_and_under_help_what_help_covers() {
     for drawer in DRAWERS { for focus in FOCI {
         let mut h = Harness::new(drawer, focus, false);
         let own = if drawer == DrawerContent::Help { DrawerContent::Closed } else { drawer };
-        assert_eq!(h.layout.row_drawer(), own);
+        assert_eq!(h.layout.row_drawer(), own_height(own));
         h.open();
-        assert_eq!(h.layout.row_drawer(), own, "Help hid the row's drawer from its parked view");
+        assert_eq!(h.layout.row_drawer(), own_height(own), "Help hid the row's drawer from its parked view");
     } }
 }
 #[test]
@@ -472,7 +479,7 @@ fn entering_a_row_shows_its_drawer_and_moves_only_drawer_focus_off_a_closed_one(
     for from in DRAWERS { for focus in FOCI { for row in [DrawerContent::Closed, DrawerContent::Repl, DrawerContent::Terminal,
         DrawerContent::Monitor, DrawerContent::Chat] {
         let mut h = Harness::new(from, focus, false);
-        let e = h.layout.enter_row_drawer(row, focus); e.apply(&mut h, None);
+        h.enter(own_height(row), focus);
         assert_eq!(h.layout.drawer(), row);
         let expected = if focus == PaneFocus::Repl && row == DrawerContent::Closed { PaneFocus::NavTree } else { focus };
         assert_eq!(h.focus.focus(), expected);
@@ -486,14 +493,14 @@ fn a_switch_while_help_shows_closes_help_and_keeps_the_layout_it_hid() {
     h.open();
     assert!(!h.layout.maximized());
     let parked = h.layout.row_drawer();
-    assert_eq!(parked, DrawerContent::Terminal);
-    let e = h.layout.enter_row_drawer(DrawerContent::Chat, PaneFocus::Repl); e.apply(&mut h, None);
+    assert_eq!(parked, own_height(DrawerContent::Terminal));
+    h.enter(own_height(DrawerContent::Chat), PaneFocus::Repl);
     assert_eq!((h.layout.drawer(), h.layout.maximized(), h.layout.chat_shown()), (DrawerContent::Chat, true, true));
     assert_eq!(h.focus.focus(), PaneFocus::Preview, "Help's focus stayed in the entered row's chat");
     h.layout.close_help();
     assert_eq!(h.layout.drawer(), DrawerContent::Closed, "the closed Help's origin brought the left row's drawer back");
     h.open();
-    let e = h.layout.enter_row_drawer(parked, PaneFocus::Repl); e.apply(&mut h, None);
+    h.enter(parked, PaneFocus::Repl);
     assert_eq!(h.layout.drawer(), DrawerContent::Terminal);
 }
 #[test]
@@ -504,14 +511,14 @@ fn a_switch_while_help_shows_returns_the_focus_help_took_and_never_moves_it_into
             let mut h = Harness::new(DrawerContent::Closed, origin, true);
             h.open();
             assert_eq!(h.focus.focus(), PaneFocus::Repl);
-            let e = h.layout.enter_row_drawer(row, h.focus.focus()); e.apply(&mut h, None);
+            h.enter(own_height(row), h.focus.focus());
             assert_eq!((h.focus.focus(), h.layout.maximized()), (origin, true), "{origin:?} then {row:?}");
         }
     }
     // Help opened from the drawer itself: the focus stays there only where the entered row has a drawer.
     let mut h = Harness::new(DrawerContent::Repl, PaneFocus::Repl, false);
     h.open();
-    let e = h.layout.enter_row_drawer(DrawerContent::Closed, PaneFocus::Repl); e.apply(&mut h, None);
+    h.enter(own_height(DrawerContent::Closed), PaneFocus::Repl);
     assert_eq!(h.focus.focus(), PaneFocus::NavTree);
 }
 
@@ -611,8 +618,8 @@ fn another_drawers_key_swaps_and_keeps_the_height() {
     } }
 }
 /// A close by any path ends the full height, and `toggle_drawer`, which the Connect step and the fixtures use, closes
-/// a drawer in one step whatever its height. A row's parked view holds the drawer, not its height: the height is the
-/// window's, so a row with a drawer open meets the full height and a row with none does not.
+/// a drawer in one step whatever its height. A row's parked view holds the drawer and its height (next test), so a
+/// row never meets the height of the row left.
 #[test]
 fn every_close_ends_the_full_height_and_a_toggle_closes_in_one_step() {
     let base = LayoutPreset::default_laptop();
@@ -626,14 +633,72 @@ fn every_close_ends_the_full_height_and_a_toggle_closes_in_one_step() {
         let mut h = full(tenant); h.layout.terminal_spawn_failed();
         h.cycle(tenant); assert!(!h.layout.full_shown(&base, h.focus.focus()), "after a spawn failure");
         let mut h = full(tenant);
-        let e = h.layout.enter_row_drawer(DrawerContent::Closed, PaneFocus::Repl); e.apply(&mut h, None);
-        assert_eq!(h.layout.row_drawer(), DrawerContent::Closed, "a row with no drawer");
+        h.enter(own_height(DrawerContent::Closed), PaneFocus::Repl);
+        assert_eq!(h.layout.row_drawer(), RowDrawer::default(), "a row with no drawer");
         h.cycle(tenant); assert!(!h.layout.full_shown(&base, h.focus.focus()), "opens at the normal height");
         let mut h = full(tenant);
-        let e = h.layout.enter_row_drawer(DrawerContent::Terminal, PaneFocus::Repl); e.apply(&mut h, None);
-        assert!(h.layout.full_shown(&base, h.focus.focus()), "a row with a drawer open meets the full height");
-        assert_eq!(h.layout.row_drawer(), DrawerContent::Terminal, "the parked view holds the tenant alone");
+        h.enter(own_height(DrawerContent::Terminal), PaneFocus::Repl);
+        assert!(!h.layout.full_shown(&base, h.focus.focus()), "a row's drawer open at its own height meets no full height");
+        assert_eq!(h.layout.row_drawer(), own_height(DrawerContent::Terminal), "and parks at it");
     }
+}
+/// A row's drawer is kept whole: the tenant and the height. A row parks what it shows, whichever drawer the entered row
+/// has (none, open at its own height, full) and whether the row was left under Help, and finds it again as it left it.
+#[test]
+fn a_row_comes_back_to_its_drawer_at_the_height_it_left_it() {
+    let base = LayoutPreset::default_laptop();
+    for tenant in TENANTS { for help in [false, true] { for other in [RowDrawer::default(), own_height(DrawerContent::Chat),
+        RowDrawer { content: DrawerContent::Monitor, full: true }] {
+        let mut h = Harness::new(DrawerContent::Closed, PaneFocus::NavTree, false);
+        h.cycle(tenant); h.cycle(tenant);
+        if help { h.open(); }
+        let left = h.layout.row_drawer();
+        assert_eq!(left, RowDrawer { content: tenant, full: true }, "{tenant:?} help={help}: parked whole");
+        h.enter(other, h.focus.focus());
+        assert_eq!(h.layout.row_drawer(), other, "{tenant:?} then {other:?}");
+        h.enter(left, h.focus.focus());
+        assert_eq!((h.layout.drawer(), h.layout.row_drawer()), (tenant, left), "{tenant:?} help={help} then {other:?}");
+        assert!(h.layout.full_shown(&base, h.focus.focus()), "{tenant:?} help={help} then {other:?}: full where the row left it");
+        assert_eq!(h.focus.focus(), PaneFocus::Repl, "the full drawer holds the focus it covers the nav of");
+    } } }
+    // A row left at its own height comes back at it, and a closed drawer is never full.
+    let mut h = Harness::new(DrawerContent::Closed, PaneFocus::NavTree, false);
+    h.cycle(DrawerContent::Chat);
+    let left = h.layout.row_drawer();
+    assert_eq!(left, own_height(DrawerContent::Chat));
+    h.enter(RowDrawer { content: DrawerContent::Terminal, full: true }, PaneFocus::Repl);
+    h.enter(left, PaneFocus::Repl);
+    assert!(!h.layout.full_shown(&base, PaneFocus::Repl), "the full height of the row left did not carry over");
+    h.enter(RowDrawer { content: DrawerContent::Closed, full: true }, PaneFocus::Repl);
+    assert_eq!(h.layout.row_drawer(), RowDrawer::default());
+    h.cycle(DrawerContent::Chat);
+    assert!(!h.layout.full_shown(&base, h.focus.focus()), "a closed drawer entered full opened at its own height");
+}
+/// What the cycle's fixes pinned holds on the first frame after a switch, on every preset: the focus is on a pane the
+/// full height leaves drawn (a drawer that covers the pane the focus was on takes it; one beside it keeps it), a
+/// layout with no full height shows the drawer open, and an answer that is the preview ends what covers it.
+#[test]
+fn the_rules_of_full_height_hold_on_the_arrival_at_a_full_row() {
+    let full = RowDrawer { content: DrawerContent::Terminal, full: true };
+    for (name, base) in presets() { for focus in FOCI {
+        let mut h = Harness::new(DrawerContent::Closed, focus, false);
+        h.enter_on(full, focus, &base);
+        let (layout, shown) = h.layout.frame_layout(&base, h.focus.focus());
+        assert!(focus_is_drawn(&h.layout, &base, h.focus.focus()), "{name} {focus:?}: the focus is on a pane that is not drawn");
+        assert_eq!(h.layout.drawer(), DrawerContent::Terminal, "{name} {focus:?}: the drawer is open");
+        assert_eq!(layout.drawer.is_some(), base.drawer.is_some(), "{name} {focus:?}");
+        let Some(n) = base.full_span() else {
+            assert!(!shown, "{name} {focus:?}: a layout with no full height shows the drawer open");
+            assert_eq!(h.focus.focus(), focus, "{name} {focus:?}: the focus did not move for a height the layout lacks");
+            continue;
+        };
+        let leaves = focus == PaneFocus::Repl || base.columns[n..].iter().any(|c| c.slot == focus.slot());
+        assert!(shown, "{name} {focus:?}: full where the row was left");
+        assert_eq!(h.focus.focus(), if leaves { focus } else { PaneFocus::Repl }, "{name} {focus:?}: the covered pane's focus goes to the drawer");
+        h.layout.uncover_preview();
+        assert!(!h.layout.full_shown(&base, h.focus.focus()), "{name} {focus:?}: an answer that is the preview ends it");
+        assert_eq!(h.layout.drawer(), DrawerContent::Terminal);
+    } }
 }
 /// Full height is drawn only while the focus is on a pane it leaves drawn, on every preset: the drawer, or a column
 /// right of the covered ones. Focus anywhere else shows the normal layout, whatever put it there, and the next press
@@ -724,7 +789,7 @@ fn no_key_path_rests_the_focus_on_a_pane_that_is_not_drawn() {
             let spatial = |h: &mut Harness| { let (c, d) = h.layout.spatial_slots(&base, h.focus.focus()); h.focus.move_focus(dir, &c, d); };
             for row in [DrawerContent::Chat, DrawerContent::Closed, DrawerContent::Terminal] {
                 let mut h = start(); h.open(); spatial(&mut h); check(&h, "help, spatial");
-                let e = h.layout.enter_row_drawer(row, h.focus.focus()); e.apply(&mut h, None);
+                h.enter(own_height(row), h.focus.focus());
                 h.layout.frame_layout(&base, h.focus.focus()); check(&h, "row switch");
             }
             let mut h = start(); h.open(); spatial(&mut h); spatial(&mut h);

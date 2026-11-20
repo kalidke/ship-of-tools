@@ -325,14 +325,25 @@ The remaining concepts below still reach shared fields through `impl State` bloc
 - `ParkedViews` privately owns the map of parked row views. Leaving a row parks its view (replacing an earlier one),
   coming back reads a clone, a kept default row's end forgets only the parked attachment, a destroyed row's view is
   dropped, and the default row's raw-slug key migrates to `<default>` with an existing `<default>` view winning. State
-  composes and applies the view; the map is reached through nothing else. A view holds its row's drawer (closed, or the
-  tenant shown; never Help): `snapshot_current_workspace_ui` parks `LayoutHelp::row_drawer`, a return applies it through
-  `LayoutHelp::enter_row_drawer`, and a first visit is closed. The row shown at start has no switch behind it: its drawer
+  composes and applies the view; the map is reached through nothing else. A view holds its row's drawer whole, one
+  `RowDrawer` (closed, or the tenant shown, never Help, and whether it stands at full height, never true for a closed
+  one): `snapshot_current_workspace_ui` parks `LayoutHelp::row_drawer`, a return applies it through
+  `LayoutHelp::enter_row_drawer`, and a first visit is closed. Every way of changing the shown row reaches that one
+  save and restore, because `State::retarget_workspace` is the only caller of `SelectedRow::select` but the capture
+  harness's startup seed (pinned by `session::snapshot_tests::only_the_one_switch_selects_a_row`): the cycle keys, the nav
+  pane's Enter, `sot-fe goto` and the other control commands, the move to a neighbor when a row closes, a created row. The row shown at start has no switch behind it: its drawer
   is whatever the window started with (closed, the Terminal after a relaunch, the Monitor under `--start-monitor`) and
   is parked when the row is first left. The one rare case: a relaunch whose resumed row is gone at the first list moves
-  to a neighbor as a first visit, so the Terminal closes there. The drawer's height, maximize and wide preview stay
-  window-wide, and the parked drawers are runtime memory: a window restart starts every row closed but the one shown.
-  Pinned by the native fixture `a_rows_drawer_stays_with_its_row`.
+  to a neighbor as a first visit, so the Terminal closes there. A full-height drawer that the focus would leave
+  covered (the focus on the nav pane or the preview, which it hides) takes the focus on the entry, the one case where an open
+  drawer takes it, since the frame would otherwise end the full height at once; in a layout with no full height the drawer
+  is shown open and the focus stays. The drawer's configured height (`drawer_height` of a preset), maximize and the wide preview stay
+  window-wide, and the parked drawers are runtime memory (nothing of a row's drawer, its height included, is written to
+  disk): a window restart starts every row closed but the one shown. Pinned by the native fixtures
+  `a_rows_drawer_stays_with_its_row` and `a_rows_drawer_height_stays_with_its_row` (full height left and found again
+  from a row with no drawer and from one open at its own height, by each way of changing the row, and an edit open on the
+  arriving row shaped by the first frame), and by `layout_help_tests::{a_row_comes_back_to_its_drawer_at_the_height_it_left_it,
+  the_rules_of_full_height_hold_on_the_arrival_at_a_full_row}` (every tenant, under Help too, on every preset and focus).
 - `SelectedRow` privately owns the selected host and workspace, the pending read mark, the two-press destroy arm and
   the time a `workspace.create` was sent. Readers see the host and workspace by reference; only a switch's retarget
   and the capture harness's startup seed select a row, both parts at once. Every switch replaces the read mark (armed
@@ -1222,7 +1233,7 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   failure closes only selection. These paths preserve other layout/Help state and keep held subscriptions. A row switch
   replaces the drawer with the entered row's (`enter_row_drawer`, applied after the REPL and view restores): Help is the
   window's, so it closes, its hidden maximize returns with the focus it took (focus still in Help goes back to where Help
-  was opened from) and its origin goes; `row_drawer` parks what Help covered. The
+  was opened from) and its origin goes; `row_drawer` parks what Help covered, with its height. The
   effect requests Monitor sync, so a drawer left or entered as Monitor takes or drops the subscription as a toggle does,
   and moves focus to the tree only when the focus was in the drawer and the entered row's drawer is closed (an open one
   never takes focus). The Chat's watch follows `chat_shown`, so it follows the restored drawer. Pinned by
@@ -1245,8 +1256,9 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   not drawn: `LayoutHelp::full_shown(base, focus)` is true only while the flag is set, a tenant (not Help) is shown, the
   preset has a full height and the focus is the drawer or a column right of the covered ones, so a focus anywhere else,
   by any path, lays out the normal height with no call to make; `spatial_slots` and the frame read the same function.
-  The flag itself is window-wide like the height, never in a parked view (a row with a drawer open meets a full one; a
-  row with none ends it), and `settle` drops it when it is not shown (`frame_layout`, the frame's only way to its layout, and the start of the key), so a
+  The flag itself is the second half of the shown row's drawer: parked with the tenant as one `RowDrawer` and entered with it
+  (a row comes back to the height it was left at; a row never given a drawer shows none, and a row left at its own height is not
+  made full by another's), and `settle` drops it when it is not shown (`frame_layout`, the frame's only way to its layout, and the start of the key), so a
   full drawer never comes back without its key; `set_drawer` drops it when the drawer closes, by any path, and Help
   keeps it for the drawer Help covers, which is drawn at the normal height meanwhile. Maximize over a full drawer shows
   the drawer alone and restores to the full height; the wide-preview key over one hides the agent column, so the

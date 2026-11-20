@@ -79,9 +79,9 @@ pub(in crate::ui) struct WorkspaceUiSnapshot {
     edit_state: Option<EditState>,
     /// The row's drawing and drawing mode (the raster and the overlay are rebuilt on restore).
     ink: crate::ui::preview::image::ink::Drawing,
-    /// The row's drawer (closed or its tenant; never Help, which is the window's). `LayoutHelp` owns the drawer; this
-    /// is only what it was when the row was left.
-    drawer: DrawerContent,
+    /// The row's drawer whole: closed or its tenant (never Help, which is the window's) and whether it stands at full
+    /// height. `LayoutHelp` owns the drawer; this is only what it was when the row was left.
+    drawer: RowDrawer,
 }
 
 impl WorkspaceUiSnapshot {
@@ -193,8 +193,9 @@ impl State {
     }
 
     /// Show the entered row's drawer, with the focus and Monitor effects a toggle has.
-    pub(in crate::ui) fn enter_row_drawer(&mut self, drawer: DrawerContent) {
-        let effect = self.layout_help.enter_row_drawer(drawer, self.focus_prompts.focus());
+    pub(in crate::ui) fn enter_row_drawer(&mut self, drawer: RowDrawer) {
+        let base = self.settings.resolve_preset(self.monitor_aspect);
+        let effect = self.layout_help.enter_row_drawer(drawer, self.focus_prompts.focus(), base);
         effect.apply(self, None);
     }
 

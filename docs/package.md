@@ -257,7 +257,8 @@ it; no person's use of it is recorded yet. `main` carries 0.7.3-rc.2-dev. Of the
 two are built and in the candidate: a drawer's own key cycles it open,
 full height and closed, with the status line on a full-height drawer's border, and Up and Down in edit mode move by
 the row on screen under a cursor drawn over the text; drawing on a PDF page and selecting its text are not started
-and wait for 0.7.4, on his word (`docs/defects.md`, fe-ui). Also in the candidate: a name after `@` in a chat post is a Slack mention, resolved by the daemon
+and wait for 0.7.4, on his word (`docs/defects.md`, fe-ui). `main` past the candidate keeps a drawer's height with its row, which the cycle's full height did
+not (the maintainer, using the candidate: the height was lost moving between sessions); built, and no person has used it. Also in the candidate: a name after `@` in a chat post is a Slack mention, resolved by the daemon
 among the workspace's members and told back to the poster by name (the maintainer: "my @person in slack isn't
 working"; no person has yet been notified by one, a stand-in answered for Slack); a skill that tells a session how to
 post to its project's channel; the REPL drawer in Julia's own colors, its long lines wrapped at the pane's width, and the escape sequences in text a

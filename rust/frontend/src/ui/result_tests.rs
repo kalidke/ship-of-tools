@@ -1700,6 +1700,132 @@ impl State {
     }
 }
 
+impl State {
+    /// A frame, and what it drew of the drawer: its tenant, and whether it stands at full height (it covers the preview).
+    fn probe_drawer_frame(&mut self) -> Result<(DrawerContent, bool)> {
+        self.redraw()?;
+        Ok((self.layout_help.drawer(), self.preview_covered() && self.pane_rects.repl.height > 0))
+    }
+
+    /// The drawer's own key pressed `presses` times, as the key handler presses it.
+    fn probe_press_drawer_key(&mut self, tenant: DrawerContent, presses: usize) {
+        for _ in 0..presses {
+            let base = self.settings.resolve_preset(self.monitor_aspect);
+            let effect = self.layout_help.cycle_drawer(tenant, self.focus_prompts.focus(), base);
+            effect.apply(self, None);
+        }
+    }
+
+    fn probe_expect_frame(&mut self, want: (DrawerContent, bool), what: &str) -> Result<()> {
+        let got = self.probe_drawer_frame()?;
+        anyhow::ensure!(got == want, "{what}: the frame drew {got:?} (tenant, full height), not {want:?}");
+        Ok(())
+    }
+
+    /// A row keeps its drawer's whole state: the tenant and whether it stands at its own height or at full height. A row
+    /// first visited shows none, a row left at full height comes back at full height whichever row it was left for and
+    /// whatever the other row's drawer was, and every way of changing the shown row reaches the one save and restore.
+    #[allow(dead_code, reason = "runs only inside a native State, from the premise overlays; no libtest body can construct one")]
+    pub(in crate::ui) fn a_rows_drawer_height_stays_with_its_row(&mut self) -> Result<()> {
+        let a = "<host-height>".to_string();
+        let (a_tx, _a_rx) = tokio::sync::mpsc::unbounded_channel();
+        self.conns = vec![(a.clone(), a_tx)];
+        let mut default = ws_info("default", "attach-default");
+        default.is_default = true;
+        default.agent = "none".into();
+        let rows = vec![default, probe_row("s1", "id-s1", false), probe_row("s2", "id-s2", false)];
+        self.on_workspaces(a.clone(), rows);
+        let go = |s: &mut State, slug: &str| s.switch_to_workspace(a.clone(), Some(slug.into()), None, false);
+        let (own, full) = (|t| (t, false), |t| (t, true));
+        // s1's REPL at full height; the layout must have one for the rest to mean anything.
+        go(self, "s1");
+        self.probe_press_drawer_key(DrawerContent::Repl, 2);
+        self.probe_expect_frame(full(DrawerContent::Repl), "the REPL's key twice, in this window's layout")?;
+        // s2, never visited, has none; back, s1 is full again with the focus in its drawer.
+        go(self, "s2");
+        self.probe_expect_frame(own(DrawerContent::Closed), "a first visit")?;
+        go(self, "s1");
+        self.probe_expect_frame(full(DrawerContent::Repl), "the return to the row left full, from a row with no drawer")?;
+        anyhow::ensure!(self.focus_prompts.focus() == PaneFocus::Repl, "the full drawer was entered with the focus on {:?}, a pane it covers", self.focus_prompts.focus());
+        // s2 with the Chat at its own height: each row shows its own, in both orders.
+        go(self, "s2");
+        self.probe_press_drawer_key(DrawerContent::Chat, 1);
+        self.probe_expect_frame(own(DrawerContent::Chat), "s2's own height")?;
+        go(self, "s1");
+        self.probe_expect_frame(full(DrawerContent::Repl), "the return, from a row with a drawer open")?;
+        go(self, "s2");
+        self.probe_expect_frame(own(DrawerContent::Chat), "s2 kept its own height beside a full s1")?;
+        // The ways of changing the shown row, each from s2 to s1 and back: the one every way ends in saves and restores.
+        let host = a.clone();
+        let ways: Vec<(&str, Box<dyn Fn(&mut State, &str) -> Result<()>>)> = vec![
+            ("the cycle keys", Box::new({ let host = host.clone(); move |s, slug| {
+                let here = s.selected.workspace_id().clone();
+                let dir = [1, -1].into_iter()
+                    .find(|d| s.row_presentation.next_row(*d, &host, here.as_deref()).is_some_and(|(h, w)| h == host && w == slug))
+                    .ok_or_else(|| anyhow::anyhow!("no cycle step reaches {slug}"))?;
+                s.cycle_workspace(dir, true);
+                Ok(())
+            } })),
+            ("the nav pane's Enter and a click", Box::new({ let host = host.clone(); move |s, slug| {
+                let target = s.row_directory.resolve(&host, slug).map_err(|e| anyhow::anyhow!(e))?;
+                s.switch_to_resolved_workspace(target, true);
+                Ok(())
+            } })),
+            ("goto, the control command", Box::new({ let host = host.clone(); move |s, slug| {
+                s.dispatch_fe_command(Some(&host), FeCommand::Workspace { slug: Some(slug.into()) });
+                Ok(())
+            } })),
+            ("a row that closed, the move to its neighbor", Box::new({ let host = host.clone(); move |s, slug| {
+                s.apply_leave(host.clone(), Leave::To((host.clone(), slug.into())));
+                Ok(())
+            } })),
+        ];
+        for (name, way) in &ways {
+            way(self, "s1")?;
+            self.probe_expect_frame(full(DrawerContent::Repl), &format!("{name}: the arrival at the full row"))?;
+            way(self, "s2")?;
+            self.probe_expect_frame(own(DrawerContent::Chat), &format!("{name}: the arrival at the row at its own height"))?;
+        }
+        // The default row, which a destroy with no neighbor shows, keeps its own: full while it is left, shown again
+        // by the leave that has no neighbor.
+        go(self, "default");
+        self.probe_press_drawer_key(DrawerContent::Chat, 2);
+        self.probe_expect_frame(full(DrawerContent::Chat), "the default row at full height")?;
+        go(self, "s2");
+        self.apply_leave(a.clone(), Leave::NoSession);
+        self.probe_expect_frame(full(DrawerContent::Chat), "the leave with no neighbor")?;
+        // A row created while s1 is shown is a first visit, and s1 is as it was left.
+        go(self, "s1");
+        self.on_workspace_created(a.clone(), Ok(crate::net::transport::WorkspaceCreatedInfo {
+            workspace_id: "id-s3".into(), slug: "s3".into(), label: "s3".into(), project_root: "/tmp/s3".into(),
+            session_name: "s3-session".into(),
+        }));
+        self.probe_expect_frame(own(DrawerContent::Closed), "the row just created")?;
+        go(self, "s1");
+        self.probe_expect_frame(full(DrawerContent::Repl), "the return from a created row")?;
+        // An edit open on the arriving row is shaped before the frame decides what the pane shows, from a full
+        // drawer and under one: s2 is left with no drawer and its edit, s1 at full height with its own.
+        go(self, "s2");
+        self.probe_press_drawer_key(DrawerContent::Chat, 2);
+        self.editor.arm_file("files:two.txt".into());
+        self.editor.open_file("files:two.txt", true, "alpha\nbeta".into(), "v".into());
+        go(self, "s1");
+        self.editor.arm_file("files:one.txt".into());
+        self.editor.open_file("files:one.txt", true, "alpha\nbeta".into(), "v".into());
+        go(self, "s2");
+        self.probe_expect_frame(own(DrawerContent::Closed), "s2 after its drawer closed")?;
+        anyhow::ensure!(self.editor.is_editing() && self.editor.shaped().is_some() && !self.editor.needs_reshape(),
+            "the arrival at an edit from a full drawer left it unshaped after the first frame");
+        go(self, "s1");
+        self.probe_expect_frame(full(DrawerContent::Repl), "s1 with an edit open")?;
+        self.layout_help.uncover_preview();
+        self.probe_expect_frame(own(DrawerContent::Repl), "an answer that is the preview ends the full height")?;
+        anyhow::ensure!(self.editor.is_editing() && self.editor.shaped().is_some() && !self.editor.needs_reshape(),
+            "the edit was not shaped when the pane's width came back");
+        Ok(())
+    }
+}
+
 /// The `preview.get`s the window wrote, as `(node, row, generation)`.
 fn previews_asked(rx: &mut ProbeRx) -> Vec<(String, Option<String>, u64)> {
     std::iter::from_fn(|| rx.try_recv().ok())
