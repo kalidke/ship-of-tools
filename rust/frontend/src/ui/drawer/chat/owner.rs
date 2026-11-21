@@ -227,7 +227,8 @@ impl Watch {
         let mut held: Vec<Ts> = self.records.keys().cloned().collect();
         held.sort_by(|a, b| ts_order(a).cmp(&ts_order(b)));
         held[..over].iter().for_each(|k| drop(self.records.remove(k)));
-        self.floor = Some(held[over].clone());
+        // What was held below is read again by paging, which also finds where Slack's plan ends, so a hidden history is asked afresh.
+        (self.floor, self.stop) = (Some(held[over].clone()), None);
     }
 
     /// The page below the floor, asked for while the reader is at the oldest held record, older history exists and a page
@@ -333,7 +334,6 @@ impl ChatOwner {
         if !w.records.is_empty() {
             w.note_reach();
             w.anchor = None;
-            w.bound();
             w.keep_newest(PARKED_RECORDS);
             self.parked.insert(0, w);
             self.parked.truncate(PARKED);

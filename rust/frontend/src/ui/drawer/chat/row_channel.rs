@@ -150,9 +150,9 @@ impl RowChannel {
             self.wanted = wanted.map(|id| {
                 let m = self.memory.iter().find(|m| m.id == id && self.connected.contains(&id.host));
                 Wanted {
+                    workspace: None,
                     unconfirmed: m.map(|m| (m.workspace.clone(), m.channel.clone())),
                     name: m.and_then(|m| Some((m.channel.as_str().to_string(), m.name.clone()?))),
-                    workspace: m.map(|m| m.workspace.clone()),
                     workspace_name: m.and_then(|m| m.workspace_name.clone()),
                     id, since: now, asked: false, answer: None, nameless: 0, retry_at: None,
                 }

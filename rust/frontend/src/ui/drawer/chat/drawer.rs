@@ -609,7 +609,7 @@ impl ChatDrawer {
     /// proves the post.
     pub(in crate::ui) fn send(&mut self, row: Option<&ResultRowIdentity>, name: Option<&str>, now: Instant) -> Result<Vec<Out>, String> {
         let Some(row) = row else { return Err("no project is selected to write to".into()) };
-        self.may_post()?;
+        self.may_post(row)?;
         // Enter over an unmapped row with nothing typed asks for its channel.
         if self.modal.is_none() && self.rows.stand() == Stand::Unmapped && self.compose.draft(row).is_none_or(|d| d.text.is_empty()) {
             return self.open_picker(Some(row));
@@ -639,9 +639,13 @@ impl ChatDrawer {
     }
 
     /// Whether a post key may post: not while a screen (the picker, the Connect step) or the name prompt holds the drawer,
-    /// which would post what that screen hides. `send` and `send_file` both ask it first.
-    fn may_post(&self) -> Result<(), String> {
-        // The row's channel is the one it had when last shown until its resolve is answered: nothing is posted for it.
+    /// which would post what that screen hides. `send` and `send_file` both ask it first, with the row the key acts on: a row
+    /// the last frame did not follow is not yet resolved, and a row's channel is the one it had when last shown until its
+    /// resolve is answered, so nothing is posted for either.
+    fn may_post(&self, row: &ResultRowIdentity) -> Result<(), String> {
+        if self.rows.row() != Some(row) {
+            return Err("not posted: no channel to write to".into());
+        }
         if self.rows.unconfirmed().is_some() {
             return Err("not posted: the project's channel is being read again; try again in a moment".into());
         }
@@ -657,7 +661,7 @@ impl ChatDrawer {
     /// file (nothing shown, or a picture opened from the chat) posts nothing and says why.
     pub(in crate::ui) fn send_file(&mut self, row: Option<&ResultRowIdentity>, previewed: Previewed<'_>, now: Instant) -> Result<Vec<Out>, String> {
         let Some(row) = row else { return Err("no project is selected to post for".into()) };
-        self.may_post()?;
+        self.may_post(row)?;
         let node = match previewed {
             Previewed::File(node) => node,
             Previewed::ChatPicture { key } => return Err(chat_picture_words(key)),
@@ -1215,6 +1219,13 @@ impl ChatDrawer {
         (self.rows.row() == Some(row)).then(|| self.owner.target()).flatten()
     }
 
+    /// The channel `row`'s next draft begins in: the watched one or, until its resolve is answered, the one it was drawn with.
+    /// A draft is typed in either; only its sending waits (`may_post`).
+    fn draft_target(&self, row: &ResultRowIdentity) -> Option<ChatTarget> {
+        let drawn = || self.rows.unconfirmed().filter(|_| self.rows.row() == Some(row));
+        self.watch_for(row).cloned().or_else(|| drawn().map(|u| ChatTarget { row: row.workspace_id.clone(), workspace: u.workspace.to_string(), channel: u.channel.clone() }))
+    }
+
     /// The person edits the draft of `row`, the row the chat shows at the key (not the last frame's, which a row switch has
     /// not yet moved). A draft begins in the watched channel only if that watch is `row`'s; a refusal is the status
     /// line's words.
@@ -1227,7 +1238,7 @@ impl ChatDrawer {
         if self.owner.posting_row() == Some((&row.host, row.workspace_id.as_str())) {
             return Err("posting…");
         }
-        let dest = self.watch_for(row).cloned();
+        let dest = self.draft_target(row);
         self.compose.edit(row, dest.as_ref().map(|t| (t, self.thread.as_ref().map(Thread::parent_ts))), edit)
     }
 
@@ -1257,10 +1268,11 @@ impl ChatDrawer {
             return Some(ComposeText::asking(name, focused));
         }
         let draft = self.rows.row().and_then(|r| self.compose.draft(r));
-        let dest = draft.map(|d| &d.dest).or_else(|| self.rows.row().and_then(|r| self.watch_for(r)))?;
+        let shown = self.rows.row().and_then(|r| self.draft_target(r));
+        let dest = draft.map(|d| &d.dest).or(shown.as_ref())?;
         // With no draft, the line names where the next one would go: the open thread's parent.
         let thread = draft.map_or_else(|| self.thread.as_ref().map(Thread::parent_ts), |d| d.thread.as_ref());
-        let elsewhere = self.owner.channel() != Some(dest.channel.as_str());
+        let elsewhere = shown.as_ref().map(|t| t.channel.as_str()) != Some(dest.channel.as_str());
         let to = match thread {
             // A thread draft says its channel too when the title has moved to another one: the post goes where it was begun.
             Some(p) => {

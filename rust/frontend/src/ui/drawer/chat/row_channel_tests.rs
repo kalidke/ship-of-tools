@@ -307,7 +307,7 @@ fn page_of(channel: &str, n: u64) -> ChatReply<sot_protocol::ops::ChatHistoryRes
 }
 
 /// A channel shown a moment ago draws what the window held for it as soon as the hub answers the row's resolve with it,
-/// while its snapshot is read again, which replaces them; another channel never shows them, and the owner keeps two.
+/// while its snapshot is read again, which replaces them; another channel never shows them, and the owner keeps `PARKED` channels.
 #[test]
 fn a_switch_back_draws_the_channels_records_while_it_is_read_again() {
     let t0 = Instant::now();
@@ -448,6 +448,9 @@ fn an_answer_that_is_not_the_remembered_channel_removes_the_drawn_records() {
     let now = at_first(&mut d, t0);
     d.on_connection(&host(), false, false, now);
     assert_eq!((d.held(), d.title()), (0, " chat · no connection to a ".to_string()));
+    // The link's return does not bring them back before the answer: they are what the last link's hub said.
+    d.on_connection(&host(), true, false, now + Duration::from_millis(100));
+    assert_eq!(d.held(), 0);
 }
 
 /// The remembered answers are as many as the parked channels, keyed by host and row, and dropped by a row that closes and by a
@@ -474,8 +477,11 @@ fn the_remembered_answers_are_bounded_and_keyed_by_host_and_row() {
     };
     assert_eq!(first_frame(&mut d, wanted("X0"), 0), 0, "the oldest row is no longer remembered");
     assert_eq!(first_frame(&mut d, wanted("X1"), 1000), 1);
-    // The same row id on another host is another row.
+    // The same row id on another host is another row, though that host's own channel of the same id is parked.
     d.on_connection(&host_b(), true, false, at(100_000));
+    let read = reading_on(&mut d, &host_b(), t0, 100_500, "Y", "D2");
+    d.on_evt(&host_b(), ChatEvt::History { req: read, reply: page_of("D2", 1) }, at(100_700));
+    assert_eq!(d.held(), 1);
     assert_eq!(first_frame(&mut d, wanted_on(host_b(), "X2"), 2000), 0);
     // A row that closes is forgotten.
     d.retire(&[ResultRowIdentity { host: host(), workspace_id: "X3".into() }]);

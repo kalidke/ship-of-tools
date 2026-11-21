@@ -1493,8 +1493,8 @@ fn a_put_between_a_links_return_and_the_snapshot_leaves_no_hole() {
     snapshot_after_a_put_during_the_recovery(o, t0 + PACE);
 }
 
-/// What is parked is trimmed to `KEPT`: a reader anchored on the oldest holds the live store up to `CEILING`, which the
-/// parked watch must not keep.
+/// What is parked is trimmed to `PARKED_RECORDS`: a reader anchored on the oldest holds the live store up to `CEILING`, which
+/// the parked watch must not keep.
 #[test]
 fn a_parked_watch_is_trimmed_to_the_kept_records() {
     let t0 = Instant::now();
@@ -1505,7 +1505,7 @@ fn a_parked_watch_is_trimmed_to_the_kept_records() {
     }
     assert!(held(&o) > KEPT && held(&o) <= CEILING, "the anchored reader holds the live store past KEPT");
     o.stop();
-    assert!(o.parked[0].records.len() <= KEPT);
+    assert!(o.parked[0].records.len() <= PARKED_RECORDS);
     assert_eq!(o.parked[0].anchor, None);
 }
 
@@ -1539,6 +1539,19 @@ fn the_parked_store_holds_eight_channels_of_their_newest_hundred() {
     assert_eq!(o.parked.len(), PARKED);
     assert!(o.parked_records(&host(), "T1", "C1").is_empty(), "the first channel parked has been pushed out");
     assert_eq!(o.parked_records(&host(), "T1", "D9").len(), 1);
+    // A watch whose older history Slack's plan hides, trimmed at its park, pages back again from its new floor (the trimmed
+    // records are newer than the plan's limit); one that loses nothing keeps the word.
+    let mut o = complete_with(t0, &["1.000001"]);
+    for i in 0..8u32 {
+        o.on_evt(&host(), changed(top_level(100 + 20 * i..=119 + 20 * i)), t0);
+    }
+    o.watch.as_mut().unwrap().stop = Some(Stop::Hides);
+    o.stop();
+    assert!(o.parked[0].stop.is_none(), "the trim asks the plan's limit afresh");
+    let mut o = complete_with(t0, &["1.000001"]);
+    o.watch.as_mut().unwrap().stop = Some(Stop::Hides);
+    o.stop();
+    assert!(o.parked[0].stop == Some(Stop::Hides), "a park that trims nothing keeps what Slack's plan hides");
     assert!(o.parked_records(&"other".to_string(), "T1", "D9").is_empty(), "a channel is keyed by its host too");
 }
 

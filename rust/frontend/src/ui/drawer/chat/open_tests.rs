@@ -9,7 +9,7 @@ use image::{ImageFormat, RgbaImage};
 use sot_protocol::chat::{ChatFile, ChatRecord};
 use sot_protocol::ops::{ChatCode, ChatFileReq, ChatFileVariant};
 
-use super::compose::Edit;
+use super::compose::{compose_rows, Edit};
 use super::drawer::{ChatDrawer, Previewed};
 use super::owner::Out;
 use super::row_channel_tests::answer as resolved;
@@ -239,4 +239,48 @@ fn a_row_drawn_before_its_resolve_is_answered_sends_nothing_for_its_channel() {
     d.on_evt(&"a".to_string(), resolved("ROW1", serde_json::json!({ "state": "mapped", "workspace": "WS1", "channel": "CH1", "delivers": false })), later(2170));
     let posted = d.send(row.as_ref(), Some("Ada"), later(2180)).unwrap();
     assert!(matches!(posted.as_slice(), [(_, OutgoingReq::ChatPost { .. })]));
+}
+
+/// A key handled in the frame of a row change acts on a row the drawer has not followed yet: a draft of that row, begun in the
+/// channel it had then, is posted for no channel the window has confirmed.
+#[test]
+fn a_post_key_for_a_row_the_frame_has_not_followed_posts_nothing() {
+    let (mut d, at, _) = figures();
+    let later = |ms: u64| at + Duration::from_millis(ms);
+    let host = "a".to_string();
+    // ROW2 is shown, mapped to another channel, and a draft begun in it; then ROW1 is shown again and answered.
+    d.tick(shown("ROW2"), later(1000));
+    d.tick(shown("ROW2"), later(1150));
+    d.on_evt(&host, resolved("ROW2", serde_json::json!({ "state": "mapped", "workspace": "WS1", "channel": "CH2", "delivers": false })), later(1160));
+    d.edit(shown("ROW2").as_ref(), Edit::Text("for two")).unwrap();
+    d.tick(shown("ROW1"), later(2000));
+    d.tick(shown("ROW1"), later(2150));
+    d.on_evt(&host, resolved("ROW1", serde_json::json!({ "state": "mapped", "workspace": "WS1", "channel": "CH1", "delivers": false })), later(2160));
+    assert_eq!(d.draft(), None, "ROW1 has no draft");
+    // The key's row is ROW2, which the last frame did not follow: nothing goes, and the draft stays.
+    assert!(d.send(shown("ROW2").as_ref(), Some("Ada"), later(2210)).is_err());
+    assert!(d.send_file(shown("ROW2").as_ref(), Previewed::File("files:a.png"), later(2210)).is_err());
+}
+
+/// Typing at a row's first frame begins its draft in the channel drawn, and the foot is drawn with the messages; only the
+/// send waits. An answer that names another channel leaves the draft where it was begun, as a row paired again with a draft
+/// held does.
+#[test]
+fn typing_at_the_first_frame_begins_the_draft_in_the_channel_drawn() {
+    let (mut d, at, _) = figures();
+    let later = |ms: u64| at + Duration::from_millis(ms);
+    let row = shown("ROW1");
+    let off = chrono::FixedOffset::east_opt(0).unwrap();
+    d.tick(shown("ROW2"), later(1000));
+    d.tick(shown("ROW1"), later(2000));
+    assert_eq!(d.held(), 1);
+    assert!(d.compose_text_at(false, 0, off).is_some(), "the input rows are drawn with the messages");
+    assert_eq!(d.edit(row.as_ref(), Edit::Text("hi")), Ok(()), "a key is not lost nor told there is no channel");
+    assert_eq!(d.draft(), Some(("hi", "CH1")));
+    assert!(d.send(row.as_ref(), Some("Ada"), later(2010)).is_err(), "the send waits");
+    d.tick(shown("ROW1"), later(2150));
+    d.on_evt(&"a".to_string(), resolved("ROW1", serde_json::json!({ "state": "mapped", "workspace": "WS1", "channel": "CH9", "delivers": false })), later(2160));
+    assert_eq!(d.draft(), Some(("hi", "CH1")), "the draft stays where it was begun");
+    let foot = compose_rows(&d.compose_text_at(false, 0, off).unwrap(), 60, 6).join("|");
+    assert!(foot.contains("to CH1"), "and the foot says where it goes: {foot}");
 }
