@@ -12,7 +12,7 @@
 #   <repo-path>   package the agent works in (workspace project root)
 #   --name        sot-comm handle for the new agent, used VERBATIM. Optional:
 #                 when omitted, the handle is DERIVED from the repo-path
-#                 basename + host and auto-disambiguated against the registry
+#                 basename, child agent kind and host, and auto-disambiguated against the registry
 #                 (same algorithm as a plain comm-join.sh — see
 #                 docs/history/adr/0028-remote-comm-autoconnect.md), in FRESH mode: an
 #                 existing row for the resolved name is a REFUSAL, never a
@@ -418,7 +418,7 @@ done
 # derivation failure (every tier already taken by something else; Codex
 # review F6) abort here with the derivation's own clear stderr reason.
 #
-# When the derivation had to qualify past the bare <repo>-<host> tier, also
+# When the derivation had to qualify past the first tier, also
 # give the new FE workspace a qualified --display-label
 # (<basename>-<qualifier>) so the session-strip rows for the two same-named
 # repos stay visually distinguishable — unless the caller already gave an
@@ -435,7 +435,7 @@ if [ -z "$NAME" ] && [ "$AGENT" != none ]; then
         DERIVED_CLAIM=true
         # The derivation and its registry write, one locked step in sotd: three lines, the handle, its qualifier and
         # tier 1's name.
-        CLAIM_LINES="$(printf '%s' "$PROV_OBJ" | sot_comm derive fresh "$CANON_ROOT" "$HANDLE_HOST" --claim)"
+        CLAIM_LINES="$(printf '%s' "$PROV_OBJ" | sot_comm derive fresh "$CANON_ROOT" "$HANDLE_HOST" --agent "$AGENT" --claim)"
         { IFS= read -r NAME; IFS= read -r CLAIMED_QUALIFIER; IFS= read -r CLAIMED_TIER1; } <<< "$CLAIM_LINES"
         [ -n "$NAME" ]
         PROV_WRITTEN=true
@@ -454,7 +454,16 @@ if [ -z "$NAME" ] && [ "$AGENT" != none ]; then
         # nonzero with no output, and the first `read` would then fail
         # under `set -e` and kill the script before this message could
         # say which host it was deriving for.
-        if ! DERIVED_LINES="$(sot_comm derive fresh "$CANON_ROOT" "$SPAWN_HOST")"; then
+        # Only the local sotd parses these arguments. The target receives the name in workspace.create.
+        rc=0
+        DERIVED_LINES="$(sot_comm derive fresh "$CANON_ROOT" "$SPAWN_HOST" --agent "$AGENT")" || rc=$?
+        if [ "$rc" -eq 2 ]; then
+            # An older local CLI returns usage (2) before deriving. A registry or tier failure returns 1.
+            sot_say "comm-spawn: local sotd does not accept --agent for derive; using its default handle" >&2
+            rc=0
+            DERIVED_LINES="$(sot_comm derive fresh "$CANON_ROOT" "$SPAWN_HOST")" || rc=$?
+        fi
+        if [ "$rc" -ne 0 ]; then
             echo "ERROR: could not derive a handle for a session on $SPAWN_HOST — see the reason above, or pass --name" >&2
             exit 1
         fi

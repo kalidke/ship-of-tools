@@ -160,7 +160,9 @@ A handle is 1 to 64 bytes of `A-Za-z0-9._-`, with no `..` and no leading `-`. De
 `<folder>-<host>`: the project folder's name and the box's raw host name, each with every other byte made `-`, runs of
 `-` collapsed and clamped (the folder to 20, the host to 12, with `-<the first six hex digits of the host's SHA-256>`
 when the clamp changed it). Only when another project's root holds that name is it qualified, by the parent folder's
-name (`<folder>-<parent>-<host>`) and then by the root's hash (`<folder>-<hash6>-<host>`). Names come from the folder,
+name (`<folder>-<parent>-<host>`) and then by the root's hash (`<folder>-<hash6>-<host>`). A Codex session's handle
+has `cx-` before the host in each of the three forms (`<folder>-cx-<host>`), so a Claude and a Codex session in one
+folder never share a handle, and a session spawned without a name gets the form of its own kind. Names come from the folder,
 never the task: a worktree's handle is derived from its folder like any other (the `/worktree` skill names the folder
 `<repo>-wt-<short>`).
 

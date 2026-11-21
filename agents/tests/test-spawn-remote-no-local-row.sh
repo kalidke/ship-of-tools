@@ -36,6 +36,25 @@ export SOTD_BIN="$(guard_bridge_stub "$WORK/bridge")"
 [ -x "$SOTD_BIN" ] || exit 2
 SPAWN="$SCRIPTS_DIR/comm-spawn.sh"
 
+# Record the arguments the local CLI receives. In the older CLI, extra arguments to derive returned usage (2).
+export BUILT_SOTD="$GUARD_SOTD"
+GUARD_SOTD="$WORK/record-comm"
+cat > "$GUARD_SOTD" <<'STUB'
+#!/usr/bin/env bash
+if [ "$1 ${2:-}" = "comm derive" ]; then
+    printf '%s\n' "${*:5}" >> "$SOT_COMM_HOME/derive.log"
+    if [ "${OLD_DERIVE:-}" = true ] && [ "${6:-}" = --agent ]; then
+        echo "usage: sotd comm derive <reclaim|fresh> <root> <raw host> [--claim]" >&2
+        exit 2
+    fi
+    if [ "${BREAK_REGISTRY:-}" = true ]; then
+        printf 'invalid JSON\n' > "$SOT_COMM_HOME/registry.json"
+    fi
+fi
+exec "${BUILT_SOTD:?a built sotd is required}" "$@"
+STUB
+chmod +x "$GUARD_SOTD" || exit 2
+
 # THIS box, for both resolvers: SOT_COMM_TEST_HOST pins comm-context.sh's
 # own HOST (registry `host` field, handle derivation), SOT_SELF_HOST pins
 # comm-lib.sh's sot_host — the resolver that mirrors Rust's
@@ -62,8 +81,9 @@ trap cleanup EXIT
 PASS=0
 FAIL=0
 check() {
-    local desc="$1" fn="$2" rc
-    "$fn"
+    local desc="$1" rc
+    shift
+    "$@"
     rc=$?
     if [ "$rc" -eq 0 ]; then
         echo "PASS: $desc"; PASS=$((PASS + 1))
@@ -170,6 +190,10 @@ run_spawn() {
 
 registry_has_row() { jq -e --arg n "$1" '.agents | has($n)' "$SPAWN_HOME/registry.json" >/dev/null 2>&1; }
 inbox_exists_for() { [ -f "$SPAWN_HOME/inbox/$1.jsonl" ]; }
+created_as() {
+    jq -se --arg kind "$1" --arg name "$2" \
+        '[.[] | select(.op == "workspace.create") | [.payload.agent, .payload.agent_name]] == [[$kind, $name]]' "$REQLOG" >/dev/null
+}
 
 # --- cases -------------------------------------------------------------
 
@@ -179,10 +203,11 @@ inbox_exists_for() { [ -f "$SPAWN_HOME/inbox/$1.jsonl" ]; }
 case_remote_daemon_writes_nothing_local() {
     local wsid="ws-remote" slug="remote1"
     start_stub_daemon "$OTHER_HOST_NAME" "$wsid" "$slug" "$(entry "$wsid" "$slug" ready)"
-    SOT_COMM_SPAWN_CAPSULE_WAIT=10 run_spawn --name spawn-remote
+    SOT_COMM_SPAWN_CAPSULE_WAIT=10 run_spawn --name spawn-remote --agent codex
     stop_stub_daemon
 
     [ "$SPAWN_RC" -eq 0 ] || { echo "  exited $SPAWN_RC: $SPAWN_ERR"; return 1; }
+    created_as codex spawn-remote && [ ! -e "$SPAWN_HOME/derive.log" ] || { echo "  explicit handle was derived or changed"; return 1; }
     registry_has_row "spawn-remote" && {
         echo "  registry row was written for a handle on $OTHER_HOST_NAME — that is the false success"; return 1; }
     inbox_exists_for "spawn-remote" && {
@@ -192,21 +217,32 @@ case_remote_daemon_writes_nothing_local() {
     return 0
 }
 
-# (b) A DERIVED handle for a remote spawn carries the TARGET box's host,
-#     not this one's — a handle naming the wrong box is the same
-#     guess-from-a-name defect in another coat.
-case_remote_derived_handle_names_target_host() {
-    local wsid="ws-derived" slug="derived1"
-    start_stub_daemon "$OTHER_HOST_NAME" "$wsid" "$slug" "$(entry "$wsid" "$slug" ready)"
-    SOT_COMM_SPAWN_CAPSULE_WAIT=10 run_spawn
+# (b) The target only needs workspace.create's existing agent_name. Both paths run derive on the spawning box.
+case_derived_handle() {
+    local host="$1" kind="$2" name="$3" calls="$4" wsid="ws-derived" slug="derived1" actual
+    start_stub_daemon "$host" "$wsid" "$slug" "$(entry "$wsid" "$slug" ready)"
+    SOT_COMM_SPAWN_CAPSULE_WAIT=10 run_spawn --agent "$kind"
     stop_stub_daemon
 
     [ "$SPAWN_RC" -eq 0 ] || { echo "  exited $SPAWN_RC: $SPAWN_ERR"; return 1; }
-    contains "$SPAWN_OUT" "@repo-$OTHER_HOST_NAME" || {
-        echo "  derived handle does not name $OTHER_HOST_NAME: $SPAWN_OUT"; return 1; }
-    registry_has_row "repo-$OTHER_HOST_NAME" && { echo "  wrote a local row for a remote handle"; return 1; }
-    registry_has_row "repo-$SELF_HOST_NAME" && { echo "  derived the handle against THIS host"; return 1; }
-    return 0
+    actual="$(cat "$SPAWN_HOME/derive.log")"
+    [ "$actual" = "$calls" ] || { echo "  expected derive arguments '$calls', got '$actual'"; return 1; }
+    contains "$SPAWN_OUT" "@$name" && created_as "$kind" "$name" || { echo "  expected $kind row @$name: $SPAWN_OUT"; return 1; }
+    if [ "$host" = "$SELF_HOST_NAME" ]; then
+        registry_has_row "$name"
+    else
+        jq -e '.agents == {}' "$SPAWN_HOME/registry.json" >/dev/null
+    fi
+}
+
+case_remote_derive_failure() {
+    start_stub_daemon "$OTHER_HOST_NAME" ws-read read1 "$(entry ws-read read1 ready)"
+    BREAK_REGISTRY=true run_spawn --agent codex
+    stop_stub_daemon
+
+    [ "$SPAWN_RC" -ne 0 ] && contains "$SPAWN_ERR" "registry could not be read" &&
+        [ "$(cat "$SPAWN_HOME/derive.log")" = "$OTHER_HOST_NAME --agent codex" ] &&
+        jq -se 'all(.[]; .op != "workspace.create")' "$REQLOG" >/dev/null
 }
 
 # (c) The local case writes its registry row through the daemon and touches no inbox file: the inbox is the daemon's
@@ -274,8 +310,16 @@ case_undeclared_host_stays_local() {
 
 check "daemon declares ANOTHER host: no local registry row, no local inbox" \
     case_remote_daemon_writes_nothing_local
-check "daemon declares ANOTHER host: a derived handle names the TARGET host" \
-    case_remote_derived_handle_names_target_host
+check "unnamed Claude child keeps the target host's handle" \
+    case_derived_handle "$OTHER_HOST_NAME" claude "repo-$OTHER_HOST_NAME" "$OTHER_HOST_NAME --agent claude"
+check "unnamed local Codex child claims its own kind's handle" \
+    case_derived_handle "$SELF_HOST_NAME" codex "repo-cx-$SELF_HOST_NAME" "$SELF_HOST_NAME --agent codex --claim"
+check "unnamed remote Codex child sends its kind's handle to the older target" \
+    case_derived_handle "$OTHER_HOST_NAME" codex "repo-cx-$OTHER_HOST_NAME" "$OTHER_HOST_NAME --agent codex"
+OLD_DERIVE=true check "an older deriving CLI supplies its original handle for a remote spawn" \
+    case_derived_handle "$OTHER_HOST_NAME" codex "repo-$OTHER_HOST_NAME" "$OTHER_HOST_NAME --agent codex
+$OTHER_HOST_NAME"
+check "a registry read failure ends a remote spawn after one derivation" case_remote_derive_failure
 check "daemon declares THIS host: registry row written through the daemon, no inbox file touched" \
     case_local_daemon_writes_the_row_and_no_inbox
 check "FAILED local spawn: provisional row rolled back and reported" \

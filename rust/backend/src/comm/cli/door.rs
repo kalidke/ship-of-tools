@@ -129,15 +129,20 @@ pub(crate) fn registry(env: &Env, args: &[String]) -> Out {
     }
 }
 
-/// `derive <reclaim|fresh> <root> <raw host> [--claim]` (with `--claim`, the entry on stdin and its registry write in
-/// the same locked step): three lines, the handle, its qualifier and tier 1's name; the derivation's lines on
-/// stderr; exit 1 with nothing written when no tier can be taken.
+/// Derive for the given agent (Claude by default), printing the handle, its qualifier and tier 1's name.
+/// With `--claim`, write the entry from stdin in the same locked step. Exit 1 when no tier can be taken.
 pub(crate) fn derive(env: &Env, args: &[String]) -> Out {
+    const USAGE: &str = "derive <reclaim|fresh> <root> <raw host> [--agent claude|codex] [--claim]";
     let mut o = Out::default();
-    let (mode, root, host, claim) = match args {
-        [m, r, h] => (m, r, h, false),
-        [m, r, h, c] if c == "--claim" => (m, r, h, true),
-        _ => return usage(o, "derive <reclaim|fresh> <root> <raw host> [--claim]"),
+    let [mode, root, host, options @ ..] = args else { return usage(o, USAGE) };
+    let (kind, rest) = match options {
+        [flag, k, rest @ ..] if flag == "--agent" && matches!(k.as_str(), "claude" | "codex") => (Kind::of(k), rest),
+        _ => (Kind::Claude, options),
+    };
+    let claim = match rest {
+        [] => false,
+        [flag] if flag == "--claim" => true,
+        _ => return usage(o, USAGE),
     };
     let mode = match mode.as_str() {
         "reclaim" => Mode::Reclaim,
@@ -162,7 +167,7 @@ pub(crate) fn derive(env: &Env, args: &[String]) -> Out {
     let unreadable = "comm: the registry could not be read, so no handle was derived; nothing was written".to_string();
     let got = if let Some(entry) = entry {
         update(env, &registry_path(env), command_lock_wait(env), |agents| {
-            let d = derive_handle(mode, root, host, Kind::Claude, agents, None, &mut notes)?;
+            let d = derive_handle(mode, root, host, kind, agents, None, &mut notes)?;
             agents.insert(d.name.clone(), entry);
             Ok((d, true))
         })
@@ -170,7 +175,7 @@ pub(crate) fn derive(env: &Env, args: &[String]) -> Out {
     } else {
         read_doc(&registry_path(env))
             .map_err(|_| unreadable.clone())
-            .and_then(|doc| derive_handle(mode, root, host, Kind::Claude, &doc["agents"].as_object().cloned().unwrap_or_default(), None, &mut notes))
+            .and_then(|doc| derive_handle(mode, root, host, kind, &doc["agents"].as_object().cloned().unwrap_or_default(), None, &mut notes))
     };
     o.errs(&notes);
     match got {
