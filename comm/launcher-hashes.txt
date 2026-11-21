@@ -1,3 +1,5 @@
+# Append each new shipped version. From an LF checkout at the repo root, set name to the launcher name and run:
+# sha256sum "agents/claude/bin/$name" | awk -v name="$name" '{print name, $1}' >> comm/launcher-hashes.txt
 show-result 08c390306f634f26a9f10d8eaedae74df73e254933bfeb303133a79972098e25
 show-result 2cea4e6bf96797be5592020a5038943d8565cc00ad6f07ef029efbeff94e8693
 show-result 449347a93f9608eed3bf313dc5d45b8be139f759999e7549aa6e17c693b6fe07

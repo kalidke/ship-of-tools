@@ -48,6 +48,8 @@ function install_comm(; clis = [:claude, :codex])
     # earlier install and its stamp stay as they were (sotd install's preflight stops the same way).
     Sys.which("jq") === nothing && error("sot-comm needs jq, which is not on PATH: install it with " *
                                          "`$(_jq_install_command())`, then run ShipTools.update_comm() again")
+    owned = _shared_launcher_owner()
+    _check_shared_launchers(SHARED_LAUNCHERS, owned; before_install = true)
     bin = joinpath(comm_home(), "bin")
     mkpath(comm_home(); mode = 0o700)
     mkpath(bin)
@@ -69,8 +71,11 @@ function install_comm(; clis = [:claude, :codex])
     prev_manifest = _read_comm_manifest(bin)
     @info "Installed comm scripts" dir = bin count = length(readdir(bin))
 
-    _stage!(problems, "shared PATH launchers") do
-        _install_shared_launchers!(problems)
+    for name in SHARED_LAUNCHERS
+        _stage!(problems, name) do
+            _check_shared_launchers((name,), owned; before_install = false)
+            _install_launchers(CLAUDE_LAUNCHER_SRC, (name,); retired = (), owned)
+        end
     end
     unhooked = String[]
     for cli in clis

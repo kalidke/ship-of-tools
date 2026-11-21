@@ -286,10 +286,10 @@ end
                     else
                         symlink(foreign, fe)
                     end
-                    @test_throws "left $foreign in place" ShipTools.update_comm(; clis)
+                    @test_throws "$foreign holds a file that is not a copy this installer shipped" ShipTools.update_comm(; clis)
                     @test read(foreign, String) == personal
                     @test Sys.iswindows() ? read(fe * ".cmd", String) == "personal shim" : islink(fe)
-                    @test read(auth) == read(joinpath(ShipTools.CLAUDE_LAUNCHER_SRC, "sot-gh-auth"))
+                    @test read(auth, String) == replace(old, "\n" => "\r\n")
                     @test isfile(notes) && read(notes, String) == "keep my notes"
                     @test isfile(marker) && read(marker, String) == "personal bytes at a marker name"
                     @test !ispath(joinpath(home, ".sot-comm", "VERSION"))
@@ -297,6 +297,7 @@ end
                     write(foreign, source == lf ? replace(lf, "\n" => "\r\n") : lf)
                     rm(Sys.iswindows() ? fe * ".cmd" : fe; force = true)
                     ShipTools.update_comm(; clis)
+                    @test read(auth) == read(joinpath(ShipTools.CLAUDE_LAUNCHER_SRC, "sot-gh-auth"))
                     @test read(foreign, String) == source
                     @test isfile(fe) && !islink(fe)
                     @test isfile(joinpath(home, ".sot-comm", "VERSION"))
@@ -305,6 +306,84 @@ end
                     @test readdir(bin) == sort([names; basename(notes); basename(marker)])
                 end
             end
+        end
+    end
+end
+
+@testset "a shared command collision leaves the entire comm install untouched" begin
+    mktempdir() do home
+        tools = mkpath(joinpath(home, "tools"))
+        cp(realpath(something(Sys.which("jq"))), joinpath(tools, Sys.iswindows() ? "jq.exe" : "jq"))
+        in_home(home, "PATH" => tools) do
+            ShipTools.update_comm()
+            # Make a rewrite or stamp removal observable even on an otherwise current install.
+            write(joinpath(ShipTools.comm_home(), "VERSION"), "previous install")
+            write(joinpath(ShipTools.comm_home(), "bin", "comm-poll.sh"), "previous script")
+            bin = joinpath(home, ".local", "bin")
+            file, link, folder = joinpath.(bin, ShipTools.SHARED_LAUNCHERS)
+            write(file, "personal command")
+            rm(folder); mkdir(folder)
+            # The link target is a copy inside this temporary home.
+            target = joinpath(home, "shipped copy")
+            mv(link, target)
+            if Sys.iswindows()
+                link *= ".cmd"
+                write(link, "personal shim")
+            else
+                symlink(target, link)
+            end
+            snapshot() = Dict(relpath(p, home) => (islink(p) ? (:link, readlink(p)) :
+                              isdir(p) ? (:dir,) : (:file, read(p), filemode(p)))
+                              for (dir, dirs, files) in walkdir(home) for p in joinpath.(dir, [dirs; files]))
+            reason = "Nothing was changed by the comm install. Move or rename it and run the install again."
+            kinds = ("a file that is not a copy this installer shipped",
+                     Sys.iswindows() ? "a file that is not a copy this installer shipped" : "a link", "a folder")
+            expected = ["$p holds $k. $reason" for (p, k) in zip((file, link, folder), kinds)]
+            refuse() = try
+                ShipTools.update_comm()
+                ""
+            catch err
+                sprint(showerror, err)
+            end
+            before = snapshot()
+            @test split(refuse(), '\n') == ["sot-comm install INCOMPLETE"; expected]
+            @test snapshot() == before
+            if !Sys.iswindows()
+                rm(target)
+                @test expected[2] in split(refuse(), '\n')
+                @test islink(link) && !ispath(link)
+            end
+        end
+    end
+end
+
+@testset "shared commands reap partial staging files and keep personal asides" begin
+    if Sys.isunix()
+        mktempdir() do home
+            in_home(home) do
+                bin = mkpath(joinpath(home, ".local", "bin"))
+                deadpid = readchomp(`sh -c "echo \$\$"`)
+                for name in ShipTools.SHARED_LAUNCHERS
+                    write(joinpath(bin, "$name.tmp-$(ShipTools._host_tag())-$deadpid-f"), "partial")
+                    write(joinpath(bin, "$name.stale-ab"), "personal aside")
+                end
+                ShipTools.update_comm(; clis = Symbol[])
+                for name in ShipTools.SHARED_LAUNCHERS
+                    @test !ispath(joinpath(bin, "$name.tmp-$(ShipTools._host_tag())-$deadpid-f"))
+                    @test read(joinpath(bin, "$name.stale-ab"), String) == "personal aside"
+                end
+            end
+        end
+    end
+end
+
+@testset "the launcher digest list includes each current shared command" begin
+    hashes = ShipTools._shipped_hashes(ShipTools.LAUNCHER_HASHES)
+    for name in ShipTools.SHARED_LAUNCHERS
+        lf = replace(read(joinpath(ShipTools.CLAUDE_LAUNCHER_SRC, name), String), "\r\n" => "\n")
+        digest = bytes2hex(Base.invokelatest(Base.require(ShipTools._SHA_ID).sha256, lf))
+        @testset "append $name $digest to comm/launcher-hashes.txt if missing" begin
+            @test digest in get(hashes, name, ())
         end
     end
 end

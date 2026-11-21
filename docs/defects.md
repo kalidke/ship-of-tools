@@ -923,6 +923,7 @@ owned by `docs/CLAUDE.md`.
 
 ## distribution
 
+- **COMM-REFUSAL-ENDS-INSTALL-MIDWAY** [note] A review probe on 2026-11-21 found that a personal file at a shared command path, or any file the comm install cannot update, ends `sotd install` after the installed version has switched and the old one has been pruned, before the daemon restarts and the install record is written. The installer reports the failure and a second run completes after the cause is removed. This has not been seen in use. Have the installer ask whether the comm install can complete before switching versions.
 - **WIN-COMM-HOOK-HOME-SPACE** [note] From reading code, never seen in use: the two hooks the comm installer writes into
   a person's own Claude settings (`comm-status-idle.sh` on Stop, `comm-subagent-guard.sh` on PreToolUse) run the command
   `$HOME/.sot-comm/bin/<script>` (`_hook_command`, `src/claude_hooks.jl`), with `$HOME` unquoted, so a shell that runs

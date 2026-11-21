@@ -8,7 +8,7 @@ const COMM_DEPRECATED_LAUNCHERS = ["ccbe"]
 
 # A shared command can match an earlier checkout. Each Windows shim has one shipped payload.
 function _shipped_launcher(path, current, digests)
-    isfile(path) && !islink(path) || return false
+    !islink(path) && isfile(path) || return false
     old = read(path, String)
     old == current && return true
     isempty(digests) && return false
@@ -18,23 +18,38 @@ function _shipped_launcher(path, current, digests)
     return bytes2hex(Base.invokelatest(Base.require(_SHA_ID).sha256, lf)) in digests
 end
 
-function _install_shared_launchers!(problems)
+function _shared_launcher_owner()
     known = _shipped_hashes(LAUNCHER_HASHES)
-    for name in SHARED_LAUNCHERS
-        _stage!(problems, name) do
-            script = read(joinpath(CLAUDE_LAUNCHER_SRC, name), String)
-            path = joinpath(homedir(), ".local", "bin", name)
-            owned(dst, file) = dst == path ? _shipped_launcher(file, script, known[name]) :
-                                            _shipped_launcher(file, _launcher_refusal(name), ())
-            destinations = Sys.iswindows() ? (path, path * ".cmd") : (path,)
-            for dst in destinations
-                if (ispath(dst) || islink(dst)) && !owned(dst, dst)
-                    error("left $dst in place: it is not a shipped launcher")
-                end
+    scripts = Dict(name => read(joinpath(CLAUDE_LAUNCHER_SRC, name), String) for name in SHARED_LAUNCHERS)
+    function owned(dst, file)
+        name = basename(dst)
+        endswith(name, ".cmd") && return _shipped_launcher(file, _launcher_refusal(chopsuffix(name, ".cmd")), ())
+        return _shipped_launcher(file, scripts[name], known[name])
+    end
+    return owned
+end
+
+function _check_shared_launchers(names, owned; before_install)
+    problems = String[]
+    context = before_install ? "Nothing was changed by the comm install." : "This path changed during the comm install."
+    for name in names
+        path = joinpath(homedir(), ".local", "bin", name)
+        for dst in (Sys.iswindows() ? (path, path * ".cmd") : (path,))
+            description = try
+                (islink(dst) || ispath(dst)) || continue
+                owned(dst, dst) && continue
+                kind = islink(dst) ? "a link" : isdir(dst) ? "a folder" :
+                       isfile(dst) ? "a file that is not a copy this installer shipped" : "a special filesystem entry"
+                "$dst holds $kind."
+            catch err
+                err isa SystemError || err isa Base.IOError || rethrow()
+                "$dst could not be checked ($(sprint(showerror, err)))."
             end
-            _install_launchers(CLAUDE_LAUNCHER_SRC, (name,); retired = (), owned)
+            push!(problems, "$description $context Move or rename it and run the install again.")
         end
     end
+    isempty(problems) || error("sot-comm install INCOMPLETE\n" * join(problems, '\n'))
+    return nothing
 end
 
 """

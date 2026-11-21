@@ -45,9 +45,9 @@ _host_tag() = filter(c -> isletter(c) || isdigit(c), gethostname())
 # make an ABANDONED staging file decidable: pid liveness is only meaningful
 # against files written on this host. Returns a SIBLING of `dst`, which is
 # load-bearing: the publish is a rename, atomic only within one filesystem.
-_tmp_name(dst::AbstractString) =
+_tmp_name(dst::AbstractString, nonce = rand) =
     string(dst, ".tmp-", _host_tag(), "-", getpid(), "-",
-           string(rand(UInt16); base = 16))
+           string(nonce(UInt16); base = 16))
 
 # Zero-signal liveness probe. Non-unix returns `true` (never reap): the probe
 # is unix-only, so a Windows host killed mid-install leaves one inert staging
@@ -74,7 +74,7 @@ never missing. An aside needs no liveness check. A staging file
 goes ONLY when its host field is this host AND its pid is not alive: a live
 pid means a run is writing it right now, and another host's pid number says
 nothing about liveness here, so both exclusions are absolute. In a shared PATH folder, `owned(dst, marker)`
-also checks the marker's contents before removal.
+also checks an aside's contents before removal. A staging file can be a partial copy.
 """
 function _reap_markers(dst::AbstractString; keep::Union{Nothing,AbstractString} = nothing, owned = Returns(true))
     dir = dirname(dst)
@@ -89,7 +89,8 @@ function _reap_markers(dst::AbstractString; keep::Union{Nothing,AbstractString} 
         # this one: it is the only copy of the old file a live holder still
         # has open.
         (keep !== nothing && full == keep) && continue
-        if startswith(suffix, ".tmp-")
+        staging = startswith(suffix, ".tmp-")
+        if staging
             fields = split(chopprefix(suffix, ".tmp-"), '-')
             length(fields) == 3 && occursin(r"^[0-9a-f]{1,4}\z", fields[3]) || continue
             fields[1] == tag || continue
@@ -99,7 +100,7 @@ function _reap_markers(dst::AbstractString; keep::Union{Nothing,AbstractString} 
             continue
         end
         try
-            owned(dst, full) && rm(full; force = true)
+            (staging || owned(dst, full)) && rm(full; force = true)
         catch
         end
     end
@@ -119,8 +120,8 @@ name. Any failure removes the temporary and throws; if the second rename fails
 the old file is put back, so `dst` is never missing.
 """
 function install_file(src::AbstractString, dst::AbstractString;
-                      rename = Base.Filesystem.rename, text = nothing, owned = Returns(true))
-    tmp = _tmp_name(dst)
+                      rename = Base.Filesystem.rename, text = nothing, owned = Returns(true), nonce = rand)
+    tmp = _tmp_name(dst, nonce)
     (ispath(tmp) || islink(tmp)) && error("install_file: staging path for $dst is occupied: $tmp")
     aside_made = Ref{Union{Nothing,String}}(nothing)
     try
@@ -138,7 +139,7 @@ function install_file(src::AbstractString, dst::AbstractString;
             # before, and if the second rename fails too the old file is put
             # back so dst is never missing.
             isfile(dst) || rethrow(first_err)
-            aside = dst * ".stale-" * string(rand(UInt32); base = 16)
+            aside = dst * ".stale-" * string(nonce(UInt32); base = 16)
             (ispath(aside) || islink(aside)) && rethrow(first_err)
             rename(dst, aside)
             aside_made[] = aside

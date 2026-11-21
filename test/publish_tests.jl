@@ -183,6 +183,24 @@ end
     end
 end
 
+@testset "install_file preserves occupied staging and aside names" begin
+    mktempdir() do dir
+        src, dst = joinpath.(dir, ("source", "command"))
+        write(src, "new"); write(dst, "old")
+        tmp = dst * ".tmp-$(ShipTools._host_tag())-$(getpid())-0"
+        write(tmp, "occupied staging file")
+        @test_throws "staging path" ShipTools.install_file(src, dst; nonce = zero)
+        @test isfile(tmp) && read(tmp, String) == "occupied staging file" && read(dst, String) == "old"
+        rm(tmp; force = true)
+        write(dst, "old")
+        aside = dst * ".stale-0"
+        write(aside, "occupied aside")
+        refuse_publish(a, b) = a == tmp && b == dst && isfile(dst) ? error("destination busy") : Base.Filesystem.rename(a, b)
+        @test_throws "destination busy" ShipTools.install_file(src, dst; rename = refuse_publish, nonce = zero)
+        @test read(aside, String) == "occupied aside" && read(dst, String) == "old"
+    end
+end
+
 @testset "_install_files: an identical destination is current even when it cannot be replaced" begin
     mktempdir() do tmp
         srcdir = joinpath(tmp, "src"); dstdir = joinpath(tmp, "dst")
@@ -301,8 +319,11 @@ if Sys.isunix()
             mine_dead = joinpath(base, "f.txt.tmp-$tag-$deadpid-0001")
             foreign_live = joinpath(base, "f.txt.tmp-x$tag-$(getpid())-0002")
             aside = joinpath(base, "f.txt.stale-deadbeef")
+            neighbor = dst * ".notes.stale-1"
+            write(neighbor, "personal notes")
             for f in (mine_dead, foreign_live, aside); write(f, "x"); end
             ShipTools.install_file(src, dst)
+            @test isfile(neighbor) && read(neighbor, String) == "personal notes"
             @test read(dst, String) == "NEW"
             @test !isfile(mine_dead)      # this host, pid gone
             @test isfile(foreign_live)    # another host's pid means nothing here

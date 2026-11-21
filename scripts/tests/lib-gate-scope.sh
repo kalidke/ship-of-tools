@@ -107,7 +107,9 @@ gate_scope_owner() {
             if [ -f "$d/rust/$c/Cargo.toml" ]; then echo "rust $c"; else echo "whole $p"; return; fi
             gate_scope_proved_by "$p" ;;
         rust/*) echo "whole $p" ;;
+        comm/adapters/*|comm/legacy-skills.txt|comm/launcher-hashes.txt) echo "shell comm"; echo "julia root" ;;
         comm/*) echo "shell comm" ;;
+        agents/claude/*|agents/codex/*) echo "shell agents"; echo "julia root" ;;
         agents/*) echo "shell agents" ;;
         scripts/tests/test-rc-gate-*|scripts/tests/test-gate-*) echo "whole $p" ;;
         scripts/tests/test-*|scripts/tests/installer-*) echo "shell scripts" ;;

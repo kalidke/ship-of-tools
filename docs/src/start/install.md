@@ -177,7 +177,7 @@ installs the agent integration:
 | Path | What |
 |------|------|
 | `~/.sot-comm/` | the session messaging scripts (`bin/`) and their runtime state |
-| `~/.local/bin/` | `ccb` (Claude Code launcher), `ccx` (Codex launcher), `sot-fe`, `show-result`, `sot-gh-auth` |
+| `~/.local/bin/` | `ccb` (Claude Code launcher), `ccx` (Codex launcher), and the shared commands `sot-fe`, `show-result`, and `sot-gh-auth`. If you have your own file at a shared command name or its Windows shim, the comm install stops before changing anything and tells you which paths to move or rename before you retry. |
 | `~/.claude/skills/` | the four onboarding skills, which you run before any row exists: `sot-install`, `sot-setup`, `sot-statusline-setup`, `sot-gh-auth` (each named account reaches the folder by the daemon's link) |
 | `~/.sot-comm/claude-layer/` | the other Claude Code skills (under `.claude/skills/`): `julia-repl`, `show-result`, `sot-comm`, `sot-session-start`, `sot-status`, `sitrep`, `worktree`, `project-log`, `reauth`, `sot-chat-post`. A session Ship of Tools starts (a row or `ccb`) adds this folder to itself and carries the work-state hooks in its own launch settings; a plain `claude` loads none of it |
 | `~/.claude/settings.json`, `~/.claude-auth/<name>/settings.json` | two hook entries, merged in without removing yours: `Stop` (the end-of-turn mail check) and `PreToolUse` on `Bash` (the subagent mail guard), each calling a script under `~/.sot-comm/bin`. The work-state hooks an earlier release merged in are removed, but only a command that is exactly one that release wrote; every other hook, a compound command of yours included, stays. A link is followed and its target written once; an account folder with no `settings.json` is skipped |

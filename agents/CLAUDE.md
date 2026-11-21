@@ -146,6 +146,20 @@ of each.
    Limits: a version of a skill shipped from a path the history above does not cover is kept (with a warning); a copy
    made on Windows with CRLF checkout hashes differently and is kept; a settings file that does not parse is left alone and
    named in the install's closing warning, which then says the settings were not brought up to date.
+   Before its first write, the comm install checks every shared PATH command in guarantee 13 and, on Windows, its
+   `.cmd` shim. It reports every occupied path it cannot recognize, leaves the comm install and its version stamp
+   intact, and tells the person to move or rename the entry and retry. It checks each name again before publishing
+   it in case the path changed after the first check. A regular wrapper can match the shipped text
+   or an earlier digest in `comm/launcher-hashes.txt`, with uniform LF or CRLF. Mixed endings, an edited or
+   unrecorded version, a link (including a dangling one), or a folder requires moving the entry. Windows shims
+   must match their exact shipped text. This branch was checked in code and has yet to run on Windows.
+   After a successful replacement, cleanup removes partial stages of a dead local process on Unix and removes a
+   shared command's kept-aside copy only if its name and bytes match. The adapter launchers `ccb` and `ccx` keep
+   their own replacement rules. An incomplete comm install ends the enclosing `sotd install` after the version
+   switch and pruning, before the daemon restart and install record (docs/defects.md: COMM-REFUSAL-ENDS-INSTALL-MIDWAY).
+   Tests in `test/install_tests.jl` cover shared commands for every adapter selection, historical copies and retry,
+   the complete install on a collision, partial stages and personal asides, and each current launcher digest.
+   `test/publish_tests.jl` covers occupied staging and aside names and marker-name matching.
 9. **The shell tools of this folder reach the daemon only through the wire.** The tools are the launchers `ccb` and
    `ccx`, the row CLIs in `spawn/`, `worktree/` and `sot-fe/`, `sot-gh-auth.sh` and the `PATH` wrappers of `claude/bin/`.
    Their route is one of three, and none opens a file the daemon owns, with one named exception: the prompt hook `sot-selection-hook.sh` opens the one file whose path the daemon gives the leg in `SOT_SELECTION_FILE`, which holds exactly the hook's output, and guesses no daemon layout (as the pinned self file is also named to the leg by the daemon). (a) A framed op over an endpoint, through
@@ -218,9 +232,8 @@ of each.
     except that every file `sot-fe` sources by a part line (`src/comm_bin.jl`, whatever their number) is
     embedded in the installed `sot-fe` and is no file of its own; nothing in `claude/` or
     `codex/` installs there. The shared install stage puts `show-result`, `sot-fe` and `sot-gh-auth` in `~/.local/bin`
-    for every adapter selection. Each adapter adds its own launcher there. The shared stage updates only shipped
-    copies (the earlier versions are in `comm/launcher-hashes.txt`) and reports a personal file as an incomplete
-    install. The wrapper `claude/bin/sot-fe` never replaces the tool `sot-fe/sot-fe`. Test:
+    for every adapter selection. Each adapter adds its own launcher there. Guarantee 8 governs replacement.
+    The wrapper `claude/bin/sot-fe` never replaces the tool `sot-fe/sot-fe`. Test:
     `test/install_tests.jl` ("the agents tools install flat from the four listed folders", and "comm-lib.sh and sot-fe
     install as one file each..." for the embedded text), over the installer's own file list.
 14. **No tool leaves a file in the temporary folders, by messaging's rule and with its limits.** On success, on failure,
@@ -458,7 +471,7 @@ One test per guarantee, named for it; `cargo test -p sot-backend agents::` runs 
 | 6 | `folder_trust::tests::*` (`two_preparations_never_share_a_temporary_name`, `the_restart_asks_the_scope_the_record_uses`), `trust_declaration::tests::*`, `env::trust_declaration_controls::*`, `env::trust_scope_controls::*` (`a_recorded_or_already_trusted_preparation_is_one_info_line_naming_the_file`, `a_claude_preparation_marks_its_trust_file_and_no_other_file`), `env::trust_config_controls::*`; the layer: `folder_trust::tests::the_layer_is_recorded_wherever_it_lies_once_a_prefix_is_declared`, `the_layer_is_recorded_beside_what_the_file_already_holds`, `no_declaration_or_a_relative_one_records_no_layer`, `env::trust_scope_controls::a_declared_box_records_the_ready_layer_beside_the_row_and_an_undeclared_one_neither`, `a_layer_that_is_not_ready_is_not_recorded`, `the_layer_is_recorded_under_the_spelling_its_add_dir_carries` (Unix); `tests/trust_declare.rs`, `tests/trust_premises.rs` |
 | 7 | `argv::tests::the_layer_rides_the_recipe_and_a_plain_claude_has_none`, `a_layer_without_the_bootstrap_skill_is_left_out_and_the_prompt_goes_with_it`, `the_layer_reaches_the_capsule_leg_the_reauth_leg_and_agent_exec`, `a_callers_settings_json_is_merged_with_the_recipes_hooks`, `layer::tests::*` (`the_selection_hook_rides_the_recipe`);
 `tests/agent_exec.rs::agent_exec_claude_carries_the_layer_when_installed`; `tests/test-hook-commands.sh` (six commands, the selection hook's among them, and a missing selection script a silent no-op); `tests/test-selection-hook.sh` (the script's rows: unset, empty, missing, a directory, an empty file, the rendering byte for byte, a path with a space, unreadable, a 1 MiB input on stdin; laid flat and executable in the staged bin); `comm/tests/test-session-start-hook.sh` (the hook's output names the handle and the handoff, exits 0 with none, prints and joins nothing with hooks off); `a_recipe_hook_the_caller_already_has_is_not_added_twice`, `a_callers_settings_of_another_shape_is_passed_as_given`; `test/layer_tests.jl`, `test/protect_tests.jl` ("the mail check and the subagent guard stay in the user's settings"). A leg that carries the layer was proved at its argv, not by running Claude Code |
-| 8 | `test/protect_tests.jl` (a person's skill, a symlinked skills folder, every configuration folder, a person's hook), `test/claude_hooks_tests.jl` (the settings retirement) |
+| 8 | `test/protect_tests.jl` (a person's skill, a symlinked skills folder, every configuration folder, a person's hook), `test/claude_hooks_tests.jl` (the settings retirement), `test/install_tests.jl` and `test/publish_tests.jl` (shared command preflight, replacement and cleanup) |
 | 9 | `tests/test-tools-wire-only.sh`, `tests/test-spawn-remote-no-local-row.sh`, `tests/test-sot-fe-endpoint-once.sh`, `tests/test-sot-fe-chat.sh` (the chat ops) |
 | 10 | `tests/test-ccb-agent-exec.sh`, `tests/test-ccx-launch.sh`, `tests/test-ccx-resume-default.sh` |
 | 11 | the hosted run of `scripts/tests/under-bash.sh`; `test/skills_tests.jl` ("a launcher's Windows shim refuses at once and names Git Bash") |

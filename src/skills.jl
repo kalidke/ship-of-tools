@@ -127,6 +127,7 @@ end
 function _shipped_hashes(path)
     known = Dict{String,Set{String}}()
     for line in eachline(path)
+        startswith(line, '#') && continue
         name, hash = split(line, ' ')
         push!(get!(known, String(name), Set{String}()), String(hash))
     end
