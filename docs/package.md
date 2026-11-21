@@ -260,8 +260,15 @@ v0.7.3-rc.2 (2026-11-20) is an unpublished draft, cut from `main` the same day o
 had passed at the commit that was cut; it is rc.1 with that one fault fixed (a row keeps its drawer's height), and its
 release workflow's builds, smokes and install smokes passed. It was installed by archive, on his word in a session's
 pane, by the maintaining session on the hub (the daemon restarted, ending the one open REPL, and every row was there
-after it) and by its own session on one window computer; no person's use of it is recorded yet.
-`main` carries 0.7.3-rc.3-dev. Of the four things the maintainer asked of 0.7.3,
+after it) and by its own session on one window computer. The maintainer used it the next day on the hub's sessions:
+a drawer's full height stayed with its session, and one thing was slow: the Chat drawer took over a second to show a
+session's channel after a switch, which the candidate did not make slower but made visible, since the drawer now
+comes back at full height. `main` carries 0.7.3-rc.3-dev, and past the second candidate it holds that fault's fix,
+which no person has used: after a switch the window asks the hub for the channel at a pace that starts at 100 ms
+(it had asked at 250 ms and then only at 1 s, and usually waited out the second for a snapshot the hub already
+held), and a session shown before draws its channel's last messages on the first frame, for up to eight channels,
+under a title that says they are being read again, with typing taken at once and only the send waiting until the
+hub has confirmed the session's channel (`docs/defects.md`, CHAT-SWITCH-RELOAD-TAKES-A-SECOND, Closed). Of the four things the maintainer asked of 0.7.3,
 two are built and in the candidate: a drawer's own key cycles it open,
 full height and closed, with the status line on a full-height drawer's border, and Up and Down in edit mode move by
 the row on screen under a cursor drawn over the text; drawing on a PDF page and selecting its text are not started
@@ -280,7 +287,7 @@ drawing its discard question, and a discard showing the file as last saved; typi
 only the lines a key changes (under 1 ms a key on a 5,000-line file, release build, where each took most of a
 second; a file of one long line is as slow as before), with the selection drawn as a band under the text; and the scoped local gate running the tests that read
 files outside their own crate. The second candidate keeps a drawer's height with its row, which the first one's full height did not (the maintainer, using the first: the
-height was lost moving between sessions); built, and no person has used it. rc.14 holds what a person's use of rc.13
+height was lost moving between sessions); he used the second and reported that it works. rc.14 holds what a person's use of rc.13
 found (2026-11-17 and 18), each seen by him unless marked: the Chat drawer's foot explains how a post appears only until
 this computer's first post; a key's letter is written lowercase everywhere in the window; the refusal to draw shows in
 the preview's box only; words that follow a person's action stay on the status line 10 s against background writes (the

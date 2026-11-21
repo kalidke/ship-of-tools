@@ -3110,3 +3110,20 @@ the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the sa
     drawer's cycle, edit mode, the REPL drawer's colors and a repainted line, a session's post to its channel.
     Filed open from that use: CHAT-MENTION-NO-AUTOCOMPLETE. Lesson for a brief: a fix that moves the focus says for
     which arrivals, a person's own or any, before the first review.
+  - The Chat drawer after a session switch (CHAT-SWITCH-RELOAD-TAKES-A-SECOND), the one thing a person's use of
+    v0.7.3-rc.2 found (2026-11-21), in two landings the same morning, about 2 hours 45 minutes from the report to
+    `main` for both, 20 of those lost to a network outage that ended two agents' turns. A diagnoser first (about 20
+    minutes): not a regression, read from the hub's log of the reported switches and the code; the same guess at a
+    snapshot's time that an earlier fix had made. The watch pace: one builder, three reviewers, three rounds, about
+    20 product lines; the first build was right in code and every blocker after it was a sentence in its records,
+    and the first review's design note (a pace that grows with the wait, in place of a step with its own cliff) was
+    taken. The first frame: one builder, three reviewers, four rounds, about 100 product lines over four commits,
+    built on the first landing's branch while that was in review and rebased onto it twice, the defects entry
+    merged by hand each time; its reviews found no way to post or draft into the wrong channel, and found typing
+    refused at the first frame, a title that named no channel while typing was taken, and record sentences that
+    still described the old rule. The fourth round (sentences, one test, a deleted accessor) was read by the
+    landing session, which had itself asked for the one false sentence that round removed. Filed open, from reading
+    code: CHAT-ARRIVAL-OPENS-THE-PICKER-BY-ITSELF, PREVIEW-ONE-PIXEL-LAYOUT-UNDER-A-FULL-DRAWER,
+    CHAT-DRAFT-HAS-NO-DISCARD. Lessons: a second change built on a branch still in review pays a rebase a round,
+    so its records wait for the first to land; and a brief that asks for a comparison with the old behavior asks
+    for its evidence too.
