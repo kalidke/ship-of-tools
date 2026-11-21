@@ -194,7 +194,7 @@ pub fn capsule_supervisor_env(
     env.push(("CLAUDE_CODE_DISABLE_AGENT_VIEW".to_string(), "1".to_string()));
     // A Claude row draws with Claude Code's classic renderer on the main screen: its fullscreen renderer takes the
     // alternate screen and the mouse, so the window's own scroll and selection of the agent pane never apply. The
-    // variable wins over the person's `tui` setting; Codex and terminal-only rows are left as they are.
+    // variable wins over the person's `tui` setting. For Codex, ccx requests inline rendering with --no-alt-screen.
     if agent_kind == "claude" {
         env.push(("CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN".to_string(), "1".to_string()));
     }

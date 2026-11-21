@@ -117,6 +117,7 @@ fi
 HANDOFF_LINE="$( . "$COMM/comm-lib.sh" 2>/dev/null && sot_comm handoff-line "$HANDLE" )" ||
     echo "ccx: the comm library did not load from $COMM; the first prompt names no handoff" >&2
 PROMPT="You are the comm-aware agent${HANDLE:+ @$HANDLE} on the sot-comm network. House conventions are in your GLOBAL $CODEX_HOME_DIR/AGENTS.md (plus the project's own AGENTS.md when it has one, and \$SOT_MANUAL/docs/USING.md for product help). Then run: $COMM/comm-poll.sh — and handle what it prints. An idle row is woken by the typed line '[sot-comm] you have mail: run comm-poll.sh'; run it and handle what it prints.${HANDOFF_LINE:+ $HANDOFF_LINE}"
+# Request the inline renderer so conversation history can enter the terminal's scrollback.
 set -- --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust --no-alt-screen
 if [ -n "$RESUME_ID" ]; then
     set -- resume "$RESUME_ID" "$@"

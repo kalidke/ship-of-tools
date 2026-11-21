@@ -220,12 +220,14 @@ it.
 
 ### How agent sessions are launched
 
-Sessions you create in the window start their agent with these options:
+Sessions you create in the window start their agent with these permission
+settings:
 
 - **Claude Code**: `claude --permission-mode auto`.
 - **Codex**: `codex --dangerously-bypass-approvals-and-sandbox
-  --dangerously-bypass-hook-trust --no-alt-screen`, through the `ccx` launcher, which also
-  marks the session's directory as trusted in `~/.codex/config.toml`. The last option requests inline rendering.
+  --dangerously-bypass-hook-trust`, through the `ccx` launcher, which also
+  marks the session's directory as trusted in `~/.codex/config.toml`.
+  For inline rendering, `ccx` passes `--no-alt-screen`.
 
 Claude Code's auto mode is not a bypass. It runs without routine permission
 prompts, but a separate classifier model reviews each action before it runs and

@@ -183,7 +183,11 @@ of each.
     claude` with the caller's flags in order (guarantee 1), or says `ccb: sotd not found` and exits 1. `ccx` has no
     daemon recipe behind it: it builds the Codex argv itself (`codex [resume <id>]
     --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust --no-alt-screen <prompt>`), requesting
-    inline rendering to preserve terminal scrollback on fresh and resumed launches. It chooses no handle
+    inline rendering on fresh and resumed launches. Codex 0.171.0's help describes this mode as preserving terminal
+    scrollback. The stub tests verify only the arguments. The capsule keeps up to 200 rows of scrollback, as it does
+    for Claude. A person's check in a real Codex row is still needed to see whether inline history reaches that buffer,
+    whether the view survives reattachment and resizing, and how the composer and menus appear in the window
+    (docs/defects.md: CODEX-ROW-NO-SCROLLBACK). `ccx` chooses no handle
     (decision 0031): it joins with no name and names, in Codex's first prompt, the handle `comm-context.sh` reads back; a
     join that gives none still starts Codex, with a prompt that names none and one stderr line saying so; it starts a
     fresh conversation unless `--continue` or `--resume` is given (`--fresh` wins over `--continue`). Limits: `ccx` runs
