@@ -983,9 +983,9 @@ impl ChatDrawer {
             (stand, _) => stand.words(host),
         };
         let workspace = self.rows.workspace_label().map(|w| format!("{w} · ")).unwrap_or_default();
-        // A row that has come back names the channel it drew the records of, while its resolve is not answered.
-        let shown = self.rows.unconfirmed().filter(|u| !self.owner.parked_records(u.host, u.workspace, u.channel.as_str()).is_empty()).map(|u| u.channel.as_str());
-        let channel = self.owner.channel().or(shown).map(|c| format!("{workspace}{} ", self.rows.label(c))).unwrap_or_default();
+        // The channel is the one the foot and a typed key use (`draft_target`): the watched one, or while a row that has come back
+        // is not resolved the one it was drawn with, so a person never types where no word names the channel.
+        let channel = self.rows.row().and_then(|r| self.draft_target(r)).map(|t| format!("{workspace}{} ", self.rows.label(t.channel.as_str()))).unwrap_or_default();
         // Each phrase is its own: the thread's, then the link's and the watch's.
         let phrases: Vec<String> = self.thread.iter().map(Thread::words).chain([words]).filter(|w| !w.is_empty()).collect();
         let thread = if self.thread.is_some() { "· thread " } else { "" };
@@ -1227,8 +1227,8 @@ impl ChatDrawer {
     }
 
     /// The person edits the draft of `row`, the row the chat shows at the key (not the last frame's, which a row switch has
-    /// not yet moved). A draft begins in the watched channel only if that watch is `row`'s; a refusal is the status
-    /// line's words.
+    /// not yet moved). A draft begins in `draft_target`'s channel, only for the row the frame follows; a refusal is the
+    /// status line's words.
     pub(in crate::ui) fn edit(&mut self, row: Option<&ResultRowIdentity>, edit: Edit) -> Result<(), &'static str> {
         let Some(row) = row else { return Err("no project is selected to write to") };
         // A paste in the Connect step is a token: it is never typed into a draft, which Enter would post.
@@ -1250,10 +1250,10 @@ impl ChatDrawer {
 
     /// What the compose rows are made of, while a channel is known to write to: the shown row's draft and where it goes
     /// (`reply in thread of h:mm AM`, the parent's time with its date before it for another day, `project::when`, then
-    /// ` in <channel>` when the draft's channel is not the watched one, or
+    /// ` in <channel>` when the draft's channel is not the one the title names (`draft_target`), or
     /// `to <channel>`, spelled as the title spells it), else where the next draft would go: the open thread, or the
-    /// watched channel. The foot is silent only when the destination is what the title shows: no thread in the draft,
-    /// none open, and the draft's channel the watched one.
+    /// channel the title names. The foot is silent only when the destination is what the title shows: no thread in the draft,
+    /// none open, and the draft's channel the one the title names.
     pub(in crate::ui) fn compose_text(&self, focused: bool) -> Option<ComposeText> {
         let now = chrono::Local::now();
         self.compose_text_at(focused, now.timestamp(), *now.offset())

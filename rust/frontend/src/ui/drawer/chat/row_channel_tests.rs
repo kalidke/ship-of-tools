@@ -453,6 +453,26 @@ fn an_answer_that_is_not_the_remembered_channel_removes_the_drawn_records() {
     assert_eq!(d.held(), 0);
 }
 
+/// A row left before its first read finished parks nothing, but its answer is remembered: shown again, the drawer draws no
+/// records, takes typing into a draft in the remembered channel, and the title names that channel, so a person never types
+/// where nothing on screen names it.
+#[test]
+fn the_title_names_the_channel_a_draft_is_typed_into_before_the_answer() {
+    let t0 = Instant::now();
+    let at = |ms: u64| t0 + Duration::from_millis(ms);
+    let mut d = ChatDrawer::default();
+    d.on_connection(&host(), true, false, t0);
+    d.tick(wanted("R"), at(0));
+    d.tick(wanted("R"), at(150));
+    d.on_evt(&host(), mapped_to("R", "C2"), at(160));
+    d.tick(wanted("S"), at(1000));
+    d.tick(wanted("R"), at(2000));
+    assert_eq!(d.held(), 0, "the channel parked nothing");
+    assert_eq!(d.edit(wanted("R").as_ref(), super::compose::Edit::Text("typed")), Ok(()));
+    assert_eq!(d.draft(), Some(("typed", "C2")));
+    assert_eq!(d.title(), " chat · C2 reading… ", "the title names the channel the draft is in");
+}
+
 /// The remembered answers are as many as the parked channels, keyed by host and row, and dropped by a row that closes and by a
 /// link change; none is drawn from another host's row of the same id.
 #[test]

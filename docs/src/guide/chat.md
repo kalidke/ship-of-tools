@@ -78,12 +78,14 @@ message in view, and a scroll that leaves it out of view moves the mark to the n
 Edits and deletes made in Slack reach the newest 100 messages, a fixed limit of Ship of Tools; an older message edited
 in Slack after the panel read it keeps the text it had then. A message deleted while you watch stays in its place as `(message deleted)` until the panel reads the
 channel again, as it does after a lost connection and when you come back to the channel from another session. The panel
-keeps the last messages of the last eight channels it showed (with more than eight sessions in turn, the ones you have not
+keeps the newest 100 messages of each of the last eight channels it showed (with more than eight sessions in turn, the ones you have not
 been in for longest show nothing at once), so switching back draws them at once, with `reading…` in the top line
 until the channel has been read again. What it draws at once is what you saw last: a message edited or deleted while you
 were in another session shows as you last saw it, and one written meanwhile is not there yet, until the panel has read the
-channel again, and then those replace them. If the project was given another channel or none meanwhile, the old messages
-disappear when the computer that runs your sessions answers. You can type at once; sending waits for that answer.
+channel again, and then the panel shows the channel as it is. If the project was given another channel or none meanwhile,
+the old messages disappear when the computer that runs your sessions answers. You can type at once, in the channel the top
+line names; sending waits for that answer. A message begun in a channel the project no longer has is refused when you send
+it (the status line says `not posted:` and why), and the panel keeps it in that channel: delete it with Backspace and write it again.
 
 ## Threads
 
@@ -343,7 +345,7 @@ computer's name, `this computer`, or `the computer that runs your sessions`.
 | `the chat on <computer> could not answer: <reason>` | It refused for another reason. | Wait: the panel tries again each minute. |
 | `Ship of Tools on <computer> has no chat: update it` | That computer runs an older Ship of Tools. | Update it. |
 | `the session is gone or was replaced` | The session ended or was replaced. | Select the project's session again. |
-| `the session's project now has another channel`, `the session's project has no channel` | The channel picked for the project changed, or was removed, while it was shown. | Select another session, then this one again: the panel asks afresh. |
+| `the session's project now has another channel`, `the session's project has no channel` | The channel picked for the project changed, or was removed, while it was shown. | Select another session, then this one again: the panel asks afresh. A message you had begun keeps its old channel (the foot says which): delete it with Backspace and write it again. |
 | `your Slack plan hides older messages`, `older messages could not be read`, `older messages are not read: <reason>`, `older messages beyond the limit are not shown` | Scrolling to the oldest found no more to read: Slack keeps older history only on some plans, a read was refused, or the panel's 256 are full. | |
 | `the thread is not read: <reason>`, `the rest of this thread is not shown` | In a thread: a read was refused (the panel tries again by itself), or the thread is longer than the panel shows. | |
 

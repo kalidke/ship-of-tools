@@ -43,7 +43,7 @@ fn clean(text: &str) -> String {
 }
 
 impl Compose {
-    /// Applies `edit` to `row`'s draft, begun in `dest` (the channel now watched, with the thread open, if any) when there
+    /// Applies `edit` to `row`'s draft, begun in `dest` (`ChatDrawer::draft_target`: the channel watched or drawn, with the thread open, if any) when there
     /// is none. A refusal is the status line's words; the draft is then as it was.
     pub(super) fn edit(&mut self, row: &ResultRowIdentity, dest: Option<(&ChatTarget, Option<&Ts>)>, edit: Edit) -> Result<(), &'static str> {
         let add = match edit {

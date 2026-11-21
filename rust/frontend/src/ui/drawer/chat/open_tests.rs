@@ -284,3 +284,36 @@ fn typing_at_the_first_frame_begins_the_draft_in_the_channel_drawn() {
     let foot = compose_rows(&d.compose_text_at(false, 0, off).unwrap(), 60, 6).join("|");
     assert!(foot.contains("to CH1"), "and the foot says where it goes: {foot}");
 }
+
+/// A message typed at the first frame and sent after an answer that names the same channel goes to the row's own target: its
+/// row, workspace and channel, as the watch's are.
+#[test]
+fn a_draft_typed_at_the_first_frame_posts_to_the_rows_target_once_the_same_channel_answers() {
+    let (mut d, at, _) = figures();
+    let later = |ms: u64| at + Duration::from_millis(ms);
+    let row = shown("ROW1");
+    d.tick(shown("ROW2"), later(1000));
+    d.tick(shown("ROW1"), later(2000));
+    assert_eq!(d.edit(row.as_ref(), Edit::Text("hi")), Ok(()));
+    d.tick(shown("ROW1"), later(2150));
+    d.on_evt(&"a".to_string(), resolved("ROW1", serde_json::json!({ "state": "mapped", "workspace": "WS1", "channel": "CH1", "delivers": false })), later(2160));
+    let out = d.send(row.as_ref(), Some("Ada"), later(2170)).unwrap();
+    match out.as_slice() {
+        [(_, OutgoingReq::ChatPost { req })] => {
+            assert_eq!((req.target.row.as_str(), req.target.workspace.as_str(), req.target.channel.as_str()), ("ROW1", "WS1", "CH1"));
+        }
+        other => panic!("one post expected, got {}", other.len()),
+    }
+}
+
+/// A key for a row the frame does not follow never begins a draft in the channel drawn for the row it does.
+#[test]
+fn a_key_for_another_row_never_begins_a_draft_in_the_drawn_channel() {
+    let (mut d, at, _) = figures();
+    let later = |ms: u64| at + Duration::from_millis(ms);
+    d.tick(shown("ROW2"), later(1000));
+    d.tick(shown("ROW1"), later(2000));
+    assert_eq!(d.held(), 1, "ROW1 is drawn from memory, unconfirmed");
+    assert!(d.edit(shown("ROW3").as_ref(), Edit::Text("x")).is_err(), "ROW3 is not the row the frame follows");
+    assert_eq!(d.draft(), None);
+}
