@@ -889,6 +889,21 @@ owned by `docs/CLAUDE.md`.
   the pictures owner's review: the drawer holds one set of up hosts and hands it to each owner's asks; each owner keeps
   its own `unsupported` set, which is per op. Left because the change runs through the owner's and the row channel's
   tests, past the 30 lines it was allowed.
+- **CHAT-SWITCH-RELOAD-TAKES-A-SECOND** [person] Seen in use by a person on the 0.7.3 candidate, 2026-11-21, right after
+  the drawer's height stayed with its session (the maintainer: "the slack pane takes a second longer to reload when
+  swithcing session"). Measured on the hub's log, not a regression: on every arrival the window's first `chat.watch` is
+  answered `pending` while the hub reads the channel's page from Slack (240 to 300 ms), and the window asked again at
+  250 ms and then only at 1 s, so when Slack took longer than about 250 ms the second ask lost the race and the window
+  waited 750 ms more for a snapshot the hub had held since about 0.3 s: the channel's messages were current about 1.7 s
+  after the switch (1.4 s to the window's own read, 0.3 s for it), where the earlier day's 245 ms reads had read at the
+  second ask. This landing replaces the two paces by one: an ask every 100 ms while the recovery is under 2 s old, then
+  every 5 s as before, and no ask while the last one's reply is awaited (`ChatOwner`, `SHORT_PACE`, `YOUNG`), so a
+  snapshot the hub holds after N ms is read within one short step of N whatever N is (a prediction of about 1.05 s
+  from the switch instead of 1.7 s, not yet measured in use). Left for the next landings: an arriving row's last
+  messages shown on the first frame (only two channels are parked, and the empty drawer fills the pane meanwhile), the
+  hub dropping a channel's model when nobody watches it, and the window's own second read of the page the hub's
+  snapshot just read. The daemon tells a connection nothing when a pending snapshot completes (`chat.status` lists
+  only channels that owe one), which is why the window asks on a clock.
 - **AGENT-PANE-CURSOR-AHEAD-OF-TEXT** [person] Seen in use by a person on a Linux window, 2026-11-19 (the maintainer: "If i switch to a session and start typing the cursor moves faster to righ than text giving increasing gap. if i backspace it all away and type again it works."; the sessions were also open in a window on another computer). Not reproduced. The window draws the pane's text and the row's terminal cursor from one grid at one cell width (`paint_terminal`, `render/cells.rs`), and a test of that path found every glyph on its cell and the cursor after the text at three scales, after a switch's checkpoint, restore and resize. Two windows on one row can disagree on the terminal's size until this window's first key takes the pen (capsule `attach.rs`; the contract does not say that a redial takes the pen), but by test that moves rows and clips the right edge, not a gap that grows a cell per key. Open guesses, in order: Claude Code's own cursor running ahead when typing begins over the dim suggested prompt an idle row shows (then it is not the window's to fix); the size disagreement; fonts on that computer. What would tell them apart: whether the cursor is whole cells past the text on the same row, less than that, or on another row.
 
 ## distribution

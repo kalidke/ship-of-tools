@@ -363,24 +363,37 @@ fn a_switch_back_draws_the_channels_records_while_it_is_read_again() {
     assert_eq!(d.held(), 1, "the newer ones stay");
 }
 
-/// While a first show's watch waits on its short paces the drawer names the instant of the next ask, which the window
-/// sleeps to, drawing no frame before it; once the third has gone it names none.
+/// While a first show's watch waits on its short pace the drawer names the instant of the next ask, which the window
+/// sleeps to, drawing no frame before it; none while an ask's reply is awaited, and none once the last short ask has gone.
+/// The answer names the channel, so the row's own retry for a name does not stand in for the owner's.
 #[test]
 fn the_drawer_names_the_instant_of_a_first_watchs_next_ask() {
     let t0 = Instant::now();
     let at = |ms: u64| t0 + Duration::from_millis(ms);
+    let pending = || {
+        let target = serde_json::from_value(serde_json::json!({ "row": "R", "workspace": "T1", "channel": "C1" })).unwrap();
+        ChatEvt::Watched { target, reply: ChatReply::Done(ChatWatchRes { state: ChatWatchState::Pending }) }
+    };
     let mut d = ChatDrawer::default();
     d.on_connection(&host(), true, false, t0);
     d.tick(wanted("R"), t0);
     assert_eq!(resolves(&d.tick(wanted("R"), at(150)).0), 1);
     assert_eq!(d.next_ask(), None, "nothing watched before the answer");
-    assert_eq!(watches(&d.on_evt(&host(), mapped_to("R", "C1"), at(160))), 1);
-    assert_eq!(d.next_ask(), Some(at(410)), "250 ms after the first watch");
-    assert!(d.tick(wanted("R"), at(300)).0.is_empty(), "a frame before it asks nothing");
-    assert_eq!(watches(&d.tick(wanted("R"), at(410)).0), 1);
-    assert_eq!(d.next_ask(), Some(at(1160)), "the third is 750 ms later");
-    assert_eq!(watches(&d.tick(wanted("R"), at(1160)).0), 1);
-    assert_eq!(d.next_ask(), None, "from then on the pace is PACE and nothing wakes the window");
+    assert_eq!(watches(&d.on_evt(&host(), named_to("R", "C1", "general"), at(160))), 1);
+    assert_eq!(d.next_ask(), None, "the first watch's reply is awaited");
+    d.on_evt(&host(), pending(), at(170));
+    assert_eq!(d.next_ask(), Some(at(260)), "100 ms after the first watch");
+    assert!(d.tick(wanted("R"), at(200)).0.is_empty(), "a frame before it asks nothing");
+    assert_eq!(watches(&d.tick(wanted("R"), at(260)).0), 1);
+    d.on_evt(&host(), pending(), at(270));
+    assert_eq!(d.next_ask(), Some(at(360)), "and each ask 100 ms after the last");
+    let mut now = 360;
+    while now <= 160 + 2000 {
+        assert_eq!(watches(&d.tick(wanted("R"), at(now)).0), 1);
+        d.on_evt(&host(), pending(), at(now + 10));
+        now += 100;
+    }
+    assert_eq!(d.next_ask(), None, "from the last short ask on the pace is PACE and nothing wakes the window");
 }
 
 /// A page read for the channel a row left is an orphan: asked again after a hide and show, the same page waits for the first

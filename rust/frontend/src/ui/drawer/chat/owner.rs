@@ -13,13 +13,14 @@ use sot_protocol::ops::{
 };
 use sot_protocol::chat::{ChatRecord, Ts};
 
-/// Between two watch attempts: the first waits `FIRST_PACE`, the second `SECOND_PACE` (so the third goes at one second from
-/// the start), the rest `PACE`. A snapshot is usually held within a few hundred milliseconds, so a first show asks soon.
-const FIRST_PACE: Duration = Duration::from_millis(250);
-const SECOND_PACE: Duration = Duration::from_millis(750);
+/// Between two watch attempts while a recovery is younger than `YOUNG`: `SHORT_PACE`, so a snapshot the daemon holds after
+/// any time is asked for within one short step of holding it, and what a person waits does not depend on how fast Slack
+/// answered that day. After it, `PACE`.
+const SHORT_PACE: Duration = Duration::from_millis(100);
+const YOUNG: Duration = Duration::from_secs(2);
 pub(super) const PACE: Duration = Duration::from_secs(5);
 /// What the daemon is given before a gap is shown: for its chat service to start (it refuses `unavailable` meanwhile), and,
-/// from the first watch it admits, for its slowest snapshot (about 18.5 s at worst, so the last watch goes at 21 s).
+/// from the first watch it admits, for its slowest snapshot (about 18.5 s at worst, so the last watch goes after 20 s).
 const WINDOW: Duration = Duration::from_secs(20);
 /// Between two watches in `Gap`, which has no cap: each also starts the daemon's own retry of its snapshot. It also paces
 /// the window's re-asking of a refused resolve (`RowChannel`).
@@ -148,6 +149,8 @@ struct Watch {
     /// window runs from the start.
     began: Instant,
     admitted: Option<Instant>,
+    /// A watch was sent and its reply has not come: another is not sent on the short pace, so a slow link sets the pace.
+    in_flight: bool,
     /// Why the last snapshot read was refused: the reason of a gap that the daemon's watch did not give.
     read_refused: Option<ChatCode>,
     /// Each held record with whether the daemon told this window it was deleted: then only its identity, author, time and
@@ -189,7 +192,7 @@ pub(super) fn ts_order(t: &Ts) -> (usize, &str, &str) {
 impl Watch {
     /// A recovery begins: its start, its admission and the last read's refusal are forgotten.
     fn begin(&mut self, now: Instant) {
-        (self.last_try, self.began, self.admitted, self.read_refused) = (None, now, None, None);
+        (self.last_try, self.began, self.admitted, self.read_refused, self.in_flight) = (None, now, None, None, false);
     }
 
     /// A loss ends a whole state: what it held is the history a snapshot may reach back to.
@@ -203,12 +206,10 @@ impl Watch {
         self.records.keys().max_by(|a, b| ts_order(a).cmp(&ts_order(b))).cloned()
     }
 
-    /// The wait after the last watch sent: `FIRST_PACE` after the one at the start, `SECOND_PACE` after one within the first
-    /// second, else `PACE`.
+    /// The wait after the last watch sent: `SHORT_PACE` after one sent while the recovery is younger than `YOUNG`, else `PACE`.
     fn pace(&self) -> Duration {
-        match self.last_try.map(|t| t.duration_since(self.began)) {
-            Some(Duration::ZERO) => FIRST_PACE,
-            Some(since) if since < FIRST_PACE + SECOND_PACE => SECOND_PACE,
+        match self.last_try {
+            Some(t) if t.duration_since(self.began) < YOUNG => SHORT_PACE,
             _ => PACE,
         }
     }
@@ -306,7 +307,7 @@ impl ChatOwner {
         let mut out: Vec<Out> = self.watch.take().filter(|w| !same(w)).map(|w| (w.host, OutgoingReq::ChatUnwatch { target: w.target })).into_iter().collect();
         // What the stopped watch knew of the channel stays true: its records, floor and reach, and that Slack's plan hides what is older.
         let (records, floor, reach, stop) = self.parked.iter().position(same).map(|i| self.parked.remove(i)).map_or_else(Default::default, |p| (p.records, p.floor, p.reach, p.stop.filter(|s| *s == Stop::Hides)));
-        self.watch = Some(Watch { host, target, registered: false, fill: Fill::Needed, reading: None, stale: false, last_try: None, began: now, admitted: None, read_refused: None, records, floor, reach, anchor: None, reaches: false, reserved: 0, paging: None, stop, overlay: Vec::new() });
+        self.watch = Some(Watch { host, target, registered: false, fill: Fill::Needed, reading: None, stale: false, last_try: None, began: now, admitted: None, in_flight: false, read_refused: None, records, floor, reach, anchor: None, reaches: false, reserved: 0, paging: None, stop, overlay: Vec::new() });
         out.extend(self.drive(now));
         out
     }
@@ -469,10 +470,10 @@ impl ChatOwner {
         if bus == sot_protocol::op::CHAT_CHANGED && self.of(host).is_some() { self.resync(now) } else { Vec::new() }
     }
 
-    /// When the watch waiting on one of its two short paces is next asked, so the window can draw a frame at that moment;
+    /// When the watch waiting on its short pace is next asked, so the window can draw a frame at that moment;
     /// `None` when none waits, or the ask would not go (the daemon is unsupported, a read is in flight).
     pub(super) fn next_ask(&self) -> Option<Instant> {
-        let w = self.watch.as_ref().filter(|w| w.fill == Fill::Needed && w.reading.is_none() && !self.unsupported.contains(&w.host))?;
+        let w = self.watch.as_ref().filter(|w| w.fill == Fill::Needed && w.reading.is_none() && !w.in_flight && !self.unsupported.contains(&w.host))?;
         w.last_try.filter(|_| w.pace() < PACE).map(|t| t + w.pace())
     }
 
@@ -580,12 +581,13 @@ impl ChatOwner {
             (w.fill, w.reading) = (Fill::Reading, Some(req.clone()));
             return vec![(w.host.clone(), OutgoingReq::ChatHistory { req })];
         }
-        // A watch sent a window after the admitted one gets its full pace to be answered before the gap is shown.
-        if w.last_try.is_none_or(|t| now.duration_since(t) >= w.pace()) {
+        // A watch sent a window after the admitted one gets its full pace to be answered before the gap is shown. An ask whose
+        // reply is awaited holds the next one back for `PACE` at most, so a reply that never comes does not stop the asks.
+        if w.last_try.is_none_or(|t| now.duration_since(t) >= w.pace() && (!w.in_flight || now.duration_since(t) >= PACE)) {
             if w.last_try.is_some_and(|t| t.duration_since(w.admitted.unwrap_or(w.began)) >= WINDOW) {
                 w.fill = Fill::Gap(w.read_refused);
             } else {
-                w.last_try = Some(now);
+                (w.last_try, w.in_flight) = (Some(now), true);
                 return vec![(w.host.clone(), OutgoingReq::ChatWatch { target: w.target.clone() })];
             }
         }
@@ -596,6 +598,9 @@ impl ChatOwner {
     /// still pending is sent again by `tick`; a refused one is a gap.
     fn on_watched(&mut self, host: &HostKey, target: &ChatTarget, reply: ChatReply<ChatWatchRes>, now: Instant) -> Vec<Out> {
         self.mark_unsupported(host, &reply);
+        if let Some(w) = self.of(host).filter(|w| &w.target == target) {
+            w.in_flight = false;
+        }
         // A reply that is not `complete`, arriving during a read, outdates it: the daemon began a snapshot the read may not hold.
         if !matches!(reply, ChatReply::Done(ChatWatchRes { state: ChatWatchState::Complete })) && self.of(host).is_some_and(|w| &w.target == target && w.fill == Fill::Reading) {
             return self.resync(now);

@@ -1679,12 +1679,15 @@ returns the requests for State to send. Rules, each with its test in `drawer/cha
   (`a_lost_chat_bus_marks_the_state_incomplete_and_watches_again`, `a_status_is_answered_by_a_paced_watch`,
   `an_unreadable_chat_event_watches_again`). Only a watch reply that says `complete`, while the state needs one, starts the one
   `chat.history` read; a pending watch is sent again by `tick`.
-  Watches go out at 0, 250 ms, 1 s, then every 5 s (`FIRST_PACE`, `SECOND_PACE`, `PACE`).
-  The same schedule serves an `unavailable` answer while the service starts (one extra watch against the old 0, 1 s, 6 s)
-  and a snapshot read the daemon refused (a retry at 250 ms and at 1 s, not at 1 s only); the gap rules, `GAP_PACE` and the
-  20 s window are as before.
-  While a watch waits on one of the two short paces, `ChatOwner::next_ask` names the instant of its next ask (`None` when none
-  waits, the daemon is unsupported, a read is in flight or the state is a gap).
+  Watches go out at 0 and then every `SHORT_PACE` (100 ms) while the recovery is under `YOUNG` (2 s) old, then every `PACE`
+  (5 s), so a snapshot the daemon holds after any time is read within one short step of it, whatever Slack took
+  (`a_snapshot_is_read_within_one_short_step_of_the_daemon_holding_it`). No short ask goes while the last one's reply is
+  awaited, so a slow link sets the pace; a reply that never comes is asked past after `PACE`
+  (`a_watch_is_not_asked_again_while_its_reply_is_awaited`). The same schedule serves an `unavailable` answer while the
+  service starts (asks at 0, 1 and 2 s, then every 5 s) and a snapshot read the daemon refused; the gap rules, `GAP_PACE` and
+  the 20 s window are as before (the last ask of the window goes between 20 and 25 s after its start).
+  While a watch waits on the short pace, `ChatOwner::next_ask` names the instant of its next ask (`None` when none
+  waits, its reply is awaited, the daemon is unsupported, a read is in flight or the state is a gap).
   The idle loop's `about_to_wait` joins that instant to the other idle deadlines (a help peek's or a preview notice's fade, the quit hint, the reply
   bar's arm moment) through `earliest`, so the window sleeps to each ask, draws no frame in between, and the chat delays none
   of them; an ask whose instant passed before the loop went to sleep is a redraw at once (`has_passed`).
