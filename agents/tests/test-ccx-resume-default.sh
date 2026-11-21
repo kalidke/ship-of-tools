@@ -20,8 +20,9 @@ trap 'rm -rf "${WORK:?}"' EXIT
 PASS=0
 FAIL=0
 check() {
-    local desc="$1" fn="$2"
-    if "$fn"; then
+    local desc="$1"
+    shift
+    if "$@"; then
         echo "PASS: $desc"; PASS=$((PASS + 1))
     else
         echo "FAIL: $desc"; FAIL=$((FAIL + 1))
@@ -67,11 +68,6 @@ run_ccx() {  # extra ccx args...
     )
 }
 
-resumed_this_id() {  # -> 0 iff argv.log's 2nd line is "resume" and 3rd is $ROLLOUT_ID
-    [ -f "$ARGV_LOG" ] || { echo "  codex stub never ran"; return 1; }
-    [ "$(sed -n 1p "$ARGV_LOG")" = "resume" ] && [ "$(sed -n 2p "$ARGV_LOG")" = "$ROLLOUT_ID" ]
-}
-
 started_fresh() {  # -> 0 iff argv.log's 1st line is NOT "resume"
     [ -f "$ARGV_LOG" ] || { echo "  codex stub never ran"; return 1; }
     [ "$(sed -n 1p "$ARGV_LOG")" != "resume" ]
@@ -89,12 +85,6 @@ case_row_env_starts_fresh() {
         SOT_WORKSPACE_ID="ws-row-1" \
         "$CCX" >/dev/null 2>"$WORK/stderr.log"
     )
-    started_fresh
-}
-
-case_hand_run_ccx_with_no_env_starts_fresh() {
-    rm -f "${ARGV_LOG:?}"
-    run_ccx
     started_fresh
 }
 
@@ -117,28 +107,28 @@ case_hand_run_ccx_inside_a_capsule_row_starts_fresh() {
     started_fresh
 }
 
-case_hand_run_ccx_with_continue_resumes() {
+# Compare every argument, including the restart brief wrapped around the fresh prompt.
+case_launch_argv() {
+    local id="$1" prompt="$FRESH_PROMPT"
+    shift
     rm -f "${ARGV_LOG:?}"
-    run_ccx --continue
-    resumed_this_id
+    run_ccx "$@" || { cat "$WORK/stderr.log"; return 1; }
+    set --
+    if [ "$id" != fresh ]; then
+        set -- resume "$id"
+        prompt="Your pane was restarted; this is the same conversation resumed. $prompt Then continue exactly where you left off."
+    fi
+    printf '%s\n' "$@" --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust --no-alt-screen "$prompt" \
+        | diff -u - "$ARGV_LOG"
 }
 
-case_capsule_flag_bare_ccx_starts_fresh() {
-    rm -f "${ARGV_LOG:?}"
-    run_ccx --capsule
-    started_fresh
-}
-
-case_capsule_flag_with_continue_resumes() {
-    rm -f "${ARGV_LOG:?}"
-    run_ccx --capsule --continue
-    resumed_this_id
-}
-
-case_capsule_flag_with_fresh_flag_stays_fresh_even_with_continue() {
-    rm -f "${ARGV_LOG:?}"
-    run_ccx --capsule --continue --fresh
-    started_fresh
+check_launch_forms() {
+    local launch="ccx${1:+ $1}" explicit_id="22222222-2222-2222-2222-222222222222"
+    check "$launch starts fresh inline" case_launch_argv fresh "$@"
+    check "$launch --fresh starts fresh inline" case_launch_argv fresh "$@" --fresh
+    check "$launch --continue resumes this folder's last conversation inline" case_launch_argv "$ROLLOUT_ID" "$@" --continue
+    check "$launch --resume resumes the given ID inline" case_launch_argv "$explicit_id" "$@" --resume "$explicit_id"
+    check "$launch --continue --fresh starts fresh inline" case_launch_argv fresh "$@" --continue --fresh
 }
 
 # A comm home holding the real comm library, so ccx can give its first prompt the handoff line (`sotd comm handoff-line`).
@@ -185,12 +175,11 @@ case_capsule_prompt_names_no_handoff_when_none_exists() {
 }
 
 check "a row env (SOT_WORKSPACE_ID set, no --capsule) starts fresh" case_row_env_starts_fresh
-check "a hand-run ccx with no SOT_* env at all starts fresh" case_hand_run_ccx_with_no_env_starts_fresh
 check "a hand-run ccx inside a capsule row's env starts fresh" case_hand_run_ccx_inside_a_capsule_row_starts_fresh
-check "a hand-run ccx --continue resumes this folder's last conversation" case_hand_run_ccx_with_continue_resumes
-check "--capsule: a bare ccx starts fresh" case_capsule_flag_bare_ccx_starts_fresh
-check "--capsule: --continue triggers the resume scan" case_capsule_flag_with_continue_resumes
-check "--capsule: --fresh wins even alongside --continue" case_capsule_flag_with_fresh_flag_stays_fresh_even_with_continue
+run_ccx --fresh || { cat "$WORK/stderr.log"; exit 1; }
+FRESH_PROMPT="$(grep '^You are the comm-aware agent on the sot-comm network\.' "$ARGV_LOG")" || { echo "Missing fresh prompt"; exit 1; }
+check_launch_forms
+check_launch_forms --capsule
 check "--capsule: the first prompt names the session's handoff when one exists" case_capsule_prompt_names_the_handoff_when_one_exists
 check "--capsule: the first prompt names no handoff when none exists" case_capsule_prompt_names_no_handoff_when_none_exists
 

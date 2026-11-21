@@ -182,7 +182,8 @@ of each.
     executable, else `PATH`, else `~/.local/share/sot/bin/sotd`, else `~/.local/bin/sotd`, and execs `sotd agent-exec
     claude` with the caller's flags in order (guarantee 1), or says `ccb: sotd not found` and exits 1. `ccx` has no
     daemon recipe behind it: it builds the Codex argv itself (`codex [resume <id>]
-    --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust <prompt>`). It chooses no handle
+    --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust --no-alt-screen <prompt>`), requesting
+    inline rendering to preserve terminal scrollback on fresh and resumed launches. It chooses no handle
     (decision 0031): it joins with no name and names, in Codex's first prompt, the handle `comm-context.sh` reads back; a
     join that gives none still starts Codex, with a prompt that names none and one stderr line saying so; it starts a
     fresh conversation unless `--continue` or `--resume` is given (`--fresh` wins over `--continue`). Limits: `ccx` runs

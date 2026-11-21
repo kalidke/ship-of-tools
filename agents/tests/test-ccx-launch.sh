@@ -82,7 +82,20 @@ case_sot_comm_name_chooses_nothing() {
 case_no_handle_still_starts_codex_and_says_so() {
     run_ccx "" || return 1
     grep -q '^You are the comm-aware agent on the sot-comm network\.' "$CODEX_LOG" \
+        && [ "$(grep -Fxc -- '--no-alt-screen' "$CODEX_LOG")" = 1 ] \
         && grep -q 'gave this session no handle' "$WORK/err"
+}
+
+case_missing_codex_opens_a_shell() {
+    local bin="$WORK/shell-only"
+    mkdir -p "$bin" || return 1
+    cat > "$bin/bash" <<'STUB'
+#!/bin/sh
+printf 'shell argc=%s\n' "$#"
+STUB
+    chmod +x "$bin/bash" || return 1
+    HOME="$WORK/empty-home" PATH="$bin" "$CCX" --capsule >"$WORK/out" 2>"$WORK/err" || return 1
+    [ "$(cat "$WORK/out")" = "shell argc=0" ] && grep -q 'ccx: codex not found' "$WORK/err"
 }
 
 case_a_capsule_leg_keeps_its_rows_selection_file() {
@@ -97,7 +110,8 @@ case_a_ccx_started_inside_a_row_drops_the_rows_selection_file() {
 
 check "ccx joins with no name and the first prompt names the handle comm-context reads" case_the_join_names_no_handle_and_the_prompt_names_the_sessions
 check "SOT_COMM_NAME chooses nothing" case_sot_comm_name_chooses_nothing
-check "a join that gives no handle still starts codex and says so" case_no_handle_still_starts_codex_and_says_so
+check "a join that gives no handle still starts Codex inline and reports the missing handle" case_no_handle_still_starts_codex_and_says_so
+check "a missing Codex reports the cause and opens a shell with no arguments" case_missing_codex_opens_a_shell
 check "ccx --capsule keeps its row's selection file" case_a_capsule_leg_keeps_its_rows_selection_file
 check "a ccx started without --capsule drops the selection file it inherited" case_a_ccx_started_inside_a_row_drops_the_rows_selection_file
 
