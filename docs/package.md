@@ -263,7 +263,11 @@ pane, by the maintaining session on the hub (the daemon restarted, ending the on
 after it) and by its own session on one window computer. The maintainer used it the next day on the hub's sessions:
 a drawer's full height stayed with its session, and one thing was slow: the Chat drawer took over a second to show a
 session's channel after a switch, which the candidate did not make slower but made visible, since the drawer now
-comes back at full height. `main` carries 0.7.3-rc.3-dev, and past the second candidate it holds that fault's fix,
+comes back at full height. v0.7.3-rc.3 (2026-11-21) is an unpublished draft, cut from `main` the same day on his
+word after the whole local gate had passed at the commit that was cut; its release workflow's builds, smokes and
+install smokes passed, and it was installed by archive, on his word in a session's pane, by their own sessions on
+two window computers, whose windows run it; the hub stays on the second candidate, since the third changes only
+the window. `main` carries 0.7.3-rc.4-dev. The third candidate is the second with that fault's fix,
 which no person has used: after a switch the window asks the hub for the channel at a pace that starts at 100 ms
 (it had asked at 250 ms and then only at 1 s, and usually waited out the second for a snapshot the hub already
 held), and a session shown before draws its channel's last messages on the first frame, for up to eight channels,
