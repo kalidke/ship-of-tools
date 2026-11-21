@@ -6,7 +6,7 @@ use crate::ui::render::text::flagged_runs;
 /// Collapse CRLF / lone-CR line endings to LF before handing text to the
 /// shaper. cosmic-text treats a `\r` as its own line break, so a Windows
 /// CRLF (`\r\n`) source renders a blank line between *every* real line —
-/// the "double-spaced code in module mode" bug, which only showed up for
+/// the bug of double-spaced code in module mode, which only showed up for
 /// repos checked out with CRLF endings (e.g. RJTrack) while LF repos
 /// rendered fine. Display-only normalization: the edit buffer and the
 /// clipboard-yank paths read their own bytes elsewhere, so this doesn't

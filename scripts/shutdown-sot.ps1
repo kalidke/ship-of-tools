@@ -18,7 +18,7 @@
 #                                          that client is stranded as a
 #                                          GHOST until the ADR-0027 keepalive
 #                                          reaper fires (~50s). That ghost is
-#                                          the "FE not detaching on close" bug.
+#                                          the bug of the FE not detaching on close.
 #   5. Wait for the LOCAL sotd (ADR     - LAST, only after the FE (its only
 #      0042 L1c) via                      possible local client) is already
 #      sot-local-daemon.ps1 -Stop         gone. This script holds a lease

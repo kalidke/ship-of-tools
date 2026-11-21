@@ -42,6 +42,10 @@ does not read it and uses no mail; it reports to the session that launched it.
   code it describes. Plots in Julia use CairoMakie.
 - The repo is public: no private host names, user names, LAN details or host-suffixed handles in commits, PRs, code
   comments or docs. A push is swept for private names before it leaves this machine.
+- The repo quotes no person: a record, comment, skill, commit, PR or issue text, release note or manual page says what
+  a person reported, asked or decided in reported form, with its date and the person's role (the maintainer, a person,
+  a reviewer), and never as quoted words. The text of the product or of another program, a defined term, a title, a
+  test's name and a fixture's input are not a person's words.
 - The repo is canonical, not any machine's memory: the user works across computers, and per-machine session memory is
   never a prerequisite. Session memory holds operating state only; a fact about the code belongs in its subsystem's
   contract.

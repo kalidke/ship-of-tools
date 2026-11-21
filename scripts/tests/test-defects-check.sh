@@ -3,7 +3,9 @@
 # fixture checkouts: a record naming an unknown id fails and the output names the id (the red case); a known open id and a
 # known closed id pass; capitals that are not ids (P1, ALLDONE, RCG_SCOPE, SHA-256, UTF-8) never hit; ids written before the
 # landing section are not records; a duplicate id and an open item with no mark fail; a missing section is refused (2).
-# Last, the real tree passes. Exit: failed checks.
+# Last, the real tree passes. Also a net, not a proof, for the root CLAUDE.md's rule that the repo quotes no person: the
+# forms of a quotation of the maintainer the sweep found (the QUOTED pattern below), each proved on a planted line.
+# Exit: failed checks.
 set -u
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 base="${TMPDIR:-/tmp}"
@@ -112,6 +114,23 @@ check "a bad argument is refused" '[ "$r" -eq 2 ]'
 out=$(bash "$here/defects-check.sh" 2>&1); r=$?
 check "the real tree passes" '[ "$r" -eq 0 ]'
 [ "$r" -eq 0 ] || echo "$out"
+
+# ---- the repo quotes no person (root CLAUDE.md): the forms of a quotation of the maintainer that the sweep found
+QUOTED='maintainer[^."“”`]{0,50}[:(,] *("|“)|(^|[^A-Za-z])(his|her) (words?|asks?|answers?|reports?|use|rule)[^."“”`]{0,50}[:(,] *("|“)|in (his|her) (own )?words|\(the maintainer[^)`"]{0,40}("|“)'
+quotes() { # <dir>: the matching lines of a checkout's tracked files, or of every file of a plain folder
+    if [ -e "$1/.git" ]; then
+        (cd "$1" && git ls-files -z -- ':!scripts/tests/test-defects-check.sh' | xargs -0 grep -I -n -i -E "$QUOTED" 2>/dev/null)
+    else grep -r -I -n -i -E "$QUOTED" "$1" 2>/dev/null; fi
+}
+mkdir -p "$work/quoted"
+printf '%s\n' 'Seen by the maintainer, 2000-01-01: "planted words one".' 'His word: "planted words two".' \
+    'On the maintainer'\''s word ("planted words three"), nothing happened.' 'His words (2000-01-01): "planted words four".' \
+    'The maintainer'\''s question, "planted words five?", ended nothing.' > "$work/quoted/records.md"
+out=$(quotes "$work/quoted")
+check "each planted form of a quotation of the maintainer is found" '[ "$(grep -c records.md <<< "$out")" -eq 5 ]'
+out=$(quotes "$here/../..")
+check "the real tree quotes no person" '[ -z "$out" ]'
+[ -z "$out" ] || echo "$out"
 
 echo "failed: $fail"
 exit "$fail"

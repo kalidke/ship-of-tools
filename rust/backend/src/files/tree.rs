@@ -124,8 +124,8 @@ impl FilesMode {
     /// Returns the absolute filesystem path for a node id — the READ
     /// resolver: symlinks are FOLLOWED, wherever they lead.
     ///
-    /// Rationale (2026-07-10, user bug "following symlink in nav pane is
-    /// broken"): out-of-root symlinks are this deployment's core convention
+    /// Rationale (2026-07-10, a user reported that following a symlink in the nav
+    /// pane was broken): out-of-root symlinks are this deployment's core convention
     /// (`data/results/` → NAS, `nas_share/<project>` → CIFS mounts), and the
     /// old unconditional canonicalize+confine guard rejected them all — a
     /// symlinked NAS directory listed as silently empty. A symlink inside the

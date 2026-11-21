@@ -73,7 +73,7 @@ action. Today this is attempted two ways, both wrong for the job:
    A backend session on a remote host cannot write to a Windows FE's
    `%LOCALAPPDATA%\devenv\fe-commands\`. So ADR-0019 covers same-machine only.
 
-Separately, **spawn "doesn't work unless you move to the session."** Root cause,
+Separately, **spawn, a user reported, did not work unless the user moved to the session.** Root cause,
 confirmed empirically this session: `claude`'s TUI needs a **real terminal at init**
 — it exits cleanly in a detached tmux pane (even with a scrubbed env + a `script`-pty
 client), but **survives once running** (long-running agents run detached right now).

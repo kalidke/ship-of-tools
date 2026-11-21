@@ -55,7 +55,7 @@ new one. The session picker uses three chords on the cursored directory:
 
 One backend daemon hosts one Julia kernel per workspace, routed by `workspace_id`,
 so switching workspaces is fast and does not tear down the kernel — switching is
-"like tmux windows in the same session." You can also cycle the active workspace
+like tmux windows in the same session. You can also cycle the active workspace
 directly with `Shift+ArrowRight` / `Shift+ArrowLeft`.
 
 #### Accounts

@@ -301,7 +301,7 @@ fn move_up_and_down_clamp_at_edges() {
 
 // ---- cursor-by-node-id preservation across row-mutating ops ----
 //
-// Regression coverage for the "nav cursor resets to row 0" bug. set_root,
+// Regression coverage for the bug where the nav cursor reset to row 0. set_root,
 // set_flat, and apply_children all used to unconditionally reset
 // `selected` to 0, which kicked the cursor back to the top of the nav
 // every transport reconnect, every project.scan, and every stale

@@ -248,7 +248,7 @@ fn crlf_source_does_not_double_space() {
     // A CRLF (`\r\n`) file must shape to the same number of visual lines
     // as the LF equivalent. cosmic-text treats a stray `\r` as its own
     // line break, so without normalization a CRLF source rendered a
-    // blank line between every line (the "double-spaced code" bug, only
+    // blank line between every line (the double-spaced code bug, only
     // visible for CRLF-checked-out repos like RJTrack). Guards both code
     // constructors.
     let mut fs = FontSystem::new();

@@ -4,7 +4,7 @@
 one rule sharpened: the capsule is the DEFAULT
 runtime for every NEW session on EVERY host from L1 on; tmux exists only to
 keep already-running sessions alive until they end, and is then deleted
-(ADR 0037 P5). "Nothing will run on tmux on the new system." Implements the destination decided 2026-09-01 for the Ship's Log
+(ADR 0037 P5): nothing was to run on tmux on the new system. Implements the destination decided 2026-09-01 for the Ship's Log
 ladder (ADR 0037, ADR 0041 build-order amendment): sessions from several
 hosts in one selector, separated by the wheel icon, with the local machine
 being just another host and local sessions being ordinary sessions.
@@ -61,10 +61,10 @@ behaves exactly as before — a visible, ordinary session row.
 
 **Amendment (decided 2026-09-06): the anchor is hidden on every host.**
 The first amendment kept a tmux backend's default row visible when it carried
-no agent, as the home of that backend's SoT LLM pane. "I like symmetry. I can
-always open a terminal-only session, but it's confusing when I can't close a
-session that looks like the others, and users may naturally try to have an LLM
-pane there." So the inert-anchor predicate is `is_default && agent == "none"`
+no agent, as the home of that backend's SoT LLM pane. The reason given: a liking for symmetry; a terminal-only session
+can always be opened, but it is confusing when a session that
+looks like the others cannot be closed, and users may naturally try to have an
+LLM pane there. So the inert-anchor predicate is `is_default && agent == "none"`
 with no runtime term, on the frontend and the daemon alike; the daemon's `.SoT`
 display relabel of its default row is retired (the row keeps its slug as label
 and is never listed); and Ship of Tools development runs in a `ship-of-tools`

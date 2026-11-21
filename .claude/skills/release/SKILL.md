@@ -73,8 +73,8 @@ run at 53 to 140 KB/s, about 3 to 7 minutes for the Linux archive).
      the consumer with the installer's verdict as the test. An installer change
      is proven before the tag (the release workflow on main without a tag, the
      case at hand reproduced), not by cutting. The maintainer, 2026-10-29, when
-     an rc.7 was proposed hours after rc.6: "how can you be on rc7 when no one
-     ever tried rc5 or rc6?"
+     an rc.7 was proposed hours after rc.6, asked how one could be on rc7 when no
+     one had tried rc5 or rc6.
 
 ## Cut it (on the word)
 
@@ -155,7 +155,7 @@ use it after editing the workflow or before a first-of-its-kind release.
 ## Hard rules
 
 - **Everything we know is wrong goes in the next rc or release.** The owner's
-  standing rule, verbatim, 2026-09-26. A known defect is never parked in a
+  standing rule, 2026-09-26. A known defect is never parked in a
   later line to keep a candidate tidy: the next candidate carries every open
   defect, and the only legitimate reasons to hold one back are that two fixes
   contend for the same file, or that a fix rests on an unproven root cause and

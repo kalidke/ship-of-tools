@@ -295,7 +295,7 @@ its name:
   judgment the sessions are taught and no check makes. A `waiting` declaration whose line addresses the session's
   person is refused the same way (`question::addresses_person`: "you" or "your" and their forms as whole words, or
   "the user", "its person", "the maintainer"): waiting on the person is a question, red in the Queue, not purple (the
-  maintainer, 2026-11-01: "waiting for me is red, not purple", after rows stamped waits such as "your go" for hours
+  maintainer, 2026-11-01: a wait on the person is red, not purple, after rows stamped waits such as "your go" for hours
   with no card); the fix is a blocked question, or a wait that names the session or job it is on. A name is not read.
   `--page-nudged`, which the Stop hook passes only once it has nudged the session for either, lets it through, so no
   closing line goes unstamped (`work_state::cli::tests::{a_blocked_stamp_that_owes_a_page_is_refused_until_nudged,

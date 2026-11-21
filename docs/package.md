@@ -208,8 +208,8 @@ by their own sessions on two window computers and by the maintaining session on 
 the rows' open REPLs ended, on his word; a third window computer was not reachable. What it carries past rc.13 is listed
 below, where this page says what `main` holds of that use. No person's use of it is recorded yet. v0.7.1-rc.13
 (2026-11-17) is an unpublished draft, cut on
-the maintainer's word in a session's pane once everything built was on `main` (his word that day: a candidate has
-everything, and is the release if it works), and installed by archive by their own sessions on two window computers
+the maintainer's word in a session's pane once everything built was on `main` (his rule that day: a candidate carries
+everything built, and is the release if it works), and installed by archive by their own sessions on two window computers
 and by the maintaining session on the hub, where the daemon restarted and the rows' open REPLs ended, on his word. It
 carries several Slack workspaces on one hub, one per project, up to 8: a person connects each from the Chat drawer and
 picks a project's channel in any of them, no request crosses workspaces, a reload restarts only the workspaces it
@@ -238,9 +238,9 @@ premise is unmeasured until a person's first post), a row's post of a file, pict
 person's post of the previewed file, and, on Windows, the writers' turn and the reader's retry when a name is replaced;
 no person's use of it is recorded yet. rc.10 (2026-11-15) was installed by archive by their own sessions on both window
 computers, where the maintainer used it: a frame of a scroll lays out only the text that is new and no blank space, so a
-page in a large agent pane eases as the preview's does (his word on it: "the llmpane scroll is even better"). rc.9 (2026-11-15) put the cell panes' page back to rc.6's ease:
+page in a large agent pane eases as the preview's does (he reported that the agent pane's scroll is even better). rc.9 (2026-11-15) put the cell panes' page back to rc.6's ease:
 the row pace rc.7 added answered a cause that was not the one seen. rc.8 (2026-11-15) carried what his use of rc.7 asked
-for: Claude rows start in Claude Code's classic renderer (his word: "we don't want claude fullscreen"), so the window's
+for: Claude rows start in Claude Code's classic renderer (his rule that day: Claude is not to run fullscreen), so the window's
 eased scroll reaches their conversation; a row's new run starts with the terminal's input modes reset; the preview's
 own messages in a box over the preview pane, held 5 s and fading, with plainer words for a refused drawing; and the
 nav pane's status pinned above its tree. rc.7 (2026-11-14) carried the Chat title's name for a mapped private
@@ -285,8 +285,7 @@ two are built and in the candidate: a drawer's own key cycles it open,
 full height and closed, with the status line on a full-height drawer's border, and Up and Down in edit mode move by
 the row on screen under a cursor drawn over the text; drawing on a PDF page and selecting its text are not started
 and wait for 0.7.4, on his word (`docs/defects.md`, fe-ui). Also in the candidate: a name after `@` in a chat post is a Slack mention, resolved by the daemon
-among the workspace's members and told back to the poster by name (the maintainer: "my @person in slack isn't
-working"; he posted one from the candidate and reported that it works, and that the name's exact spelling has to be remembered: nothing offers names as one is typed, `docs/defects.md`, chat); a skill that tells a session how to
+among the workspace's members and told back to the poster by name (the maintainer reported that an `@person` mention in Slack did not work; he posted one from the candidate and reported that it works, and that the name's exact spelling has to be remembered: nothing offers names as one is typed, `docs/defects.md`, chat); a skill that tells a session how to
 post to its project's channel; the REPL drawer in Julia's own colors, its long lines wrapped at the pane's width, and the escape sequences in text a
 program printed read by one linear grammar of at most 4096 bytes a sequence (the window's cell rule took minutes on a
 megabyte of unfinished openers), and a person's eval in the drawer printing with color where an agent's runs as it did
@@ -322,7 +321,7 @@ maintainer asked of the Chat drawer on rc.10 (2026-11-15): Up and Down ease the 
 and Left over an empty draft leaves an open thread, as the nav pane's Left does. The `release/0.6.6` branch is closed to
 all but fixes found in use. A
 new release candidate waits until a person has used the last one and carries everything that use found, and
-everything else known to be wrong (the maintainer, 2026-11-13: a candidate saves nothing for the next one). In
+everything else known to be wrong (his rule of 2026-11-13: nothing is held back for the next candidate). In
 progress is the project chat (the daemon speaks Slack itself,
 in Rust, up to 8 Slack workspaces on one hub, each project's channel in its own, a person's post under a custom author): its plan of record is `docs/history/slack-client-plan.md`.
 Its first stage's preparations (P2, P4, P10, P11, P5, P6, P9, P1), B1a (the record and normalization), B1b (the HTTP core) and B1c (the Slack calls) and B1d (the Socket Mode listener)

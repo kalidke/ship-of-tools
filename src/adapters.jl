@@ -90,7 +90,7 @@ function _install_adapter(cli::Symbol; unhooked::Vector{String} = String[])
         # Hooks deploy as a LOCAL PLUGIN (found the hard way, 2026-07-06:
         # codex 0.142 loads lifecycle hooks from config and ENABLED PLUGINS —
         # a standalone hooks.json in the codex home is silently ignored, which
-        # was the "session coloring isn't working" bug). Layout: the implicit
+        # was the bug where session coloring did not work). Layout: the implicit
         # local marketplace ~/.agents/plugins/marketplace.json + a sot-comm
         # plugin dir (manifest + hooks/hooks.json), then `codex plugin add`
         # (which re-copies into $CODEX_HOME/plugins/cache on every run, so a

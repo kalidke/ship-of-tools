@@ -120,7 +120,10 @@ Guarantees, each with the mechanism it rests on:
 - Every gate run, scoped or not, also runs `tests/test-defects-check.sh`, which runs `tests/defects-check.sh` on the
   checkout: it fails with the id when a landing record of `docs/history/passes.md` names an item that is not in
   `docs/defects.md`, and when a tracked `CLAUDE.md` cites an item id there that is not one. The rule that tells an id from
-  other capitals is `docs/CLAUDE.md`'s.
+  other capitals is `docs/CLAUDE.md`'s. The same script is a net for the root `CLAUDE.md`'s rule that the repo quotes no person: it fails
+  when a tracked file quotes the maintainer in one of the forms the sweep found, which are the `QUOTED` pattern in the
+  script (each form has a planted line). It is not a proof: a quotation in another form, or one a line break
+  separates from its cue, passes.
 - The Linux local gate builds `sotd`, `sot` and `sot-capsule` before its jobs, then runs
   `installer-publish-guard.py` for `fresh` and `repair`, each with its own log, result and named summary line.
   `tests/test-rc-gate-installer.sh` proves both jobs execute and retain their own status through the real pipeline.
@@ -689,7 +692,7 @@ Tests (all observe execution, not source spellings):
 | `tests/installer-apply.sh` (including `installer-handoff.sh`) | Git-less libc/tree preflight retains its cause; a real scratch clone enrolls before recording builds and packs an executable sot-apply |
 | `tests/test-rc-gate-scope.sh` | The path-to-piece table with its widening cases, and the real pipeline over stand-ins: a scoped run selects only its pieces, a selected job the tree lacks fails |
 | `tests/release-features-check.sh --prove` | The real tree and the feature on a dev-dependency alone pass; the feature on a normal dependency of the backend, on the frontend, in sot-chat's default, in a target table, or on a member only `--workspace` builds fails, and so does sot-protocol's on the backend's normal dependency or in its default; the message names the feature |
-| `tests/test-defects-check.sh` (and `tests/defects-check.sh`) | A landing record naming an unknown item id fails and the output names it; known open and closed ids pass; capitals that are not ids never hit; a duplicate id and an open item with no mark fail; the real tree passes |
+| `tests/test-defects-check.sh` (and `tests/defects-check.sh`) | A landing record naming an unknown item id fails and the output names it; known open and closed ids pass; capitals that are not ids never hit; a duplicate id and an open item with no mark fail; five planted forms of a quotation of the maintainer are found and the real tree matches none; the real tree passes |
 | `tests/test-release-cut.sh`, `tests/test-rc-gate-target.sh`, `tests/test-rc-gate-parity.sh`, `tests/test-native-stderr.ps1` | Existing entry contracts retain their intended executing fixtures after enrollment |
 | `install::unix::tests::version_cleanup_keeps_unavailable_registrations_and_refused_worktrees` | Version cleanup preserves unavailable registrations and dirty/locked checkouts while removing available clean ones |
 

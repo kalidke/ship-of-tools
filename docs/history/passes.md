@@ -425,8 +425,8 @@ after the cut), and it cost one tag: rc.5 stays with no release, and rc.6 carrie
 a landing that changes the installer's verdict runs no install smoke before the tag. rc.6 was cut 2026-10-29; its first
 install, on the maintainer's workstation, ended ONE STEP LEFT on a false step (the installer judged the state folder
 from its own environment, not from the unit's drop-in), fixed on main the same day. An rc.7 to carry that fix was
-proposed within hours and withdrawn on the maintainer's question, "how can you be on rc7 when no one ever tried rc5 or
-rc6?": each cut had become the test of the session's own installer change, with the session as the consumer and the
+proposed within hours and withdrawn on the maintainer's question how one could be on rc7 when no one had tried rc5 or
+rc6: each cut had become the test of the session's own installer change, with the session as the consumer and the
 installer's verdict as the test. Since (the maintainer, 2026-10-29) a new candidate waits until a person has used the
 last one, and carries everything that use found. The row tools seen in rc.6's first use landed 2026-10-30: a session
 in a row knew neither that it ran in the window nor how to give its person a terminal of their own, read "none
@@ -533,7 +533,7 @@ their sum, after a macOS runner at a quarter speed ran out a job's ceiling with 
 (the maintainer's request) the session strip's order is a choice, cycled by `Primary+Shift+O` and kept across
 restarts: by state (the default, as before), alphabetical, or by recent work-state change, each within its
 computer's block. Since the same day a row's PDF page comes back from a row switch with its page and count, after the
-maintainer found a PDF "terrible" and deaf to PageDown on 0.7.0-rc.8: the parked view kept the page's bytes but not
+maintainer found a PDF terrible and deaf to PageDown on 0.7.0-rc.8: the parked view kept the page's bytes but not
 its page, so the restore drew it with the standalone raster's nearest sampler and the paging keys were not admitted.
 v0.7.0-rc.9 was cut 2026-11-05 from these and installed from its draft on two of the maintainer's computers, where
 he saw no issue in use; v0.7.0 was cut from the same code and published the same day on his word, and a plain install
@@ -630,7 +630,7 @@ A landing's record goes here, with its measured times; the package page holds on
   the 5 s write bound; the one false sentence it found was the contract's, on what can hold a pong.
 - The macOS check and the chat dependency, 2026-11-06: 15:40 to main 15:58, 18 minutes, first gate passed, whole, review without a
   blocker. `ring`'s build script now meets a stand-in C compiler in that one gate step, so `sot-backend` can depend on `sot-chat` and
-  the step still type-checks macOS code; `cargo check` links nothing. The review showed the builder's word "links" was too strong: no
+  the step still type-checks macOS code; `cargo check` links nothing. The review showed the builder's claim that it links was too strong: no
   daemon code names the crate, so `sotd` holds none of it, and the old-glibc pack and the Windows link have not met it yet. Their
   first proof is the first call, at B2e. Every manifest change of the stage is in this landing.
 - The ping landing's follow-up, 2026-11-06: 15:43 to main 16:03, 20 minutes, two fix rounds, first gate at its head passed. Tests for
@@ -1430,7 +1430,7 @@ A landing's record goes here, with its measured times; the package page holds on
   1, 0; 7 and 5 minutes: the first found the contract still saying a Codex row answers held) and two fix rounds of a
   minute each; two gates of 2 minutes.
 - A thinner pen, 2026-11-09: builder launched 10:29, main 10:47 (9359b3ef2), 18 minutes. The maintainer, drawing on
-  the first candidate with selection and drawing: "could we make the pen a bit smaller?" The ink's width is 1/300 of
+  the first candidate with selection and drawing, asked for a smaller pen. The ink's width is 1/300 of
   the raster's long side instead of 1/200, the 3-pixel floor kept; the window's raster, the daemon's picture and the
   eraser's reach share the one rule. One product line and about ten test lines. Where the minutes went: the build (4
   minutes, the red at the base shown); one gate of 4 minutes, scoped; one review round of 13 minutes (blockers 0; its
@@ -1750,7 +1750,7 @@ A landing's record goes here, with its measured times; the package page holds on
   byte-identical); review round 2 (the same copy, two unpinned rules); three scoped gates of 2 to 3 minutes. The
   Windows-only test first ran in the hosted run on main, green.
 - The preview takes an agent's path in the tree's spelling and marks a refused preview (PREVIEW-PDF-STALE),
-  2026-11-10: reported by the maintainer 13:24 ("pdfs not updated in preview when new pdf is generated"); diagnosis
+  2026-11-10: reported by the maintainer 13:24 (a PDF not updated in the preview when a new one is generated); diagnosis
   13:2x to 13:50 (an agent badged `$PWD/../x.pdf`; the window kept the `..`, the daemon refused it, the pane kept the
   older bytes unmarked, and the live refresh never matched the watcher's id); builder launched 13:52, main 14:47
   (1cb38101d), 55 minutes from the builder and 83 from the report. About 95 product lines and 130 test lines:
@@ -1870,7 +1870,7 @@ A landing's record goes here, with its measured times; the package page holds on
   tile ran into the next; a page joining above moves every record below it); three amends; two rebases by the
   session; three scoped gates.
 - One update runbook for an agent, in `docs/`, 2026-11-11: asked for about 07:40 (a one-line message that
-  sends any computer's agent to it, which "needs to work and be foolproof"), main 10:34 (808f2c6d1), a records landing
+  sends any computer's agent to it, which was to work and be foolproof), main 10:34 (808f2c6d1), a records landing
   of about 180 runbook lines. Where the time went: each round of real runs found a way an update would fail for a
   person, and each fix needed another run. Five hosted probes on macOS and Windows and container runs on Linux, from
   every 0.6 and 0.7 start tried: GitHub's listing refused anonymous calls from a shared address (the newest release is
@@ -1923,8 +1923,8 @@ A landing's record goes here, with its measured times; the package page holds on
   that asks again, so a fix that fetched on every visit would pass; two clears where one serves); one fix commit and
   two gates.
 - The update runbook moves every daemon a window dials before that window, 2026-11-11: the maintainer at about 13:10,
-  "your directions are bad - its leaving fe orphaned to non updated Bes", and later "users followed your exact
-  intructions above and had systems that updated but would not connect due to a FE/BE version mismatch"; builder
+  reported that the directions left a window orphaned from daemons not yet updated, and later that users who followed
+  the exact instructions had systems that updated but would not connect for a window and daemon version mismatch; builder
   launched 13:52, main 18:05 (8494686d7 to 5756c144e, five commits), 4 hours 13 minutes. About 270
   runbook and guide lines. The cause: the runbook updated only the computer its agent ran on, and a window and its
   daemon on two computers refuse each other across 0.6 and 0.7; its first proof had run single computers only. Where
@@ -2199,7 +2199,7 @@ A landing's record goes here, with its measured times; the package page holds on
   build's launch: two review rounds, each finding behavior worth fixing before the landing. The removal of the
   plugins' lazy load is right once no JLL loads in the kernel (4.5 ms, 2 MiB).
 - Copy as one line, 2026-11-13, the first of the four defects a person saw that the fifth candidate carries (the
-  maintainer: a release candidate saves nothing for the next one). Builder launched 19:37, main 20:33 (010f71a71,
+  maintainer's rule: nothing is held back for the next candidate). Builder launched 19:37, main 20:33 (010f71a71,
   f33dda4c3, 3d7efb008), 56 minutes. A long command Claude Code had word-wrapped itself pasted as two lines
   (PANE-COPY-KEEPS-WRAPS). The first build joined, in the default copy, every break where the next word would not have
   fit, read from Claude Code's own wrap settings; its full gate passed, and review round 1 found the blocker: that
@@ -2390,13 +2390,13 @@ A landing's record goes here, with its measured times; the package page holds on
   its own ring alone (a shell, the Terminal, the REPL). Claude Code's classic renderer (`/tui default`, or the variable
   `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1` per process) would leave its conversation in the window's ring; the choice is
   the maintainer's.
-- A thin gray rule between the Chat drawer's messages, 2026-11-14, on the maintainer's ask ("slack has a thin hor line
-  (gray) between each message"), trial 1, Opus arm, builder chat-message-rules: builder about 22:08, main 22:19
+- A thin gray rule between the Chat drawer's messages, 2026-11-14, on the maintainer's ask (Slack has a thin horizontal line
+  in gray between each message), trial 1, Opus arm, builder chat-message-rules: builder about 22:08, main 22:19
   (f33614cc3), about 11 minutes. 11 product lines and 79 test lines: a one-pixel rule in the top pixel of every record
   but the first and one a day divider opens, grouped messages included, adding no height. Where the minutes went: the
   build 7, its diff read and its rendered frame looked at; one scoped gate 3.
-- The maintainer's use of the classic renderer, 2026-11-15: he switched a row to it and said "ok, this is working well
-  in this session. so we don't want claude fullscreen." His switch saved the setting for every session of the computer's
+- The maintainer's use of the classic renderer, 2026-11-15: he switched a row to it and said it was working well
+  in that session, so Claude is not to run fullscreen. His switch saved the setting for every session of the computer's
   accounts, and the Claude sessions already running took it up while running but stayed on the alternate screen with
   mouse tracking on and nothing redrawn, which he saw as dead screens. Claude Code's own `/restart` relaunched one such
   session in place, resuming its conversation by id, and its screen came back on the main screen with mouse tracking off;
@@ -2415,9 +2415,9 @@ A landing's record goes here, with its measured times; the package page holds on
   setting, and Codex and terminal-only rows are unchanged. Where the minutes went: the build 11; a fix round 3 (a test
   that proved the launch paths by reading source text, deleted); the rebase and one scoped gate 3.
 - The preview's own messages in a box over the preview pane, and plainer words for a refused drawing
-  (DRAWING-REFUSAL-WORDS, seen in use by a person on rc.7), 2026-11-15, on the maintainer's asks ("the messsage about
-  drawing not supported isn't very good. explain what it does"; "could we have messages like that appear in the preview
-  pane itself, similar to what happens when we do a help"), trial 1, Sonnet arm, builder preview-notice: builder about
+  (DRAWING-REFUSAL-WORDS, seen in use by a person on rc.7), 2026-11-15, on the maintainer's asks (the message about
+  drawing not being supported was not good and should explain what drawing does; messages like that should appear in the
+  preview pane itself, as they do for help), trial 1, Sonnet arm, builder preview-notice: builder about
   08:25, main 08:56 (e5966706b, 015d4d0dc), about 31 minutes. About 216 product lines and 259 test lines. A preview
   message shows in the help peek's box at the pane's foot, held 5 s and fading, as well as on the status line; a refused
   drawing says what drawing does and the two ways to draw. Where the minutes went: the build 7, its rendered frame looked
@@ -2426,21 +2426,21 @@ A landing's record goes here, with its measured times; the package page holds on
   cut in a narrow pane, an untested idle wake that could leave the window at 60 Hz, a second list of video suffixes, and
   the docs' list of what is boxed); a fix round 8, its diff read; the rebase and one scoped gate 3.
 - The nav pane's status stays pinned above a long tree (NAV-STATUS-SCROLLS-OFF, seen in use by a person on rc.7),
-  2026-11-15, on the maintainer's report ("when nav pane is long, the messages at top aren't seeen - the are too far
-  up"), trial 1, Opus arm, builder nav-status-pin: builder about 08:25, main 09:06 (454508ca5, ef8489590), about 41
+  2026-11-15, on the maintainer's report (when the nav pane is long, the messages at the top are not seen: they are too far
+  up), trial 1, Opus arm, builder nav-status-pin: builder about 08:25, main 09:06 (454508ca5, ef8489590), about 41
   minutes. About 100 product lines and 210 test lines. The status was the head of the scrolled nav body, so a cursor deep
   in a long tree scrolled it off; it is now pinned at the list's top with the tree scrolling beneath, the cursor's
   comfort zone counted in the tree's own rows, and the workspace picker's cursor, which an old count left undrawn in
   short lists, drawn. Where the minutes went: the build 13; the review 17, which found no blocker, a cursor that could
   stay off a one- or two-row tree view, and tests that painted one frame from the top; a fix round 9, its new table
   test red against the old lines; the rebase and one scoped gate 3.
-- v0.7.1-rc.8, 2026-11-15, on the maintainer's word ("let's try that on next rc7 which will likely be final rc"; rc.7
+- v0.7.1-rc.8, 2026-11-15, on the maintainer's word to try that on the next candidate, which would likely be the final one (rc.7
   existed, so rc.8), carrying the four landings above: the full local gate at 7e03de18d passed (09:12); the cut at
   about 09:15 (release afc5207b3, the line's next stamp 69a647d7a); the draft ready about 09:36. The hub's install by
   archive was refused before it changed anything, because restarting the daemon would end the rows' open REPLs, and
   the hub stays on rc.7 until he says. One window computer's session installed it by archive (09:40). Named consumer:
   the maintainer; named check: the preview's box, the pinned nav status and Claude rows in the classic renderer. His use
-  found ROW-PACE-SLOW on the desktop: "why is scrolling slow on [the desktop]?", "just on this llm pane".
+  found ROW-PACE-SLOW on the desktop: he asked why scrolling was slow there, and said it was just in the agent pane.
 - The Windows tree fixtures' descendant writes nothing to the stdout the test reads (CONTAIN-PING-PID-INTERLEAVE), 2026-11-15,
   fixing forward a hosted red with no use behind it, test only and outside trial 1: main 09:37 (6b07be38d), one scoped
   gate; the hosted Windows run passed after it.
@@ -2451,40 +2451,40 @@ A landing's record goes here, with its measured times; the package page holds on
   same test stays open as PARKED-CLIENT-CUT-COUNT.
 - The cell panes page as they did before the row pace (ROW-PACE-SLOW), 2026-11-15, the two commits of rc.7's pace
   reverted whole, the scroll code byte-identical to rc.6's: main 15:10 (920021d64), one scoped gate; about 15 minutes
-  from the maintainer's word that his laptop's rc.6 window was "working great". A session's explanations before it (a
+  from the maintainer's word that his laptop's rc.6 window was working great. A session's explanations before it (a
   version, then the pane's height) were given without evidence; the maintainer said so.
-- v0.7.1-rc.9, 2026-11-15, on the maintainer's word ("go - and get this [desktop] on it"), carrying the revert: the full
+- v0.7.1-rc.9, 2026-11-15, on the maintainer's word to go and get the desktop on it, carrying the revert: the full
   local gate at 920021d64 passed (15:36); the cut at 15:37 (release 831e85b42, next stamp 67b27086d); the draft ready
   about 16:02; the desktop window computer's session installed it (16:05). Named consumer: the maintainer; named check:
-  Page Up and Page Down in the agent pane on the desktop. His use: "same problem in llm pane".
+  Page Up and Page Down in the agent pane on the desktop. His use: the same problem in the agent pane.
 - A roll frame shapes only the text that is new, and spaces are not text (AGENT-PANE-ROLL-RESHAPES), 2026-11-15, after a
-  Fable diagnosis on the maintainer's word ("ask a fable agent for help"), trial 1, Sonnet arm, builder text-reuse:
+  Fable diagnosis on the maintainer's word to ask a Fable agent for help, trial 1, Sonnet arm, builder text-reuse:
   diagnosis 16:00 to 16:43, main 17:22 (46d999a06, a95ec4e39), about 82 minutes in all. About 85 product lines added, the
   program 49 lines shorter, about 130 test lines. The text layer reused a shaped buffer only for the run in the same slot
   of the frame's list, so a ring that moved a row shaped nearly every run in the window again: about 125 ms a frame at
   203 by 73 on a Linux host against 4.5 ms for a preview frame, so a page got two frames on the desktop's large pane;
   runs now take the buffer shaped for the same text wherever it sat, and blank cells make no run. A Codex read on his
-  word ("have codex try to figure it out"), told none of this, found the same cause at the same line in 18 minutes. Where
+  word to have Codex try to figure it out, told none of this, found the same cause at the same line in 18 minutes. Where
   the minutes went: the diagnosis 43, measured; the build 13; one scoped gate and the review 21 at once, which found no
   blocker and could not break either rule (every glyph of 45 frames of 18 adversarial screens the same before and after)
   and one untested path, a metrics change; a fix round 25, its test red with that path emptied; one scoped gate 2. Two
   pixel-scroll builds started before the diagnosis were stopped without an edit.
-- v0.7.1-rc.10, 2026-11-15, on the maintainer's word ("ok, just make a new rc and i try it on [the desktop]"), carrying the
+- v0.7.1-rc.10, 2026-11-15, on the maintainer's word to make a new candidate for him to try on the desktop, carrying the
   text reuse: the full local gate at a95ec4e39 passed (17:31) and the hosted runs were green; the cut at 18:55 (release
   149fc7dc4, next stamp 0dae303dd); both window computers' sessions installed it by archive (19:21 and 19:26), the
-  laptop from rc.6. Named consumer: the maintainer; named check: Page Up in the agent pane on the desktop. His use: "ok,
-  the llmpane scroll is even better. nice."
+  laptop from rc.6. Named consumer: the maintainer; named check: Page Up in the agent pane on the desktop. His use: he reported that the agent pane's scroll
+  is even better.
 - The Chat drawer's mark keys ease the view, and Left over an empty draft leaves a thread, 2026-11-15, on the
-  maintainer's asks on rc.10 ("up and down arrow should have our smooth scroll as well. and let's make left arrow on
-  empty prompt move back out to main, like the nav pane"), trial 1, Opus arm, builder chat-arrow-keys: builder about
+  maintainer's asks on rc.10 (Up and Down should have the smooth scroll as well, and Left on an
+  empty prompt should move back out to main, as in the nav pane), trial 1, Opus arm, builder chat-arrow-keys: builder about
   19:20, main 19:37 (8ba91c625), about 17 minutes. 65 product lines and about 100 test lines: an arrow that marks a
   message out of view eases the view there over the scroll setting, and a new action, Left in the Chat scope, closes an
   open thread as Escape does while the draft is empty. Where the minutes went: the build 11, its diff read, no review
   round; one scoped gate 2.
 - The rows on Claude Code's alternate screen, 2026-11-15: of the 27 the maintainer's switch to the classic renderer
   left blank, 24 came back on the main screen with their conversations by Claude Code's own `/restart`, typed by a
-  session on his word in manual mode ("c"); the other three refused it while background work of their own ran, and
-  came back after their sessions stopped that work at his word ("go", and for the first of them "get [it] unstuck"). Their sessions had taken
+  session on his word in manual mode (his answer c); the other three refused it while background work of their own ran, and
+  came back after their sessions stopped that work at his word (to go, and for the first of them to get it unstuck). Their sessions had taken
   no turn on the mail that asked them (WAKE-MISSED-FULLSCREEN-ROWS).
 
 The records below run from rc.10 to rc.11 and the landing after it. Times are the clock of the day each landing was
@@ -2494,11 +2494,11 @@ recorded" where they do not. A builder is a trial 1 builder with its count and a
 the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the same role on model `opus` at effort medium.
 
 - The first-time setup page for the project chat's Slack app, 2026-11-15, on the maintainer's word that the manual should
-  hold it ("that should be in the docs as well") after he read a draft of it in the preview and said a public
+  hold it as well, after he read a draft of it in the preview and said a public
   package's instructions must be for anyone setting it up for the first time: `guide/chat-setup.md` with the two links
   to it, and CHAT-SETUP-UNDOCUMENTED closed. Gate 20:31, main (6bf17fccc); the hosted runs green. Writing and the build
   not recorded. The page asked a person to make and edit two files on the hub, and the maintainer's word on that
-  ("we can't require users to make and edit files") became the in-window setup below.
+  (users cannot be required to make and edit files) became the in-window setup below.
 - The in-window setup, 2026-11-15 to 2026-11-16: a plan of 12 landings and an optional 13th (about 1,250 product lines and
   1,600 test lines estimated) from a planner agent, then the maintainer's answers to its four questions (a lone computer
   is its own hub; the file scopes now, for figures; no switching of workspaces; no mail switch), each one written into the
@@ -2603,8 +2603,8 @@ the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the sa
   gate 16:29, main (0c1f09728, bdd4dbeee), which is the plan's first goal: a row posts a figure. The hosted runs green.
 - L6 of the figures plan, a picture's bytes cross the wire as `chat.file`'s blob, 2026-11-16, trial 1 #32, Opus arm,
   builder file-bytes: about 93 product and 137 test lines; gate 16:44, main (fdd00817b); the hosted runs green.
-- A person's post under their own Slack user token, 2026-11-16, on the maintainer's word ("the point was that if post
-  from here as me, the bot should answer", after a post of his through the drawer reached Slack as the app's and a
+- A person's post under their own Slack user token, 2026-11-16, on the maintainer's word (a post
+  from the drawer as himself was meant to be answered by the bot, after a post of his through the drawer reached Slack as the app's and a
   responder in the channel skipped it): a plan of four landings (wire, the chat crate, the daemon, the window) from a
   planner agent. The chat crate's part was built first (trial 1 #31, Sonnet arm, builder post-as-person: about 125
   product and 267 test lines against the plan's 60 and 140; a review with no blocker and five should-fix items, among
@@ -2660,8 +2660,8 @@ the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the sa
   18:59 on 36bcf5060, at 22:10 on dbc0b1d3a and at 23:15 on d6c40ecc1, the third after the last landing the candidate
   carries; the hosted runs of d6c40ecc1 were green; the comm folder had changed since rc.10 only in a skill's help line and
   its hash, so no mail matrix was owed. A decision card with two questions went to the maintainer (cut and install; and the
-  stopped piece below) with the cut marked irreversible, and his word was: "(a) 1a 2a: make it, install on all three, and
-  build the stopped piece tested only by making its helper fail on purpose". The cut was at 07:51 on 2026-11-17 (release
+  stopped piece below) with the cut marked irreversible, and his word was to take (a), 1a and 2a: make it, install on all three, and
+  build the stopped piece tested only by making its helper fail on purpose. The cut was at 07:51 on 2026-11-17 (release
   3d9310d14, next stamp 8636a658f); the draft was green with five assets; two window computers' sessions installed it by
   archive (08:15 and 08:18, each verified), and the maintaining session installed it on the hub from the archive at about
   08:17 with the daemon restart he had approved (the rows' open REPLs ended; a repair run after it passed; 28 rows, 27
@@ -2698,8 +2698,8 @@ the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the sa
   that had not finished did not run. Do not produce that content again, even reworded." It had been planning a child decode
   and a test that made a malformed picture. The session did not ask another agent to do it, did not reword it and held
   the piece for the maintainer, with the other fixes built meanwhile (a click opens on the release within 4 px, a link that
-  is down says so and never sends later, the status words); his word on the decision card above, "build the stopped piece
-  tested only by making its helper fail on purpose", resumed the builder, which built the decode in the window's bounded
+  is down says so and never sends later, the status words); his word on the decision card above, to build the stopped piece
+  tested only by making its helper fail on purpose, resumed the builder, which built the decode in the window's bounded
   drawing child (a picture mode, a PNG out of at most 16 megapixels, the header checked first; the in-window decode
   deleted) with fail-on-purpose stand-ins and no malformed picture, and the classifier did not stop it again. A verify
   review found no blocker and three should-fix items (the picture ask counted as a strike against the pane's own drawings
@@ -2881,7 +2881,7 @@ the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the sa
     the hosted macOS tests ran on macOS 26 alone, and the person's version was asked for an hour in. A change that
     opened the Slack setup's page without the redirect was built and reviewed in that hour and dropped on the
     maintainer's word (the setup was not at fault). Unproven: a person's Mac on macOS 27.
-  - macOS 27 in the hosted tests, the same evening, on the maintainer's word in the session's pane ("yes add mac 27",
+  - macOS 27 in the hosted tests, the same evening, on the maintainer's word in the session's pane (to add macOS 27,
     a workflow change): `rust.yml` runs every macOS job again on the `xcode-27` image (macOS 27, a preview), nine
     build+test jobs and three publish-guard jobs, with the macOS-only steps keyed on the system and not on a label.
     Run from a branch on 0.7.1's code (run 44459315829): three of the twelve macOS 27 jobs red, about thirty tests,
@@ -2889,8 +2889,8 @@ the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the sa
     change merged in (run 44462416438): all 56 jobs green. Scoped gate passed 22:36; landed 22:37 as 828ea7d40, after
     the lookup's change so that no commit of `main` carries a leg known red. The release gate's workflow still runs
     macOS 26 alone.
-  - macOS 27 in the release gate's hosted run, 2026-11-19, on the maintainer's word in the session's pane ("add 27 to
-    the tests", 06:53, a workflow change, with his word to make 0.7.2 if the tests pass): `release-gate.yml` runs each
+  - macOS 27 in the release gate's hosted run, 2026-11-19, on the maintainer's word in the session's pane (to add 27 to
+    the tests, 06:53, a workflow change, with his word to make 0.7.2 if the tests pass): `release-gate.yml` runs each
     of its macOS jobs again on the `xcode-27` image, the two `gate-*` shards through the plan step as `rust.yml` does
     and the six macOS-only jobs (the native minimized window and its mutation leg, the window close, the pane timing,
     the daemon lifetime premises, the scripts under bash 3.2) through a two-system matrix, eight more jobs in all. An

@@ -73,8 +73,8 @@ pub(crate) fn parts(text: &str) -> Parts {
 
 /// Why a blocked question owes a decision page it does not name (`Page:`), or `None`: a merge, a tag or a registration
 /// (an `Irreversible:` clause, or an older line's `Pane only:`) always carries one. Whether any other question needs
-/// one is its decision's context, not its length (the maintainer, 2026-10-27: "you often have 1 or 2 sentences for
-/// something that is very complicated"), which no parser can read, so that half of the rule is taught, not refused.
+/// one is its decision's context, not its length (the maintainer, 2026-10-27: a question often has one or two sentences
+/// for something very complicated), which no parser can read, so that half of the rule is taught, not refused.
 pub(crate) fn page_owed(text: &str) -> Option<&'static str> {
     if !parts(text).page.is_empty() {
         return None;
@@ -85,7 +85,7 @@ pub(crate) fn page_owed(text: &str) -> Option<&'static str> {
 
 /// The words by which a wait's line addresses the session's person, or `None`: "you" or "your" and their forms, as whole
 /// words in any case, or the person named as such ("the user", "its person", "the maintainer"). Waiting on the person
-/// is a question for them (the maintainer, 2026-11-01: "waiting for me is red, not purple"), which only a blocked stamp
+/// is a question for them (the maintainer, 2026-11-01: a wait on the person is red, not purple), which only a blocked stamp
 /// puts in the Queue. A name is not read: none is in the repository.
 pub(crate) fn addresses_person(text: &str) -> Option<String> {
     let lower = text.to_lowercase();

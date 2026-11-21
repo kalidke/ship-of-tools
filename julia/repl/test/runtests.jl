@@ -502,7 +502,7 @@ Base.flush(::CountingIO) = nothing
         # The res-only error was silently dropped for fire-and-forget runs
         # (the supervisor drops untracked res acks by design), making a
         # missing file indistinguishable from a run that never happened —
-        # the 2026-07-24 "--fresh include never runs" field failure. The
+        # the 2026-07-24 field failure where --fresh include never ran. The
         # failure must stream as error+done frames like any other eval error.
         bs_in, bs_out, _ = drive(String[])
         req = sprint(DR.json_write, Dict(

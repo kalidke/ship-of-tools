@@ -19,8 +19,8 @@ otherwise *name a path* or *paste a URL*), and on "open it in the browser",
 | A built site, ANY page inside it, or a self-contained `.html` | `Page: <abs-path>` at the end of your closing marker line | the person's Queue (a card) |
 | An http(s) URL — page, PR, CI run, dashboard | `sot-fe open-url <url>` | FE machine's OS browser |
 
-An HTML page is offered, never opened in a new tab (the maintainer, 2026-10-31: "things are still posting pages
-directly to browser, and not to radiant queue"). End your reply's closing marker line with `Page: <absolute path>`:
+An HTML page is offered, never opened in a new tab (the maintainer, 2026-10-31, found pages still posting
+directly to the browser and not to the queue). End your reply's closing marker line with `Page: <absolute path>`:
 `SITREP-QUESTION:` when you ask, `SITREP-WAITING:` while you wait, `SITREP:` when you close. The daemon keeps the page on
 your row's latest stamp and the Queue opens it from its card. The page must lie under your row's project folder (keep
 pages in `dev/output/pages/`). `show-result <page.html>` opens nothing: it prints that line with the absolute path, or

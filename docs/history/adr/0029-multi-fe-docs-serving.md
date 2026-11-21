@@ -138,7 +138,7 @@ by the same `ClientGuard::drop` hook as the prefix map; exhaustion returns a
 clear `root_relative_pool_busy` error; per-port bind failures shrink the pool
 non-fatally. The open-time guard is now the ROUTER between the two schemes,
 not a refusal. All launchers forward the range statically. Found by, and
-verified against, an example lab's project `__site` ("Shift+W isn't working").
+verified against, an example lab's project `__site` (reported as Shift+W not working).
 
 ## Amendment (2026-10-16, 0.6.6): a window's sites outlive its connections
 

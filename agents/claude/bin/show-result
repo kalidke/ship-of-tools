@@ -63,8 +63,8 @@ case "$(printf '%s' "$REL" | tr '[:upper:]' '[:lower:]')" in
     fi ;;
 esac
 
-# A page is offered, never opened (the maintainer, 2026-10-31: "things are still posting pages directly to browser, and
-# not to radiant queue"): the session ends its reply's closing marker line with `Page: <absolute path>`, the daemon
+# A page is offered, never opened (the maintainer, 2026-10-31: pages were still posting directly to the browser, and
+# not to the Queue): the session ends its reply's closing marker line with `Page: <absolute path>`, the daemon
 # keeps that page on the row's latest stamp, and the person's Queue opens it from its card. The Queue serves only a page
 # under this row's own project folder (pages' open verb), so a page elsewhere is refused here. A person who asks to see
 # a page now gets it from `sot-fe docs <workspace> <absolute path>`, which this wrapper never runs.

@@ -881,8 +881,8 @@ only as an alias until the next cut, then is retired. A defect found before the 
 before the cut and rides into that candidate; a defect found after the tag goes into the next rc. A broken candidate may
 be deleted and re-cut under the same number only while its release is still a draft that no box has installed by archive
 run; once it is published, or any box has installed it that way, it is never re-cut.
-The maintainer, 2026-10-16: "so just like our julia
-packages, once we tag we move main to next version as dev."
+The maintainer, 2026-10-16: as with the lab's Julia
+packages, once a tag is cut main moves to the next version as dev.
 
 ## Amendment 2026-10-19 — the apply checks that the prepare fits its host
 

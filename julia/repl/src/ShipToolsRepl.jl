@@ -444,7 +444,7 @@ function handle_run_file(io::IO, id, payload)
         # for a fire-and-forget run the terminal res is dropped by the
         # supervisor (by design), so a res-only error made this failure
         # perfectly invisible — no drawer entry, no FE close-out, "accepted"
-        # then silence (the 2026-07-24 "--fresh include never runs" report).
+        # then silence (the 2026-07-24 report that --fresh include never runs).
         emit = make_emit(io, id, eval_id)
         emit(Dict(:kind => "error",
                   :message => "no such file: $abs_path",

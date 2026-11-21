@@ -19,8 +19,8 @@ from host-b).
 
 Result: a `ccb`/`ccbe` session launched on a server could only catch up on its
 durable inbox on its next natural turn; it never woke on inbound. In practice the
-servers ran **zero** sessions — the registry was 100% myhost — and "the monitors of
-host-b are down" was the visible symptom.
+servers ran **zero** sessions — the registry was 100% myhost — and the monitors of
+host-b being down was the visible symptom.
 
 The Windows FE already solved the same shape (no local daemon → tunnel `sotd`
 from myhost + explicit `SOT_RELAY_ENDPOINT`); the Linux servers had simply never

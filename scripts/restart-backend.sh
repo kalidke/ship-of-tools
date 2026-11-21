@@ -8,7 +8,7 @@
 # so a normal FE launch won't pick up a backend fix either. That gap once let a
 # pane-derived work-state fix sit built-but-unloaded for ~17h — the daemon had
 # been running since before the fix was committed — surfacing to the user as
-# "agents show idle when they're actually working". This script is the canonical
+# agents showing idle when they were actually working. This script is the canonical
 # "load the latest binary now".
 #
 # It kills the running daemon by EXPLICIT pid (never `pkill -f`, which self-

@@ -27,7 +27,7 @@ Until now the launcher hard-coded the target host (myhost) and the cross-machine
 
 Two constraints shaped the design:
 
-- **The user does not need active in-session host switching.** Switching hosts means cold-starting a new daemon's session state; that's heavyweight and expected to be rare ("we don't really need to switch hosts actively"). Picking a host once and having it persist is enough.
+- **The user does not need active in-session host switching.** Switching hosts means cold-starting a new daemon's session state; that's heavyweight and expected to be rare (the user said that switching hosts actively is not really needed). Picking a host once and having it persist is enough.
 - **Reconnection (tunnel-supervisor restarts after laptop wake, wifi flap, etc.) must target the *same* host the user is on**, not silently bounce to a different one.
 
 ## Decision

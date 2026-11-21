@@ -10,9 +10,9 @@ a detail, and wants the orchestrator LLM (the in-pane `claude`) to *look at that
 specific zoomed region* — "what's the artifact here?". Today the LLM pane has no
 idea what's in the preview, and there's no way to hand it a crop.
 
-Two framings surfaced: (a) a one-off "capture this ROI and send it" action, and
-(b) the higher-level "make the LLM pane sot-aware so it knows what I'm looking
-at". They converge: (b) is the foundation, (a) is one trigger on top of it.
+Two framings surfaced: (a) a one-off action to capture this ROI and send it, and
+(b) the higher-level aim of making the LLM pane sot-aware so it knows what the
+user is looking at. They converge: (b) is the foundation, (a) is one trigger on top of it.
 
 This extends ADR 0019 (frontend control channel): `fe-state.json` already lets the
 in-pane agent *observe* the FE (mode/focus/workspace), and `fe-commands/` lets it
