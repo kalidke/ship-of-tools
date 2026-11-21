@@ -51,3 +51,18 @@ fn derive_prints_the_three_lines_the_spawn_reads() {
     assert_eq!(slug(&t.env, &args(&["My Row"])).stdout, format!("{}\n", sot_topology::endpoint::slug("My Row")));
     assert_eq!(routable(&t.env, &args(&["", "/r"])).code, 1);
 }
+
+#[test]
+fn derive_fresh_uses_the_childs_kind_and_defaults_to_claude() {
+    let mut t = TestHome::new();
+    t.set("SOT_AGENT_KIND", "codex");
+    for (kind, name) in [(Some("codex"), "repo-cx-box1"), (None, "repo-box1"), (Some("claude"), "repo-box1")] {
+        let mut argv = args(&["fresh", "/home/u/repo", "box1"]);
+        if let Some(kind) = kind {
+            argv.extend(args(&["--agent", kind]));
+        }
+        let o = derive(&t.env, &argv);
+        assert_eq!(o.code, 0, "{}", o.stderr);
+        assert_eq!(o.stdout, format!("{name}\n\n{name}\n"));
+    }
+}

@@ -280,7 +280,7 @@ Calls in: every session through the wrappers (`comm-send.sh`, `comm-poll.sh`, `c
 `comm-leave.sh`, `comm-list.sh`, `comm-relay.sh`, `comm-session-start.sh`), whose names, arguments, output words and
 exit codes are kept; rows' work-state scripts and hooks and the agents' CLIs through the shell door
 (`comm/lib/comm-lib-sotd.sh`): `sot_comm VERB`, which runs `sotd comm VERB` (the spawn: `registry put|del-provisional|touch`,
-`derive [--claim]`, `slug`; the despawn: `registry del`, `self-slot`; the spawn, despawn, probe and three comm test suites:
+`derive [--agent claude|codex] [--claim]` (the child's kind, so an unnamed Codex child is given the Codex handle; Claude when omitted: `door_tests.rs`, `agents/tests/test-spawn-remote-no-local-row.sh`), `slug`; the despawn: `registry del`, `self-slot`; the spawn, despawn, probe and three comm test suites:
 `ensure-home`; ccx: `handoff-line`; the Stop hook: `unread`, `stop-mark`), and three functions kept because many
 scripts call them and tests stand in for them: `sot_require_agent` (the spawn, despawn, probe and worktree scripts,
 `comm-status.sh` and its two hooks; the heartbeat test stubs it), `sot_registry_read` (the spawn, despawn, probe,
