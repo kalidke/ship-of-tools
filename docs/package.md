@@ -173,8 +173,15 @@ earlier text of the sections above and the integration-test assignment by pass.
 
 ## State
 
-v0.7.2 is published (2026-11-19), and a plain install moves a computer to it; `docs/UPDATE-AGENT.md` is the one update
-procedure an agent follows, from any 0.6 or 0.7 install. It is 0.7.1 with two faults on a Mac fixed, cut from `main`
+v0.7.3 is published (2026-11-21), and a plain install moves a computer to it; `docs/UPDATE-AGENT.md` is the one update
+procedure an agent follows, from any 0.6 or 0.7 install. It is the third 0.7.3 candidate's code under the final
+stamp (only the version stamps differ), cut from `main` on the maintainer's word the morning he had used that
+candidate, after the whole local gate had passed at the commit that was cut, and published on his word once the
+release workflow's builds, smokes and install smokes and the release gate's hosted run on that commit had passed,
+every job green. What it carries is listed below, where this page speaks of the 0.7.3 candidates. One fault a
+person saw on the third candidate is in it, measured to be older than the candidate and not fixed: a session whose
+preview holds a markdown file with large tables arrives late at every switch to it (`docs/defects.md`,
+PREVIEW-TABLES-REBUILT-AT-EVERY-ARRIVAL). `main` carries 0.7.4-dev. v0.7.2 was published 2026-11-19. It is 0.7.1 with two faults on a Mac fixed, cut from `main`
 on the maintainer's word with no candidate once the tests had passed: the whole local gate at the commit that was cut,
 and, on the last commit that changes product code, the hosted Rust tests and the release gate's hosted run, both with
 their macOS jobs on macOS 26 and on macOS 27, and the release workflow's builds and install smokes without a tag,
@@ -267,8 +274,9 @@ comes back at full height. v0.7.3-rc.3 (2026-11-21) is an unpublished draft, cut
 word after the whole local gate had passed at the commit that was cut; its release workflow's builds, smokes and
 install smokes passed, and it was installed by archive, on his word in a session's pane, by their own sessions on
 two window computers, whose windows run it; the hub stays on the second candidate, since the third changes only
-the window. `main` carries 0.7.3-rc.4-dev. The third candidate is the second with that fault's fix,
-which no person has used: after a switch the window asks the hub for the channel at a pace that starts at 100 ms
+the window. The maintainer used the third candidate that morning and called for the release; his one report on it,
+a session slow to arrive, was measured to be the preview's older fault named above and none of the candidate's
+changes. The third candidate is the second with the Chat drawer's fix: after a switch the window asks the hub for the channel at a pace that starts at 100 ms
 (it had asked at 250 ms and then only at 1 s, and usually waited out the second for a snapshot the hub already
 held), and a session shown before draws its channel's last messages on the first frame, for up to eight channels,
 under a title that says they are being read again, with typing taken at once and only the send waiting until the

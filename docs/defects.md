@@ -909,8 +909,32 @@ owned by `docs/CLAUDE.md`.
   covers the preview, so the preview's rect is empty, and `layout_markdown` lays the markdown buffer out at
   `(width - padding).max(1.0)`, 1 px wide (`preview/layout.rs`). Each change between a covered and an uncovered preview
   (a switch to or from a row whose drawer is full) therefore resizes the buffer, which shapes the file again at 1 px and
-  again at the pane's width. The cost is not measured; extrapolated from the editor's 850 ms for a 465 KB file it is tens
-  of ms for a README. Fix not decided: keep the last non-empty width while the pane is covered.
+  again at the pane's width. Measured since (2026-11-21, a release build, a 62 KB markdown file): 6.4 ms to build the
+  file at 1 px against 5.9 ms at the pane's width, and 0.23 ms for the resize after it, so it costs a person nothing
+  they would see. Fix not decided: keep the last non-empty width while the pane is covered.
+- **PREVIEW-TABLES-REBUILT-AT-EVERY-ARRIVAL** [person] Seen in use by a person on the 0.7.3 candidate, 2026-11-21 (the
+  maintainer, of one session among many: "something wierd slow when swithcin to you", and, once another file had been
+  put in that session's preview, "now its fast"; his first guess was the Chat drawer, which a measurement cleared).
+  A session whose preview holds a markdown file with large tables arrives late as a whole, every pane of it, at every
+  switch to it. The window keeps one set of table buffers and clears it whenever markdown is not on screen
+  (`preview/markdown/media.rs`, called from `prepare.rs`), so each arrival at such a session rebuilds the text of every
+  table of the file, rows out of view included, on the UI thread, and one frame draws every pane
+  (`ui/app/frame.rs`), so nothing of the arriving session reaches the screen until it is done. Measured on a release
+  build with the file he had open (62 KB, seven wide tables, 102,034 characters in them): 216 to 223 ms for the
+  tables, a first frame of 263 to 265 ms where the frames after it take 1.1 to 1.6 ms; the same at the second 0.7.3
+  candidate and the third (no preview, session, frame or render code differs between them), so it is older than
+  both. On the hub's log of his use the preview's read reached the hub 398 to 680 ms after each switch to that
+  session and 149 to 180 ms after the file changed, so his window's frame is inferred to have run about 230 to
+  530 ms long. The tables are rebuilt even while a full-height drawer covers the preview (the check for markdown
+  shown ignores the pane's size), and nothing of them is kept per row, so a second arrival costs what the first did.
+  The navigation pane's restore was measured beside it and is not the cause: a return draws the saved tree at once
+  and its folder reads go out together. Not fixed, and in 0.7.3. The fix named: keep recently built sets of table
+  buffers under a budget so a return reuses them (one set of this file's tables holds 33 MB), and never build a
+  set in the arrival's own frame: that frame draws the session with the tables' places empty and the next frame
+  builds them; then, for the first view, shape only the tables in view or shape table text in the cheap mode (24 ms
+  measured against 216, with no font fallback, so box-drawing characters want a check on Windows and macOS first).
+  Its test: a window fixture whose first frame after a return to such a session must take under 50 ms with its
+  tables drawn, and after a first arrival under 50 ms with the tables in the next frame, red today (220 to 365 ms).
 - **AGENT-PANE-CURSOR-AHEAD-OF-TEXT** [person] Seen in use by a person on a Linux window, 2026-11-19 (the maintainer: "If i switch to a session and start typing the cursor moves faster to righ than text giving increasing gap. if i backspace it all away and type again it works."; the sessions were also open in a window on another computer). Not reproduced. The window draws the pane's text and the row's terminal cursor from one grid at one cell width (`paint_terminal`, `render/cells.rs`), and a test of that path found every glyph on its cell and the cursor after the text at three scales, after a switch's checkpoint, restore and resize. Two windows on one row can disagree on the terminal's size until this window's first key takes the pen (capsule `attach.rs`; the contract does not say that a redial takes the pen), but by test that moves rows and clips the right edge, not a gap that grows a cell per key. Open guesses, in order: Claude Code's own cursor running ahead when typing begins over the dim suggested prompt an idle row shows (then it is not the window's to fix); the size disagreement; fonts on that computer. What would tell them apart: whether the cursor is whole cells past the text on the same row, less than that, or on another row.
 
 ## distribution
