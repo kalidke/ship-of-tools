@@ -411,6 +411,64 @@ case_plain_user_turn_without_marker_floors_blue_unnudged() {
 }
 
 # ---- effort vs exchange (2026-09-10): a long green turn is asked once ----
+# Synthetic Codex rollout. The older turn, outputs, and command-completion events
+# must not inflate the number of calls made by the model in the current turn.
+codex_rollout() {  # TOOLS SECONDS
+    jq -nc --argjson calls "$1" --argjson secs "$2" '
+        def record($s; $type; $p): {timestamp: ((1760000000+$s)|todate), type:$type, payload:$p};
+        def start($s; $id): record($s; "event_msg"; {type:"task_started",turn_id:$id,started_at:(1760000000+$s)});
+        start(-3600; "older"), record(-1; "response_item"; {type:"function_call", call_id:"old"}),
+        start(0; "current"), record(0; "turn_context"; {turn_id:"current"}),
+        (range($calls) as $i | (if $i%2==0 then "function_call" else "custom_tool_call" end) as $kind
+         | record(1; "response_item"; {type:$kind,call_id:($i|tostring)}),
+           record(1; "event_msg"; {type:"item_completed",turn_id:"current",item:{type:"CommandExecution"}}),
+           record(1; "response_item"; {type:($kind+"_output"),call_id:($i|tostring)})),
+        record($secs; "response_item"; {type:"message",role:"assistant",phase:"final_answer",content:[]})' > "$WORK/codex.jsonl"
+}
+codex_stop() {  # TRANSCRIPT FINAL-TEXT [ACTIVE]
+    printf '%s' "$1" | jq -Rsc --arg text "$2" --argjson active "${3:-false}" '{
+        transcript_path:(if .=="" then null else . end), session_id:"session", turn_id:"current",
+        last_assistant_message:$text, stop_hook_active:$active, hook_event_name:"Stop"}' | bash "$HOOKS_DIR/comm-status-idle.sh"
+}
+case_codex_effort() {  # TOOLS SECONDS [EXPECTED REASON PREFIX]
+    local out tr="$WORK/codex.jsonl"
+    seed idle; W "$GENUINE"; codex_rollout "$1" "$2" || return 1
+    out="$(codex_stop "$tr" "Finished.")" || return 1
+    if [ -n "${3:-}" ]; then
+        printf '%s' "$out" | jq -e --arg prefix "$3" '.decision=="block" and (.reason|startswith($prefix))' >/dev/null &&
+            expect working/user/-/-/- held || { echo "    wrong effort block: $out"; return 1; }
+        out="$(codex_stop "$tr" "Finished." true)" || return 1
+    fi
+    [ -z "$out" ] && expect done/-/-/-/d end || { echo "    unexpected hold: $out"; return 1; }
+}
+case_unknown_effort() {  # TRANSCRIPT CONDITION
+    local tr="$WORK/unknown.jsonl" out
+    seed idle; W "$GENUINE"; _mail_reset
+    case "$1" in
+        missing) rm -f "$tr" ;;
+        null) tr="" ;;
+        empty) : > "$tr" ;;
+        malformed) printf '{\n' > "$tr" ;;
+        other) printf '{"type":"unrecognized"}\n' > "$tr" ;;
+        stale) codex_rollout 10 600 && sed 's/"current"/"older"/g' "$WORK/codex.jsonl" > "$tr" || return 1 ;;
+    esac
+    out="$(codex_stop "$tr" "Finished.")" || return 1
+    [ -z "$out" ] && expect done/-/-/-/d end || { echo "    unknown effort held: $out"; return 1; }
+    seed idle; W "$GENUINE"; _mail_line "$NAME"
+    out="$(codex_stop "$tr" "SITREP: Complete")" || return 1
+    printf '%s' "$out" | jq -e '.decision=="block" and (.reason|contains("comm-poll"))' >/dev/null &&
+        expect working/user/-/-/- mail-first || return 1
+    printf '1' > "$SOT_COMM_HOME/read/$NAME.cursor"
+    out="$(codex_stop "$tr" "SITREP: Complete" true)" || return 1
+    [ -z "$out" ] && expect done/-/-/-/d marked && [ "$(summ)" = Complete ]
+}
+case_claude_without_turn_boundary() {
+    local tr="$WORK/claude-tail.jsonl" out
+    seed idle; W "$GENUINE"
+    printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"Finished."}]}}' > "$tr"
+    out="$(printf '%s' "$tr" | jq -Rsc '{transcript_path:.,stop_hook_active:false}' | bash "$HOOKS_DIR/comm-status-idle.sh")"
+    [ -z "$out" ] && expect done/-/-/-/d end || { echo "    missing prompt produced a hold: $out"; return 1; }
+}
 case_effort_user_turn_without_marker_gets_one_soft_nudge() {
     seed idle; W "$GENUINE"
     local out; out="$(ITX 10 60 'Fixed it; all green.')"

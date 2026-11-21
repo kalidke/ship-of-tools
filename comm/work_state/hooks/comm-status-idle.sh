@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# comm-status-idle.sh — Claude Code `Stop` hook for comm agents. Four jobs,
+# comm-status-idle.sh — Claude Code and Codex `Stop` hook for comm agents. Four jobs,
 # numbered by topic. They RUN in this order: the inbox read and (2)'s mail
 # block, then a lock fault's once-block, on EVERY turn, a marker turn
 # included; then (0); then (1) and the other nudges; then (3). While an inbox
@@ -149,7 +149,7 @@ sot_end_by_signal() { [ -z "${_SOT_SIG:-}" ] || { trap - "$_SOT_SIG"; exec sh -c
 
 # Stop-hook input (JSON on stdin): {stop_hook_active, transcript_path, ...}.
 input="$(cat 2>/dev/null || true)"
-jqget() { printf '%s' "$input" | jq -r "$1" 2>/dev/null || true; }
+jqget() { printf '%s' "$input" | jq -j "$1" 2>/dev/null || true; }
 
 # Comm-agent gate (the safety line): resolve our handle; ONLY a joined comm agent
 # with a registry row is eligible for the nudge. Anyone else → plain idle floor,
@@ -235,14 +235,12 @@ else
     fi
 fi
 
-# The current turn's slice: everything after the last HUMAN/machine prompt (a
+# The Claude turn's slice: everything after the last HUMAN/machine prompt (a
 # `user` record whose content is a string / carries no tool_result -- tool
 # results are `user` records too). One jq pass over that slice feeds two
 # things: the effort counter (tool calls + wall seconds) and the closing text
-# the marker check below searches. A prompt not found in the tail means the
-# turn is longer than the tail: an effort by construction (tools/secs pinned
-# to a 9999 sentinel, as before) -- but the text is still joined from
-# whatever the tail holds, since a stale prefix beats a missed marker.
+# the marker check below searches. Without a prompt in the tail the counts
+# are unknown. The available text still participates in the marker check.
 #
 # The text is EVERY assistant text block in the slice, joined in order, not
 # just the last assistant record's (2026-09-14, live incident: a long reply
@@ -262,8 +260,11 @@ fi
 # as {stop_feedback: R}, never through argv: a reason can hold free text, and
 # MSYS2 rewrites an argument that looks like a path.
 EFFORT_TOOLS=8; EFFORT_SECS=300
-turn_tools=0; turn_secs=0; last_text=""; prompt_text=""
-if [ -n "$tp" ] && [ -r "$tp" ]; then
+turn_tools=""; turn_secs=""; last_text=""; prompt_text=""
+# turn_id is the Codex Stop schema's extension. Its marker comes from the
+# final message below; its effort is measured only after mail and markers pass.
+turn_id="$(jqget '.turn_id | strings')"
+if [ -z "$turn_id" ] && [ -n "$tp" ] && [ -r "$tp" ]; then
     turn_json="$( { jq -cR 'fromjson? | strings | {stop_feedback: .}' "$fb_file" 2>/dev/null
                     tail -n 3000 "$tp" 2>/dev/null; } | jq -sc '
         def is_prompt: .type=="user" and ((.message.content|type)=="string"
@@ -279,15 +280,15 @@ if [ -n "$tp" ] && [ -r "$tp" ]; then
         | ([to_entries[] | select(.value | is_prompt and (is_own_feedback($fb) | not)) | .key] | last) as $h
         | (if $h == null then . else .[$h+1:] end) as $turn
         | ([$turn[] | select(.type=="assistant") | .message.content[]? | select(.type=="text") | .text] | join("\n")) as $text
-        | if $h == null then {tools: 9999, secs: 9999, text: $text, prompt: ""}
+        | if $h == null then {text: $text, prompt: ""}
           else
             ([$turn[] | select(.type=="assistant") | .message.content[]? | select(.type=="tool_use")] | length) as $n
             | ((.[$h].timestamp // "") | if . == "" then 0 else secs end) as $t0
             | (([$turn[] | select(.type=="assistant") | .timestamp // empty] | last // "") | if . == "" then 0 else secs end) as $t1
-            | {tools: $n, secs: (if $t0 > 0 and $t1 > $t0 then $t1 - $t0 else 0 end), text: $text, prompt: (.[$h] | prompt_of)}
+            | {tools: $n, secs: (if $t0 > 0 and $t1 >= $t0 then $t1 - $t0 else null end), text: $text, prompt: (.[$h] | prompt_of)}
           end' 2>/dev/null)"
-    turn_tools="$(printf '%s' "$turn_json" | jq -r '.tools // 0' 2>/dev/null)"
-    turn_secs="$(printf '%s' "$turn_json" | jq -r '.secs // 0' 2>/dev/null)"
+    turn_tools="$(printf '%s' "$turn_json" | jq -j '.tools // empty' 2>/dev/null)"
+    turn_secs="$(printf '%s' "$turn_json" | jq -j '.secs // empty' 2>/dev/null)"
     last_text="$(printf '%s' "$turn_json" | jq -r '.text // ""' 2>/dev/null)"
     # Last prompt record's own text (2026-09-15, turn-origin correction below):
     # empty when the turn is longer than the tail ($h was null) -- the origin
@@ -302,8 +303,6 @@ lam="$(jqget '.last_assistant_message // empty')"
 if [ -n "$lam" ]; then
     last_text="${last_text}
 ${lam}"
-    case "$turn_tools" in ''|*[!0-9]*) turn_tools=0 ;; esac
-    case "$turn_secs" in ''|*[!0-9]*) turn_secs=0 ;; esac
 fi
 
 # (0) CLOSING MARKER: the LAST line in the turn opening with
@@ -599,7 +598,28 @@ esac
 # turn closed an effort (owes the sitrep block) or was a step in a live
 # back-and-forth (owes nothing). Short turns never trip this, whatever they
 # did; the thresholds are the effort/exchange line, not a work detector.
-if [ "$origin" = user ] && { [ "$turn_tools" -ge "$EFFORT_TOOLS" ] || [ "$turn_secs" -ge "$EFFORT_SECS" ]; }; then
+if [ "$origin" = user ] && [ -n "$turn_id" ] && [ -f "$tp" ] && [ -r "$tp" ]; then
+    # Rollout call records have no turn id. Only count them after the most
+    # recent task_started if it names this Stop's turn, up to its completion
+    # if already recorded. Outputs and command-completion events are echoes.
+    counts="$(tail -n 3000 "$tp" | jq -sj --arg id "$turn_id" '
+        def event($kind): .type=="event_msg" and .payload.type==$kind;
+        def seconds: capture("^(?<sec>[^.Z]+)(?<frac>\\.[0-9]+)?Z$")
+            | ((.sec+"Z")|fromdateiso8601) + (("0"+(.frac // ""))|tonumber);
+        ([to_entries[] | select(.value | event("task_started")) | .key] | last) as $start
+        | select($start != null and .[$start].payload.turn_id==$id)
+        | .[$start:]
+        | (first(to_entries[] | select(.value | event("task_complete") and .payload.turn_id==$id) | .key)
+           // (length-1)) as $end
+        | select($end > 0) | .[:$end+1]
+        | ((last.timestamp|seconds) - (first.timestamp|seconds) | floor) as $secs
+        | select($secs >= 0)
+        | [([.[] | select(.type=="response_item" and (.payload.type | strings | endswith("_call")))] | length),
+           $secs] | @tsv' 2>/dev/null)" || counts=""
+    read -r turn_tools turn_secs <<< "$counts"
+fi
+if [ "$origin" = user ] && [ -n "$turn_tools" ] && [ -n "$turn_secs" ] &&
+    { [ "$turn_tools" -ge "$EFFORT_TOOLS" ] || [ "$turn_secs" -ge "$EFFORT_SECS" ]; }; then
     emit_block "$(jq -nc --arg n "$turn_tools" --arg m "$((turn_secs / 60))" '{
       decision: "block",
       reason: ("This turn ran " + $n + " tool calls over " + $m + " min and ends with no closing marker. IF it CLOSED a work effort (a result landed, a fix shipped, a diagnosis was reached, a decision point arrived), close with the sitrep block now, as the last thing in your reply: a line  SITREP: <one-line headline>  then the chain (issue in context, diagnosis, design, result with its scale, interpretation, plan) in plain words -- no hashes, paths, names, backticks or bullets. IF this turn was a step in a live back-and-forth with the user, end normally: no block is owed. This will not fire again this turn.")

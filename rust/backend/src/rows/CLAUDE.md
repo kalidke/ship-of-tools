@@ -316,6 +316,11 @@ its name:
   (`sot_require_agent`), and a process outside the row resolves no handle of the row's. The daemon sets two facts only:
   the dialog it reads on a Claude row's screen, and a person's read (`workspace.activate` with `read: true`, which the
   window sends after ten seconds on the row), which clears `done` without restamping the row's time.
+- The Stop hook checks directed mail first. On an unmarked human turn, eight calls or five minutes qualify for
+  an effort reminder. For Codex the hook matches the payload's `turn_id` to the rollout's `task_started`, counts
+  tool-call response items once, and measures elapsed time from the turn's start to its last recorded activity.
+  If the last 3,000 transcript records cannot establish the counts, effort is unknown for either agent and the
+  hook skips that reminder. Codex can still declare its closing marker in `last_assistant_message`.
 - Two reader paths. `workspace.list` carries each row's `agent_state`, `agent_summary` and `agent_status_at`, read fresh
   from the registry through the row's bound handle and only from an entry of this host (`work_state::shown_of`); the
   work-state poll compares the same answer every 1.5 s and publishes `workspace.changed` (action `agent_state`) when what
