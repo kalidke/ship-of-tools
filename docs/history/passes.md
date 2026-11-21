@@ -3127,3 +3127,31 @@ the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the sa
     CHAT-DRAFT-HAS-NO-DISCARD. Lessons: a second change built on a branch still in review pays a rebase a round,
     so its records wait for the first to land; and a brief that asks for a comparison with the old behavior asks
     for its evidence too.
+  - v0.7.3 (2026-11-21): the third candidate's code under the final stamp, cut and published the same morning on
+    the maintainer's word; the whole local gate at the commit cut, the release workflow 22 of 22 and the release
+    gate's hosted run 33 of 33. About 75 minutes from the word to the publish, 60 of them the two hosted runs.
+  - A session with a table-heavy preview arrives at once (PREVIEW-TABLES-REBUILT-AT-EVERY-ARRIVAL), found in a
+    person's use of the third 0.7.3 candidate the same day. First taken for a fault of the candidate's chat
+    changes; a diagnoser cleared those by measuring whole frames (about 1 ms, the chat under 0.1) and then found
+    the cause by timing the very file: every table of a previewed markdown file was shaped again at each arrival,
+    216 to 223 ms, in the one frame that draws every pane. One builder, three reviewers, four rounds, about
+    2 hours 45 minutes from the start of the build to `main`, about 75 product lines. Each review measured on a
+    release build, which no review of the chat landings had: the first found the same stall moved to the frame
+    that uncovers the preview and a memory bound that was false; the second found a regression for a document
+    over the budget (its set was dropped at every cover) that the first fix had opened; the third found none.
+    The push was refused once by the pre-push private-information check, for a defect entry that quoted a
+    person's report; the entry was rewritten in reported form and the commits combined under a new branch.
+    Filed open: PREVIEW-TABLES-FIRST-VIEW-SHAPES-ALL, PREVIEW-TABLE-PADDING-AMPLIFIES,
+    PREVIEW-DOCUMENT-RESHAPED-AT-EVERY-ARRIVAL. Lessons: a fault a person reports as slow gets a timing of the
+    frame before any cause is named, and its fix a reviewer who measures; a session's own badge can be the
+    cause (the file that was slow had been put in the preview by the session that was asked why).
+  - The repo quotes no person, the maintainer's rule of 2026-11-21, and on his word the quotations already on
+    `main` came out in one records change: about 100 passages in about 35 files rewritten in reported form (the
+    landing records, the defects list, the package page, the design records, skills and comments), the rule
+    written into the root `CLAUDE.md` and the head of the defects list, and a net for the common forms added to
+    the defects check. One builder, one reviewer, two rounds, about 45 minutes; the reviewer compared every
+    rewritten sentence with its original and found no fact lost. Neither a search nor a reviewer's scan found
+    them all in one pass: the builder read the two largest lists whole in the second round. The gate caught
+    what neither had: rewording a shipped skill changes its hash, and the list of shipped skill versions had to
+    be regenerated (it also lacked one earlier version of another skill). One quotation remains, in a workflow
+    file's comment, which changes only on the maintainer's word.

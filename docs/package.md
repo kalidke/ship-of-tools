@@ -179,9 +179,19 @@ stamp (only the version stamps differ), cut from `main` on the maintainer's word
 candidate, after the whole local gate had passed at the commit that was cut, and published on his word once the
 release workflow's builds, smokes and install smokes and the release gate's hosted run on that commit had passed,
 every job green. What it carries is listed below, where this page speaks of the 0.7.3 candidates. One fault a
-person saw on the third candidate is in it, measured to be older than the candidate and not fixed: a session whose
+person saw on the third candidate is in it, measured to be older than the candidate and not fixed in it: a session whose
 preview holds a markdown file with large tables arrives late at every switch to it (`docs/defects.md`,
-PREVIEW-TABLES-REBUILT-AT-EVERY-ARRIVAL). `main` carries 0.7.4-dev. v0.7.2 was published 2026-11-19. It is 0.7.1 with two faults on a Mac fixed, cut from `main`
+PREVIEW-TABLES-REBUILT-AT-EVERY-ARRIVAL, Closed). It was installed by plain installs the same day on the hub (the
+daemon restarted, on the maintainer's word, ending two open REPLs) and by its own session on one window computer;
+two more computers' sessions were asked and had not answered, and four computers had no session to ask. `main`
+carries 0.7.4-dev, and past the release it holds that fault's fix, which no person has used: built table sets are
+kept within a budget so a return to such a session draws them at once, no table is built in the frame that first
+draws an arriving session or uncovers the preview, and a covered preview builds nothing and keeps what it holds;
+what is left of it is open (the first view of such a page, and each zoom step, still shape every table in one
+frame, PREVIEW-TABLES-FIRST-VIEW-SHAPES-ALL; a return renders the session's whole parked document again before its
+first frame, PREVIEW-DOCUMENT-RESHAPED-AT-EVERY-ARRIVAL). Since the same day the repo quotes no person (the
+maintainer's rule, in the root `CLAUDE.md`): every quotation in a tracked file was rewritten in reported form, and
+the defects check carries a net for the common forms. v0.7.2 was published 2026-11-19. It is 0.7.1 with two faults on a Mac fixed, cut from `main`
 on the maintainer's word with no candidate once the tests had passed: the whole local gate at the commit that was cut,
 and, on the last commit that changes product code, the hosted Rust tests and the release gate's hosted run, both with
 their macOS jobs on macOS 26 and on macOS 27, and the release workflow's builds and install smokes without a tag,
