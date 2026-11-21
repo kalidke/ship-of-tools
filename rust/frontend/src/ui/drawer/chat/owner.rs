@@ -413,11 +413,6 @@ impl ChatOwner {
         self.fill() == Some(Fill::Complete) && self.watch.as_ref().is_some_and(|w| w.records.is_empty() && w.stop != Some(Stop::Stuck))
     }
 
-    /// The watched channel's id.
-    pub(super) fn channel(&self) -> Option<&str> {
-        self.target().map(|t| t.channel.as_str())
-    }
-
     pub(super) fn target(&self) -> Option<&ChatTarget> {
         self.watch.as_ref().map(|w| &w.target)
     }

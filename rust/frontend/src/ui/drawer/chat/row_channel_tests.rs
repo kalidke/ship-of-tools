@@ -464,13 +464,13 @@ fn the_title_names_the_channel_a_draft_is_typed_into_before_the_answer() {
     d.on_connection(&host(), true, false, t0);
     d.tick(wanted("R"), at(0));
     d.tick(wanted("R"), at(150));
-    d.on_evt(&host(), mapped_to("R", "C2"), at(160));
+    d.on_evt(&host(), answer("R", serde_json::json!({ "state": "mapped", "workspace": "T1", "channel": "C2", "delivers": false, "name": "general", "workspace_name": "Lab" })), at(160));
     d.tick(wanted("S"), at(1000));
     d.tick(wanted("R"), at(2000));
     assert_eq!(d.held(), 0, "the channel parked nothing");
     assert_eq!(d.edit(wanted("R").as_ref(), super::compose::Edit::Text("typed")), Ok(()));
     assert_eq!(d.draft(), Some(("typed", "C2")));
-    assert_eq!(d.title(), " chat · C2 reading… ", "the title names the channel the draft is in");
+    assert_eq!(d.title(), " chat · Lab · #general reading… ", "the title names the channel the draft is in, and its workspace");
 }
 
 /// The remembered answers are as many as the parked channels, keyed by host and row, and dropped by a row that closes and by a

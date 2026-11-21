@@ -345,7 +345,7 @@ computer's name, `this computer`, or `the computer that runs your sessions`.
 | `the chat on <computer> could not answer: <reason>` | It refused for another reason. | Wait: the panel tries again each minute. |
 | `Ship of Tools on <computer> has no chat: update it` | That computer runs an older Ship of Tools. | Update it. |
 | `the session is gone or was replaced` | The session ended or was replaced. | Select the project's session again. |
-| `the session's project now has another channel`, `the session's project has no channel` | The channel picked for the project changed, or was removed, while it was shown. | Select another session, then this one again: the panel asks afresh. A message you had begun keeps its old channel (the foot says which): delete it with Backspace and write it again. |
+| `the session's project now has another channel`, `the session's project has no channel` | The channel picked for the project changed, or was removed, while it was shown. | Select another session, then this one again: the panel asks afresh. A message you had begun keeps its old channel (the foot names it, by its ID): delete it with Backspace and write it again. |
 | `your Slack plan hides older messages`, `older messages could not be read`, `older messages are not read: <reason>`, `older messages beyond the limit are not shown` | Scrolling to the oldest found no more to read: Slack keeps older history only on some plans, a read was refused, or the panel's 256 are full. | |
 | `the thread is not read: <reason>`, `the rest of this thread is not shown` | In a thread: a read was refused (the panel tries again by itself), or the thread is longer than the panel shows. | |
 
@@ -365,6 +365,7 @@ messages to be missed, the top line says `not up to date`.
 | `not posted: Slack asked for a pause; wait <n> s` | Wait, then press Enter again. |
 | `may have been posted: check the channel before sending it again` | Look at the channel before posting again. |
 | `not posted: update Ship of Tools on <computer>, then post again` | That computer runs an older Ship of Tools. |
+| `not posted: the project's channel is being read again; try again in a moment` | You pressed Enter in the first moment after selecting a session, before the computer that runs your sessions confirmed its channel. Press Enter again; the message is kept. |
 | `not posted: close the screen open in the chat first` | Close the channel list or the screen shown, then post. |
 | `not posted: the chat name is not valid; ...` | Fix the `name =` line under `[chat]` in `settings.toml`. |
 | `draft is full: nothing added` | The message is at its limit. |

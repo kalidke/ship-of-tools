@@ -315,5 +315,7 @@ fn a_key_for_another_row_never_begins_a_draft_in_the_drawn_channel() {
     d.tick(shown("ROW1"), later(2000));
     assert_eq!(d.held(), 1, "ROW1 is drawn from memory, unconfirmed");
     assert!(d.edit(shown("ROW3").as_ref(), Edit::Text("x")).is_err(), "ROW3 is not the row the frame follows");
-    assert_eq!(d.draft(), None);
+    // The followed row's own key still begins its draft, with nothing of ROW3's in it.
+    assert_eq!(d.edit(shown("ROW1").as_ref(), Edit::Text("y")), Ok(()));
+    assert_eq!(d.draft(), Some(("y", "CH1")));
 }
