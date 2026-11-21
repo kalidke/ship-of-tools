@@ -792,50 +792,51 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   no reflow, so it cannot loop); a figure's landing or failure asks for one too, and the frame takes it once. Table
   buffers are shaped only when their sources or metrics change, which also returns the shared horizontal scroll to the
   left; the scroll is clamped each frame to the widest table. Shaping a table is the largest preview cost for a page
-  of tables (every row, shown or not, at natural width; 1 to 2 ms per 1,000 bytes of rendered table text in a release
-  build for the pages measured, up to 4.5 ms for dense shapes), so a set is not thrown away for a row's leaving: a
-  set the frame no longer shows is kept (`park`), newest first, within `PARKED_TABLE_BYTES`, 200,000 bytes of rendered
-  table text (the text `build_table_block` makes, box-drawing characters and padding included, not the markdown file's
-  bytes). In a reader's terms: one file of the diagnosed size (140,198 bytes of table text) stays warm beside the
-  shown set, or any number of others that total at most 59,802 bytes; three such sessions stepped in turn are all cold
-  at every step, each arriving as a first view. A document with more table text than the budget is never kept: its
-  return from another row, and from markdown not shown, is a first view. A byte of rendered table text held 76 to 520
-  resident bytes in the measurements (the worst is padding: a table with one long cell pads every row to it), so the
-  kept sets hold up to about 104 MB beside the shown set. Nothing bounds the shown set: the text cap bounds the
-  markdown file, not what its tables render to (a 28 KB file with one 3,000-character cell and 2,000 short rows
-  renders 6 MB of table text, `docs/defects.md`, PREVIEW-TABLE-PADDING-AMPLIFIES). A kept set is taken back
-  (`take_parked`) only for the same table texts, in the same order and count, at the same font size and line height
-  (`built_from`); its width is fixed at 10,000 px and its color is applied at the draw, so nothing else shapes it.
-  The font size is a key, so the tables follow a text-scale step, at the cost of one build per step (230 ms for the
-  diagnosed file, 180 to 195 ms for a page of 227,640 bytes of table text; the step back costs the same again unless
-  the earlier size's set is kept), and the key was how a set once held at the wrong size could be drawn. A frame
-  shapes no table when it shows no markdown text (the set it holds is kept if within the budget), and when a
-  full-height drawer or a maximized pane covers the preview (`preview_covered`): a covered preview builds nothing and
-  keeps the set it holds and the tables' horizontal scroll, whatever the set's size, so uncovering draws the tables as
-  they were. It shapes none, either, when `MarkdownMedia::defer_next` was called and no set is kept for the document:
-  `switch_to_workspace` calls it (a row's first frame), and so does every frame that shows no tables or covers them,
-  so the first frame that shows them again (a row switched to under a cover, a picture or the editor gone) defers too;
-  `prepare_media` takes the deferral on every frame, so it never outlives the frame that spends it. A deferred frame
-  draws every pane with the tables' places empty (the walk reserves each table's height from its rendered line count,
-  so nothing moves), marks the pacer dirty and leaves the shaping to the next frame. So a return to a row whose set
-  is kept draws its tables in its first frame: about a millisecond for the diagnosed file and a page of 142,458 bytes
-  (0.7 to 1.1 ms), 2.6 ms for one of 186,696 bytes. A page restored from parked bytes with no kept set (an evicted
-  set, a text scale changed while away) draws its text first and its tables a frame later, in that frame (about
-  217 ms for the diagnosed file, 135 ms for a page of about 100,000 characters of table text). A page that arrives as a
-  reply (a row's first visit, a `preview` command into the shown row, a file that changed while the row was away)
-  shapes its tables in the reply's own frame, as it did before the sets were kept (135 to 303 ms measured): that frame
-  is not deferred, because a document that changes every few hundred ms would blank its tables for a frame at each
-  change. Not built: shaping only the tables in view, and the cheap shaping mode (`docs/defects.md`,
-  PREVIEW-TABLES-FIRST-VIEW-SHAPES-ALL). Tests, in media_store_tests.rs:
-  `a_set_left_is_taken_back_for_the_same_sources_and_metrics_only` (each input of the key changed alone),
-  `the_sets_kept_stay_within_the_budget_oldest_first`, `a_set_is_charged_its_rendered_bytes_whatever_it_holds` (a
-  padding-only table: the charge is its bytes and each padding character is a shaped glyph),
-  `the_real_budget_keeps_a_set_at_it_and_drops_one_past_it` (at `PARKED_TABLE_BYTES` itself, with its capacity and
-  worst-case memory); the native fixture `a_row_of_wide_tables_arrives_without_shaping_them_in_its_first_frame`
-  (seven tables, about 100,000 characters of table text: the tables each frame leaves are asserted, for a return, a
-  cold arrival, a covered preview, an uncover with and without a kept set, a deferral outliving its frame and a
-  deferred build's mark of the pacer, and a page over the budget through a cover with its tables and their scroll;
-  the one time bound is relative to the same window's own shaping of them). A math SVG is drawn by the worker, never on the window's
+  of tables (every row, shown or not, at natural width; its costs are in `docs/defects.md`,
+  PREVIEW-TABLES-FIRST-VIEW-SHAPES-ALL), so a set is not thrown away for a row's leaving: a set the frame no longer
+  shows is kept (`park`), newest first, within `PARKED_TABLE_BYTES`, 200,000 bytes of rendered table text (the text
+  `build_table_block` makes, box-drawing characters and padding included, not the markdown file's bytes). In a
+  reader's terms: one file of the diagnosed size (140,198 bytes of table text) stays warm beside the shown set, or any
+  number of others that total at most 59,802 bytes; three such sessions stepped in turn are all cold at every step,
+  each arriving as a first view. A document with more table text than the budget is never kept: its return from
+  another row, and from markdown not shown, is a first view. A byte of rendered table text held 76 to 520 resident
+  bytes in the measurements (the worst is padding: a table with one long cell pads every row to it), so the kept sets
+  hold up to about 104 MB beside the shown set. Nothing bounds the shown set: the text cap bounds the markdown file,
+  not what its tables render to (a 28 KB file with one 3,000-character cell and 2,000 short rows renders 6 MB of
+  table text, `docs/defects.md`, PREVIEW-TABLE-PADDING-AMPLIFIES). A kept set is taken back (`take_parked`) only for
+  the same table texts, in the same order and count, at the same font size and line height (`built_from`); its width
+  is fixed at 10,000 px and its color is applied at the draw, so nothing else shapes it. Both sizes are in the key, so
+  a set shaped at another size is never drawn and the tables follow a text-scale step, at the cost of one build per
+  step (the step back takes the earlier size's set when it is kept). A frame shapes no table when it shows no
+  markdown text (the set it holds is kept if within the budget), and when a full-height drawer or a maximized pane
+  covers the preview (`preview_covered`): a covered preview builds nothing and keeps the set it holds and the
+  tables' horizontal scroll, whatever the set's size. Uncovering draws that set at once when the page and the text
+  scale are unchanged; when either changed under the cover (a file rewritten, another file previewed, a text-scale
+  step, a row arriving under the cover), the uncover frame draws no tables and the next frame shapes them. A frame
+  shapes none, either, when `MarkdownMedia::defer_next` was called and no set is kept for the document:
+  `switch_to_workspace` calls it (a row's first frame), and so does every frame that shows no markdown or covers it,
+  so the first frame that shows the tables again (a row switched to under a cover, a picture or the editor gone)
+  defers too; `prepare_media` takes the deferral on every frame, so it never outlives the frame that spends it. A
+  deferred frame draws every pane with the tables' places empty (the walk reserves each table's height from its
+  rendered line count, so nothing moves), holds no set of another page, marks the pacer dirty and leaves the shaping
+  to the next frame. So a return to a row whose set is kept builds no table: the table stage of its first frame took
+  under 15 microseconds on every page measured, and the frame took under 5 ms in every measurement (0.5 to 4.1 ms,
+  the rest being the document's own text work, which the next frame does not pay). A page restored from parked bytes
+  with no kept set (an evicted set, a text scale changed while away) draws its text first and its tables a frame
+  later, in that frame. A page that arrives as a reply (a row's first visit, a `preview` command into the shown row, a
+  file that changed while the row was away) shapes its tables in the reply's own frame, as it did before the sets
+  were kept: that frame is not deferred, because a document that changes every few hundred ms would blank its tables
+  for a frame at each change. Not built: shaping only the tables in view, and the cheap shaping mode. Tests, in
+  media_store_tests.rs: `a_set_left_is_taken_back_for_the_same_sources_and_metrics_only` (each input of the key
+  changed alone), `the_sets_kept_stay_within_the_budget_oldest_first`,
+  `a_set_is_charged_its_rendered_bytes_whatever_it_holds` (a padding-only table: the charge is its bytes and each
+  padding character is a shaped glyph), `the_real_budget_keeps_a_set_at_it_and_drops_one_past_it` (at
+  `PARKED_TABLE_BYTES` itself, with its capacity and worst-case memory); the native fixture
+  `a_row_of_wide_tables_arrives_without_shaping_them_in_its_first_frame` (seven tables, about 100,000 characters of
+  table text: the tables each frame leaves are asserted, for a return, a cold arrival, a covered preview, an uncover
+  with and without a kept set, a page changed under the cover, a deferred frame that holds no set of another page, a
+  deferral outliving its frame and a deferred build's mark of the pacer, and a page over the budget through a cover
+  with its tables and their scroll; the one time bound is relative to the same window's own shaping of them). A math SVG is drawn by the worker, never on the window's
   thread: the paint pass (`prepare_media`) collects the shown snippets that want a raster (`MathSvg::wants_raster`: not
   drawn, and not asked under the pane's generation) with each one's pixel size, and `request_rasters` asks for them as
   one batch (`SvgDraws::submit_batch`: one child for the frame's snippets, and for every other batched job waiting),

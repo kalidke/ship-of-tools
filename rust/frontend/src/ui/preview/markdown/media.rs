@@ -221,9 +221,10 @@ impl State {
     /// shaped. A new set resets the horizontal scroll to 0 so navigation
     /// between docs starts fresh. No-op when the set is in sync — typical
     /// steady state across redraws. With `defer` (the frame that first
-    /// draws an arriving row, or that first shows the tables after a frame that showed none) nothing is shaped: the tables' places, which
-    /// the walk reserves from the rendered text, stay empty and the next
-    /// frame shapes them.
+    /// draws an arriving row, or that first shows the tables after a
+    /// frame that showed none) nothing is shaped: the tables' places,
+    /// which the walk reserves from the rendered text, stay empty and the
+    /// next frame shapes them.
     pub(in crate::ui) fn ensure_table_buffers(&mut self, defer: bool) {
         use crate::ui::preview::markdown::MediaBlock;
         // Snapshot the (rendered, font_px, line_h_px) of every Table in

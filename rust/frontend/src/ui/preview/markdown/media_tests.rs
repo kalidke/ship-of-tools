@@ -116,9 +116,10 @@ impl State {
     /// A row whose preview holds seven wide tables (about 100,000 characters of table text) shows them at once when
     /// the person returns to it, and shows its panes first when it arrives, or its preview is uncovered, with no set of
     /// its tables kept: that frame shapes no table, asks for the next, and the next shapes all seven. A covered preview
-    /// builds none, and a return from under the cover takes the set back. A deferred build marks the pacer
-    /// dirty. A page over the budget keeps its tables and their scroll through a cover. A reply's frame long after an arrival still shapes in its own frame (the deferral is spent by the frame
-    /// that took it). The asserted facts are the tables a frame leaves; each frame's length is printed (`tables-frame`,
+    /// builds none, and a return from under the cover takes the set back. A deferred build marks the pacer dirty and
+    /// holds no set of another page. A page over the budget keeps its tables and their scroll through a cover; a page
+    /// changed under the cover draws none at the uncover and all at the next frame. A reply's frame long after an
+    /// arrival still shapes in its own frame (the deferral is spent by the frame that took it). The asserted facts are the tables a frame leaves; each frame's length is printed (`tables-frame`,
     /// microseconds). The one time bound is relative, to this window's own cost of shaping the seven in the frame after
     /// the first arrival, so a slow runner moves both alike; the held counts carry the proof.
     #[allow(dead_code, reason = "runs only inside a native State, from the premise overlays; no libtest body can construct one")]
@@ -158,7 +159,8 @@ impl State {
         // s2 with a small page, then the return to s1: all seven in the first frame.
         go(self, "s2");
         self.show_page("files:small.md", &small);
-        self.tables_frame()?;
+        let (_, stale) = self.tables_frame()?;
+        check(stale == 0, format!("the deferred frame of s2 held {stale} tables of another page"));
         let (_, small_held) = self.tables_frame()?;
         check(small_held == 1, String::from("s2's table was not shaped by its second frame"));
         go(self, "s1");
@@ -244,6 +246,17 @@ impl State {
         check(!self.preview_covered() && held == n && self.md_media.table_scroll_px() == scrolled,
             format!("an uncovered page over the budget held {held} of {n} tables, scrolled {} of {scrolled}", self.md_media.table_scroll_px()));
         check(uncover_huge * 2 < huge_build, format!("uncovering a page over the budget took {uncover_huge:?}, against {huge_build:?} to shape it"));
+        // A page changed under the cover: the set held is not the page's, so the uncover frame draws none (a deferred frame
+        // holds no set of another page) and the next frame shapes the page's own.
+        self.press_repl_key();
+        self.press_repl_key();
+        self.tables_frame()?;
+        self.show_page("files:other.md", &page_of_tables("other", 1));
+        self.press_repl_key();
+        let (_, held) = self.tables_frame()?;
+        check(!self.preview_covered() && held == 0, format!("the uncover of a page changed under the cover held {held} tables of the old page"));
+        let (_, then) = self.tables_frame()?;
+        check(then == 1, format!("the frame after that uncover held {then} tables, not 1"));
         anyhow::ensure!(failed.is_empty(), "{}", failed.join("; "));
         Ok(())
     }
