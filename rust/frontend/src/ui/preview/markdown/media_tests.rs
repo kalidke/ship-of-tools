@@ -72,3 +72,179 @@ impl State {
         Ok(())
     }
 }
+
+/// A page of `tables` wide tables, each of 12 rows of 8 cells of about 110 characters: about 14,500 characters, and
+/// about 21,000 bytes of rendered table text, a table. Each table is headed by a line of text, so the rest of the
+/// page is not empty.
+fn page_of_tables(tag: &str, tables: usize) -> String {
+    let mut page = String::new();
+    for t in 0..tables {
+        page.push_str(&format!("{tag} table {t}.\n\n"));
+        for r in 0..12 {
+            let cells: Vec<String> = (0..8).map(|c| format!("{tag}t{t}r{r}c{c} ").repeat(11).trim().to_owned()).collect();
+            page.push_str(&format!("| {} |\n", cells.join(" | ")));
+            if r == 0 {
+                page.push_str(&format!("|{}\n", "---|".repeat(8)));
+            }
+        }
+        page.push('\n');
+    }
+    page
+}
+
+impl State {
+    /// One frame, its length, and the table buffers it left.
+    fn tables_frame(&mut self) -> anyhow::Result<(std::time::Duration, usize)> {
+        let begun = std::time::Instant::now();
+        self.redraw()?;
+        Ok((begun.elapsed(), self.md_media.tables().len()))
+    }
+
+    /// The REPL drawer's own key: open, then full height, then closed.
+    fn press_repl_key(&mut self) {
+        let base = self.settings.resolve_preset(self.monitor_aspect);
+        let effect = self.layout_help.cycle_drawer(DrawerContent::Repl, self.focus_prompts.focus(), base);
+        effect.apply(self, None);
+    }
+
+    /// Show `page` as the preview of the row now shown, as a reply to its request does.
+    fn show_page(&mut self, node: &str, page: &str) {
+        self.preview_source.install("text/markdown".into(), page.as_bytes().to_vec(), Some(node.into()), None, None);
+        self.render_preview_source("text/markdown", page.as_bytes());
+    }
+
+    /// A row whose preview holds seven wide tables (about 100,000 characters of table text) shows them at once when
+    /// the person returns to it, and shows its panes first when it arrives, or its preview is uncovered, with no set of
+    /// its tables kept: that frame shapes no table, asks for the next, and the next shapes all seven. A covered preview
+    /// builds none, and a return from under the cover takes the set back. A deferred build marks the pacer
+    /// dirty. A page over the budget keeps its tables and their scroll through a cover. A reply's frame long after an arrival still shapes in its own frame (the deferral is spent by the frame
+    /// that took it). The asserted facts are the tables a frame leaves; each frame's length is printed (`tables-frame`,
+    /// microseconds). The one time bound is relative, to this window's own cost of shaping the seven in the frame after
+    /// the first arrival, so a slow runner moves both alike; the held counts carry the proof.
+    #[allow(dead_code, reason = "runs only inside a native State, from the premise overlays; no libtest body can construct one")]
+    pub(in crate::ui) fn a_row_of_wide_tables_arrives_without_shaping_them_in_its_first_frame(&mut self) -> anyhow::Result<()> {
+        let host = "<host-tables>".to_string();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        self.conns = vec![(host.clone(), tx)];
+        let row = |slug: &str, default: bool| {
+            let mut row = nav::ws_info(slug, &format!("{slug}-session"));
+            row.workspace_id = format!("id-{slug}");
+            row.is_default = default;
+            if default {
+                row.agent = "none".into();
+            }
+            row
+        };
+        self.on_workspaces(host.clone(), vec![row("default", true), row("s1", false), row("s2", false), row("s3", false)]);
+        let go = |s: &mut State, slug: &str| s.switch_to_workspace(host.clone(), Some(slug.into()), None, true);
+        let (big, small) = (page_of_tables("big", 7), page_of_tables("small", 1));
+        // The characters of table text on the page, and the bytes the kept sets charge for them.
+        let sizes = |s: &State| s.shaped.md().media_blocks.iter().fold((0, 0, 0), |(n, chars, bytes), b| match b {
+            crate::ui::preview::markdown::MediaBlock::Table { rendered, .. } => (n + 1, chars + rendered.chars().count(), bytes + rendered.len()),
+            _ => (n, chars, bytes),
+        });
+        // Every rule is checked and the fixture fails after the last, so one run says which hold.
+        let mut failed = Vec::new();
+        let mut check = |held: bool, words: String| if !held { failed.push(words) };
+        // The first visit: s1 arrives, the arrival frame shapes nothing, the next shapes all seven.
+        go(self, "s1");
+        self.show_page("files:big.md", &big);
+        let (tables, chars, bytes) = sizes(self);
+        anyhow::ensure!((90_000..115_000).contains(&chars) && tables == 7, "the page's tables: {tables} of {chars} characters");
+        let (arrival, held) = self.tables_frame()?;
+        let (build, built) = self.tables_frame()?;
+        println!("tables-frame first_arrival_us={} held={held} next_us={} held={built} chars={chars} bytes={bytes}", arrival.as_micros(), build.as_micros());
+        check(held == 0 && built == 7, format!("a first arrival held {held} tables in its first frame and {built} in its next"));
+        // s2 with a small page, then the return to s1: all seven in the first frame.
+        go(self, "s2");
+        self.show_page("files:small.md", &small);
+        self.tables_frame()?;
+        let (_, small_held) = self.tables_frame()?;
+        check(small_held == 1, String::from("s2's table was not shaped by its second frame"));
+        go(self, "s1");
+        let (back, held) = self.tables_frame()?;
+        println!("tables-frame return_us={} held={held}", back.as_micros());
+        check(held == 7, format!("a return held {held} tables in its first frame, not 7"));
+        check(back * 2 < build, format!("a return's first frame took {back:?}, against {build:?} to shape the tables"));
+        // An arrival with no set kept: the panes first, the tables a frame later.
+        go(self, "s2");
+        self.tables_frame()?;
+        self.md_media = MarkdownMedia::default();
+        go(self, "s1");
+        let (cold, held) = self.tables_frame()?;
+        let (_, then) = self.tables_frame()?;
+        println!("tables-frame cold_arrival_us={} held={held} next_held={then}", cold.as_micros());
+        check(held == 0 && then == 7, format!("a cold arrival held {held} in its first frame and {then} in its next"));
+        check(cold * 2 < build, format!("a cold arrival's first frame took {cold:?}, against {build:?} to shape the tables"));
+        // A covered preview: a full-height drawer builds nothing and keeps the set it holds, so uncovering draws it at once.
+        self.press_repl_key();
+        self.press_repl_key();
+        let (_, held) = self.tables_frame()?;
+        check(self.preview_covered() && held == 7, format!("a covered preview held {held} tables, not the 7 it had (covered: {})", self.preview_covered()));
+        self.press_repl_key();
+        let (back_uncovered, held) = self.tables_frame()?;
+        println!("tables-frame uncover_kept_us={} held={held}", back_uncovered.as_micros());
+        check(!self.preview_covered() && held == 7, format!("the preview uncovered with its set kept held {held} tables"));
+        // With no set kept, the frame that uncovers shapes none, asks for the next, and the next shapes all seven.
+        self.press_repl_key();
+        self.press_repl_key();
+        self.md_media = MarkdownMedia::default();
+        for _ in 0..3 {
+            let (_, held) = self.tables_frame()?;
+            check(held == 0, format!("a covered preview shaped {held} tables"));
+        }
+        self.press_repl_key();
+        let (uncover, held) = self.tables_frame()?;
+        check(!self.preview_covered() && held == 0, format!("the frame that uncovered the preview held {held} tables"));
+        let (shaped, then) = self.tables_frame()?;
+        println!("tables-frame uncover_cold_us={} held={held} next_us={} next_held={then}", uncover.as_micros(), shaped.as_micros());
+        check(then == 7, format!("the frame after the uncover held {then} tables, not 7"));
+        // A deferral is spent by the frame that takes it: s3 shows the very tables s2 holds, so nothing is shaped and
+        // the deferral its arrival set is taken by a frame that has no use for it; a reply that then changes the
+        // table is shaped in its own frame.
+        go(self, "s2");
+        self.tables_frame()?;
+        let (_, held) = self.tables_frame()?;
+        check(held == 1, format!("s2's table was not held after its second frame ({held})"));
+        go(self, "s3");
+        self.show_page("files:small.md", &small);
+        let (_, held) = self.tables_frame()?;
+        check(held == 1, format!("s3 showing s2's page held {held} tables, not 1"));
+        self.show_page("files:small.md", &page_of_tables("changed", 1));
+        let (_, held) = self.tables_frame()?;
+        check(held == 1, format!("a reply's frame long after an arrival held {held} tables, not 1 (a deferral outlived its frame)"));
+        // A deferred build asks for the next frame. Other work of a frame marks the pacer too, so this one is asked of the
+        // call alone.
+        self.md_media = MarkdownMedia::default();
+        self.pacer.clear_dirty();
+        self.ensure_table_buffers(true);
+        check(self.pacer.is_dirty() && self.md_media.tables().is_empty(), String::from("a deferred build did not ask for the next frame"));
+        self.ensure_table_buffers(false);
+        check(self.md_media.tables().len() == 1, String::from("the build after a deferral shaped no table"));
+        // A document over the budget is never parked, so a cover must not cost it its set, nor the table scroll: closing a
+        // full-height drawer draws its tables, scrolled as they were, in a frame that builds none.
+        let huge = page_of_tables("huge", 10);
+        self.show_page("files:huge.md", &huge);
+        let (n, _, huge_bytes) = sizes(self);
+        anyhow::ensure!(huge_bytes > crate::ui::preview::markdown::media_store::PARKED_TABLE_BYTES, "the page is within the budget: {huge_bytes} bytes");
+        let (huge_build, held) = self.tables_frame()?;
+        check(held == n, format!("the page over the budget held {held} of {n} tables"));
+        self.md_media.scroll_tables_right(300.0);
+        self.tables_frame()?;
+        let scrolled = self.md_media.table_scroll_px();
+        check(scrolled > 0.0, String::from("the tables did not scroll sideways"));
+        self.press_repl_key();
+        self.press_repl_key();
+        let (_, held) = self.tables_frame()?;
+        check(self.preview_covered() && held == n && self.md_media.table_scroll_px() == scrolled,
+            format!("a covered page over the budget held {held} of {n} tables, scrolled {} of {scrolled}", self.md_media.table_scroll_px()));
+        self.press_repl_key();
+        let (uncover_huge, held) = self.tables_frame()?;
+        println!("tables-frame huge_build_us={} bytes={huge_bytes} uncover_us={} held={held}", huge_build.as_micros(), uncover_huge.as_micros());
+        check(!self.preview_covered() && held == n && self.md_media.table_scroll_px() == scrolled,
+            format!("an uncovered page over the budget held {held} of {n} tables, scrolled {} of {scrolled}", self.md_media.table_scroll_px()));
+        check(uncover_huge * 2 < huge_build, format!("uncovering a page over the budget took {uncover_huge:?}, against {huge_build:?} to shape it"));
+        anyhow::ensure!(failed.is_empty(), "{}", failed.join("; "));
+        Ok(())
+    }
+}

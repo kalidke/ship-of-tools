@@ -24,10 +24,18 @@ impl State {
         // (typical steady-state across redraws). It also resets
         // the table scroll to 0 whenever buffers are rebuilt, so
         // navigating to a different doc starts at scroll-left.
-        if show_md {
-            self.ensure_table_buffers();
+        // A covered preview (a full-height drawer or a maximized pane) builds nothing but keeps the set it holds, so
+        // uncovering it draws the tables as they were, whatever the set's size. Markdown not shown drops the set (kept
+        // when within the budget). The frame that first draws an arriving row, and the first that shows the tables
+        // after a frame that showed none, shapes no table when none is kept; the deferral is taken on every frame.
+        let defer = self.md_media.take_defer();
+        if show_md && !self.preview_covered() {
+            self.ensure_table_buffers(defer);
         } else {
-            self.md_media.clear_tables();
+            if !show_md {
+                self.md_media.clear_tables();
+            }
+            self.md_media.defer_next();
         }
         // Clamp the shared horizontal scroll so the user can't walk
         // past the right edge of the widest table on the current doc.

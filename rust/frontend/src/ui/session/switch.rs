@@ -173,6 +173,7 @@ impl State {
         };
         let old_tree_key = self.retarget_workspace(host, slug, session_name, person_driven);
         let restored = self.restore_entering_workspace(person_driven);
+        self.md_media.defer_next();
         self.load_entering_tree(old_tree_key);
         // Refresh the workspace list so kernel_running / new rows stay
         // current — cheap and not user-facing if Sessions mode isn't

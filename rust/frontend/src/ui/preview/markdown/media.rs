@@ -12,13 +12,29 @@ use crate::ui::*;
 /// right edge.
 pub(in crate::ui) struct TableBufferEntry {
     rendered: String,
+    /// The metrics it was shaped at: a text-scale change shapes again.
+    font_px: f32,
+    line_h_px: f32,
     pub(in crate::ui) buffer: cosmic_text::Buffer,
     pub(in crate::ui) natural_w_px: f32,
 }
 
 impl TableBufferEntry {
-    /// Whether this buffer was built from `source`.
-    pub(super) fn built_from(&self, source: &str) -> bool { self.rendered == source }
+    /// Whether this buffer was built from `source` at these metrics, the whole of what its shaping depends on (its
+    /// width is fixed and its color is applied at the draw).
+    pub(super) fn built_from(&self, source: &str, font_px: f32, line_h_px: f32) -> bool {
+        self.rendered == source && self.font_px == font_px && self.line_h_px == line_h_px
+    }
+
+    /// What a kept buffer is charged: the bytes of its rendered table text.
+    pub(super) fn charge(&self) -> usize { self.rendered.len() }
+}
+
+/// An entry that holds `rendered` and no shaped text, for the tests of what a kept set is charged.
+#[cfg(test)]
+pub(super) fn unshaped(rendered: String, font_px: f32, line_h_px: f32) -> TableBufferEntry {
+    let buffer = cosmic_text::Buffer::new_empty(cosmic_text::Metrics::new(font_px, line_h_px));
+    TableBufferEntry { rendered, font_px, line_h_px, buffer, natural_w_px: 0.0 }
 }
 
 /// One table's buffer at its natural width. 10_000 px is wider than any
@@ -47,6 +63,8 @@ pub(in crate::ui) fn table_buffer(
     }
     TableBufferEntry {
         rendered,
+        font_px,
+        line_h_px,
         buffer: buf,
         natural_w_px,
     }
@@ -198,12 +216,15 @@ impl State {
     /// Build (or rebuild) the per-table cosmic-text Buffers that host
     /// wide GFM tables at natural width — see `TableBufferEntry`
     /// docstring. Compares the current `media_blocks` Table sources
-    /// against the cached `rendered` strings; if any differ (or count
-    /// changed), the whole table buffer set is rebuilt and the
-    /// horizontal scroll resets to 0 so navigation between docs starts
-    /// fresh. No-op when buffers are already in sync — typical steady
-    /// state across redraws.
-    pub(in crate::ui) fn ensure_table_buffers(&mut self) {
+    /// and metrics against the held set; if they differ, the set kept
+    /// for a document shown before is taken back, else the whole set is
+    /// shaped. A new set resets the horizontal scroll to 0 so navigation
+    /// between docs starts fresh. No-op when the set is in sync — typical
+    /// steady state across redraws. With `defer` (the frame that first
+    /// draws an arriving row, or that first shows the tables after a frame that showed none) nothing is shaped: the tables' places, which
+    /// the walk reserves from the rendered text, stay empty and the next
+    /// frame shapes them.
+    pub(in crate::ui) fn ensure_table_buffers(&mut self, defer: bool) {
         use crate::ui::preview::markdown::MediaBlock;
         // Snapshot the (rendered, font_px, line_h_px) of every Table in
         // current source order. Snapshot avoids the &mut self / &self
@@ -224,6 +245,14 @@ impl State {
             })
             .collect();
         if self.md_media.tables_match(&snapshots) {
+            return;
+        }
+        if self.md_media.take_parked(&snapshots) {
+            return;
+        }
+        if defer && !snapshots.is_empty() {
+            self.md_media.clear_tables();
+            self.pacer.mark_dirty();
             return;
         }
         let mut tables = Vec::with_capacity(snapshots.len());

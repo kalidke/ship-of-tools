@@ -32,6 +32,13 @@ fn math_key(job: &str) -> Option<(String, bool)> {
     Some((rest[1..].to_owned(), display))
 }
 
+/// The most bytes of rendered table text (`TableBufferEntry::charge`) kept for documents not shown. Shaped, a byte of it
+/// held 76 to 520 bytes in the measurements (the worst is padding: a table with one long cell pads every row to it),
+/// so the kept sets hold up to about 104 MB beside the shown set, which nothing bounds (the text cap bounds the
+/// markdown file, not the text its tables render to). 200,000 keeps one file of the diagnosed size (140,198 bytes of
+/// rendered table text) beside the shown one; a document with more than this is never kept.
+pub(in crate::ui) const PARKED_TABLE_BYTES: usize = 200_000;
+
 /// Math and token requests go out only for keys neither cached nor in flight; a reply caches its entry, settles the
 /// key and asks for one reflow, which the frame takes once.
 #[derive(Default)]
@@ -56,6 +63,12 @@ pub(in crate::ui) struct MarkdownMedia {
     /// `natural_w_px` is the measured max line width — used by the
     /// scroll clamp.
     tables: Vec<TableBufferEntry>,
+    /// The table sets of documents shown before, newest first, within `PARKED_TABLE_BYTES`: a return to a document
+    /// takes its set back instead of shaping it again. A set is taken only for the same sources at the same metrics.
+    parked: Vec<Vec<TableBufferEntry>>,
+    /// The next frame that shows the tables shapes none (`State::switch_to_workspace` and every frame that shows no
+    /// tables set it): it draws the panes with the tables' places empty and asks for the next frame.
+    defer: bool,
     /// Cache of MathJax-rendered SVGs keyed by `(latex, display)`.
     /// Populated by `IncomingEvt::MathRendered`; consumed by the
     /// markdown render path to paint quads over FFFC placeholders.
@@ -91,19 +104,49 @@ pub(in crate::ui) struct MarkdownMedia {
 impl MarkdownMedia {
     pub(in crate::ui) fn tables(&self) -> &[TableBufferEntry] { &self.tables }
 
-    /// Whether the table buffers were built from exactly these sources, in order.
-    pub(in crate::ui) fn tables_match(&self, sources: &[(String, f32, f32)]) -> bool {
-        sources.len() == self.tables.len()
-            && sources.iter().zip(self.tables.iter()).all(|((r, _, _), e)| e.built_from(r))
-    }
+    /// Whether the table buffers were built from exactly these sources at these metrics, in order.
+    pub(in crate::ui) fn tables_match(&self, sources: &[(String, f32, f32)]) -> bool { set_matches(&self.tables, sources) }
 
-    /// New table buffers replace the old; the shared scroll returns to the left edge.
+    /// New table buffers replace the old, which are kept; the shared scroll returns to the left edge.
     pub(in crate::ui) fn replace_tables(&mut self, tables: Vec<TableBufferEntry>) {
-        self.tables = tables;
+        let old = std::mem::replace(&mut self.tables, tables);
+        self.park(old, PARKED_TABLE_BYTES);
         self.table_scroll_px = 0.0;
     }
 
-    pub(in crate::ui) fn clear_tables(&mut self) { self.tables.clear(); }
+    pub(in crate::ui) fn clear_tables(&mut self) {
+        let old = std::mem::take(&mut self.tables);
+        self.park(old, PARKED_TABLE_BYTES);
+    }
+
+    /// The kept set shaped from exactly `sources` becomes the shown one; whether there was one.
+    pub(in crate::ui) fn take_parked(&mut self, sources: &[(String, f32, f32)]) -> bool {
+        let Some(i) = self.parked.iter().position(|set| set_matches(set, sources)) else { return false };
+        let set = self.parked.remove(i);
+        self.replace_tables(set);
+        true
+    }
+
+    /// `set` is kept newest first, the oldest dropped to stay within `budget` bytes of rendered table text; a set over the budget alone
+    /// is not kept.
+    fn park(&mut self, set: Vec<TableBufferEntry>, budget: usize) {
+        let charge = |set: &[TableBufferEntry]| set.iter().map(TableBufferEntry::charge).sum::<usize>();
+        if set.is_empty() || charge(&set) > budget {
+            return;
+        }
+        self.parked.insert(0, set);
+        let mut kept = 0;
+        self.parked.retain(|set| {
+            kept += charge(set);
+            kept <= budget
+        });
+    }
+
+    /// The next frame that shows the tables shapes none.
+    pub(in crate::ui) fn defer_next(&mut self) { self.defer = true; }
+
+    /// Whether this frame shapes none; asked on every frame, so a deferral never outlives the frame that spends it.
+    pub(in crate::ui) fn take_defer(&mut self) -> bool { std::mem::take(&mut self.defer) }
 
     pub(in crate::ui) fn table_scroll_px(&self) -> f32 { self.table_scroll_px }
     pub(in crate::ui) fn clamp_table_scroll(&mut self, max: f32) {
@@ -231,6 +274,12 @@ impl MarkdownMedia {
 
     /// The frame's one reflow, taken.
     pub(in crate::ui) fn take_reflow(&mut self) -> bool { std::mem::take(&mut self.reflow) }
+}
+
+fn set_matches(set: &[TableBufferEntry], sources: &[(String, f32, f32)]) -> bool {
+    sources.len() == set.len() && sources.iter().zip(set).all(|((rendered, font_px, line_h_px), entry)| {
+        entry.built_from(rendered, *font_px, *line_h_px)
+    })
 }
 
 #[cfg(test)]

@@ -220,3 +220,94 @@ fn a_stale_snippet_is_asked_again_under_the_current_generation() {
     assert!(matches!(bench.settled(2, &["x"]), Settled::Drawn { .. }));
     assert_eq!(bench.given(), 2);
 }
+
+fn table_set(fs: &mut cosmic_text::FontSystem, texts: &[&str], font_px: f32, line_h_px: f32) -> Vec<TableBufferEntry> {
+    texts.iter().map(|text| super::super::media::table_buffer(fs, (*text).to_owned(), font_px, line_h_px)).collect()
+}
+
+fn sources(texts: &[&str], font_px: f32, line_h_px: f32) -> Vec<(String, f32, f32)> {
+    texts.iter().map(|text| ((*text).to_owned(), font_px, line_h_px)).collect()
+}
+
+#[test]
+fn a_set_left_is_taken_back_for_the_same_sources_and_metrics_only() {
+    let mut fs = cosmic_text::FontSystem::new();
+    let mut media = MarkdownMedia::default();
+    let (a, b) = (["│ a │\n", "│ b │\n"], ["│ other │\n"]);
+    media.replace_tables(table_set(&mut fs, &a, 12.0, 15.0));
+    media.scroll_tables_right(40.0);
+    media.replace_tables(table_set(&mut fs, &b, 12.0, 15.0));
+    assert!(media.tables_match(&sources(&b, 12.0, 15.0)));
+    assert!(!media.tables_match(&sources(&a, 12.0, 15.0)), "the shown set is the newer one");
+    // Each input of the key, changed alone, takes nothing back.
+    assert!(!media.take_parked(&sources(&["│ a │\n", "│ c │\n"], 12.0, 15.0)), "one table's text");
+    assert!(!media.take_parked(&sources(&["│ a │\n"], 12.0, 15.0)), "the count");
+    assert!(!media.take_parked(&sources(&["│ b │\n", "│ a │\n"], 12.0, 15.0)), "the order");
+    assert!(!media.take_parked(&sources(&a, 13.0, 15.0)), "the font size");
+    assert!(!media.take_parked(&sources(&a, 12.0, 16.0)), "the line height");
+    assert!(media.tables_match(&sources(&b, 12.0, 15.0)), "a refusal leaves the shown set alone");
+    // The same key takes its set back, at the left edge, and keeps the one it replaces.
+    assert!(media.take_parked(&sources(&a, 12.0, 15.0)));
+    assert!(media.tables_match(&sources(&a, 12.0, 15.0)));
+    assert_eq!(media.table_scroll_px(), 0.0);
+    assert!(media.take_parked(&sources(&b, 12.0, 15.0)), "the set it replaced is kept in turn");
+    // A clear keeps the set it empties, and a set is in one place only: shown, it is no longer kept.
+    media.clear_tables();
+    assert!(media.tables().is_empty());
+    assert!(media.take_parked(&sources(&b, 12.0, 15.0)));
+    assert!(media.take_parked(&sources(&a, 12.0, 15.0)), "both sets were kept");
+    assert!(!media.take_parked(&sources(&a, 12.0, 15.0)), "a shown set is not kept as well");
+}
+
+#[test]
+fn the_sets_kept_stay_within_the_budget_oldest_first() {
+    let mut fs = cosmic_text::FontSystem::new();
+    let mut media = MarkdownMedia::default();
+    let text = ["│ 0123456789 │\n"];
+    let each = text[0].len();
+    // Three fit, a fourth pushes the oldest out; the budget counts bytes of rendered table text.
+    let budget = each * 3;
+    for n in 0..4 {
+        let set = table_set(&mut fs, &[&format!("{}{n}", text[0])], 12.0, 15.0);
+        media.park(set, budget);
+    }
+    let kept: Vec<usize> = media.parked.iter().map(|set| set.iter().map(TableBufferEntry::charge).sum()).collect();
+    assert!(kept.iter().sum::<usize>() <= budget, "{kept:?}");
+    assert_eq!(kept.len(), 2, "each set is one byte over `each`, so two fit in three: {kept:?}");
+    // The newest are the ones kept.
+    assert!(media.parked[0][0].built_from(&format!("{}3", text[0]), 12.0, 15.0));
+    // A set over the budget by itself is not kept and drops none of the others.
+    let big = table_set(&mut fs, &[&"x".repeat(budget + 1)], 12.0, 15.0);
+    media.park(big, budget);
+    assert_eq!(media.parked.len(), 2);
+}
+
+#[test]
+fn a_set_is_charged_its_rendered_bytes_whatever_it_holds() {
+    // A table with one long cell pads every row to it, so a set of mostly spaces is the worst case for memory (520
+    // resident bytes per byte charged, against 76 to 355 for text and borders, measured): the charge is the byte count.
+    let mut fs = cosmic_text::FontSystem::new();
+    let padded = format!("│{}│\n", " ".repeat(498)).repeat(20);
+    let set = table_set(&mut fs, &[&padded], 12.0, 15.0);
+    assert_eq!(set[0].charge(), padded.len());
+    let glyphs: usize = set[0].buffer.layout_runs().map(|run| run.glyphs.len()).sum();
+    assert_eq!(glyphs, 20 * 500, "every padding character is a shaped glyph the charge stands for");
+}
+
+#[test]
+fn the_real_budget_keeps_a_set_at_it_and_drops_one_past_it() {
+    use super::super::media::unshaped;
+    // What the contract says of the constant: a set of the diagnosed file's size (140,198 bytes of table text) is kept,
+    // and the whole budget at the worst measured factor (520 resident bytes per byte) stays near 100 MB.
+    assert!(PARKED_TABLE_BYTES >= 140_198);
+    assert!(PARKED_TABLE_BYTES * 520 <= 110 << 20);
+    let mut media = MarkdownMedia::default();
+    // Entries that hold text and no shaping, so the test takes no time to build a set of the budget's size.
+    media.replace_tables(vec![unshaped("x".repeat(PARKED_TABLE_BYTES), 12.0, 15.0)]);
+    media.clear_tables();
+    assert_eq!(media.parked.len(), 1, "a set at the budget is kept");
+    media.replace_tables(vec![unshaped("y".repeat(PARKED_TABLE_BYTES + 1), 12.0, 15.0)]);
+    media.clear_tables();
+    assert_eq!(media.parked.len(), 1, "a set one byte past it is not kept, and drops none that is");
+    assert!(media.parked[0][0].built_from(&"x".repeat(PARKED_TABLE_BYTES), 12.0, 15.0));
+}
