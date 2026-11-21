@@ -217,8 +217,10 @@ of each.
     lists (`agents`, `agents/sot-fe`, `agents/spawn`, `agents/worktree`) installs flat into the comm folder's `bin/`,
     except that every file `sot-fe` sources by a part line (`src/comm_bin.jl`, whatever their number) is
     embedded in the installed `sot-fe` and is no file of its own; nothing in `claude/` or
-    `codex/` installs there (the launchers and the `PATH` wrappers reach `~/.local/bin` through the installer's own
-    stage, `src/sources.jl`), and the wrapper `claude/bin/sot-fe` never replaces the tool `sot-fe/sot-fe`. Test:
+    `codex/` installs there. The shared install stage puts `show-result`, `sot-fe` and `sot-gh-auth` in `~/.local/bin`
+    for every adapter selection. Each adapter adds its own launcher there. The shared stage updates only shipped
+    copies (the earlier versions are in `comm/launcher-hashes.txt`) and reports a personal file as an incomplete
+    install. The wrapper `claude/bin/sot-fe` never replaces the tool `sot-fe/sot-fe`. Test:
     `test/install_tests.jl` ("the agents tools install flat from the four listed folders", and "comm-lib.sh and sot-fe
     install as one file each..." for the embedded text), over the installer's own file list.
 14. **No tool leaves a file in the temporary folders, by messaging's rule and with its limits.** On success, on failure,
@@ -349,8 +351,8 @@ of each.
 - The layer: `<comm home>/claude-layer/` (written by the installer from `agents/claude/` and `comm/adapters/claude/`,
   read by the recipe) and the table of hooks in `layer.rs`.
 - The non-messaging Claude skills (the four onboarding ones global, the rest the layer's; `julia-repl`, `project-log`, `reauth`, `show-result`, `sitrep`, `sot-chat-post`, `sot-gh-auth`,
-  `sot-install`, `sot-setup`, `sot-status`, `sot-statusline-setup`, `worktree`) and the Claude launcher `ccb` with its
-  `PATH` wrappers (`show-result`, `sot-fe`, `sot-gh-auth`): `claude/`. The Codex launcher `ccx`: `codex/`.
+  `sot-install`, `sot-setup`, `sot-status`, `sot-statusline-setup`, `worktree`) and the Claude launcher `ccb` live in
+  `claude/`. The shared install stage takes its three PATH wrappers from `claude/bin/`. The Codex launcher `ccx` lives in `codex/`.
 - The row CLIs `spawn/`, the /worktree scripts `worktree/`, the frontend CLI and nav broadcast `sot-fe/`,
   `sot-gh-auth.sh`, and the suites `tests/`.
 - `sot-fe docs <workspace> <absolute-page>` carries an explicit entry reply scope through `fe.command docs`:

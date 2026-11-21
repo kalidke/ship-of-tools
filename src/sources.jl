@@ -9,8 +9,11 @@ const REPO_ROOT = dirname(COMM_SRC)
 const COMM_BIN_FOLDERS = joinpath(COMM_SRC, "bin-folders.txt")
 # The folders holding the Claude skills (each skill a subfolder with a SKILL.md).
 const CLAUDE_SKILL_SRCS = [joinpath(COMM_SRC, "adapters", "claude"), joinpath(REPO_ROOT, "agents", "claude")]
-# The Claude launcher scripts, installed into ~/.local/bin.
+# The shared PATH commands live beside Claude's own launcher.
 const CLAUDE_LAUNCHER_SRC = joinpath(REPO_ROOT, "agents", "claude", "bin")
+# Record SHA-256 of the Git blob contents from this folder and its predecessor, comm/adapters/claude/bin.
+const SHARED_LAUNCHERS = ("show-result", "sot-fe", "sot-gh-auth")
+const LAUNCHER_HASHES = joinpath(COMM_SRC, "launcher-hashes.txt")
 # The Codex adapter folder; the install of the Codex arm is skipped when it is absent.
 const CODEX_ADAPTER_SRC = joinpath(COMM_SRC, "adapters", "codex")
 # The Codex skills (same shape as the Claude ones).

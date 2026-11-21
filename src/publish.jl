@@ -70,39 +70,36 @@ rename onto `dst`. A directory-wide PRE-pass can delete another run's aside
 during the window between its two renames — the one moment that aside is the
 only copy of the old file; done after our own rename succeeds, the worst case
 is that the other run's restore fails and `dst` keeps our valid new content,
-never missing. An aside goes unconditionally (best effort). A staging file
+never missing. An aside needs no liveness check. A staging file
 goes ONLY when its host field is this host AND its pid is not alive: a live
 pid means a run is writing it right now, and another host's pid number says
-nothing about liveness here, so both exclusions are absolute.
+nothing about liveness here, so both exclusions are absolute. In a shared PATH folder, `owned(dst, marker)`
+also checks the marker's contents before removal.
 """
-function _reap_markers(dst::AbstractString; keep::Union{Nothing,AbstractString} = nothing)
+function _reap_markers(dst::AbstractString; keep::Union{Nothing,AbstractString} = nothing, owned = Returns(true))
     dir = dirname(dst)
     base = basename(dst)
     isdir(dir) || return nothing
     tag = _host_tag()
     for name in readdir(dir)
-        (startswith(name, base) && name != base) || continue
+        startswith(name, base * ".") || continue
+        suffix = chopprefix(name, base)
         full = joinpath(dir, name)
         # The aside this call just created belongs to the NEXT replace, not
         # this one: it is the only copy of the old file a live holder still
         # has open.
         (keep !== nothing && full == keep) && continue
-        if occursin(".stale-", name)
-            try
-                rm(full; force = true)
-            catch
-            end
+        if startswith(suffix, ".tmp-")
+            fields = split(chopprefix(suffix, ".tmp-"), '-')
+            length(fields) == 3 && occursin(r"^[0-9a-f]{1,4}\z", fields[3]) || continue
+            fields[1] == tag || continue
+            pid = tryparse(Int, fields[2])
+            (pid === nothing || _pid_alive(pid)) && continue
+        elseif !occursin(r"^\.stale-[0-9a-f]{1,8}\z", suffix)
             continue
         end
-        r = findfirst(".tmp-", name)
-        r === nothing && continue
-        fields = split(name[(last(r) + 1):end], '-')
-        length(fields) >= 2 || continue
-        fields[1] == tag || continue
-        pid = tryparse(Int, fields[2])
-        (pid === nothing || _pid_alive(pid)) && continue
         try
-            rm(full; force = true)
+            owned(dst, full) && rm(full; force = true)
         catch
         end
     end
@@ -122,8 +119,9 @@ name. Any failure removes the temporary and throws; if the second rename fails
 the old file is put back, so `dst` is never missing.
 """
 function install_file(src::AbstractString, dst::AbstractString;
-                      rename = Base.Filesystem.rename, text = nothing)
+                      rename = Base.Filesystem.rename, text = nothing, owned = Returns(true))
     tmp = _tmp_name(dst)
+    (ispath(tmp) || islink(tmp)) && error("install_file: staging path for $dst is occupied: $tmp")
     aside_made = Ref{Union{Nothing,String}}(nothing)
     try
         cp(src, tmp; force = true)
@@ -141,6 +139,7 @@ function install_file(src::AbstractString, dst::AbstractString;
             # back so dst is never missing.
             isfile(dst) || rethrow(first_err)
             aside = dst * ".stale-" * string(rand(UInt32); base = 16)
+            (ispath(aside) || islink(aside)) && rethrow(first_err)
             rename(dst, aside)
             aside_made[] = aside
             try
@@ -153,7 +152,7 @@ function install_file(src::AbstractString, dst::AbstractString;
                 rethrow(second_err)
             end
         end
-        _reap_markers(dst; keep = aside_made[])
+        _reap_markers(dst; keep = aside_made[], owned)
     catch err
         isfile(tmp) && rm(tmp; force = true)
         error("install_file: $dst: $(sprint(showerror, err))")
@@ -209,7 +208,7 @@ survive.
 """
 function _install_files(srcdir::AbstractString, dstdir::AbstractString, files;
                          executable = Returns(false), text = nothing,
-                         rename = Base.Filesystem.rename)
+                         rename = Base.Filesystem.rename, owned = Returns(true))
     problems = String[]
     for f in files
         dst = joinpath(dstdir, f)
@@ -226,7 +225,7 @@ function _install_files(srcdir::AbstractString, dstdir::AbstractString, files;
             continue
         end
         try
-            install_file(src, dst; rename = rename, text = text === nothing ? nothing : () -> text(f))
+            install_file(src, dst; rename = rename, text = text === nothing ? nothing : () -> text(f), owned)
             executable(f) && chmod(dst, 0o755)
         catch err
             push!(problems, "$f could not be updated, kept the previous copy ($(sprint(showerror, err)))")

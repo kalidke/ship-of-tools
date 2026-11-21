@@ -187,6 +187,128 @@ end
     end
 end
 
+@testset "update_comm puts shared commands on PATH for every adapter selection" begin
+    shared = ["show-result", "sot-fe", "sot-gh-auth"]
+    jq = realpath(something(Sys.which("jq")))
+    where_exe = Sys.iswindows() ? something(Sys.which("where.exe")) : nothing
+    snapshot(bin) = Dict(basename(path) => (read(path), filemode(path), mtime(path))
+                         for path in readdir(bin; join = true))
+
+    for (clis, names) in ((Symbol[], shared), ([:codex], ["ccx"; shared]), ([:claude], ["ccb"; shared]),
+                          ([:claude, :codex], ["ccb"; "ccx"; shared]))
+        @testset "$clis" begin
+            mktempdir() do home
+                bin = joinpath(home, ".local", "bin")
+                tools = mkpath(joinpath(home, "tools"))
+                # Only jq is needed. A real codex on the caller's PATH must never add a plugin here.
+                cp(jq, joinpath(tools, Sys.iswindows() ? "jq.exe" : "jq"))
+                in_home(home, "PATH" => tools) do
+                    ShipTools.update_comm(; clis)
+                    expected = Sys.iswindows() ? sort([names; names .* ".cmd"]) : names
+                    found = isdir(bin) ? readdir(bin) : String[]
+                    @test found == expected
+                    isdir(bin) || return
+                    withenv("PATH" => (Sys.iswindows() ? bin : "$bin:/usr/bin:/bin")) do
+                        for name in intersect(names, found)
+                            path = joinpath(bin, name)
+                            adapter = name == "ccx" ? "codex" : "claude"
+                            src = joinpath(ShipTools.REPO_ROOT, "agents", adapter, "bin", name)
+                            @test read(path) == read(src)
+                            @test Sys.isexecutable(path)
+                            if Sys.iswindows()
+                                matches = readlines(Cmd(`$where_exe $name`; dir = home))
+                                @test any(p -> samefile(p, path * ".cmd"), matches)
+                                @test read(path * ".cmd", String) == ShipTools._launcher_refusal(name)
+                            else
+                                @test Sys.which(name) == path
+                                @test filemode(path) & 0o777 == 0o755
+                                if name in shared
+                                    @test occursin(name, read(Cmd(`$name --help`; dir = home), String))
+                                end
+                            end
+                        end
+                    end
+                    write(joinpath(bin, "my-tool"), "keep this file")
+                    before = snapshot(bin)
+                    ShipTools.update_comm(; clis)
+                    @test snapshot(bin) == before
+                    if isempty(clis)
+                        # A change to any wrapper must keep both checkout forms recognizable on the next install.
+                        for name in shared
+                            path = joinpath(bin, name)
+                            current = read(path, String)
+                            lf = replace(current, "\r\n" => "\n")
+                            write(path, lf == current ? replace(lf, "\n" => "\r\n") : lf)
+                        end
+                        ShipTools.update_comm(; clis)
+                        @test all(read(joinpath(bin, name)) == before[name][1] for name in shared)
+                    end
+                end
+            end
+        end
+    end
+end
+
+@testset "a shared command upgrades only shipped copies and reports personal files" begin
+    for clis in ([:codex], [:claude], [:claude, :codex])
+        @testset "$clis" begin
+            mktempdir() do home
+                in_home(home) do
+                    bin = mkpath(joinpath(home, ".local", "bin"))
+                    # An existing two-adapter install keeps both launchers even if only one adapter updates.
+                    for (src, name) in ((ShipTools.CLAUDE_LAUNCHER_SRC, "ccb"), (ShipTools.CODEX_LAUNCHER_SRC, "ccx"))
+                        chmod(cp(joinpath(src, name), joinpath(bin, name)), 0o755)
+                        Sys.iswindows() && ShipTools._install_launcher_refusals(src, bin, [name])
+                    end
+                    auth = joinpath(bin, "sot-gh-auth")
+                    # An earlier shipped wrapper (c8d674cd3), as installed from a CRLF checkout.
+                    old = raw"""#!/bin/bash
+                    # sot-gh-auth — bare-command wrapper so a human at ANY shell can just type
+                    # `sot-gh-auth` (so `gh auth login` is one command from a bare shell). The real script lives in
+                    # ~/.sot-comm/bin (not on PATH); this lands in ~/.local/bin (on PATH) via
+                    # ShipTools.update_comm(). Full flow, request/poll/status subcommands — see
+                    # sot-gh-auth.sh --help.
+                    exec "${SOT_COMM_HOME:-$HOME/.sot-comm}/bin/sot-gh-auth.sh" "$@"
+                    """
+                    write(auth, replace(old, "\n" => "\r\n"))
+                    notes = auth * ".stale-notes"
+                    write(notes, "keep my notes")
+                    marker = auth * ".stale-deadbeef"
+                    write(marker, "personal bytes at a marker name")
+                    foreign = joinpath(bin, "show-result")
+                    source = read(joinpath(ShipTools.CLAUDE_LAUNCHER_SRC, "show-result"), String)
+                    lf = replace(source, "\r\n" => "\n")
+                    personal = replace(lf, "\n" => "\r\n"; count = 1)
+                    write(foreign, personal)
+                    fe = joinpath(bin, "sot-fe")
+                    if Sys.iswindows()
+                        write(fe * ".cmd", "personal shim")
+                    else
+                        symlink(foreign, fe)
+                    end
+                    @test_throws "left $foreign in place" ShipTools.update_comm(; clis)
+                    @test read(foreign, String) == personal
+                    @test Sys.iswindows() ? read(fe * ".cmd", String) == "personal shim" : islink(fe)
+                    @test read(auth) == read(joinpath(ShipTools.CLAUDE_LAUNCHER_SRC, "sot-gh-auth"))
+                    @test isfile(notes) && read(notes, String) == "keep my notes"
+                    @test isfile(marker) && read(marker, String) == "personal bytes at a marker name"
+                    @test !ispath(joinpath(home, ".sot-comm", "VERSION"))
+                    # Resolve both collisions with a shipped copy and a vacant name, then retry.
+                    write(foreign, source == lf ? replace(lf, "\n" => "\r\n") : lf)
+                    rm(Sys.iswindows() ? fe * ".cmd" : fe; force = true)
+                    ShipTools.update_comm(; clis)
+                    @test read(foreign, String) == source
+                    @test isfile(fe) && !islink(fe)
+                    @test isfile(joinpath(home, ".sot-comm", "VERSION"))
+                    names = ["ccb", "ccx", "show-result", "sot-fe", "sot-gh-auth"]
+                    Sys.iswindows() && append!(names, names .* ".cmd")
+                    @test readdir(bin) == sort([names; basename(notes); basename(marker)])
+                end
+            end
+        end
+    end
+end
+
 @testset "the library publishes first, and a script started after any rename sources it whole" begin
     files = ShipTools._comm_bin_files()
     lib = first(f for (f, n) in files if n == "comm-lib.sh")
@@ -421,7 +543,7 @@ end
     mktempdir() do home
         chmod(home, 0o755)
         # ADR 0049, User isolation: a new folder is 0700 whatever the caller's mask. The mask is process-wide,
-        # so it is set around the install only. install_comm(clis = Symbol[]) reads only the comm home.
+        # so it is set around the install only.
         old = set_process_umask(0o022)
         try
             in_home(home) do

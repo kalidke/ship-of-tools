@@ -123,15 +123,10 @@ function _prune_layer_skills!(layerskills::AbstractString, srcdirs)
     return nothing
 end
 
-"""
-    _legacy_skill_hashes() -> Dict{String,Set{String}}
-
-The skills an earlier installer placed straight into a Claude skills folder: each name with the hash of every version the
-repo ever shipped (`comm/legacy-skills.txt`, made by `scripts/legacy-skill-hashes.sh`; frozen history).
-"""
-function _legacy_skill_hashes()
+# Both inventories record the exact shipped versions under each name, one name and digest per line.
+function _shipped_hashes(path)
     known = Dict{String,Set{String}}()
-    for line in eachline(LEGACY_SKILL_HASHES)
+    for line in eachline(path)
         name, hash = split(line, ' ')
         push!(get!(known, String(name), Set{String}()), String(hash))
     end
@@ -168,14 +163,14 @@ function _skill_folder_hash(dir::AbstractString)
 end
 
 """
-    _retire_placed_skills!(skillsroot; known = _legacy_skill_hashes())
+    _retire_placed_skills!(skillsroot; known = _shipped_hashes(LEGACY_SKILL_HASHES))
 
 Remove from a Claude skills folder the skills an earlier install put there, and nothing else. A folder goes only when its
 contents hash to a version the repo shipped of the skill of that name; any other folder of such a name is a person's own
 and stays, with a warning. A skills folder that is itself a link is never acted through (its target is somebody's
 dotfiles), and a link inside it is never removed. The rule holds on every run, so it keeps no marker.
 """
-function _retire_placed_skills!(skillsroot::AbstractString; known = _legacy_skill_hashes())
+function _retire_placed_skills!(skillsroot::AbstractString; known = _shipped_hashes(LEGACY_SKILL_HASHES))
     if islink(skillsroot)
         @warn "this Claude skills folder is a symbolic link: skills an earlier install placed in it were left where they are" dir = skillsroot
         return nothing

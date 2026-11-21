@@ -31,13 +31,13 @@ function _repo_commit()
 end
 
 """
-    install_comm(; clis = [:claude])
+    install_comm(; clis = [:claude, :codex])
 
 Install sot-comm, creating the comm folder owner-only (0700) when it does not
 exist. Installs the files of every folder listed in
 comm/bin-folders.txt into `\$SOT_COMM_HOME/bin` (default `~/.sot-comm/bin`),
 each part inside the file that sources it (`_comm_bin_text`),
-whatever `clis`, and installs the adapter for each CLI in `clis`
+and the shared PATH commands into `~/.local/bin` whatever `clis`. Installs the adapter for each CLI in `clis`
 (`:claude` skills into the Claude layer, the mail-check hooks, and the retirement of what an earlier install put in the user's own folders; `:codex` skills/hooks/plugin). Idempotent — safe to
 re-run to update an existing install. Without jq on PATH it stops before it
 changes anything, with one line naming the command that installs jq
@@ -69,6 +69,9 @@ function install_comm(; clis = [:claude, :codex])
     prev_manifest = _read_comm_manifest(bin)
     @info "Installed comm scripts" dir = bin count = length(readdir(bin))
 
+    _stage!(problems, "shared PATH launchers") do
+        _install_shared_launchers!(problems)
+    end
     unhooked = String[]
     for cli in clis
         _stage!(problems, "adapter $cli") do

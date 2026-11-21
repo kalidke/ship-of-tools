@@ -22,7 +22,7 @@ function _install_adapter(cli::Symbol; unhooked::Vector{String} = String[])
             _prune_layer_skills!(claude_layer_skills(), CLAUDE_SKILL_SRCS)
         end
         _stage!(problems, "claude launchers") do
-            _install_launchers(CLAUDE_LAUNCHER_SRC)
+            _install_launchers(CLAUDE_LAUNCHER_SRC, ("ccb",))
         end
         if isempty(problems)
             # Every configuration folder an account uses, each skills folder by the same rule: a folder that is a link
