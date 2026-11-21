@@ -91,8 +91,14 @@ fn a_post_is_sent_only_after_the_last_ones_reply() {
     assert!(o.post(host(), Posting::Text(post_req("two"))).is_some());
 }
 
+/// The wait after a watch sent when the recovery was `age` old, restated for the tests: a quarter of the age, within
+/// `SHORT_PACE` and `PACE`.
+fn pace_after(age: Duration) -> Duration {
+    (age / 4).clamp(SHORT_PACE, PACE)
+}
+
 /// Rule 2: a status that lists the channel is answered by a watch, never by a read of its own; losses within the pace send
-/// nothing, and a watch that stays pending is sent again on the short pace while the recovery is young, then on `PACE`
+/// nothing, and a watch that stays pending is sent again on the pace, which grows with the recovery's age to `PACE`
 /// (the gap is `a_gap_comes_only_after_...`).
 #[test]
 fn a_status_is_answered_by_a_paced_watch() {
@@ -103,22 +109,26 @@ fn a_status_is_answered_by_a_paced_watch() {
     assert!(is_watch(&o.on_evt(&host(), status(true, &["C1"]), now)));
     assert!(o.on_evt(&host(), status(true, &["C1"]), now).is_empty(), "inside the pace");
     assert!(o.on_evt(&host(), watched(ChatWatchState::Pending), now).is_empty(), "a pending watch starts no read");
-    while now.duration_since(began) < YOUNG {
-        assert!(o.tick(now + SHORT_PACE - Duration::from_millis(1)).is_empty());
-        now += SHORT_PACE;
-        assert!(is_watch(&o.tick(now)), "a short ask at {:?}", now.duration_since(began));
+    while pace_after(now.duration_since(began)) < PACE {
+        let pace = pace_after(now.duration_since(began));
+        assert!(o.tick(now + pace - Duration::from_millis(1)).is_empty());
+        now += pace;
+        assert!(is_watch(&o.tick(now)), "an ask at {:?}", now.duration_since(began));
         assert!(o.on_evt(&host(), watched(ChatWatchState::Pending), now).is_empty());
     }
+    // The last ask was at least 20 s into the recovery: the window is spent, and the next turn finds the gap.
     assert!(o.tick(now + PACE - Duration::from_millis(1)).is_empty());
-    assert!(is_watch(&o.tick(now + PACE)));
+    assert!(o.tick(now + PACE).is_empty());
+    assert_eq!(gap_of(&o), Some(None));
 }
 
-/// After a `pending` answer the watch is asked again every `SHORT_PACE` until the recovery is `YOUNG` old, then every `PACE`,
-/// and the owner says a frame is wanted until the last short ask has gone, so an idle window is woken for each. A watch that
-/// is complete, or whose reply is awaited, wants none.
+/// After a `pending` answer the watch is asked again after a quarter of the recovery's age then (at least `SHORT_PACE`), until
+/// that is `PACE`, and the owner says a frame is wanted until the last such ask has gone, so an idle window is woken for each.
+/// A watch that is complete, or whose reply is awaited, wants none.
 #[test]
 fn a_pending_watch_is_asked_again_soon_and_the_window_is_woken() {
     let t0 = Instant::now();
+    assert_eq!(complete(t0).next_ask(), None, "a complete watch names no ask though its last try is young");
     let mut o = ChatOwner::default();
     o.on_connection(&host(), true, t0);
     assert_eq!(o.next_ask(), None, "nothing watched");
@@ -127,35 +137,35 @@ fn a_pending_watch_is_asked_again_soon_and_the_window_is_woken() {
     o.on_evt(&host(), watched(ChatWatchState::Pending), t0 + Duration::from_millis(20));
     assert_eq!(o.next_ask(), Some(t0 + SHORT_PACE), "the window is woken for the second ask");
     assert!(o.tick(t0 + SHORT_PACE - Duration::from_millis(1)).is_empty());
-    assert!(is_watch(&o.tick(t0 + SHORT_PACE)), "the second ask goes at the short pace");
-    let mut at = t0 + SHORT_PACE;
-    while at.duration_since(t0) < YOUNG {
+    let mut at = t0;
+    while pace_after(at.duration_since(t0)) < PACE {
+        let next = at + pace_after(at.duration_since(t0));
+        assert_eq!(o.next_ask(), Some(next), "the window is woken for each ask, at {:?}", at.duration_since(t0));
+        assert!(is_watch(&o.tick(next)));
+        at = next;
         o.on_evt(&host(), watched(ChatWatchState::Pending), at);
-        assert_eq!(o.next_ask(), Some(at + SHORT_PACE), "and for each one after");
-        at += SHORT_PACE;
-        assert!(is_watch(&o.tick(at)));
     }
-    o.on_evt(&host(), watched(ChatWatchState::Pending), at);
-    assert_eq!(o.next_ask(), None, "from the last short ask on the pace is PACE and nothing wakes the window");
+    assert_eq!(o.next_ask(), None, "from the ask after which the pace is PACE nothing wakes the window");
     assert!(o.tick(at + PACE - Duration::from_millis(1)).is_empty());
-    assert!(is_watch(&o.tick(at + PACE)));
+    assert!(o.tick(at + PACE).is_empty(), "the window is spent");
+    assert_eq!(gap_of(&o), Some(None));
     history_req(&o.on_evt(&host(), watched(ChatWatchState::Complete), at + PACE + Duration::from_secs(1)));
     assert_eq!(o.next_ask(), None, "a read in flight wants no ask");
 }
 
 /// The wait does not depend on how long the snapshot takes: a snapshot the daemon holds `held` after the first watch is read
-/// within one short step after it, across the range a Slack read takes. (Today's 300 ms case read at 1,000 ms.) Four cases
-/// of 2,000 steps, a few milliseconds.
+/// within the larger of `SHORT_PACE` and a quarter of `held` (and the 1 ms of the steps here), from 100 ms to 15 s. (Today's
+/// 300 ms case read at 1,000 ms; a step to `PACE` at 2 s would read 2,001 ms at 7,000.) Seven cases of at most 21,000 steps.
 #[test]
-fn a_snapshot_is_read_within_one_short_step_of_the_daemon_holding_it() {
+fn a_snapshot_is_read_within_a_quarter_of_the_time_the_daemon_took_to_hold_it() {
     let mut late = Vec::new();
-    for held_ms in [100u64, 300, 600, 1200] {
+    for held_ms in [100u64, 300, 600, 1200, 2001, 5000, 15000] {
         let t0 = Instant::now();
         let mut o = ChatOwner::default();
         o.on_connection(&host(), true, t0);
         let mut out = o.watch(host(), target("C1"), t0);
         let mut read = None;
-        for ms in 0..=2000u64 {
+        for ms in 0..=held_ms + 6000 {
             let now = t0 + Duration::from_millis(ms);
             if ms > 0 {
                 out = o.tick(now);
@@ -169,12 +179,53 @@ fn a_snapshot_is_read_within_one_short_step_of_the_daemon_holding_it() {
                 break;
             }
         }
+        let bound = 100.max(held_ms / 4) + 1;
         match read {
-            Some(read) if read >= held_ms && read - held_ms <= 100 => {}
-            other => late.push(format!("held at {held_ms} ms, read at {other:?}")),
+            Some(read) if read >= held_ms && read - held_ms <= bound => {}
+            other => late.push(format!("held at {held_ms} ms, read at {other:?}, bound {bound}")),
         }
     }
     assert!(late.is_empty(), "{late:?}");
+}
+
+/// The instants of a watch's asks, in microseconds from the first, while the pace is under `PACE`: after each reply `answer`
+/// gives (the watch itself answered, or the read it started), the next ask is when `next_ask` says.
+fn ask_instants(answer: impl Fn(&mut ChatOwner, Instant)) -> Vec<u128> {
+    let t0 = Instant::now();
+    let mut o = ChatOwner::default();
+    o.on_connection(&host(), true, t0);
+    assert!(is_watch(&o.watch(host(), target("C1"), t0)));
+    answer(&mut o, t0);
+    let mut instants = vec![0];
+    while let Some(at) = o.next_ask() {
+        assert!(is_watch(&o.tick(at)), "an ask at {:?}", at.duration_since(t0));
+        instants.push(at.duration_since(t0).as_micros());
+        answer(&mut o, at);
+    }
+    instants
+}
+
+/// An `unavailable` answer (the service starting) and a snapshot read the daemon refused are asked on the same schedule as
+/// a pending watch: at 100 ms steps for the first 400 ms, then each after a quarter of the recovery's age; 12 asks in the
+/// first 2 s and 23 to the 20 s window (the last after 17.8 s, at 22.2 s).
+#[test]
+fn unavailable_and_a_refused_read_are_asked_on_the_pending_schedule() {
+    let unavailable = ask_instants(|o, at| {
+        o.on_evt(&host(), ChatEvt::Watched { target: target("C1"), reply: ChatReply::Refused(ChatCode::Unavailable) }, at);
+    });
+    let refused_read = ask_instants(|o, at| {
+        let req = history_req(&o.on_evt(&host(), watched(ChatWatchState::Complete), at));
+        o.on_evt(&host(), ChatEvt::History { req, reply: ChatReply::Refused(ChatCode::Busy) }, at);
+    });
+    let pending = ask_instants(|o, at| {
+        o.on_evt(&host(), watched(ChatWatchState::Pending), at);
+    });
+    assert_eq!(unavailable, pending);
+    assert_eq!(refused_read, pending);
+    let first_two_seconds: Vec<_> = pending.iter().copied().filter(|us| *us <= 2_000_000).collect();
+    assert_eq!(first_two_seconds, [0, 100_000, 200_000, 300_000, 400_000, 500_000, 625_000, 781_250, 976_562, 1_220_703, 1_525_878, 1_907_348]);
+    assert_eq!(pending.len(), 23, "asks to the window's end");
+    assert!(pending[22] >= 20_000_000 && pending[21] < 20_000_000);
 }
 
 /// Never two asks in flight for one watch: nothing goes while the last ask has no reply, the next goes at once when the
@@ -192,6 +243,22 @@ fn a_watch_is_not_asked_again_while_its_reply_is_awaited() {
     assert!(is_watch(&o.on_evt(&host(), watched(ChatWatchState::Pending), slow)), "the reply came, the pace had passed: the next ask goes");
     assert!(o.tick(slow + Duration::from_millis(500)).is_empty(), "and that one is awaited too");
     assert!(is_watch(&o.tick(slow + PACE)), "a reply that never comes does not end the asks");
+}
+
+/// A late reply for another channel, or for the same channel on another link, is not the answer to the ask in flight: that
+/// ask stays awaited. (One for an earlier watch of the same channel cannot be told apart: the contract states the limit.)
+#[test]
+fn a_late_reply_of_another_channel_or_link_leaves_the_ask_awaited() {
+    let t0 = Instant::now();
+    let mut o = ChatOwner::default();
+    o.on_connection(&host(), true, t0);
+    assert!(is_watch(&o.watch(host(), target("C1"), t0)));
+    let other_channel = ChatEvt::Watched { target: target("C2"), reply: ChatReply::Done(ChatWatchRes { state: ChatWatchState::Pending }) };
+    assert!(o.on_evt(&host(), other_channel, t0 + Duration::from_millis(150)).is_empty());
+    assert!(o.on_evt(&"other".to_string(), watched(ChatWatchState::Pending), t0 + Duration::from_millis(160)).is_empty());
+    assert!(o.tick(t0 + Duration::from_millis(300)).is_empty(), "the ask is still awaited");
+    assert_eq!(o.next_ask(), None, "and names no instant");
+    assert!(is_watch(&o.on_evt(&host(), watched(ChatWatchState::Pending), t0 + Duration::from_millis(400))), "its own reply frees it");
 }
 
 /// Rule 3: a status entry for another channel, a bare gap flag, or any status once nothing is watched starts nothing.
@@ -881,29 +948,30 @@ fn a_gap_comes_only_after_the_daemons_slowest_snapshot_and_says_why() {
     let complete = || ChatReply::Done(ChatWatchRes { state: ChatWatchState::Complete });
     let refused = |c| ChatReply::Refused(c);
 
-    // Pending to 17 s, then complete at 22 s (asks at 0, 1 and 2 s on the short pace, then every 5 s).
-    let (o, sent, gap) = run_seconds(40, None, |s| if s <= 17 { pending() } else { complete() });
-    assert_eq!((fill(&o), gap, sent), (Fill::Complete, None, vec![0, 1, 2, 7, 12, 17, 22]));
+    // Pending to 23 s, then complete at 24 s, the last ask of the window (the pace grows with the recovery's age, and the
+    // clock here has whole seconds: the asks of 100 ms to 1 s steps are the 0 to 5 s ones).
+    let (o, sent, gap) = run_seconds(40, None, |s| if s <= 23 { pending() } else { complete() });
+    assert_eq!((fill(&o), gap, sent), (Fill::Complete, None, vec![0, 1, 2, 3, 4, 5, 7, 9, 12, 15, 19, 24]));
 
-    // Always pending: the gap comes at 27 s and not before, and a status at 3 s changes nothing.
-    for status_at in [None, Some(3)] {
+    // Always pending: the gap comes at 29 s and not before, and a status at 8 s changes nothing.
+    for status_at in [None, Some(8)] {
         let (o, sent, gap) = run_seconds(30, status_at, |_| pending());
-        assert_eq!((gap, gap_of(&o), sent), (Some(27), Some(None), vec![0, 1, 2, 7, 12, 17, 22]));
+        assert_eq!((gap, gap_of(&o), sent), (Some(29), Some(None), vec![0, 1, 2, 3, 4, 5, 7, 9, 12, 15, 19, 24]));
     }
 
-    // A starting service refuses unavailable to 11 s; its snapshot is then slow, and completes at 32 s.
+    // A starting service refuses unavailable to 11 s; its snapshot is then slow, and completes at 34 s.
     let (o, sent, gap) = run_seconds(50, None, |s| match s {
         0..=11 => refused(ChatCode::Unavailable),
-        12..=27 => pending(),
+        12..=29 => pending(),
         _ => complete(),
     });
-    assert_eq!((fill(&o), gap, sent), (Fill::Complete, None, vec![0, 1, 2, 7, 12, 17, 22, 27, 32]));
+    assert_eq!((fill(&o), gap, sent), (Fill::Complete, None, vec![0, 1, 2, 3, 4, 5, 7, 9, 12, 15, 19, 24, 29, 34]));
 
     // Refusals that can clear: shown at once with their reason, asked again each minute.
     let (o, sent, gap) = run_seconds(200, None, |_| refused(ChatCode::TooManyWatches));
     assert_eq!((gap, gap_of(&o), sent), (Some(0), Some(Some(ChatCode::TooManyWatches)), vec![0, 60, 120, 180]));
     let (_, sent, gap) = run_seconds(60, None, |_| refused(ChatCode::Unavailable));
-    assert_eq!((gap, sent), (Some(22), vec![0, 1, 2, 7, 12, 17, 22]));
+    assert_eq!((gap, sent), (Some(24), vec![0, 1, 2, 3, 4, 5, 7, 9, 12, 15, 19, 24]));
     let (o, _, _) = run_seconds(60, None, |_| refused(ChatCode::Unavailable));
     assert_eq!(gap_of(&o), Some(Some(ChatCode::Unavailable)));
 
@@ -917,7 +985,7 @@ fn a_gap_comes_only_after_the_daemons_slowest_snapshot_and_says_why() {
 
     // The watch complete but every read refused: a gap with the read's reason, asked again each minute.
     let (o, sent, gap) = run_reads(300, None, |_| complete(), |_| ChatReply::Refused(ChatCode::Busy));
-    assert_eq!((gap, gap_of(&o)), (Some(27), Some(Some(ChatCode::Busy))), "watched at {sent:?}");
+    assert_eq!((gap, gap_of(&o)), (Some(29), Some(Some(ChatCode::Busy))), "watched at {sent:?}");
 
     // A gap's reason does not outlive a pending reply: the service that was not running now is.
     let (o, _, _) = run_seconds(100, None, |s| if s < 30 { refused(ChatCode::Unavailable) } else { pending() });

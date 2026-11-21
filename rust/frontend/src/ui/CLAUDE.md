@@ -1679,13 +1679,26 @@ returns the requests for State to send. Rules, each with its test in `drawer/cha
   (`a_lost_chat_bus_marks_the_state_incomplete_and_watches_again`, `a_status_is_answered_by_a_paced_watch`,
   `an_unreadable_chat_event_watches_again`). Only a watch reply that says `complete`, while the state needs one, starts the one
   `chat.history` read; a pending watch is sent again by `tick`.
-  Watches go out at 0 and then every `SHORT_PACE` (100 ms) while the recovery is under `YOUNG` (2 s) old, then every `PACE`
-  (5 s), so a snapshot the daemon holds after any time is read within one short step of it, whatever Slack took
-  (`a_snapshot_is_read_within_one_short_step_of_the_daemon_holding_it`). No short ask goes while the last one's reply is
-  awaited, so a slow link sets the pace; a reply that never comes is asked past after `PACE`
-  (`a_watch_is_not_asked_again_while_its_reply_is_awaited`). The same schedule serves an `unavailable` answer while the
-  service starts (asks at 0, 1 and 2 s, then every 5 s) and a snapshot read the daemon refused; the gap rules, `GAP_PACE` and
-  the 20 s window are as before (the last ask of the window goes between 20 and 25 s after its start).
+  Watches go out at 0 and then after a quarter of the recovery's age at the last one, at least `SHORT_PACE` (100 ms) and at
+  most `PACE` (5 s) (`Watch::pace`): at 0, 100, 200, 300, 400 and 500 ms, then 625, 781, 977 ms, and so on, 12 asks in the
+  first 2 s and 23 to the end of the 20 s window (the last at 22.2 s). So a snapshot the daemon holds N after the first
+  watch is read within the larger of `SHORT_PACE` and a quarter of N of holding it, to the 20 s the window gives it
+  (`a_snapshot_is_read_within_a_quarter_of_the_time_the_daemon_took_to_hold_it`, 100 ms to 15 s). No ask goes while the last
+  one's reply is awaited, so a slow link sets the pace; a reply that never comes is asked past after `PACE`
+  (`a_watch_is_not_asked_again_while_its_reply_is_awaited`). The limit: "never two asks in flight" holds within one watch and
+  one answer cycle, for a reply says only its target (`ChatEvt::Watched`), so a late reply of an earlier watch of the same
+  channel (a row left and come back within a slow link's round trip, or an ask asked past) frees the flag and costs one extra
+  ask, which the daemon takes as a repeat (a late reply for another channel or link frees nothing,
+  `a_late_reply_of_another_channel_or_link_leaves_the_ask_awaited`). The same schedule serves an `unavailable` answer while the
+  service starts and a snapshot read the daemon refused, the same 12 and 23 asks
+  (`unavailable_and_a_refused_read_are_asked_on_the_pending_schedule`); each `unavailable` answer is also followed by a
+  `chat.resolve` of the row (the drawer's `check_again`), so the hub sees up to 12 and 23 watch and resolve pairs. The gap
+  rules, `GAP_PACE` and the 20 s window are as before (the last ask of the window goes between 20 and 25 s after its start).
+  What the schedule costs the hub in Slack calls: a watch of a channel whose snapshot is pending makes none; a snapshot that
+  fails at once in the hub (a token or network error answered in milliseconds) is begun again by each ask, one call each, up to
+  12 in the first 2 s and 23 to the window's end, until a retry header's wait stops them (the door refuses unsent); a refused
+  snapshot read is one `chat.history` per cycle, at most one per ask and none while a retry header holds or the HTTP core is
+  full. The old schedule's counts were 3 in the first second and 7 to the window's end.
   While a watch waits on the short pace, `ChatOwner::next_ask` names the instant of its next ask (`None` when none
   waits, its reply is awaited, the daemon is unsupported, a read is in flight or the state is a gap).
   The idle loop's `about_to_wait` joins that instant to the other idle deadlines (a help peek's or a preview notice's fade, the quit hint, the reply

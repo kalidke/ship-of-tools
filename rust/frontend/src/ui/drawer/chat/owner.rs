@@ -13,11 +13,10 @@ use sot_protocol::ops::{
 };
 use sot_protocol::chat::{ChatRecord, Ts};
 
-/// Between two watch attempts while a recovery is younger than `YOUNG`: `SHORT_PACE`, so a snapshot the daemon holds after
-/// any time is asked for within one short step of holding it, and what a person waits does not depend on how fast Slack
-/// answered that day. After it, `PACE`.
+/// Between two watch attempts: a quarter of the recovery's age at the last one, within `SHORT_PACE` and `PACE`, so a snapshot
+/// the daemon holds N after the first watch is asked for within the larger of `SHORT_PACE` and a quarter of N of holding it,
+/// whatever Slack took that day (`pace`).
 const SHORT_PACE: Duration = Duration::from_millis(100);
-const YOUNG: Duration = Duration::from_secs(2);
 pub(super) const PACE: Duration = Duration::from_secs(5);
 /// What the daemon is given before a gap is shown: for its chat service to start (it refuses `unavailable` meanwhile), and,
 /// from the first watch it admits, for its slowest snapshot (about 18.5 s at worst, so the last watch goes after 20 s).
@@ -149,7 +148,7 @@ struct Watch {
     /// window runs from the start.
     began: Instant,
     admitted: Option<Instant>,
-    /// A watch was sent and its reply has not come: another is not sent on the short pace, so a slow link sets the pace.
+    /// A watch was sent and its reply has not come: another is not sent before `PACE`, so a slow link sets the pace.
     in_flight: bool,
     /// Why the last snapshot read was refused: the reason of a gap that the daemon's watch did not give.
     read_refused: Option<ChatCode>,
@@ -192,7 +191,7 @@ pub(super) fn ts_order(t: &Ts) -> (usize, &str, &str) {
 impl Watch {
     /// A recovery begins: its start, its admission and the last read's refusal are forgotten.
     fn begin(&mut self, now: Instant) {
-        (self.last_try, self.began, self.admitted, self.read_refused, self.in_flight) = (None, now, None, None, false);
+        (self.last_try, self.began, self.admitted, self.read_refused) = (None, now, None, None);
     }
 
     /// A loss ends a whole state: what it held is the history a snapshot may reach back to.
@@ -206,12 +205,9 @@ impl Watch {
         self.records.keys().max_by(|a, b| ts_order(a).cmp(&ts_order(b))).cloned()
     }
 
-    /// The wait after the last watch sent: `SHORT_PACE` after one sent while the recovery is younger than `YOUNG`, else `PACE`.
+    /// The wait after the last watch sent: a quarter of the recovery's age then, at least `SHORT_PACE` and at most `PACE`.
     fn pace(&self) -> Duration {
-        match self.last_try {
-            Some(t) if t.duration_since(self.began) < YOUNG => SHORT_PACE,
-            _ => PACE,
-        }
+        self.last_try.map_or(PACE, |t| (t.duration_since(self.began) / 4).clamp(SHORT_PACE, PACE))
     }
 
     fn oldest(&self) -> Option<Ts> {

@@ -386,14 +386,17 @@ fn the_drawer_names_the_instant_of_a_first_watchs_next_ask() {
     assert!(d.tick(wanted("R"), at(200)).0.is_empty(), "a frame before it asks nothing");
     assert_eq!(watches(&d.tick(wanted("R"), at(260)).0), 1);
     d.on_evt(&host(), pending(), at(270));
-    assert_eq!(d.next_ask(), Some(at(360)), "and each ask 100 ms after the last");
-    let mut now = 360;
-    while now <= 160 + 2000 {
-        assert_eq!(watches(&d.tick(wanted("R"), at(now)).0), 1);
-        d.on_evt(&host(), pending(), at(now + 10));
-        now += 100;
+    assert_eq!(d.next_ask(), Some(at(360)), "and each ask after the pace of the last");
+    // Each ask after that is named by the drawer, whatever its gap: 21 more to the last, 22 s after the first, where the
+    // recovery is 20 s old and the pace is `PACE`.
+    let mut asks = 2;
+    while let Some(next) = d.next_ask() {
+        assert_eq!(watches(&d.tick(wanted("R"), next).0), 1);
+        d.on_evt(&host(), pending(), next);
+        asks += 1;
     }
-    assert_eq!(d.next_ask(), None, "from the last short ask on the pace is PACE and nothing wakes the window");
+    assert_eq!(asks, 23, "the owner's schedule: 12 asks in the first 2 s, 23 to the window's end");
+    assert_eq!(d.next_ask(), None, "from the last ask on the pace is PACE and nothing wakes the window");
 }
 
 /// A page read for the channel a row left is an orphan: asked again after a hide and show, the same page waits for the first
