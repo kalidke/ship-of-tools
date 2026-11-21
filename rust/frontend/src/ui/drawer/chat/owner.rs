@@ -14,8 +14,8 @@ use sot_protocol::ops::{
 use sot_protocol::chat::{ChatRecord, Ts};
 
 /// Between two watch attempts: a quarter of the recovery's age at the last one, within `SHORT_PACE` and `PACE`, so a snapshot
-/// the daemon holds N after the first watch is asked for within the larger of `SHORT_PACE` and a quarter of N of holding it,
-/// whatever Slack took that day (`pace`).
+/// the daemon holds N after the first watch is asked for within the largest of `SHORT_PACE`, a quarter of N and one round trip of
+/// the link (an ask waits for the last one's reply), whatever Slack took that day (`pace`).
 const SHORT_PACE: Duration = Duration::from_millis(100);
 pub(super) const PACE: Duration = Duration::from_secs(5);
 /// What the daemon is given before a gap is shown: for its chat service to start (it refuses `unavailable` meanwhile), and,

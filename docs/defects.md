@@ -893,15 +893,16 @@ owned by `docs/CLAUDE.md`.
   the drawer's height stayed with its session (the maintainer: "the slack pane takes a second longer to reload when
   swithcing session"). Not a regression. For an arrival no other window holds, the window's first `chat.watch` is answered
   `pending` while the hub reads the channel's page from Slack (read from the daemon's code; the hub's log shows the history
-  reads, 240 to 300 ms, and that the first read started about 1.4 s after the switch). The window asked again at 250 ms
+  reads, 240 to 300 ms, and, on the day he saw it, that the first read started about 1.4 s after the switch). The window asked again at 250 ms
   and then only at 1 s, so when Slack took longer than about 250 ms the second ask lost the race and the window waited
-  750 ms more for a snapshot the hub had held since about 0.3 s: the channel's messages were current about 1.7 s after the
+  750 ms more for a snapshot the hub had held since about 0.3 s after the first watch: the channel's messages were current about 1.7 s after the
   switch (1.4 s to the window's own read, 0.3 s for it). On the earlier day, with reads of 238 to 250 ms, two of four
-  arrivals read at the second ask and two at the third. This landing replaces the two paces by one that grows: an ask after a
+  arrivals fit a read at the second ask (or a channel another window held) and two the third, as the timings read. This landing replaces the two paces by one that grows: an ask after a
   quarter of the recovery's age at the last one, at least 100 ms and at most 5 s, and no ask while the last one's reply is
-  awaited (`ChatOwner`, `Watch::pace`). A snapshot the hub holds N after the first watch is read within the larger of 100 ms
-  and a quarter of N of holding it, to the 20 s the window gives it (a prediction of about 1.05 s from the switch instead of
-  1.7 s for a 300 ms read, not yet measured in use). It costs 12 asks in the first 2 s and 23 to the window's end, where it
+  awaited (`ChatOwner`, `Watch::pace`). A snapshot the hub holds N after the first watch is read within the largest of 100 ms,
+  a quarter of N and one round trip of the link, to the 20 s the window gives it (an ask is not sent while the last one's
+  reply is awaited; a prediction of about 1.05 s from the switch instead of
+  1.7 s for a 300 ms read, not yet measured in use). It costs at most 12 asks in the first 2 s and 23 to the window's end (fewer on a slow link), where it
   was 3 in the first second and 7. Left for the next landings: an arriving row's last messages shown on the first frame
   (only two channels are parked, and the empty drawer fills the pane meanwhile), the hub dropping a channel's model when
   nobody watches it, and the window's own second read of the page the hub's snapshot just read. The daemon tells a connection

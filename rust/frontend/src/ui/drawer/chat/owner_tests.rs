@@ -953,7 +953,8 @@ fn a_gap_comes_only_after_the_daemons_slowest_snapshot_and_says_why() {
     let (o, sent, gap) = run_seconds(40, None, |s| if s <= 23 { pending() } else { complete() });
     assert_eq!((fill(&o), gap, sent), (Fill::Complete, None, vec![0, 1, 2, 3, 4, 5, 7, 9, 12, 15, 19, 24]));
 
-    // Always pending: the gap comes at 29 s and not before, and a status at 8 s changes nothing.
+    // Always pending: the gap comes at 29 s of this whole-second grid (27.2 s on the real schedule) and not before, and a
+    // status at 8 s changes nothing.
     for status_at in [None, Some(8)] {
         let (o, sent, gap) = run_seconds(30, status_at, |_| pending());
         assert_eq!((gap, gap_of(&o), sent), (Some(29), Some(None), vec![0, 1, 2, 3, 4, 5, 7, 9, 12, 15, 19, 24]));
