@@ -78,8 +78,11 @@ message in view, and a scroll that leaves it out of view moves the mark to the n
 Edits and deletes made in Slack reach the newest 100 messages, a fixed limit of Ship of Tools; an older message edited
 in Slack after the panel read it keeps the text it had then. A message deleted while you watch stays in its place as `(message deleted)` until the panel reads the
 channel again, as it does after a lost connection and when you come back to the channel from another session. The panel
-keeps the messages of the last two channels it showed, so switching back draws them as soon as the computer that runs
-your sessions answers, with `reading…` in the top line until the channel is read again.
+keeps the last messages of the last eight channels it showed, so switching back draws them at once, with `reading…` in
+the top line until the channel has been read again. What it draws at once is what you saw last: a message edited,
+deleted or written while you were in another session shows as you last saw it, until the panel has read the channel again,
+about a second later, and then replaces them. If the project was given another channel meanwhile, the old messages
+disappear when the computer that runs your sessions answers.
 
 ## Threads
 

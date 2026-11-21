@@ -31,8 +31,11 @@ const KEPT: usize = 256;
 const CEILING: usize = KEPT + MAX_PAGE as usize;
 /// Between two asks of a page that was refused as rate limited.
 pub(super) const LIMITED_PACE: Duration = Duration::from_secs(30);
-/// The stopped watches whose records the owner keeps: two, so a person can pass between two channels and back.
-const PARKED: usize = 2;
+/// The stopped watches whose records the owner keeps, and so the rows `RowChannel` remembers: eight, so a person can pass
+/// between a project's sessions and back. Each is held to its newest `PARKED_RECORDS` when it parks, so the store is at most
+/// `PARKED` x `PARKED_RECORDS` x 32 KiB (wire's record bound), 25 MiB.
+pub(super) const PARKED: usize = 8;
+const PARKED_RECORDS: usize = 100;
 
 pub(super) type Out = (HostKey, OutgoingReq);
 
@@ -214,6 +217,19 @@ impl Watch {
         self.records.keys().min_by(|a, b| ts_order(a).cmp(&ts_order(b))).cloned()
     }
 
+    /// Holds the records to the newest `n`, the oldest going and the floor rising to the oldest kept: what the daemon tracks is
+    /// the newest, and what was held below is read again by paging.
+    fn keep_newest(&mut self, n: usize) {
+        let over = self.records.len().saturating_sub(n);
+        if over == 0 {
+            return;
+        }
+        let mut held: Vec<Ts> = self.records.keys().cloned().collect();
+        held.sort_by(|a, b| ts_order(a).cmp(&ts_order(b)));
+        held[..over].iter().for_each(|k| drop(self.records.remove(k)));
+        self.floor = Some(held[over].clone());
+    }
+
     /// The page below the floor, asked for while the reader is at the oldest held record, older history exists and a page
     /// fits. A refused page waits out its pace first, and one refused for good is not asked again until a row or link change.
     fn older(&mut self, now: Instant) -> Option<ChatHistoryReq> {
@@ -281,7 +297,7 @@ pub(super) struct ChatOwner {
     /// Hosts whose daemon answered a chat op as unknown; cleared per host when its connection comes back.
     unsupported: HashSet<HostKey>,
     watch: Option<Watch>,
-    /// The watches `stop` ended, newest first, each within `KEPT`: a watch of the same host and channel takes up its
+    /// The watches `stop` ended, newest first, each within `PARKED_RECORDS`: a watch of the same host and channel takes up its
     /// records and floor, shown while its snapshot is read again, as after a link's return.
     parked: Vec<Watch>,
     posting: Option<(HostKey, Posting)>,
@@ -309,7 +325,7 @@ impl ChatOwner {
     }
 
     /// End the watch at once, with one unwatch; its read in flight is given up (the drawer reads `reading` first), and it is
-    /// parked, trimmed to `KEPT`, when it holds records.
+    /// parked, trimmed to its newest `PARKED_RECORDS`, when it holds records.
     pub(super) fn stop(&mut self) -> Vec<Out> {
         let Some(mut w) = self.watch.take() else { return Vec::new() };
         let out = vec![(w.host.clone(), OutgoingReq::ChatUnwatch { target: w.target.clone() })];
@@ -318,6 +334,7 @@ impl ChatOwner {
             w.note_reach();
             w.anchor = None;
             w.bound();
+            w.keep_newest(PARKED_RECORDS);
             self.parked.insert(0, w);
             self.parked.truncate(PARKED);
         }
@@ -375,7 +392,17 @@ impl ChatOwner {
 
     /// The held records with whether each was deleted, oldest first.
     pub(super) fn records(&self) -> Vec<(&ChatRecord, bool)> {
-        let mut held: Vec<_> = self.watch.iter().flat_map(|w| w.records.values().map(|(r, d)| (r, *d))).collect();
+        Self::in_order(self.watch.as_ref())
+    }
+
+    /// The records of the stopped watch of this host and channel, oldest first: what a row that comes back draws before its
+    /// resolve is answered. They are only read; no watch holds them, so nothing is asked of the channel meanwhile.
+    pub(super) fn parked_records(&self, host: &HostKey, workspace: &str, channel: &str) -> Vec<(&ChatRecord, bool)> {
+        Self::in_order(self.parked.iter().find(|w| &w.host == host && w.target.workspace == workspace && w.target.channel.as_str() == channel))
+    }
+
+    fn in_order(w: Option<&Watch>) -> Vec<(&ChatRecord, bool)> {
+        let mut held: Vec<_> = w.iter().flat_map(|w| w.records.values().map(|(r, d)| (r, *d))).collect();
         held.sort_by(|a, b| ts_order(&a.0.ts).cmp(&ts_order(&b.0.ts)));
         held
     }

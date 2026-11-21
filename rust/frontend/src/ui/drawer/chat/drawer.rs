@@ -150,6 +150,15 @@ impl Modal {
     }
 }
 
+/// The records the channel's view shows: the watch's, or, for a row that has come back and whose resolve is not answered, those
+/// the owner parked for the channel its last answer named. The second are only drawn; the owner has no watch for them.
+fn held_records<'a>(owner: &'a ChatOwner, rows: &RowChannel) -> Vec<(&'a sot_protocol::chat::ChatRecord, bool)> {
+    match rows.unconfirmed() {
+        Some(u) => owner.parked_records(u.host, u.workspace, u.channel.as_str()),
+        None => owner.records(),
+    }
+}
+
 /// How far a release may be from its press, in pixels each way, and still be a click on a tile.
 const CLICK_SLOP_PX: f32 = 4.0;
 
@@ -632,6 +641,10 @@ impl ChatDrawer {
     /// Whether a post key may post: not while a screen (the picker, the Connect step) or the name prompt holds the drawer,
     /// which would post what that screen hides. `send` and `send_file` both ask it first.
     fn may_post(&self) -> Result<(), String> {
+        // The row's channel is the one it had when last shown until its resolve is answered: nothing is posted for it.
+        if self.rows.unconfirmed().is_some() {
+            return Err("not posted: the project's channel is being read again; try again in a moment".into());
+        }
         match (&self.modal, &self.asking) {
             (None, None) => Ok(()),
             _ => Err("not posted: close the screen open in the chat first".into()),
@@ -966,7 +979,9 @@ impl ChatDrawer {
             (stand, _) => stand.words(host),
         };
         let workspace = self.rows.workspace_label().map(|w| format!("{w} · ")).unwrap_or_default();
-        let channel = self.owner.channel().map(|c| format!("{workspace}{} ", self.rows.label(c))).unwrap_or_default();
+        // A row that has come back names the channel it drew the records of, while its resolve is not answered.
+        let shown = self.rows.unconfirmed().filter(|u| !self.owner.parked_records(u.host, u.workspace, u.channel.as_str()).is_empty()).map(|u| u.channel.as_str());
+        let channel = self.owner.channel().or(shown).map(|c| format!("{workspace}{} ", self.rows.label(c))).unwrap_or_default();
         // Each phrase is its own: the thread's, then the link's and the watch's.
         let phrases: Vec<String> = self.thread.iter().map(Thread::words).chain([words]).filter(|w| !w.is_empty()).collect();
         let thread = if self.thread.is_some() { "· thread " } else { "" };
@@ -984,7 +999,7 @@ impl ChatDrawer {
             let rows = m.motion.spend_rows(std::time::Instant::now(), f32::from(self.body_end.1.max(1)));
             m.scroll = m.scroll.saturating_add_signed(rows as i16).min(self.body_end.0);
         }
-        let records = if self.modal.is_some() || self.unreadable() { Vec::new() } else { self.thread.as_ref().map_or_else(|| self.owner.records(), Thread::records) };
+        let records = if self.modal.is_some() || self.unreadable() { Vec::new() } else { self.thread.as_ref().map_or_else(|| held_records(&self.owner, &self.rows), Thread::records) };
         self.view.layout(fonts, &records, body, scale, now.timestamp(), *now.offset());
         // The placed records' files are the pictures wanted, under the watch of the row the frame follows.
         let at = self.rows.row().and_then(|r| Some((r.host.clone(), self.watch_for(r)?.clone())));
@@ -1106,7 +1121,7 @@ impl ChatDrawer {
     /// `chat.open_image`: opens the marked message's first picture; the words when there is none to open.
     pub(in crate::ui) fn open_marked(&mut self, now: Instant) -> Result<Vec<Out>, &'static str> {
         let mark = self.view.mark.clone().ok_or("no message marked: ArrowUp marks one")?;
-        let records = self.thread.as_ref().map_or_else(|| self.owner.records(), Thread::records);
+        let records = self.thread.as_ref().map_or_else(|| held_records(&self.owner, &self.rows), Thread::records);
         let (r, _) = records.into_iter().find(|(r, deleted)| r.ts == mark && !deleted).ok_or("the marked message has no picture")?;
         let f = r.files.iter().find(|f| f.is_picture()).ok_or("the marked message has no picture")?;
         let (ws, ch, file) = (r.workspace.clone(), r.channel.clone(), f.id.clone());
@@ -1117,6 +1132,10 @@ impl ChatDrawer {
     /// wanted, and only one original is in flight (`ChatPictures::open`). The reply is installed by State (`take_opened`).
     /// The status line says `opening the picture…` while it comes, or why nothing was asked.
     fn open(&mut self, workspace: &str, channel: &str, file: &str, now: Instant) -> Vec<Out> {
+        if self.rows.unconfirmed().is_some() {
+            self.notice = Some("picture not opened: the project's channel is being read again; try again in a moment".into());
+            return Vec::new();
+        }
         let target = self.rows.row().cloned().and_then(|row| Some((row.host.clone(), self.watch_for(&row)?.clone())));
         let Some((host, target)) = target.filter(|(_, t)| t.workspace == workspace && t.channel.as_str() == channel) else {
             self.notice = Some("picture not opened: its channel is no longer the one shown".into());
@@ -1212,9 +1231,10 @@ impl ChatDrawer {
         self.compose.edit(row, dest.as_ref().map(|t| (t, self.thread.as_ref().map(Thread::parent_ts))), edit)
     }
 
-    /// Rows a listing retired lose their drafts.
+    /// Rows a listing retired lose their drafts and their remembered channel.
     pub(in crate::ui) fn retire(&mut self, rows: &[ResultRowIdentity]) {
         self.compose.retire(rows);
+        self.rows.forget(rows);
     }
 
     /// What the compose rows are made of, while a channel is known to write to: the shown row's draft and where it goes
@@ -1283,7 +1303,7 @@ impl ChatDrawer {
 
     #[cfg(test)]
     pub(super) fn held(&self) -> usize {
-        self.owner.records().len()
+        held_records(&self.owner, &self.rows).len()
     }
 
     #[cfg(test)]

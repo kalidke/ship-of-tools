@@ -9,8 +9,10 @@ use image::{ImageFormat, RgbaImage};
 use sot_protocol::chat::{ChatFile, ChatRecord};
 use sot_protocol::ops::{ChatCode, ChatFileReq, ChatFileVariant};
 
-use super::drawer::ChatDrawer;
+use super::compose::Edit;
+use super::drawer::{ChatDrawer, Previewed};
 use super::owner::Out;
+use super::row_channel_tests::answer as resolved;
 use super::thread_tests::{body, channel, shown};
 use crate::net::transport::{ChatEvt, ChatPicture, ChatReply, OutgoingReq};
 
@@ -195,4 +197,46 @@ fn a_refused_original_is_said_and_nothing_is_handed_on() {
     d.on_evt(&"a".to_string(), ChatEvt::File { req, reply: ChatReply::Refused(ChatCode::TooLarge) }, at);
     assert!(d.take_opened().is_none());
     assert_eq!(d.take_notice(), Some(format!("picture not opened: {}", ChatCode::TooLarge.text())));
+}
+
+/// A row switched back to is drawn from what was held before its resolve is answered, and until then the drawer only shows:
+/// every action it can send (the pace, Enter, a file's post, a thread, a picture's open by a click and by the mark, the picker)
+/// sends nothing for it, whatever the draft or the marked message was. The answer lifts it.
+#[test]
+fn a_row_drawn_before_its_resolve_is_answered_sends_nothing_for_its_channel() {
+    let mut fonts = FontSystem::new();
+    let (mut d, at, _) = figures();
+    let row = shown("ROW1");
+    d.edit(row.as_ref(), Edit::Text("a draft")).unwrap();
+    let later = |ms: u64| at + Duration::from_millis(ms);
+    d.tick(shown("ROW2"), later(1000));
+    d.tick(shown("ROW1"), later(2000));
+    d.layout(&mut fonts, body(), 1.0, body());
+    assert_eq!(d.held(), 1, "the first frame draws the held record");
+    assert_eq!(d.tiles().len(), 2, "and its picture tiles");
+    d.mark(true, Instant::now(), Duration::ZERO);
+    d.layout(&mut fonts, body(), 1.0, body());
+    let on = center(d.tiles()[0].rect);
+    let now = later(2010);
+    let actions: Vec<(&str, Vec<Out>)> = vec![
+        ("the frame's pace", d.tick(shown("ROW1"), now).0),
+        ("Enter on the draft", d.send(row.as_ref(), Some("Ada"), now).unwrap_or_default()),
+        ("the post of a file", d.send_file(row.as_ref(), Previewed::File("files:a.png"), now).unwrap_or_default()),
+        ("the thread of the marked message", d.open_thread()),
+        ("the open of the marked picture", d.open_marked(now).unwrap_or_default()),
+        ("a click on a tile", click(&mut d, on, now)),
+        ("the channel picker", d.open_picker(row.as_ref()).unwrap_or_default()),
+        ("a later frame", d.tick(shown("ROW1"), later(2100)).0),
+    ];
+    for (name, outs) in &actions {
+        assert!(outs.is_empty(), "{name} sent {} requests for a channel not yet confirmed", outs.len());
+    }
+    assert!(d.send(row.as_ref(), Some("Ada"), now).is_err() && d.send_file(row.as_ref(), Previewed::File("files:a.png"), now).is_err());
+    assert_eq!(d.draft().map(|(t, _)| t), Some("a draft"), "the draft stands");
+    // The resolve is the one request, and its answer lifts the hold: the same Enter now posts.
+    let outs = d.tick(shown("ROW1"), later(2160)).0;
+    assert!(matches!(outs.as_slice(), [(_, OutgoingReq::ChatResolve { .. })]));
+    d.on_evt(&"a".to_string(), resolved("ROW1", serde_json::json!({ "state": "mapped", "workspace": "WS1", "channel": "CH1", "delivers": false })), later(2170));
+    let posted = d.send(row.as_ref(), Some("Ada"), later(2180)).unwrap();
+    assert!(matches!(posted.as_slice(), [(_, OutgoingReq::ChatPost { .. })]));
 }

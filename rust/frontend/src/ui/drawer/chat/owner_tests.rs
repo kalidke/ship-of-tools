@@ -1509,6 +1509,39 @@ fn a_parked_watch_is_trimmed_to_the_kept_records() {
     assert_eq!(o.parked[0].anchor, None);
 }
 
+/// The parked store is bounded: eight channels, each its newest hundred records with the floor at the oldest kept, so at most
+/// `PARKED` x `PARKED_RECORDS` records of wire's 32 KiB bound, 25 MiB; a ninth channel pushes the oldest parked one out.
+#[test]
+fn the_parked_store_holds_eight_channels_of_their_newest_hundred() {
+    assert_eq!((PARKED, PARKED_RECORDS), (8, 100));
+    assert!(PARKED * PARKED_RECORDS * sot_protocol::chat::MAX_RECORD_BYTES <= 25 << 20, "the worst case is 25 MiB");
+    let t0 = Instant::now();
+    let mut o = complete_with(t0, &["1.000001"]);
+    for i in 0..8u32 {
+        o.on_evt(&host(), changed(top_level(100 + 20 * i..=119 + 20 * i)), t0);
+    }
+    assert_eq!(held(&o), 161);
+    o.stop();
+    let p = &o.parked[0];
+    assert_eq!(p.records.len(), PARKED_RECORDS, "a park keeps the newest hundred");
+    assert_eq!(p.floor, Some(ts("160.000001")), "the floor is the oldest kept");
+    assert!(p.records.contains_key(&ts("259.000001")) && !p.records.contains_key(&ts("159.000001")));
+    // A channel with fewer is kept whole, and each park past eight pushes the oldest parked out.
+    for i in 0..PARKED + 2 {
+        let c = format!("D{i}");
+        o.watch(host(), target(&c), t0);
+        let req = history_req(&o.on_evt(&host(), ChatEvt::Watched { target: target(&c), reply: ChatReply::Done(ChatWatchRes { state: ChatWatchState::Complete }) }, t0));
+        let records = vec![record("5.000001", &c)];
+        o.on_evt(&host(), ChatEvt::History { req, reply: ChatReply::Done(serde_json::from_value(serde_json::json!({ "records": records })).unwrap()) }, t0);
+        o.stop();
+        assert!(o.parked.len() <= PARKED);
+    }
+    assert_eq!(o.parked.len(), PARKED);
+    assert!(o.parked_records(&host(), "T1", "C1").is_empty(), "the first channel parked has been pushed out");
+    assert_eq!(o.parked_records(&host(), "T1", "D9").len(), 1);
+    assert!(o.parked_records(&"other".to_string(), "T1", "D9").is_empty(), "a channel is keyed by its host too");
+}
+
 /// A channel passed through before its read holds nothing and parks nothing, so it does not push out a channel that does.
 #[test]
 fn a_watch_that_held_nothing_parks_nothing() {

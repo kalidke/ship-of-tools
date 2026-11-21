@@ -1759,8 +1759,13 @@ returns the requests for State to send. Rules, each with its test in `drawer/cha
   one), an unwatch only for another channel or host (`watching_again_sends_only_what_changes`). `chat.changed` for the watched channel puts records and, for a record held, keeps that it was deleted
   (`changed_events_put_and_delete_the_watched_channels_records`): the owner holds each record with its deleted flag as one pair (`records()` returns the pairs), keeping only the deleted record's identity, author, time and origin, and the view passes the flag to the projection, which shows the header and `(message deleted)` alone (`a_deleted_message_is_its_header_and_the_notice_alone`, `a_deleted_record_shows_as_deleted_through_the_drawer`, `an_anchor_on_a_deleted_message_passes_on_when_a_snapshot_drops_it`). A deleted record counts against `KEPT`, a snapshot holds no deleted record from its oldest up, though the deleted ones below an overlapping snapshot stay, a put of the same time brings the message back (`a_put_after_a_delete_brings_the_message_back`), and a delete of a record not held adds nothing (`a_delete_leaves_a_tombstone_in_place`).
 - `stop` keeps the watch it ends when it holds records (its reads are given up all the same), trimmed to `KEPT` with no
-  anchor (`a_parked_watch_is_trimmed_to_the_kept_records`): the owner keeps the last two (`PARKED`), newest first, and a
-  channel that held nothing parks nothing (`a_watch_that_held_nothing_parks_nothing`). A `watch` of the same host and
+  anchor (`a_parked_watch_is_trimmed_to_the_kept_records`) and then to its newest `PARKED_RECORDS` (100, the daemon's own
+  bound), the floor at the oldest kept, so a reader who had paged back loses the older pages on return: the owner keeps the
+  last eight (`PARKED`), newest first, and a channel that held nothing parks nothing (`a_watch_that_held_nothing_parks_nothing`).
+  The store is at most `PARKED` x `PARKED_RECORDS` x 32 KiB (chat's record bound, guarantee 3), 25 MiB, whatever the channels
+  hold (`the_parked_store_holds_eight_channels_of_their_newest_hundred`); a record is usually a few hundred bytes, which no test
+  measures. `parked_records` reads a parked watch's records with no watch for them: what a row that has come back draws at its
+  first frame (the drawer's rule below). A `watch` of the same host and
   channel, for whichever row, takes up the parked one's records, floor and reach, and its word that Slack's plan hides older messages (a link change keeps that word too, `hidden_history_survives_a_switch_back`, `hidden_history_survives_a_links_return`), and begins as a recovery, as after a link's return
   (`Needed`), so a switch back draws what was held at the hub's answer while the channel is read again, and another channel
   never shows them (`row_channel_tests::a_switch_back_draws_the_channels_records_while_it_is_read_again`). Whether the
@@ -1780,7 +1785,7 @@ returns the requests for State to send. Rules, each with its test in `drawer/cha
   in `Complete` one run ending at the channel's newest with a floor, or the word that Slack's plan hides older messages, wherever older history is owed).
   Limit: held records older than the snapshot's oldest stay, as the drawer keeps any older than its newest 100, so an edit or
   delete of one, and a parent's reply count and latest reply, made while its channel was parked do not reach the window for as
-  long as the channel stays among the last two; the manual says so.
+  long as the channel stays among the last eight; the manual says so.
   The parked records stay in memory when the drawer is hidden.
 - A post is sent only when none waits for its reply (`a_post_is_sent_only_after_the_last_ones_reply`). One waiting when its link
   ends is `Unknown` (it may exist); one to a host that is not connected is never written and is `Refused(Unavailable)`
@@ -1798,6 +1803,23 @@ methods are `pub(super)`, so no other ui code can drop the requests they return.
   while it shows. Each frame `tick_chat` asks `wanted_row` for the selected row's host and canonical id, never the slug, and
   does not resolve the selected row while the chat is hidden (`the_chat_follows_the_canonical_id_of_the_selected_slug`).
   The rest is pinned by `drawer::chat::row_channel_tests::the_watch_follows_the_shown_rows_channel_and_ends_with_it`.
+- A row switched back to draws its channel's last records at its first frame, before its resolve is answered. `RowChannel` keeps
+  each recent row's last `mapped` answer (channel, workspace and the names), keyed by host and row id, newest first, at most
+  `REMEMBERED` of them, which is the owner's `PARKED` (one constant: a remembered row's records can still be parked); an answer
+  that is not `mapped` for the row, a closed row (`ChatDrawer::retire`) and any change of the host's link drop its entry. A new
+  wanted row with an entry on a connected host is unconfirmed (`RowChannel::unconfirmed`) until its resolve is answered, whatever
+  the answer: `held_records` then reads the owner's parked records of the remembered channel, and the title names the channel
+  with `reading…`. Nothing is sent for an unconfirmed channel, held in two places: the owner has no watch for it (so no watch,
+  snapshot, older page, thread, picture request or open takes a channel from it: each takes the watched channel, `watch_for` or
+  the owner's `target`), and `may_post` (both posts) and `open` refuse while the row is unconfirmed, a draft carrying its own
+  destination. The answer ends it: `mapped` to the same channel starts the watch, which takes the parked records up, `mapped`
+  to another channel, `unmapped`, a refusal or the link's loss removes the drawn records at once (they stay parked under their
+  own channel). `row_channel_tests::a_row_switched_back_to_draws_its_last_records_on_the_first_frame`,
+  `an_answer_that_is_not_the_remembered_channel_removes_the_drawn_records`,
+  `the_remembered_answers_are_bounded_and_keyed_by_host_and_row`, `open_tests::a_row_drawn_before_its_resolve_is_answered_sends_nothing_for_its_channel`.
+  What may be untrue: an edit, a delete or a message made while the row was away is missing until the snapshot is read again
+  (the hub forgets a channel nobody watches, so each return costs one Slack read), and a row paired again while away shows its old
+  channel for the debounce and one resolve round trip; the title's `reading…` says so, and the manual says it.
 - `RowChannel` resolves a wanted row once, with `chat.resolve`, after it has stayed the same for `NAV_FIRE_DEBOUNCE` on a connected
   host (until then the frame pacer is marked dirty); no answer outlives the wanted row or a link change, so showing Chat again resolves again. `RowChannel` keeps the last answer as a `Stand` (with `Unlisted` and `Offline` read from the wanted row and the links); `ChatDrawer::title` is ` chat · <channel> ` (ahead of the channel, ` <workspace> · ` when the last answer carried `workspace_name`, which the daemon sends only while the hub serves more than one workspace, kept by `RowChannel` and drawn through `cell_row`, cut to 24 cells with a final `…` so the channel keeps its room, and nothing for an answer without it: `row_channel_tests::the_title_names_the_workspace_when_the_hub_does`, and `a_long_workspace_name_never_costs_the_channel_or_overruns_the_interior`, which also holds that `write_title` clamps every pane's title by cells and writes nothing past its interior; `#name` when an answer for the wanted row carried the watched channel's name, kept by `RowChannel` with the id it was for through later answers for that channel that carry none (a Slack app outside a private channel cannot read its name, and the person must still find the channel), drawn through `cell_row`, and the id otherwise: `row_channel_tests::the_title_names_the_channel_when_the_answer_did_and_says_the_id_otherwise`) and the words of the `Stand`, or for a mapped row of the owner's fill (`view_tests::every_outcome_has_a_state_a_next_action_and_words`, with each "asked again"); the words of a refusal code are wire's `ChatCode::text`, never the window's copy, except `unavailable`, which has the window's own words (not the hub; the hub's service not running); a target refused for good (`stale_row`, `stale_mapping`, `unmapped`) shows that text and is asked again only at a row or link change; a refusal that is neither the hub's nor the row's is asked again after `GAP_PACE`, its answer cleared meanwhile; a `mapped` answer with no name (the daemon looks the names up after its start, so a window can resolve first) is asked again 1, 3, 10 and 30 s after each such answer, four tries at most for a wanted row and a link (a row or link change starts them afresh, an answer with the name ends them), the answer standing meanwhile, so the watch and the title's id hold and only the title waits; `RowChannel::next_ask` names the instant of the next try and `ChatDrawer::next_ask` joins it with the owner's, so the window is woken for it (tests `row_channel_tests::a_mapped_answer_with_no_name_is_asked_again_until_a_name_comes_or_the_tries_end`, `the_title_shows_the_name_once_a_later_answer_carries_it`). The answer for the row
   still wanted decides its watch: `mapped` watches it (a second one is nothing, the owner takes the same target twice as

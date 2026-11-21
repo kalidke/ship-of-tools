@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use sot_protocol::ops::{ChatCode, ChatHistoryReq, ChatResolveRes, ChatService, ChatStatusEvt, ChatWatchRes, ChatWatchState};
 
 use super::drawer::ChatDrawer;
-use super::owner::{Fill, Out};
+use super::owner::{Fill, Out, PARKED};
 use crate::net::dial::HostKey;
 use crate::net::transport::{ChatEvt, ChatReply, OutgoingReq};
 use crate::ui::ResultRowIdentity;
@@ -347,20 +347,147 @@ fn a_switch_back_draws_the_channels_records_while_it_is_read_again() {
     shown(&mut d, 5000, "R2", Some("C1"));
     assert_eq!(d.held(), 1, "the records are the channel's");
 
-    // Two are kept: C2, C3 and C4 each read with a record, one after the other, push the first out (C1 went at C3).
-    let read_as = |d: &mut ChatDrawer, from: u64, row: &str, channel: &str| {
-        shown(d, from, row, Some(channel));
-        let read = history(&d.on_evt(&host(), complete_to(row, channel), at(from + 170)));
-        d.on_evt(&host(), ChatEvt::History { req: read, reply: page_of(channel, 1) }, at(from + 180));
+    // The owner keeps `PARKED` channels: that many more, each read with a record, push the first (C1) out.
+    for k in 0..=PARKED {
+        let (row, channel) = (format!("X{k}"), format!("D{k}"));
+        let from = 6000 + 1000 * k as u64;
+        shown(&mut d, from, &row, Some(&channel));
+        let read = history(&d.on_evt(&host(), complete_to(&row, &channel), at(from + 170)));
+        d.on_evt(&host(), ChatEvt::History { req: read, reply: page_of(&channel, 1) }, at(from + 180));
         assert_eq!(d.held(), 1);
-    };
-    read_as(&mut d, 6000, "T", "C2");
-    read_as(&mut d, 7000, "U", "C3");
-    read_as(&mut d, 8000, "V", "C4");
-    shown(&mut d, 9000, "T", Some("C2"));
+    }
+    shown(&mut d, 20000, "R", Some("C1"));
     assert_eq!(d.held(), 0, "the oldest parked channel is gone");
-    shown(&mut d, 10000, "U", Some("C3"));
+    shown(&mut d, 21000, "X7", Some("D7"));
     assert_eq!(d.held(), 1, "the newer ones stay");
+}
+
+/// Row R shown, resolved, mapped to `C1` (named `name` when given) and read with `n` records, then another row shown: the state
+/// of a session the person has left. The instant its time is counted from.
+fn away_from_r(n: u64, name: Option<&str>) -> (ChatDrawer, Instant) {
+    let t0 = Instant::now();
+    let at = |ms: u64| t0 + Duration::from_millis(ms);
+    let mut d = ChatDrawer::default();
+    d.on_connection(&host(), true, false, t0);
+    d.tick(wanted("R"), at(0));
+    d.tick(wanted("R"), at(150));
+    d.on_evt(&host(), name.map_or_else(|| mapped("R"), |name| named_to("R", "C1", name)), at(160));
+    let read = history(&d.on_evt(&host(), complete("R"), at(170)));
+    d.on_evt(&host(), ChatEvt::History { req: read, reply: page_of("C1", n) }, at(180));
+    assert_eq!(d.held(), n as usize);
+    d.tick(wanted("S"), at(1000));
+    assert_eq!(d.held(), 0, "another row shows nothing of R's");
+    (d, t0)
+}
+
+/// A row switched back to draws its channel's last records at the first frame, before its resolve is answered, under the title
+/// that says they are read again; the answer keeps them, and the snapshot replaces them.
+#[test]
+fn a_row_switched_back_to_draws_its_last_records_on_the_first_frame() {
+    let (mut d, t0) = away_from_r(3, Some("general"));
+    let at = |ms: u64| t0 + Duration::from_millis(ms);
+    let (outs, settling) = d.tick(wanted("R"), at(2000));
+    assert!(outs.is_empty() && settling, "the first frame sends nothing");
+    assert_eq!(d.held(), 3, "its records are drawn at the first frame");
+    assert_eq!(d.title(), " chat · #general reading… ");
+    assert_eq!(d.fill(), None, "nothing is watched yet");
+    // The debounce passes, the resolve alone goes, and the records stand until it is answered.
+    let (outs, _) = d.tick(wanted("R"), at(2150));
+    assert_eq!((resolves(&outs), outs.len()), (1, 1));
+    assert_eq!(d.held(), 3);
+    assert_eq!(watches(&d.on_evt(&host(), named_to("R", "C1", "general"), at(2160))), 1, "the answer starts the watch");
+    assert_eq!((d.held(), d.title()), (3, " chat · #general reading… ".to_string()), "the watch takes the records up");
+    let read = history(&d.on_evt(&host(), complete("R"), at(2170)));
+    d.on_evt(&host(), ChatEvt::History { req: read, reply: page_of("C1", 1) }, at(2180));
+    assert_eq!((d.held(), d.fill()), (1, Some(Fill::Complete)), "the snapshot replaces them");
+    assert_eq!(d.title(), " chat · #general ");
+    // A row never shown has nothing to draw at its first frame.
+    d.tick(wanted("T"), at(3000));
+    assert_eq!(d.held(), 0);
+}
+
+/// A resolve that names another channel, none, or refuses removes the drawn records at once; they stay parked under their own
+/// channel; a link that goes takes them as well.
+#[test]
+fn an_answer_that_is_not_the_remembered_channel_removes_the_drawn_records() {
+    let at_first = |d: &mut ChatDrawer, t0: Instant| {
+        assert!(d.tick(wanted("R"), t0 + Duration::from_millis(2000)).0.is_empty());
+        assert_eq!(d.held(), 3);
+        assert_eq!(resolves(&d.tick(wanted("R"), t0 + Duration::from_millis(2150)).0), 1);
+        t0 + Duration::from_millis(2160)
+    };
+    // Another channel: paired again while away.
+    let (mut d, t0) = away_from_r(3, None);
+    let now = at_first(&mut d, t0);
+    assert_eq!(watches(&d.on_evt(&host(), mapped_to("R", "C9"), now)), 1);
+    assert_eq!(d.held(), 0, "the old channel's records are gone at the answer");
+    assert_eq!(d.title(), " chat · C9 reading… ");
+    // They are parked under C1 still: another row mapped to C1 takes them up.
+    d.tick(wanted("Q"), now + Duration::from_millis(100));
+    d.tick(wanted("Q"), now + Duration::from_millis(300));
+    d.on_evt(&host(), mapped_to("Q", "C1"), now + Duration::from_millis(310));
+    assert_eq!(d.held(), 3, "parked again under their own channel");
+
+    // Unpaired while away; and the row is no longer remembered.
+    let (mut d, t0) = away_from_r(3, None);
+    let now = at_first(&mut d, t0);
+    d.on_evt(&host(), answer("R", serde_json::json!({ "state": "unmapped" })), now);
+    assert_eq!((d.held(), d.title()), (0, " chat · no channel ".to_string()));
+    d.tick(wanted("S"), now + Duration::from_millis(100));
+    d.tick(wanted("R"), now + Duration::from_millis(200));
+    assert_eq!(d.held(), 0, "an unmapped row's channel is forgotten");
+
+    // Refused: what it shows today, no old records under it.
+    let (mut d, t0) = away_from_r(3, None);
+    let now = at_first(&mut d, t0);
+    d.on_evt(&host(), ChatEvt::Resolved { row: "R".into(), reply: ChatReply::Refused(ChatCode::StaleRow) }, now);
+    assert_eq!((d.held(), d.title()), (0, format!(" chat · {} ", ChatCode::StaleRow.text())));
+
+    // Lost: the link went before the answer.
+    let (mut d, t0) = away_from_r(3, None);
+    let now = at_first(&mut d, t0);
+    d.on_connection(&host(), false, false, now);
+    assert_eq!((d.held(), d.title()), (0, " chat · no connection to a ".to_string()));
+}
+
+/// The remembered answers are as many as the parked channels, keyed by host and row, and dropped by a row that closes and by a
+/// link change; none is drawn from another host's row of the same id.
+#[test]
+fn the_remembered_answers_are_bounded_and_keyed_by_host_and_row() {
+    let t0 = Instant::now();
+    let at = |ms: u64| t0 + Duration::from_millis(ms);
+    let mut d = ChatDrawer::default();
+    d.on_connection(&host(), true, false, t0);
+    // PARKED + 1 rows, each read with a record: X0 is pushed out of the memory, though its channel is still parked.
+    for k in 0..=PARKED {
+        let (row, channel) = (format!("X{k}"), format!("D{k}"));
+        let from = 1000 * k as u64;
+        d.tick(wanted(&row), at(from));
+        d.tick(wanted(&row), at(from + 150));
+        d.on_evt(&host(), mapped_to(&row, &channel), at(from + 160));
+        let read = history(&d.on_evt(&host(), complete_to(&row, &channel), at(from + 170)));
+        d.on_evt(&host(), ChatEvt::History { req: read, reply: page_of(&channel, 1) }, at(from + 180));
+    }
+    let first_frame = |d: &mut ChatDrawer, row: Option<ResultRowIdentity>, ms: u64| {
+        d.tick(row, at(100_000 + ms));
+        d.held()
+    };
+    assert_eq!(first_frame(&mut d, wanted("X0"), 0), 0, "the oldest row is no longer remembered");
+    assert_eq!(first_frame(&mut d, wanted("X1"), 1000), 1);
+    // The same row id on another host is another row.
+    d.on_connection(&host_b(), true, false, at(100_000));
+    assert_eq!(first_frame(&mut d, wanted_on(host_b(), "X2"), 2000), 0);
+    // A row that closes is forgotten.
+    d.retire(&[ResultRowIdentity { host: host(), workspace_id: "X3".into() }]);
+    assert_eq!(first_frame(&mut d, wanted("X3"), 3000), 0);
+    assert_eq!(first_frame(&mut d, wanted("X4"), 4000), 1);
+    // A link change forgets them all; the channel's records are still parked, and the hub's answer takes them up.
+    d.on_connection(&host(), false, false, at(105_000));
+    d.on_connection(&host(), true, false, at(105_100));
+    assert_eq!(first_frame(&mut d, wanted("X5"), 5200), 0);
+    d.tick(wanted("X5"), at(105_400));
+    d.on_evt(&host(), mapped_to("X5", "D5"), at(105_410));
+    assert_eq!(d.held(), 1);
 }
 
 /// While a first show's watch waits on its short pace the drawer names the instant of the next ask, which the window

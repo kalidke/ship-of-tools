@@ -1,18 +1,19 @@
 //! Which row the chat follows: the wanted row (host and canonical id) is resolved once it has stayed the same for
 //! `NAV_FIRE_DEBOUNCE`, on a connected host. It sends nothing itself and keeps only the last answer, as a `Stand`, until
-//! the row or a link changes: a resolve makes no Slack call.
+//! the row or a link changes: a resolve makes no Slack call. It also remembers each recent row's last mapped answer, so a row
+//! shown again can draw its channel's parked records at its first frame, before its resolve is answered.
 
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 use crate::net::dial::HostKey;
 use crate::net::transport::{ChatReply, OutgoingReq};
-use sot_protocol::ops::{ChatCode, ChatResolveRes, ChatUnconfigured};
+use sot_protocol::ops::{ChatChannel, ChatCode, ChatResolveRes, ChatUnconfigured};
 use crate::ui::app::NAV_FIRE_DEBOUNCE;
 use crate::ui::chrome::cell_row;
 use crate::ui::ResultRowIdentity;
 
-use super::owner::{Out, GAP_PACE};
+use super::owner::{Out, GAP_PACE, PARKED};
 
 /// How long after a `mapped` answer with no name the row is resolved again: the daemon looks the names up in the background
 /// after its start, so a first answer may come before it ends. Four tries at most, each counted from the last answer; after
@@ -23,8 +24,29 @@ const NAME_RETRIES: [Duration; 4] = [Duration::from_secs(1), Duration::from_secs
 /// in a drawer 60 cells wide the channel and the words of the outcome keep the other 25.
 const WORKSPACE_CELLS: usize = 24;
 
+/// A row's last mapped answer, as the first frame of its next arrival reads it.
+struct Remembered {
+    id: ResultRowIdentity,
+    workspace: String,
+    channel: ChatChannel,
+    name: Option<String>,
+    workspace_name: Option<String>,
+}
+
+/// The rows remembered: as many as the owner parks channels, so a remembered row's records can still be there.
+const REMEMBERED: usize = PARKED;
+
+/// The channel a wanted row is drawn as before its resolve is answered: the one its last mapped answer named.
+pub(super) struct Unconfirmed<'a> {
+    pub host: &'a HostKey,
+    pub workspace: &'a str,
+    pub channel: &'a ChatChannel,
+}
+
 struct Wanted {
     id: ResultRowIdentity,
+    /// The channel the row's remembered answer named, until this arrival's resolve is answered: shown, never acted on.
+    unconfirmed: Option<(String, ChatChannel)>,
     since: Instant,
     asked: bool,
     /// What the last answer came to, and when; `None` while a resolve is owed or in flight.
@@ -116,13 +138,25 @@ pub(super) struct Tick {
 pub(super) struct RowChannel {
     connected: HashSet<HostKey>,
     wanted: Option<Wanted>,
+    /// The last mapped answer of each recent row, newest first, at most `REMEMBERED`. A row that closes (`forget`), a link
+    /// change of its host and a later answer that is not mapped drop its entry.
+    memory: Vec<Remembered>,
 }
 
 impl RowChannel {
     pub(super) fn tick(&mut self, wanted: Option<ResultRowIdentity>, now: Instant) -> Tick {
         let same = self.wanted.as_ref().map(|w| &w.id) == wanted.as_ref();
         if !same {
-            self.wanted = wanted.map(|id| Wanted { id, since: now, asked: false, answer: None, name: None, workspace: None, workspace_name: None, nameless: 0, retry_at: None });
+            self.wanted = wanted.map(|id| {
+                let m = self.memory.iter().find(|m| m.id == id && self.connected.contains(&id.host));
+                Wanted {
+                    unconfirmed: m.map(|m| (m.workspace.clone(), m.channel.clone())),
+                    name: m.and_then(|m| Some((m.channel.as_str().to_string(), m.name.clone()?))),
+                    workspace: m.map(|m| m.workspace.clone()),
+                    workspace_name: m.and_then(|m| m.workspace_name.clone()),
+                    id, since: now, asked: false, answer: None, nameless: 0, retry_at: None,
+                }
+            });
         }
         // Only a refusal that is neither the hub's nor the row's is asked again, after the pace.
         if let Some(w) = self.wanted.as_mut().filter(|w| matches!(w.answer, Some((Stand::Failed(_), at)) if now.duration_since(at) >= GAP_PACE)) {
@@ -148,7 +182,22 @@ impl RowChannel {
     /// owner takes the same target twice as nothing).
     pub(super) fn on_connection(&mut self, host: &HostKey, up: bool) {
         if up { self.connected.insert(host.clone()); } else { self.connected.remove(host); }
+        // What a link's hub said is not known of the next one's.
+        self.memory.retain(|m| &m.id.host != host);
+        self.wanted.iter_mut().filter(|w| &w.id.host == host).for_each(|w| w.unconfirmed = None);
         self.ask_again(host);
+    }
+
+    /// Rows a listing retired are forgotten.
+    pub(super) fn forget(&mut self, rows: &[ResultRowIdentity]) {
+        self.memory.retain(|m| !rows.contains(&m.id));
+    }
+
+    /// The channel the wanted row's remembered answer named, while this arrival's resolve is not answered and the link is up:
+    /// its parked records may be drawn, and nothing may be sent for it.
+    pub(super) fn unconfirmed(&self) -> Option<Unconfirmed<'_>> {
+        let w = self.wanted.as_ref().filter(|w| self.connected.contains(&w.id.host))?;
+        w.unconfirmed.as_ref().map(|(workspace, channel)| Unconfirmed { host: &w.id.host, workspace, channel })
     }
 
     /// The wanted row on `host` is resolved again on the next frame (a link changed, or a connect was answered).
@@ -201,7 +250,15 @@ impl RowChannel {
             _ => None,
         };
         let nameless = stand == Stand::Mapped && name.is_none();
+        if let Some(id) = self.wanted.as_ref().map(|w| w.id.clone()) {
+            self.memory.retain(|m| m.id != id);
+            if let ChatReply::Done(ChatResolveRes::Mapped { workspace, channel, .. }) = reply {
+                self.memory.insert(0, Remembered { id, workspace: workspace.clone(), channel: channel.clone(), name: name.as_ref().map(|(_, n)| n.clone()), workspace_name: workspace_name.clone() });
+                self.memory.truncate(REMEMBERED);
+            }
+        }
         for w in self.wanted.iter_mut() {
+            w.unconfirmed = None;
             (w.answer, w.name, w.workspace, w.workspace_name) = (Some((stand, now)), name.clone(), workspace.clone(), workspace_name.clone());
             w.nameless = if nameless { w.nameless + 1 } else { 0 };
             w.retry_at = nameless.then(|| NAME_RETRIES.get(w.nameless - 1).map(|d| now + *d)).flatten();
