@@ -129,9 +129,17 @@ pub(crate) fn registry(env: &Env, args: &[String]) -> Out {
     }
 }
 
-/// Derive for the given agent (Claude by default), printing the handle, its qualifier and tier 1's name.
-/// With `--claim`, write the entry from stdin in the same locked step. Exit 1 when no tier can be taken.
+/// `derive <reclaim|fresh> <root> <raw host> [--agent claude|codex] [--claim]`: three lines, the handle, its qualifier
+/// and tier 1's name; the derivation's lines on stderr; exit 1 with nothing written when no tier can be taken. With
+/// `--claim`, the entry on stdin is written in the same locked step. `--agent` is the kind the handle is derived for
+/// (Claude when omitted); it is the spawn's option, for an unnamed Codex child, and a join derives in its own process.
+/// Any other argument, a repeat or another order is usage (2).
 pub(crate) fn derive(env: &Env, args: &[String]) -> Out {
+    derive_from(env, args, stdin_text)
+}
+
+/// `derive`, with the claim's entry read through `entry_text` (a test's stand-in for stdin).
+fn derive_from(env: &Env, args: &[String], entry_text: impl FnOnce() -> String) -> Out {
     const USAGE: &str = "derive <reclaim|fresh> <root> <raw host> [--agent claude|codex] [--claim]";
     let mut o = Out::default();
     let [mode, root, host, options @ ..] = args else { return usage(o, USAGE) };
@@ -153,7 +161,7 @@ pub(crate) fn derive(env: &Env, args: &[String]) -> Out {
         }
     };
     let entry = if claim {
-        match serde_json::from_str::<Value>(&stdin_text()) {
+        match serde_json::from_str::<Value>(&entry_text()) {
             Ok(e) => Some(e),
             Err(_) => {
                 o.err("claim_derived_handle: the entry to write is not JSON; nothing was written");

@@ -37,6 +37,7 @@ export SOTD_BIN="$(guard_bridge_stub "$WORK/bridge")"
 SPAWN="$SCRIPTS_DIR/comm-spawn.sh"
 
 # Record the arguments the local CLI receives. In the older CLI, extra arguments to derive returned usage (2).
+# OLD_DERIVE=true makes this stub answer as that CLI did.
 export BUILT_SOTD="$GUARD_SOTD"
 GUARD_SOTD="$WORK/record-comm"
 cat > "$GUARD_SOTD" <<'STUB'
@@ -235,6 +236,20 @@ case_derived_handle() {
     fi
 }
 
+# (b2) An older local sotd does not know --agent. A Claude child is asked in the old form and spawns as before; a Codex
+#      child stops before anything is written, with one line saying so, on both paths.
+case_older_sotd_codex_refused() {
+    local host="$1"
+    start_stub_daemon "$host" ws-old old1 "$(entry ws-old old1 ready)"
+    OLD_DERIVE=true run_spawn --agent codex
+    stop_stub_daemon
+
+    [ "$SPAWN_RC" -eq 1 ] && contains "$SPAWN_ERR" "installed sotd is older than this script and cannot derive a Codex session's handle" &&
+        [ "$(cat "$SPAWN_HOME/derive.log")" = "$host --agent codex$([ "$host" = "$SELF_HOST_NAME" ] && echo ' --claim')" ] &&
+        jq -se 'all(.[]; .op != "workspace.create")' "$REQLOG" >/dev/null &&
+        jq -e '.agents == {}' "$SPAWN_HOME/registry.json" >/dev/null || { echo "  rc $SPAWN_RC: $SPAWN_ERR"; return 1; }
+}
+
 case_remote_derive_failure() {
     start_stub_daemon "$OTHER_HOST_NAME" ws-read read1 "$(entry ws-read read1 ready)"
     BREAK_REGISTRY=true run_spawn --agent codex
@@ -311,14 +326,17 @@ case_undeclared_host_stays_local() {
 check "daemon declares ANOTHER host: no local registry row, no local inbox" \
     case_remote_daemon_writes_nothing_local
 check "unnamed Claude child keeps the target host's handle" \
-    case_derived_handle "$OTHER_HOST_NAME" claude "repo-$OTHER_HOST_NAME" "$OTHER_HOST_NAME --agent claude"
+    case_derived_handle "$OTHER_HOST_NAME" claude "repo-$OTHER_HOST_NAME" "$OTHER_HOST_NAME"
+check "unnamed local Claude child derives with the argv it always had" \
+    case_derived_handle "$SELF_HOST_NAME" claude "repo-$SELF_HOST_NAME" "$SELF_HOST_NAME --claim"
 check "unnamed local Codex child claims its own kind's handle" \
     case_derived_handle "$SELF_HOST_NAME" codex "repo-cx-$SELF_HOST_NAME" "$SELF_HOST_NAME --agent codex --claim"
 check "unnamed remote Codex child sends its kind's handle to the older target" \
     case_derived_handle "$OTHER_HOST_NAME" codex "repo-cx-$OTHER_HOST_NAME" "$OTHER_HOST_NAME --agent codex"
-OLD_DERIVE=true check "an older deriving CLI supplies its original handle for a remote spawn" \
-    case_derived_handle "$OTHER_HOST_NAME" codex "repo-$OTHER_HOST_NAME" "$OTHER_HOST_NAME --agent codex
-$OTHER_HOST_NAME"
+check "an older sotd stops an unnamed remote Codex spawn with one line" case_older_sotd_codex_refused "$OTHER_HOST_NAME"
+check "an older sotd stops an unnamed local Codex spawn with one line, claiming nothing" case_older_sotd_codex_refused "$SELF_HOST_NAME"
+OLD_DERIVE=true check "an older sotd still spawns an unnamed Claude child as before" \
+    case_derived_handle "$OTHER_HOST_NAME" claude "repo-$OTHER_HOST_NAME" "$OTHER_HOST_NAME"
 check "a registry read failure ends a remote spawn after one derivation" case_remote_derive_failure
 check "daemon declares THIS host: registry row written through the daemon, no inbox file touched" \
     case_local_daemon_writes_the_row_and_no_inbox

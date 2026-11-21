@@ -408,6 +408,15 @@ while [ "$occ_i" -lt "$OCC_N" ]; do
     occ_i=$((occ_i + 1))
 done
 
+# Only a Codex child's derive call carries an argument an older sotd does not know; it answers usage (2) before it
+# derives or writes anything. A Codex child is never given the Claude form of handle, so that answer stops the spawn.
+codex_derive_refused() {
+    if [ "$1" -eq 2 ] && [ "$AGENT" = codex ]; then
+        echo "ERROR: the installed sotd is older than this script and cannot derive a Codex session's handle (it did not accept 'derive --agent codex'); nothing was started. Update it, or pass --name" >&2
+        exit 1
+    fi
+}
+
 # NAME omitted -> derive it AND write the provisional row atomically, same
 # algorithm + same locked-claim path as a plain comm-join.sh (ADR 0028
 # addendum; `sotd comm derive`, with and without `--claim`) — but in
@@ -435,7 +444,14 @@ if [ -z "$NAME" ] && [ "$AGENT" != none ]; then
         DERIVED_CLAIM=true
         # The derivation and its registry write, one locked step in sotd: three lines, the handle, its qualifier and
         # tier 1's name.
-        CLAIM_LINES="$(printf '%s' "$PROV_OBJ" | sot_comm derive fresh "$CANON_ROOT" "$HANDLE_HOST" --agent "$AGENT" --claim)"
+        rc=0
+        if [ "$AGENT" = codex ]; then
+            CLAIM_LINES="$(printf '%s' "$PROV_OBJ" | sot_comm derive fresh "$CANON_ROOT" "$HANDLE_HOST" --agent codex --claim)" || rc=$?
+        else
+            CLAIM_LINES="$(printf '%s' "$PROV_OBJ" | sot_comm derive fresh "$CANON_ROOT" "$HANDLE_HOST" --claim)" || rc=$?
+        fi
+        codex_derive_refused "$rc"
+        [ "$rc" -eq 0 ] || exit "$rc"
         { IFS= read -r NAME; IFS= read -r CLAIMED_QUALIFIER; IFS= read -r CLAIMED_TIER1; } <<< "$CLAIM_LINES"
         [ -n "$NAME" ]
         PROV_WRITTEN=true
@@ -456,13 +472,12 @@ if [ -z "$NAME" ] && [ "$AGENT" != none ]; then
         # say which host it was deriving for.
         # Only the local sotd parses these arguments. The target receives the name in workspace.create.
         rc=0
-        DERIVED_LINES="$(sot_comm derive fresh "$CANON_ROOT" "$SPAWN_HOST" --agent "$AGENT")" || rc=$?
-        if [ "$rc" -eq 2 ]; then
-            # An older local CLI returns usage (2) before deriving. A registry or tier failure returns 1.
-            sot_say "comm-spawn: local sotd does not accept --agent for derive; using its default handle" >&2
-            rc=0
+        if [ "$AGENT" = codex ]; then
+            DERIVED_LINES="$(sot_comm derive fresh "$CANON_ROOT" "$SPAWN_HOST" --agent codex)" || rc=$?
+        else
             DERIVED_LINES="$(sot_comm derive fresh "$CANON_ROOT" "$SPAWN_HOST")" || rc=$?
         fi
+        codex_derive_refused "$rc"
         if [ "$rc" -ne 0 ]; then
             echo "ERROR: could not derive a handle for a session on $SPAWN_HOST — see the reason above, or pass --name" >&2
             exit 1

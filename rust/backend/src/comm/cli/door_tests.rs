@@ -66,3 +66,41 @@ fn derive_fresh_uses_the_childs_kind_and_defaults_to_claude() {
         assert_eq!(o.stdout, format!("{name}\n\n{name}\n"));
     }
 }
+
+/// The kind is the argument's alone (the decoy environment says Codex), on the claim path as on the read-only one, and
+/// any other form of the arguments is usage that derives and writes nothing.
+#[test]
+fn derive_arguments_are_one_table() {
+    let mut t = TestHome::new();
+    t.set("SOT_AGENT_KIND", "codex");
+    let base = ["fresh", "/home/u/repo", "box1"];
+    let run = |extra: &[&str]| {
+        let mut argv = args(&base);
+        argv.extend(args(extra));
+        derive_from(&t.env, &argv, || r#"{"host":"box1"}"#.to_string())
+    };
+    let keys = || t.agents().as_object().unwrap().keys().cloned().collect::<Vec<_>>();
+    t.put("keep", json!({"host": "box1"}));
+    for extra in [
+        &["--agent", "bad"][..],
+        &["--agent"],
+        &["--agent", "codex", "--agent", "codex"],
+        &["--claim", "--agent", "codex"],
+        &["--agent", "--claim"],
+        &["--agent", "codex", "--bogus"],
+        &["--bogus"],
+        &["--claim", "--claim"],
+    ] {
+        let o = run(extra);
+        assert_eq!((o.code, o.stdout.as_str()), (2, ""), "{extra:?}");
+        assert!(o.stderr.starts_with("usage: ") && o.stderr.contains("[--agent claude|codex]"), "{extra:?}: {}", o.stderr);
+        assert_eq!(keys(), ["keep"], "{extra:?} wrote");
+    }
+    // The two old forms.
+    assert_eq!(run(&[]).stdout, "repo-box1\n\nrepo-box1\n");
+    assert_eq!(keys(), ["keep"]);
+    // The claim path takes the argument's kind and writes under that handle in the same step.
+    let o = run(&["--agent", "codex", "--claim"]);
+    assert_eq!((o.code, o.stdout.as_str()), (0, "repo-cx-box1\n\nrepo-cx-box1\n"), "{}", o.stderr);
+    assert!(t.agents().get("repo-cx-box1").is_some() && t.agents().get("repo-box1").is_none());
+}
