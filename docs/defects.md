@@ -280,6 +280,18 @@ owned by `docs/CLAUDE.md`.
 
 ## rows
 
+- **RECENT-ORDER-LEAVES-SESSIONS-WITHOUT-AN-AGENT** [person] The maintainer reported on 2026-11-22 that in the session
+  strip's recent order a session with no agent never moved and sorted last, and that a new session started last. Cause:
+  the order sorted by the work-state stamp alone (`activity_order`, `rust/frontend/src/ui/session/row_presentation.rs`),
+  which a row whose session never joins does not have (`work_state::shown_of`). Built: rows says each row's last
+  activity in the listing (`Workspace::active_at`, `workspace.list`'s `active_at`: the newest of the row's creation
+  and its work-state stamp) and the recent order sorts by it, so a new session sorts first at its first listing (second
+  when another session stamped in its creation second or later, or when the session selected in the window holds the
+  first slot, which it keeps) and a session with no agent is placed by its creation; the default row keeps its
+  creation across daemon starts, so one with an agent does not read as new after each; a window on a daemon older
+  than this, and an older window, sort as before. Open: input typed into a session's terminal is not counted, so a session with no agent still never moves
+  after its creation, until the capsule reports the time its terminal last took input and rows counts it; and no person
+  has used the built part.
 - **JQ-16-FLOOR-CHECKED-BY-NAMES-ONLY** [note] Review probes found jq programs that newer versions accept and 1.6 refuses. The gate uses newer jq and checks variable names in source. Hooks suppress jq errors, so a rejected effort filter reports unknown on a 1.6 host while the gate passes. This has not been seen in use. Run the hook suites under a pinned jq 1.6 as the gate does for Bash 3.2.
 - **CODEX-STOP-LOSES-EARLIER-MARKER** [note] From reading `comm-status-idle.sh`: a Codex Stop reads the closing marker in its final-message payload. If unread mail holds that reply and the continuation omits the marker, the hook cannot recover it from the earlier Codex reply because the transcript slice for markers runs only on the Claude path. This has not been observed in a live row.
 - **BOOT-STARTS-EVERY-ROW-AT-ONCE** [session] After a computer's boot the daemon started all of its 29 rows at once

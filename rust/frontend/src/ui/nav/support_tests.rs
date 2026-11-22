@@ -34,6 +34,7 @@ pub(in crate::ui) fn ws_info(slug: &str, session_name: &str) -> crate::net::tran
         agent_state: String::new(),
         agent_summary: String::new(),
         agent_status_at: String::new(),
+        active_at: String::new(),
         repl_state: String::new(),
         runtime: String::new(),
         phase: None,

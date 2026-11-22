@@ -5,6 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::Result;
 
 use super::*;
+use crate::comm::registry::registry::{epoch_of, iso8601_utc_from_secs};
 use crate::paths;
 
 /// `Default` is `Stopped`: no observation yet reads as "never started".
@@ -201,6 +202,13 @@ impl Workspace {
 
     pub fn agent_name(&self) -> String {
         self.agent_name.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// The row's last activity, the one statement of the rule (rows' contract, Activity): the newest of its creation
+    /// and `status_at`, its shown work-state stamp, which counts only when it reads as a stamp. In the stamp's form.
+    pub(crate) fn active_at(&self, status_at: &str) -> String {
+        let created = u64::try_from(self.created).unwrap_or(0);
+        iso8601_utc_from_secs(created.max(epoch_of(status_at).unwrap_or(0)))
     }
 
     /// Mutates in place, on the SAME `Arc`, rather than replacing it through `insert`.

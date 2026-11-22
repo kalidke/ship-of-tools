@@ -35,3 +35,39 @@ fn pty_open_failure_reason_prefers_code_falls_back_when_absent() {
     let uncoded = serde_json::json!({"cols": 80, "rows": 24});
     assert_eq!(pty_open_failure_reason(&uncoded), "unsupported daemon reply");
 }
+
+/// The listing's one parse site copies each row's last activity beside its work-state stamp: the newer daemon's as it
+/// sent it, an older daemon's (which sends none) empty.
+#[test]
+fn a_listing_carries_each_rows_last_activity() {
+    let entry = |slug: &str| {
+        serde_json::json!({
+            "workspace_id": format!("ws-{slug}-1"),
+            "slug": slug,
+            "label": slug,
+            "project_root": format!("/projects/{slug}"),
+            "session_name": format!("sot-be-{slug}"),
+            "kernel_running": false,
+            "is_default": false,
+            "agent_status_at": "2026-09-08T09:00:00Z",
+        })
+    };
+    let mut told = entry("told");
+    told["active_at"] = serde_json::json!("2026-09-08T09:05:00Z");
+    let payload = serde_json::json!({ "workspaces": [told, entry("older-daemon")] });
+    let seen = std::cell::RefCell::new(Vec::new());
+    on_workspace_list(Frame::res(1, op::WORKSPACE_LIST, payload), &|evt| {
+        if let IncomingEvt::Workspaces { workspaces } = evt {
+            for w in workspaces {
+                seen.borrow_mut().push((w.slug, w.active_at, w.agent_status_at));
+            }
+        }
+    });
+    assert_eq!(
+        seen.into_inner(),
+        [
+            ("told".to_string(), "2026-09-08T09:05:00Z".to_string(), "2026-09-08T09:00:00Z".to_string()),
+            ("older-daemon".to_string(), String::new(), "2026-09-08T09:00:00Z".to_string()),
+        ]
+    );
+}

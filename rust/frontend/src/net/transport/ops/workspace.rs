@@ -57,6 +57,9 @@ pub struct WorkspaceInfo {
     /// ISO8601 (RFC3339) timestamp of the last state write — drives the
     /// staleness aging of a "working" that's gone quiet. "" when absent.
     pub agent_status_at: String,
+    /// The wire's `active_at`: the row's last activity as its daemon computed it, the time the recent order sorts by.
+    /// "" from a daemon that predates the field; the recent order then sorts that row by `agent_status_at`.
+    pub active_at: String,
     /// Lifecycle of the workspace's persistent REPL child: "not_started" |
     /// "starting" (spawned, precompiling — NOT dead) | "ready" | "dead";
     /// "" from a daemon that predates the field. Mirrors the `lifecycle`
@@ -456,6 +459,7 @@ pub(crate) fn on_workspace_list(
                     agent_state: w.agent_state,
                     agent_summary: w.agent_summary,
                     agent_status_at: w.agent_status_at,
+                    active_at: w.active_at,
                     repl_state: w.repl_state,
                     runtime: w.runtime,
                     phase: w.phase,

@@ -168,6 +168,9 @@ pub(crate) fn seed_default_row(opts: &crate::Opts, files_mode: &FilesMode, works
     // wiped a default row's already-joined handle on the very next save.
     if let Some(existing) = &existing_default {
         default_ws_seed.agent_handle = existing.agent_handle.copy();
+        // The row's creation too: `from_label` gives the re-seed this start's time, and a row's last activity counts
+        // its creation, so a default row with an agent would read as newly active after every daemon start.
+        default_ws_seed.created = existing.created;
     }
     workspaces.insert(default_ws_seed);
     let default_ws = workspaces

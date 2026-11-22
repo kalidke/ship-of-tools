@@ -37,9 +37,12 @@ name is in this crate's one op table.
    change that default; `CommFileReq.expected_row` is an additive optional field, left out of the frame when unset, so an
    ordinary filing is the one an older daemon reads (`the_expected_row_is_an_optional_wire_field`). An older daemon would
    drop the field and file as an ordinary request, so a request that names a row is never sent to another daemon: the daemon
-   that receives it is the only one that admits it, and the contract of messaging says so; incompatible scope vocabulary changes follow this same protocol-number rule. The families
-   with none are agent, browse, lane, monitor, pty, repl, update, workspace and the preview payloads (`ir.rs`), and the
-   other page payloads have no previous-shape fixtures.
+   that receives it is the only one that admits it, and the contract of messaging says so; incompatible scope vocabulary changes follow this same protocol-number rule.
+   `WorkspaceListEntry.active_at` (the row's last activity, rows' rule) is an additive string defaulting to empty, and
+   empty is a daemon before the field, which the window reads as the signal to sort by `agent_status_at`; the list entry's
+   previous shape is pinned in `ops/workspace_tests.rs` (`a_list_entry_grows_by_its_last_activity_and_stays_additive`).
+   The families with none are agent, browse, lane, monitor, pty, repl, update, the rest of workspace and the preview
+   payloads (`ir.rs`), and the other page payloads have no previous-shape fixtures.
 4. **A child's output is read by lines, lossily, so no byte ends a reader.** A line is the bytes up to `\n`, less a
    `\r` before it, decoded lossily, through `ChildLines` or `blocking_child_lines` only; `rust/clippy.toml`'s
    child-output group refuses tokio's and std's strict line readers. Each user keeps its own proof (the sidecars'
@@ -306,7 +309,7 @@ Same on all three; the blocking codec is the one the ssh bridge and shell wrappe
 |---|---|---|
 | 1 | envelope cap | `codec_tests.rs`: `an_envelope_at_the_cap_is_written_and_read_by_both_pairs`, `oversize_envelope_is_typed_and_writes_nothing`, `an_envelope_with_no_newline_is_refused_at_the_cap` |
 | 2 | blob exact | `codec_tests.rs`: `file_chunk_blob_is_consumed_no_desync`, `a_blob_of_another_length_than_the_payload_declares_is_refused_before_any_byte_is_written`, `a_declared_blob_length_reserves_at_most_a_small_bound`, `a_truncated_frame_error_carries_no_frame_bytes` |
-| 3 | defaulted growth, protocol integer | `ops/session_tests.rs`: `legacy_hello_req_defaults_to_preversioning`, `legacy_hello_res_defaults_to_preversioning`, `this_process_declares_the_protocol_the_version_and_the_os_account`; `lib_client_wire_tests.rs`: `the_shell_hello_is_this_protocols_hello`; `ops/lease_wire_tests.rs`: `fe_lease_res_defaults`; `ops/pages_tests.rs`: `docs_open_grows_by_a_defaulted_scope_and_old_payloads_grant_none`; the integer's refusal at hello is `rust/backend/src/server/hello_protocol_gate_tests.rs` and `rust/backend/tests/admission.rs` (server's) |
+| 3 | defaulted growth, protocol integer | `ops/session_tests.rs`: `legacy_hello_req_defaults_to_preversioning`, `legacy_hello_res_defaults_to_preversioning`, `this_process_declares_the_protocol_the_version_and_the_os_account`; `lib_client_wire_tests.rs`: `the_shell_hello_is_this_protocols_hello`; `ops/lease_wire_tests.rs`: `fe_lease_res_defaults`; `ops/pages_tests.rs`: `docs_open_grows_by_a_defaulted_scope_and_old_payloads_grant_none`; `ops/workspace_tests.rs`: `a_list_entry_grows_by_its_last_activity_and_stays_additive`; the integer's refusal at hello is `rust/backend/src/server/hello_protocol_gate_tests.rs` and `rust/backend/tests/admission.rs` (server's) |
 | 4 | lossy lines | `child_lines_tests.rs`: `every_byte_a_child_writes_reads_as_a_line` |
 | 5 | release predicate | `version_app_version_tests.rs`: `the_bare_version_and_the_release_predicate_never_disagree`, `clean_on_tag_is_the_bare_version_only_from_ci` |
 | 6 | grammars | `annotation_tests.rs`, `physical_scale_tests.rs`, `page_url_tests.rs`, `video_path_tests.rs`, `page_reply_tests.rs::hostile_text_is_refused_and_plain_text_is_marked`, `chat_tests.rs::slack_text_decodes_entities_once_delimited_and_escape_inverts_it` |

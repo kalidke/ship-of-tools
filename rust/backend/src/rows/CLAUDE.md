@@ -386,6 +386,30 @@ its name:
 - Limits: a dialog that closes between the tick's read and its write reads red for one more tick; a turn that ends with
   no Stop (Esc, a bare No, a reauth, an API error) leaves the row `working` until its next turn.
 
+Activity. A row's last activity is the newest of two facts: its creation (`created`, kept in its toml, so it survives
+restarts; the default row's too, whose re-seed at each daemon start carries it over,
+`store::tests::boot_keeps_the_default_rows_creation`; a create over the same slug takes the new row's) and its
+work-state stamp, the `status_at` that `shown_of` reads, so only through the row's bound handle and from an entry of
+this host. The stamp is when the row's session last stamped its work state, which is more often than its state
+changes: every prompt, stop and declaration restamps it, and a busy turn's heartbeat at most once a minute. The stamp
+counts only when it reads as one (`epoch_of`, messaging's parser of the registry's `YYYY-MM-DDTHH:MM:SSZ`: it checks
+the length, the final `Z` and the six numbers, not the separators or a number's range). Rows owns the rule and states
+it once, in `Workspace::active_at`. `workspace.list` computes it at each listing and carries it as `active_at`, in the
+stamp's form and never empty, and the window's recent order sorts by it (fe-ui's contract). A new session has the
+newest time at its first listing, so it sorts first, with two limits: a session stamped in the new session's creation
+second, or after it and before that listing, is as recent or more and sorts ahead of it (the window gives a tie to the
+row that had a place before); and the session selected in a window keeps its slot there, so when it holds the first
+slot as the listing with the new session arrives, the new session is second, and stays second once it is selected. A
+session with no agent, which never has a stamp, is placed by its creation (the maintainer asked on 2026-11-22 that the
+recent order place a session with no agent as fairly as one with an agent, and a new session first).
+`agent_status_at` keeps its meaning, the time the work state was last stamped: the wilt and the window's state order
+read it, never the new time. Limits: input typed into a row's terminal is not counted, so after its creation a session with no
+agent never moves (docs/defects.md: RECENT-ORDER-LEAVES-SESSIONS-WITHOUT-AN-AGENT); a row toml with no `created` key,
+which only a hand-written one lacks, takes the load's time at every daemon start, so that row reads as new after each;
+a creation before the epoch counts as the epoch. Tests:
+`rows::ops::list::agent_str_host_filter_tests::the_list_says_each_rows_last_activity`,
+`rows::store::tests::boot_keeps_the_default_rows_creation`.
+
 Owns: the registry (`Workspaces`) and the row (`Workspace`) with its phase cell, guards, run gate and the default row's
 rule; on disk `<config>/workspaces-<host>/<slug>.toml`, `<state>/workspaces/<id>/` with its tombstones, and
 `workspaces/.registries-of`; the ops `workspace.create`, `workspace.destroy`, `workspace.list`, `workspace.activate`,
@@ -414,7 +438,8 @@ scripts during an install logs one refused dialog stamp a row until it restarts.
 Calls out: capsule (`sot-capsule supervise`, the supervisor client, the attach client); agents (argv, environment,
 folder trust: `under_declared_prefix`, `claude_prepared_within`, `effective_claude_trust_file`); sidecars (`Kernel`,
 `Repl`); files (`FilesMode`, `ConceptStore`, `Watcher`); messaging (`edit_entry`,
-`read_comm_agents`, `remove_comm_agents_for_workspace`, `stamp_last_seen`, `last_joiner`, the wake's `dialog_of`,
+`read_comm_agents`, `remove_comm_agents_for_workspace`, `stamp_last_seen`, `last_joiner`, the stamp's parser and
+formatter `epoch_of` and `iso8601_utc_from_secs`, the wake's `dialog_of`,
 `startup_of`, `type_if_free`);
 platform (dirs, the declared host, durable writes, locks); containment (`Signal`); pages (the `PageRow`, `PageOption`
 and `RowRef` data shapes its server-built closures return).

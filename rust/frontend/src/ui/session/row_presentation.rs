@@ -49,6 +49,9 @@ pub(in crate::ui) struct RowPresentation {
     workspace_labels: HashMap<WsKey, String>,
     workspace_project_roots: HashMap<WsKey, String>,
     workspace_states: HashMap<WsKey, (String, String)>,
+    /// The time the recent order sorts each row by: its daemon's `active_at`, or its work-state stamp when the daemon
+    /// sent none (one that predates the field).
+    workspace_recent: HashMap<WsKey, String>,
     prev_workspace_states: HashMap<WsKey, String>,
     flash_starts: HashMap<WsKey, Instant>,
     workspace_slugs: Vec<WsKey>,
@@ -75,6 +78,7 @@ impl RowPresentation {
         let mut labels = HashMap::new();
         let mut roots = HashMap::new();
         let mut states = HashMap::new();
+        let mut recent = HashMap::new();
         let mut slugs = Vec::new();
         let mut default_slug = None;
         let mut repl_catchup = HashMap::new();
@@ -101,6 +105,12 @@ impl RowPresentation {
                     key.clone(),
                     (row.agent_state.clone(), row.agent_status_at.clone()),
                 );
+                let at = if row.active_at.is_empty() {
+                    &row.agent_status_at
+                } else {
+                    &row.active_at
+                };
+                recent.insert(key.clone(), at.clone());
                 if !row.repl_state.is_empty() {
                     repl_catchup.insert(key.clone(), row.repl_state.clone());
                 }
@@ -127,6 +137,7 @@ impl RowPresentation {
             self.order,
             &slugs,
             &states,
+            &recent,
             &labels,
             &badged,
             &self.workspace_slugs,
@@ -135,6 +146,7 @@ impl RowPresentation {
         self.workspace_labels = labels;
         self.workspace_project_roots = roots;
         self.workspace_states = states;
+        self.workspace_recent = recent;
         self.default_workspace_slug = default_slug;
         let default_migration = self
             .default_slug()
@@ -151,6 +163,7 @@ impl RowPresentation {
             self.order,
             &self.workspace_slugs,
             &self.workspace_states,
+            &self.workspace_recent,
             &self.workspace_labels,
             &badged,
             &self.workspace_slugs,
@@ -169,6 +182,7 @@ impl RowPresentation {
             order,
             &self.workspace_slugs,
             &self.workspace_states,
+            &self.workspace_recent,
             &self.workspace_labels,
             &badged,
             &self.workspace_slugs,
@@ -301,6 +315,8 @@ impl RowPresentation {
                 if let Some(Some(state)) = states.get(i) {
                     self.workspace_states
                         .insert(key.clone(), (state.clone(), status_at.to_string()));
+                    self.workspace_recent
+                        .insert(key.clone(), status_at.to_string());
                     self.prev_workspace_states.insert(key, state.clone());
                 }
             }
@@ -339,6 +355,7 @@ fn activity_order(
     order: StripOrder,
     slugs: &[WsKey],
     states: &HashMap<WsKey, (String, String)>,
+    recent: &HashMap<WsKey, String>,
     labels: &HashMap<WsKey, String>,
     badged: &std::collections::HashSet<WsKey>,
     prev: &[WsKey],
@@ -347,15 +364,18 @@ fn activity_order(
     // Alphabetical moves only when rows come or go, so it has no pin.
     let pinned = pinned.filter(|_| order != StripOrder::Alphabetical);
     let prev_pos = |k: &WsKey| prev.iter().position(|p| p == k).unwrap_or(usize::MAX);
+    let millis = |at: &str| {
+        chrono::DateTime::parse_from_rfc3339(at)
+            .ok()
+            .map(|t| t.timestamp_millis())
+            .unwrap_or(i64::MIN)
+    };
     let sort_key = |k: &WsKey| {
         let (state, at) = states
             .get(k)
             .map(|(s, a)| (s.as_str(), a.as_str()))
             .unwrap_or(("", ""));
-        let stamp = chrono::DateTime::parse_from_rfc3339(at)
-            .ok()
-            .map(|t| t.timestamp_millis())
-            .unwrap_or(i64::MIN);
+        let stamp = millis(at);
         match order {
             StripOrder::State => (
                 activity_rank(state, badged.contains(k)),
@@ -373,7 +393,7 @@ fn activity_order(
             ),
             StripOrder::Recent => (
                 0,
-                std::cmp::Reverse(stamp),
+                std::cmp::Reverse(millis(recent.get(k).map_or("", String::as_str))),
                 prev_pos(k),
                 String::new(),
                 String::new(),

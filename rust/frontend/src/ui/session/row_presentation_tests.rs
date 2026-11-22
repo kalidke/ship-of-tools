@@ -546,3 +546,62 @@ fn next_row_follows_the_chosen_order() {
     assert_eq!(p.next_row(1, "a", Some("a2")), Some(("a".into(), "a3".into())));
     assert_eq!(p.next_row(-1, "a", Some("a2")), Some(("a".into(), "a1".into())));
 }
+
+fn active(slug: &str, state: &str, at: &str, active_at: &str) -> WorkspaceInfo {
+    let mut r = row(slug, state, at);
+    r.active_at = active_at.into();
+    r
+}
+
+#[test]
+fn recent_order_sorts_by_last_activity_and_an_older_daemons_rows_by_their_status_time() {
+    let mut d = RowDirectory::default();
+    // Host a's daemon says each row's last activity. t1 is a session with no agent: no state, no stamp, and the newest
+    // by its creation. a3's last activity is newer than a2's, and its stamp older.
+    replace(
+        &mut d,
+        "a",
+        vec![
+            active("a1", "working", "2026-09-08T09:01:00Z", "2026-09-08T09:01:00Z"),
+            active("a2", "working", "2026-09-08T09:03:00Z", "2026-09-08T09:03:00Z"),
+            active("a3", "working", "2026-09-08T09:02:00Z", "2026-09-08T09:04:00Z"),
+            active("t1", "", "", "2026-09-08T09:05:00Z"),
+        ],
+    );
+    // Host b's daemon predates the field and sends none: its rows sort by their status time, one without it last. The
+    // state order puts b1, at work, ahead of the newer b3, so only the status time puts b3 first.
+    replace(
+        &mut d,
+        "b",
+        vec![
+            row("b1", "working", "2026-09-08T09:01:00Z"),
+            row("b2", "", ""),
+            row("b3", "idle", "2026-09-08T09:02:00Z"),
+        ],
+    );
+    let state_order = ["a/a2", "a/a3", "a/a1", "a/t1", "b/b1", "b/b3", "b/b2"];
+    let mut p = RowPresentation::default();
+    refresh(&mut p, &d, Instant::now());
+    assert_eq!(slugs(&p), state_order);
+    // A change of order and a re-sort at a badge change both read the times the last listing left.
+    p.set_order(StripOrder::Recent, HashSet::new());
+    assert_eq!(slugs(&p), ["a/t1", "a/a3", "a/a2", "a/a1", "b/b3", "b/b1", "b/b2"]);
+    p.resort("a", None, HashSet::new());
+    assert_eq!(slugs(&p), ["a/t1", "a/a3", "a/a2", "a/a1", "b/b3", "b/b1", "b/b2"]);
+    // A listing in which a1 is the newest: the selection, a3, keeps slot 1 and the others follow their times around it.
+    replace(
+        &mut d,
+        "a",
+        vec![
+            active("a1", "working", "2026-09-08T09:01:00Z", "2026-09-08T09:09:00Z"),
+            active("a2", "working", "2026-09-08T09:03:00Z", "2026-09-08T09:03:00Z"),
+            active("a3", "working", "2026-09-08T09:02:00Z", "2026-09-08T09:04:00Z"),
+            active("t1", "", "", "2026-09-08T09:05:00Z"),
+        ],
+    );
+    refresh_selected(&mut p, &d, "a3");
+    assert_eq!(slugs(&p), ["a/a1", "a/a3", "a/t1", "a/a2", "b/b3", "b/b1", "b/b2"]);
+    // The state order of the same rows still sorts by the work-state stamp.
+    p.set_order(StripOrder::State, HashSet::new());
+    assert_eq!(slugs(&p), state_order);
+}

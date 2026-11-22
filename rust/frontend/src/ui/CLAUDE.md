@@ -243,8 +243,15 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   inert defaults retain metadata. None selections use hello metadata; unknown nondefaults get no root fallback.
   Stable host blocks, in `ordered_hosts` order, are sorted by a `StripOrder`, default `State`: rank blocked, badge,
   done, working, waiting, rest, then newest stamp, pinning the selection's previous slot. `Alphabetical` sorts a block
-  by shown label without case, then slug, with no pin. `Recent` sorts by newest `agent_status_at` (an unreadable stamp
-  last) and pins like `State`. `set_order` re-sorts at once without the pin; the key action `strip.cycle_order`
+  by shown label without case, then slug, with no pin. `Recent` sorts by each row's newest last activity, the
+  listing's `active_at` (rows' rule: the newest of the row's creation and its work-state stamp; the window computes
+  nothing), and a row whose daemon sent none, one older than the field, by its `agent_status_at`; an unreadable time
+  sorts last, and it pins like `State`. So a session new to a listing, whose time is its creation, sorts first unless
+  another row's time is in the same second or later (equal times keep their previous order, and a row new to the
+  listing has no previous place, so it loses the tie) or the pinned selection holds the first slot, which it keeps. The
+  recent time is kept per row in a map of its own beside the state/stamp pairs, filled by `refresh` (and by
+  `seed_capture` for the capture harness) and read by `refresh`, `resort` and `set_order`; the `State` order and the
+  wilt keep the stamp. `set_order` re-sorts at once without the pin; the key action `strip.cycle_order`
   (`Primary+Shift+o`) cycles state, alphabetical, recent and the choice is kept as `strip_order` in the resume state,
   applied at startup before the first listing.
   Known changes flash; missing rows retain history. Sessions/strip share the 600 ms fade. Destroy forgets only
@@ -253,7 +260,9 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   after capture seeding, preserving the timing of `1bc65e054`.
   Behavior tests: `workspace_list::tests` and `row_presentation::tests` (among them
   `alphabetical_order_sorts_each_host_block_by_label_and_ignores_state`,
-  `recent_order_puts_the_newest_status_first_and_keeps_the_selection_in_its_slot`,
+  `recent_order_puts_the_newest_status_first_and_keeps_the_selection_in_its_slot` (the older daemon's rows),
+  `recent_order_sorts_by_last_activity_and_an_older_daemons_rows_by_their_status_time` (both, an older daemon's rows
+  where the state order and the status time disagree),
   `changing_the_order_resorts_at_once_and_does_not_pin`, `the_order_cycles_state_alphabetical_recent`,
   `next_row_follows_the_chosen_order`), and the resume round trip in `persist::resume_tests`.
 - `ResultLedger` privately owns canonical owed results, the listed badge index, both checked serials and the

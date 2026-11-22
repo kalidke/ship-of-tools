@@ -2,7 +2,7 @@
 
 use crate::comm::Env;
 use super::{context as ctx_of, gate, Out};
-use crate::comm::registry::registry::{binding, command_lock_wait, entry, read_doc, unix_now_secs, update, Binding, Entry};
+use crate::comm::registry::registry::{binding, command_lock_wait, entry, epoch_of, read_doc, unix_now_secs, update, Binding, Entry};
 
 /// `sotd comm context [--rebind]`: the identity, eval-able. The comm folder is made whole only when the gate passes;
 /// the identity is read either way.
@@ -132,25 +132,6 @@ pub(crate) fn fmt_age(secs: u64) -> String {
         s if s < 86_400 => format!("{}h ago", s / 3600),
         s => format!("{}d ago", s / 86_400),
     }
-}
-
-/// A `YYYY-MM-DDTHH:MM:SSZ` stamp in seconds since the epoch, or `None`.
-pub(crate) fn epoch_of(stamp: &str) -> Option<u64> {
-    let b = stamp.as_bytes();
-    if b.len() != 20 || b[19] != b'Z' {
-        return None;
-    }
-    let n = |r: std::ops::Range<usize>| stamp.get(r)?.parse::<i64>().ok();
-    let (y, m, d, hh, mm, ss) = (n(0..4)?, n(5..7)?, n(8..10)?, n(11..13)?, n(14..16)?, n(17..19)?);
-    // Days from the civil date (Howard Hinnant's algorithm), the inverse of the registry's own stamp.
-    let y = if m <= 2 { y - 1 } else { y };
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = y - era * 400;
-    let mp = (m + 9) % 12;
-    let doy = (153 * mp + 2) / 5 + d - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146_097 + doe - 719_468;
-    u64::try_from(days * 86_400 + hh * 3600 + mm * 60 + ss).ok()
 }
 
 /// `sotd comm list`: every registered handle with its liveness and work-state line, then on a window's computer the

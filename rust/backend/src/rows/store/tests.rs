@@ -492,6 +492,41 @@ fn boot_keeps_the_default_rows_declared_handle() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The boot sequence keeps the default row's creation, in memory and in its toml, at every daemon start: the re-seed
+/// builds a new row, whose creation would be the start's own time, and a row's last activity counts its creation
+/// (rows' contract, Activity), so a default row with an agent would sort first in the recent order after each start.
+#[test]
+fn boot_keeps_the_default_rows_creation() {
+    let _guard = env_guarded();
+    let dir = std::env::temp_dir().join(format!("sot-ws-test-default-created-{}-{}", std::process::id(), now_unix()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let root = dir.join("m5-home");
+    std::fs::create_dir_all(&root).unwrap();
+    std::env::set_var("XDG_CONFIG_HOME", dir.join("xdg"));
+    std::env::set_var("LOCALAPPDATA", &dir);
+    std::env::remove_var("USERPROFILE");
+    std::env::set_var("SOT_SELF_HOST", "host-4");
+    std::env::set_var("SOT_COMM_HOME", dir.join("comm"));
+    let mut row = Workspace::from_label("m5-home", root.clone(), false, "claude".into(), String::new(), String::new());
+    row.created = 1_700_000_000;
+    save(&row).unwrap();
+
+    let opts = crate::Opts { socket: None, project_root: root.clone(), label: Some("m5-home".into()), adopt_legacy_registry: false };
+    let files_mode = crate::files::tree::FilesMode::new(root.clone()).unwrap();
+    // Two daemon starts, each with a registry of its own, as a process has.
+    for start in ["the first start", "the second start"] {
+        let reg = Workspaces::new();
+        assert_eq!(scan_disk(&reg, false).unwrap(), 1);
+        let seeded = crate::rows::anchor::seed_default_row(&opts, &files_mode, &reg);
+        assert_eq!(seeded.created, 1_700_000_000, "{start} moved the default row's creation");
+        assert_eq!(seeded.active_at(""), "2023-11-14T22:13:20Z", "{start}: the list would say the row was active at the start");
+        let fresh = Workspaces::new();
+        scan_disk(&fresh, false).unwrap();
+        assert_eq!(fresh.resolve(Some("m5-home")).unwrap().created, 1_700_000_000, "{start} rewrote the creation in the default row's toml");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn load_toml_legacy_rejected_when_legacy_off() {
     let dir = std::env::temp_dir().join(format!(

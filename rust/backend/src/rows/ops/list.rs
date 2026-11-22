@@ -82,6 +82,7 @@ pub async fn handle_workspace_list(
                 task: ws.task.clone(),
                 agent_state: work.state,
                 agent_summary: work.summary,
+                active_at: ws.active_at(&work.status_at),
                 agent_status_at: work.status_at,
                 repl_state: ws.repl_state().to_string(),
                 runtime: ws.runtime.clone(),

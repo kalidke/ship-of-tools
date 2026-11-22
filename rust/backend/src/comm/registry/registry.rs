@@ -1,5 +1,5 @@
 //! The daemon's side of the comm registry (registry.json): fresh reads, the lock, one entry's edit, pruning, and the
-//! UTC stamps comm writes.
+//! UTC stamps comm writes, with their parser.
 
 /// ISO-8601 UTC instant (e.g. `2026-05-29T14:30:05Z`) without pulling in
 /// chrono — the backend has no time crate, so format the civil date from
@@ -27,6 +27,25 @@ pub(crate) fn iso8601_utc_from_secs(secs: u64) -> String {
         "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
         year, month, day, hh, mm, ss
     )
+}
+
+/// A `YYYY-MM-DDTHH:MM:SSZ` stamp in seconds since the epoch, or `None`.
+pub(crate) fn epoch_of(stamp: &str) -> Option<u64> {
+    let b = stamp.as_bytes();
+    if b.len() != 20 || b[19] != b'Z' {
+        return None;
+    }
+    let n = |r: std::ops::Range<usize>| stamp.get(r)?.parse::<i64>().ok();
+    let (y, m, d, hh, mm, ss) = (n(0..4)?, n(5..7)?, n(8..10)?, n(11..13)?, n(14..16)?, n(17..19)?);
+    // Days from the civil date (Howard Hinnant's algorithm), the inverse of the registry's own stamp.
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let mp = (m + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    u64::try_from(days * 86_400 + hh * 3600 + mm * 60 + ss).ok()
 }
 
 /// Howard Hinnant's days-from-civil inverse: convert days-since-epoch to a

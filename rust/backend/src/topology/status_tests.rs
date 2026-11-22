@@ -78,6 +78,7 @@ fn ws(phase: Option<&str>, account: &str) -> WorkspaceListEntry {
         agent_state: String::new(),
         agent_summary: String::new(),
         agent_status_at: String::new(),
+        active_at: "2026-01-01T00:00:00Z".to_string(),
         repl_state: String::new(),
         runtime: "tmux".to_string(),
         state_dir: None,

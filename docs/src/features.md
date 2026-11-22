@@ -70,7 +70,13 @@ Delivery in a real Codex session still needs checking. See
 ### Order of the session strip
 
 `Ctrl+Shift+o` cycles the order of the session strip along the bottom edge:
-by state, alphabetical, or by recent activity.
+by state, alphabetical, or by recent activity. A session's recent activity
+is the later of when it was created and when its agent last reported: at a
+turn's start and end, at each state it declares, and about once a minute
+while it works. So a new session starts first, unless another session
+reported in the same second or later, or the session you are on holds the
+first place, which it keeps. A session with no agent keeps the place its
+creation gives it.
 
 ### More on agents
 
