@@ -184,6 +184,7 @@ installs the agent integration:
 | `~/.codex/skills/` | the Codex skills `sot-comm`, `sot-session-start` and `sot-chat-post` |
 | `~/.codex/AGENTS.md` | the repo's `AGENTS.md`, installed when none is there and replaced only while the installed file holds "Codex sessions in Ship of Tools"; any other file there is left alone and a warning says to merge by hand |
 | `~/.agents/plugins/sot-comm/`, `~/.agents/plugins/marketplace.json` | the Codex work-state hook plugin; written whether or not Codex is installed, and registered with `codex plugin add sot-comm@sot-local` when it is |
+| `$CODEX_HOME/plugins/cache/sot-local/sot-row/<version>/` | On Unix, each `ccx` launch enables the cached `sot-row@sot-local` plugin for that session. Its skills are `julia-repl`, `project-log`, `show-result`, `sitrep`, `sot-status` and `worktree` |
 
 `~/.claude` and `~/.codex` follow `CLAUDE_CONFIG_DIR` and `CODEX_HOME` when
 those are set; `~/.sot-comm` follows `SOT_COMM_HOME`. The other paths do not
@@ -197,8 +198,7 @@ install under a separate user account or in a virtual machine.
 Apart from the four onboarding skills, the Claude skills and the work-state hooks
 exist only in a session Ship of Tools starts: a row, or `ccb`. That session adds `~/.sot-comm/claude-layer` to itself
 (`--add-dir`) and carries the hooks in its own launch settings, so a `claude`
-you start yourself in a terminal loads none of them, and neither your skills
-folder nor your `settings.json` holds a skill or a work-state hook. An install
+you start yourself in a terminal loads none of them, and the four onboarding skills remain in your Claude skills folder. An install
 removes the skills an earlier release put in a Claude skills folder (`~/.claude`,
 `$CLAUDE_CONFIG_DIR`, each `~/.claude-auth/<name>`) only where the folder is
 byte for byte a version this repository shipped, and says so about any other
@@ -207,11 +207,14 @@ touched. The two mail hooks remain in your settings and do nothing in a session
 that has not joined the Ship of Tools session registry; `SOT_COMM_HOOKS=off`
 turns the Claude Code hooks off entirely.
 
-Nothing the installer writes for Claude lands in a folder of yours any more, so
-no skill of yours is overwritten. The Codex skills are still written into
-`~/.codex/skills`: a skill directory there with the same name as one of them is
-overwritten, each shipped file replacing the file of the same name and any other
-file in that directory deleted, with no backup.
+The four Claude onboarding skills in `~/.claude/skills` and the three global
+Codex skills in `~/.codex/skills` use the same update rule. In each shipped
+skill directory the installer replaces matching files and removes every other file, including files you added, without a backup.
+On Unix the installer replaces the entire `$CODEX_HOME/plugins/cache/sot-local/sot-row/` folder without a backup.
+Windows skips this step until a Windows launcher can start Codex rows.
+Each `ccx` launch enables the row skills even if your configuration disables the plugin.
+The row plugin has no marketplace entry, so `codex plugin list` omits it and `codex plugin add` cannot enable it globally.
+A personal configuration that explicitly enables the cached plugin also loads the skills in plain Codex.
 
 The installer itself edits no shell profile. If no Julia 1.12 or newer is
 found and juliaup is not installed, it runs the juliaup installer, which adds
@@ -283,6 +286,8 @@ Then, by hand:
   file it points to, once;
 - if Codex is installed, remove the `sot-comm@sot-local` plugin (it is listed
   by `codex plugin list`);
+- on Unix, run `codex plugin remove sot-row@sot-local` to delete the cached row plugin, or delete `$CODEX_HOME/plugins/cache/sot-local/sot-row/` by hand. Its skills are `julia-repl`, `project-log`, `show-result`, `sitrep`, `sot-status` and `worktree`;
+- remove the installer’s `$CODEX_HOME/plugins/cache/sot-local/.sot-row.install/` staging directory after all installers have exited;
 - remove the `sot-local` entry from `~/.agents/plugins/marketplace.json`, or
   delete the file if nothing else is listed in it;
 - remove the `[projects."<dir>"]` blocks with `trust_level = "trusted"` that

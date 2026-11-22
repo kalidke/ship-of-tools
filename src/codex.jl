@@ -164,3 +164,71 @@ const CODEX_MARKETPLACE_PAYLOADS = [
 }
 """,
 ]
+
+const ROW_PLUGIN_VERSION = "0.1.0"
+const ROW_PLUGIN_MANIFEST = """{"name": "sot-row", "version": "$ROW_PLUGIN_VERSION", "skills": "./skills/"}\n"""
+
+# An open, kernel-locked file belongs to its publisher until close or process death.
+# Keep the lock file between publishes so every caller locks the same inode.
+function _row_lock(path)
+    fs = Base.Filesystem
+    entry = lstat(path)
+    ispath(entry) && !isfile(entry) && error("row plugin lock does not belong to the installer: $path")
+    io = fs.open(path, fs.JL_O_CREAT | fs.JL_O_RDWR, 0o600)
+    ccall(:flock, Cint, (Cint, Cint), fd(io), 6) == 0 && return io # LOCK_EX | LOCK_NB
+    err = Base.Libc.errno()
+    close(io)
+    err == Base.Libc.EAGAIN && return nothing
+    Base.systemerror("flock $path", err)
+end
+
+function _publish_row_tree(build, dst; windows = Sys.iswindows())
+    windows && return
+    scratch = joinpath(dirname(dst), "." * basename(dst) * ".install")
+    if !ispath(lstat(scratch))
+        # Publish the ownership mark with the directory, so a crash never leaves an ambiguous empty folder.
+        mktempdir(mkpath(dirname(dst))) do fresh
+            touch(joinpath(fresh, "sot-row-stage"))
+            try
+                Base.Filesystem.rename(fresh, scratch)
+            catch
+                isdir(scratch) || rethrow() # a concurrent publisher may have installed it first
+            end
+        end
+    end
+    marker = joinpath(scratch, "sot-row-stage")
+    if !isdir(lstat(scratch)) || !isfile(lstat(marker)) || filesize(marker) != 0
+        error("row plugin staging path does not belong to the installer: $scratch")
+    end
+    lock = _row_lock(joinpath(scratch, "lock"))
+    isnothing(lock) && return @info "Skipping row plugin: another install is publishing the same release"
+    stage, previous = joinpath(scratch, "new"), joinpath(scratch, "previous")
+    present(p) = ispath(lstat(p))
+    restore() = !present(dst) && present(previous) && Base.Filesystem.rename(previous, dst)
+    try
+        restore()
+        rm(previous; force = true, recursive = true)
+        rm(stage; force = true, recursive = true)
+        build(stage)
+        present(dst) && Base.Filesystem.rename(dst, previous)
+        try
+            Base.Filesystem.rename(stage, dst)
+        finally
+            restore()
+        end
+        rm(previous; force = true, recursive = true)
+    finally
+        close(lock)
+    end
+end
+
+function _install_row_plugin(home, skillsrc = AGENT_SKILL_SRC)
+    _publish_row_tree(joinpath(home, "plugins", "cache", "sot-local", "sot-row")) do stage
+        names = readlines(CODEX_ROW_SKILL_LIST)
+        root = joinpath(stage, ROW_PLUGIN_VERSION)
+        metadata = mkpath(joinpath(root, ".codex-plugin"))
+        write(joinpath(metadata, "plugin.json"), ROW_PLUGIN_MANIFEST)
+        landed = _install_skills(skillsrc, joinpath(root, "skills"); keep = in(names))
+        sort(landed) == sort("/" .* names) || error("row plugin missing a listed skill from $skillsrc")
+    end
+end

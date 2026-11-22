@@ -8,7 +8,8 @@ const REPO_ROOT = dirname(COMM_SRC)
 # one repo-relative folder per line.
 const COMM_BIN_FOLDERS = joinpath(COMM_SRC, "bin-folders.txt")
 # The folders holding the Claude skills (each skill a subfolder with a SKILL.md).
-const CLAUDE_SKILL_SRCS = [joinpath(COMM_SRC, "adapters", "claude"), joinpath(REPO_ROOT, "agents", "claude")]
+const AGENT_SKILL_SRC = joinpath(REPO_ROOT, "agents", "claude")
+const CLAUDE_SKILL_SRCS = [joinpath(COMM_SRC, "adapters", "claude"), AGENT_SKILL_SRC]
 # The shared PATH commands live beside Claude's own launcher.
 const CLAUDE_LAUNCHER_SRC = joinpath(REPO_ROOT, "agents", "claude", "bin")
 # Record SHA-256 of the Git blob contents from this folder and its predecessor, comm/adapters/claude/bin.
@@ -20,6 +21,7 @@ const CODEX_ADAPTER_SRC = joinpath(COMM_SRC, "adapters", "codex")
 const CODEX_SKILL_SRC = joinpath(CODEX_ADAPTER_SRC, "skills")
 # The Codex launcher scripts, installed into ~/.local/bin.
 const CODEX_LAUNCHER_SRC = joinpath(REPO_ROOT, "agents", "codex", "bin")
+const CODEX_ROW_SKILL_LIST = joinpath(dirname(CODEX_LAUNCHER_SRC), "shared-skills.txt")
 # The hooks payload that becomes the sot-comm plugin's hooks/hooks.json.
 const CODEX_HOOKS_JSON_SRC = joinpath(CODEX_ADAPTER_SRC, "hooks.json")
 # The sot-comm plugin folder (its .codex-plugin/plugin.json manifest).

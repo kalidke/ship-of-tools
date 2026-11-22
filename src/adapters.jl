@@ -87,6 +87,9 @@ function _install_adapter(cli::Symbol; unhooked::Vector{String} = String[])
                 @warn "codex AGENTS.md exists and is not ours — merge manually" file = dst
             end
         end
+        _stage!(problems, "codex row plugin") do
+            _install_row_plugin(home)
+        end
         # Hooks deploy as a LOCAL PLUGIN (found the hard way, 2026-07-06:
         # codex 0.142 loads lifecycle hooks from config and ENABLED PLUGINS —
         # a standalone hooks.json in the codex home is silently ignored, which
@@ -96,8 +99,8 @@ function _install_adapter(cli::Symbol; unhooked::Vector{String} = String[])
         # (which re-copies into $CODEX_HOME/plugins/cache on every run, so a
         # repo edit does propagate). Paths in marketplace.json resolve from TWO
         # levels above the file ($HOME) — the marketplace stays HOME-relative
-        # even when CODEX_HOME points elsewhere, which is why only skills and
-        # AGENTS.md above needed codex_home().
+        # even when CODEX_HOME points elsewhere, which is why the skills,
+        # AGENTS.md and row plugin cache above use codex_home().
         #
         # Hook TRUST: persisted per hook HASH in $CODEX_HOME/config.toml under
         # [hooks.state], granted once via the /hooks TUI. NOT covered by a

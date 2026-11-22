@@ -32,8 +32,10 @@ Run from inside the repo you want a worktree of:
 
 ```bash
 comm-worktree-new.sh <shortname> [--base <ref>] [--branch <name>] \
-                     [--task "what to do"] [--expertise "a, b"] [--no-spawn]
+                     [--agent claude|codex] [--task "what to do"] [--expertise "a, b"] [--no-spawn]
 ```
+
+The spawned row runs Claude by default. Pass `--agent codex` for a Codex row.
 
 Refuses (loudly, never `--force`s): an invalid `<shortname>`
 (`^[a-z0-9][a-z0-9-]*$`) or branch name, a branch that already exists or is

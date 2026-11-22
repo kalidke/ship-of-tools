@@ -118,7 +118,7 @@ case_launch_argv() {
         set -- resume "$id"
         prompt="Your pane was restarted; this is the same conversation resumed. $prompt Then continue exactly where you left off."
     fi
-    printf '%s\n' "$@" --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust --no-alt-screen "$prompt" \
+    printf '%s\n' "$@" --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust --no-alt-screen -c 'plugins.sot-row@sot-local.enabled=true' "$prompt" \
         | diff -u - "$ARGV_LOG"
 }
 

@@ -49,7 +49,7 @@ which is the failure this replaces.
 ## How
 
 If the user asked for a specific file, badge it immediately — no
-folder-reasoning — then `Read` it and give your critical read in words.
+folder-reasoning — then open it and look at it yourself and give your critical read in words.
 
 ```bash
 show-result <path>                                    # workspace-relative

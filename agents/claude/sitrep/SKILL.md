@@ -1,6 +1,6 @@
 ---
 name: sitrep
-description: Situation report — a plain-language narrative of the last work effort for the person steering the project, in one causal chain (the issue and its context, how it was diagnosed, what the cause is, what test or fix was built, the quantitative result, what it means, what to do next). Invoke on "sitrep", "/sitrep", "what did you do", "where are we", "summarize the last effort", and fire it yourself as the closing message whenever a work effort finishes. Two levels: the chat sitrep (about 300 words) and the log executive summary (about 120 words) that opens an effort or experiment page.
+description: Situation report — a plain-language narrative of the last work effort for the person steering the project, in one causal chain (the issue and its context, how it was diagnosed, what the cause is, what test or fix was built, the quantitative result, what it means, what to do next). Invoke on "sitrep", "what did you do", "where are we", "summarize the last effort", and fire it yourself as the closing message whenever a work effort finishes. It comes at two levels, the chat sitrep (about 300 words) and the log executive summary (about 120 words) that opens an effort or experiment page.
 ---
 
 # sitrep — say what was done and why, in the reader's language
@@ -16,7 +16,7 @@ A sitrep is not a progress report and not a technical report. Activity
 
 ## When to write one
 
-- The user asks (`/sitrep`, "what did you do", "where are we", "summarize").
+- The user asks ("sitrep", "what did you do", "where are we", "summarize").
 - A work effort closes: a delegated worker returns, an experiment finishes, a
   benchmark run is scored, a decision point is reached. The closing message of
   that effort IS the sitrep. Do not report the close in any other shape first.
@@ -107,7 +107,7 @@ cannot disagree. No separate status call is needed at turn end.
 `Options:` with at least two `(letter)` choices and `Recommend` with a letter are required on the question marker
 line. Use `Irreversible:` for a merge, a tag, a General registration or anything else that cannot be undone, saying
 what it does; the card asks the user to acknowledge it before its answer buttons work, and the user's click types the
-answer into the pane. A question carries a decision page (`Page:`, made with `/decision-page`) by default: skip it
+answer into the pane. A question carries a decision page (`Page:`, the absolute path to an HTML page explaining the options) by default: skip it
 only when the question and a sentence or two of background are everything the user needs to decide. An
 `Irreversible:` question always carries one, and the Stop hook asks for it before stamping. `Page:` is the
 marker's permitted path, on any of the three markers: a page you made for the user to read (a report, a decision page)

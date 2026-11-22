@@ -108,6 +108,12 @@ case_a_ccx_started_inside_a_row_drops_the_rows_selection_file() {
     [ "$(cat "$CODEX_LOG.sel")" = "<unset>" ] || { echo "  codex saw: $(cat "$CODEX_LOG.sel")"; return 1; }
 }
 
+case_fresh_row_enables_its_skills() {
+    run_ccx proj-box1 && awk 'last == "-c" && $0 == "plugins.sot-row@sot-local.enabled=true" { n++ }
+        { last = $0 } END { exit n != 1 }' "$CODEX_LOG"
+}
+
+check "a fresh ccx enables the row skills once" case_fresh_row_enables_its_skills
 check "ccx joins with no name and the first prompt names the handle comm-context reads" case_the_join_names_no_handle_and_the_prompt_names_the_sessions
 check "SOT_COMM_NAME chooses nothing" case_sot_comm_name_chooses_nothing
 check "a join that gives no handle still starts Codex inline and reports the missing handle" case_no_handle_still_starts_codex_and_says_so

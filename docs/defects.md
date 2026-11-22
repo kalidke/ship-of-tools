@@ -529,6 +529,11 @@ owned by `docs/CLAUDE.md`.
 
 ## agents
 
+- **CODEX-ROW-SKILL-DISCOVERY** [note] The prompt renderer and launcher argv cover fresh processes. After release,
+  resume a row thread on a shared background server and compare its skill inventory with a plain Codex session on
+  that server. In a live row, ask in ordinary words to create a project log and check that Codex selects the
+  plugin skill and reads its bundled resources.
+
 - **CODEX-ROW-NO-SCROLLBACK** [note] `ccx` passes `--no-alt-screen` on fresh and resumed Codex launches, as verified
   with a stub. Keep open until a person uses a Codex row with this change and checks its scrollback, the view after
   reattachment and resizing, and the composer and menus.
@@ -556,8 +561,11 @@ owned by `docs/CLAUDE.md`.
 - **WIN-SKILL-HASH-CRLF** [note] The Windows skill-folder hash: a CRLF checkout's copies differ from the list and are kept.
 - **MEMORY-FLAG-UNGUARANTEED** [note] The auto-memory flag (`memory.rs`, `--settings` key `autoMemoryDirectory`) has no
   guarantee of its own in the agents page; it is owned policy of the recipe, proved by `memory::tests::*`.
-- **CODEX-GLOBAL-SKILLS** [note] Codex's skills and plugin still install into the global `$CODEX_HOME` and `~/.agents`,
-  outside any row; the same question as guarantee 7, for Codex. A pass decides it with the Codex plugin mechanism.
+- **CODEX-GLOBAL-SKILLS** [note] The six shared row skills now live in a cache-only plugin enabled by `ccx`.
+  The three messaging skills and the work-state plugin remain global. Their scope is still open.
+- **CODEX-INSTALL-REENABLES-HOOKS** [note] An installer review in November 2026 found that
+  `codex plugin add sot-comm@sot-local` re-enables a work-state plugin disabled in personal settings.
+  The same temporary-home probe reproduced this on the release before the row skills plugin.
 - **TRUST-WRITE-DROPS-SAVE** [note] The reverse of REAUTH-TRUST-LOST, by reading: `ensure_folder_trusted`
   (`agents/folder_trust.rs`) reads the account's `.claude.json`, inserts the entry and renames its copy over the file
   outside Claude Code's lock, so a Claude Code save that lands between that read and that rename is dropped (a counter, a

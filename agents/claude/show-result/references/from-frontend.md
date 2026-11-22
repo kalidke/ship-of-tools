@@ -1,6 +1,6 @@
 # show-result from a FRONTEND session
 
-Everything in `SKILL.md` assumes a booted **backend** session. A Claude
+Everything in `SKILL.md` assumes a booted **backend** session. An agent
 running in the Windows FE Terminal drawer is a session like any other
 (bootstrapped the same as any Ship of Tools session — `fe@<host>` is the
 frontend PROCESS's address, not this session's handle) and has neither of the things the

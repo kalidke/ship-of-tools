@@ -66,7 +66,7 @@ inside a row. Lanes that each edit their own copy of a package (one git
 worktree per lane) choose one of two shapes:
 
 - **A lane that runs Julia again and again is a row of its own.** The
-  session makes it with `/worktree` (`comm-worktree-new.sh`): a worktree and a
+  session makes it with the worktree skill (`comm-worktree-new.sh`): a worktree and a
   row bound to it. That row's REPL runs `--project=<the worktree>`, loads
   that lane's copy of the package once, and keeps it warm. The lane's own
   agent drives it with `sot-fe repl run "$SOT_WORKSPACE_ID" <file>`. The
@@ -219,7 +219,7 @@ There is no quiet mode.
   `repl run` it.
 - Define stubs, redirect imports or rebind consts in it — fresh process.
 - Drive it from parallel subagents: the second one gets `busy`. A lane that
-  needs a warm Julia is a row of its own (`/worktree`).
+  needs a warm Julia is a row of its own (see the worktree skill).
 - Add Revise or any package to a shared default environment (`@v1.x`).
 - Use it for throwaway parse checks — every run lands in the owner's history.
   `julia -e` is right for those.

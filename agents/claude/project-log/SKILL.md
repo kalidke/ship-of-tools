@@ -1,6 +1,6 @@
 ---
 name: project-log
-description: Scaffold and maintain a hand-written HTML "project record" under project-log/ in a repository -- no build step, no Julia logic, plain files. Four verbs -- init (scaffold from the vendored skeleton), add-experiment (new experiment page, registered in the nav), add-journal (new dated journal entry), update-assets (refresh generic assets/templates only, never page content). Activates for "project log", "project record", "add experiment page", "add journal entry", "update project-log assets", "/project-log".
+description: Scaffold and maintain a hand-written HTML "project record" under project-log/ in a repository -- no build step, no Julia logic, plain files. Four verbs -- init (scaffold from the vendored skeleton), add-experiment (new experiment page, registered in the nav), add-journal (new dated journal entry), update-assets (refresh generic assets/templates only, never page content). Activates for "project log", "project record", "add experiment page", "add journal entry", "update project-log assets", "create a project log".
 ---
 
 # project-log
@@ -16,25 +16,17 @@ has run — read that page before writing content into a scaffolded page.
 
 ## Setup (every verb starts here)
 
-Resolve the repo root and this skill's own `resources/` directory. Never
-hardcode either path — the skill can be installed project-locally or in the
-user's home, and the repo it's asked to act on is whatever the caller is in.
+Use the directory of the SKILL.md you loaded. Claude supplies the skill's base
+directory. In Codex, resolve its listed file path against the skill root in the
+catalog. Substitute the resulting absolute directory in the assignment below.
 
 ```bash
 REPO="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
-
-SKILL_DIR=""
-for candidate in \
-  "${CLAUDE_PROJECT_DIR:-$REPO}/.claude/skills/project-log" \
-  "${SOT_COMM_HOME:-$HOME/.sot-comm}/claude-layer/.claude/skills/project-log"
-do
-  if [ -d "$candidate/resources" ]; then
-    SKILL_DIR="$candidate"
-    break
-  fi
-done
-[ -n "$SKILL_DIR" ] || { echo "project-log skill resources/ not found next to SKILL.md" >&2; exit 1; }
-RESOURCES="$SKILL_DIR/resources"
+PROJECT_LOG_SKILL_DIR='<directory of the loaded project-log SKILL.md>'
+RESOURCES="$PROJECT_LOG_SKILL_DIR/resources"
+[ -f "$RESOURCES/assets/site.js" ] || {
+  echo "project-log resources missing beside the loaded SKILL.md: $RESOURCES" >&2; exit 1
+}
 ```
 
 Two small helpers used below, for turning a CLI-style slug into a display
@@ -95,9 +87,9 @@ skeleton.
    awk '/^const SITE_SECTIONS = \[$/,/^\];$/' "$REPO/project-log/assets/site.js"
    ```
 
-6. **Suggest a CLAUDE.md snippet — print it, never write it.** Offer this (or
+6. **Suggest a project instructions snippet — print it, never write it.** Offer this (or
    the like), adapted from `reference/how-we-work.html`, for the user to paste
-   into their own `CLAUDE.md` if they want it:
+   into their own `CLAUDE.md` or `AGENTS.md` if they want it:
 
    ```markdown
    ## Project record (`project-log/`)
@@ -108,7 +100,7 @@ skeleton.
    never edited after the day it's written). Every experiment gets one page
    under `experiments/<campaign>/`, in this order: In short, Hypothesis,
    Methods, Results, Conclusions, Provenance. Add pages with the
-   `/project-log` skill (`add-experiment`, `add-journal`); refresh generic
+   `project-log` skill (`add-experiment`, `add-journal`); refresh generic
    assets/templates with `update-assets`. Full conventions:
    `project-log/reference/how-we-work.html`.
    ```

@@ -17,16 +17,15 @@ You start and switch them from [Sessions mode](modes.md). A dedicated
 ## What Ship of Tools adds to the agent
 
 The installer gives each agent CLI a set of skills and hooks (listed under
-[What the installer changes](@ref install-footprint)). For Claude Code they
-exist only in a session Ship of Tools starts, a row or `ccb`: a `claude` you
-start yourself in a terminal loads none of them.
+[What the installer changes](@ref install-footprint)). For Claude Code, a session Ship of Tools starts
+adds the row skills and work-state hooks. The four onboarding skills also load globally.
 
 - **Skills** that call small command-line tools: `julia-repl` runs code in the
   session's REPL ([How agents use the REPL](@ref agents-repl)), `show-result`
   puts a file in your preview pane or opens a page in your browser, and
   `sot-comm` sends messages to other sessions. Claude Code gets all of them;
-  Codex gets `sot-comm`, `sot-session-start` and `sot-chat-post`, so Codex sessions
-  have no REPL skill yet.
+  every Codex session gets `sot-comm`, `sot-session-start` and `sot-chat-post`.
+  A `ccx` launch also enables the `sot-row` plugin, which includes the REPL and preview skills.
 - **Hooks** that report the session's work state (working, blocked, done),
   which is what colours its row. See [Work-state colours](../concepts/work-state.md).
 

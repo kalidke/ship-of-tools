@@ -90,13 +90,23 @@ page_misses() {
         n="$(basename "$d")"
         case "$rm_line" in *"$n"*) ;; *) echo "the uninstall line leaves ~/.codex/skills/$n"; bad=1 ;; esac
     done
+    local list="$root/agents/codex/shared-skills.txt" expected line actual section
+    expected="$(LC_ALL=C sort "$list")" && [ -n "$expected" ] || return 1
+    for section in '^[|] .*sot-row@sot-local' '^- .*sot-row@sot-local'; do
+        line="$(grep -E "$section" "$page")" || return 1
+        # Both records put only the skill names after the final "skills are ".
+        actual="$(printf '%s\n' "${line##*skills are }" | grep -oE '`[a-z][a-z0-9-]*`' | tr -d '`' | LC_ALL=C sort)"
+        [ "$actual" = "$expected" ] || { echo "row plugin skills in $section differ from $list"; bad=1; }
+    done
     [ "$seen" -gt 0 ] || return 1
     return "$bad"
 }
 check "lint: the install page names every skill and its uninstall line removes every Codex skill" page_misses "$ROOT" "$ROOT/docs/src/start/install.md"
 sed 's/,sot-chat-post}/}/' "$ROOT/docs/src/start/install.md" > "$WORK/page-no-codex.md"
 sed 's/`sot-chat-post`/`x`/g' "$ROOT/docs/src/start/install.md" > "$WORK/page-no-name.md"
-for m in page-no-codex page-no-name; do
+sed '/^[|] .*sot-row@sot-local/s/`worktree`/`other`/' "$ROOT/docs/src/start/install.md" > "$WORK/page-row.md"
+sed '/^- .*sot-row@sot-local/s/`worktree`/`other`/' "$ROOT/docs/src/start/install.md" > "$WORK/page-uninstall.md"
+for m in page-no-codex page-no-name page-row page-uninstall; do
     if page_misses "$ROOT" "$WORK/$m.md" > /dev/null; then
         echo "FAIL: the page lint passes a page that misses a skill ($m)"; FAIL=$((FAIL + 1))
     else

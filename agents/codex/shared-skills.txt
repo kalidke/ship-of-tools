@@ -1,0 +1,6 @@
+julia-repl
+project-log
+show-result
+sitrep
+sot-status
+worktree

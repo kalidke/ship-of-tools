@@ -139,9 +139,8 @@ Claude Code sessions run code in the same REPL you use, the session's own,
 through the `sot-fe repl` command that the `julia-repl` skill teaches them.
 That REPL starts with `--project` set to the session root's directory when
 it has a `Project.toml`, else the shim's environment.
-The skill is installed for Claude Code only (see
-[What the installer changes](@ref install-footprint)); Codex sessions have no
-REPL skill yet. The REPL runs one evaluation at a time; a request that arrives
+Codex rows receive the same skill through the plugin enabled by `ccx` (see
+[What the installer changes](@ref install-footprint)). The REPL runs one evaluation at a time. A request that arrives
 while another runs comes back `busy` (see
 [Hosts, sessions, REPLs](@ref session-model)).
 

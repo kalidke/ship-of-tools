@@ -142,3 +142,215 @@ end
     @test v === nothing
     @test raw == "\$SOME_OTHER_VAR/codex"
 end
+
+# Include resource bytes and relative names, so a missing, stale or extra resource fails.
+function plugin_tree(root)
+    Dict(relpath(joinpath(dir, f), root) => read(joinpath(dir, f))
+         for (dir, _, files) in walkdir(root) for f in files)
+end
+
+@testset "Codex row plugin install, refresh and recovery" begin
+    mktempdir() do home
+        tools = mkpath(joinpath(home, "tools"))
+        cp(realpath(something(Sys.which("jq"))), joinpath(tools, Sys.iswindows() ? "jq.exe" : "jq"))
+        in_home(home, "PATH" => tools) do
+            skills = joinpath(ShipTools.REPO_ROOT, "agents", "claude")
+            names = readlines(joinpath(dirname(skills), "codex", "shared-skills.txt"))
+            marketplace = joinpath(home, ".agents", "plugins")
+            cfg = joinpath(ShipTools.codex_home(), "config.toml")
+            ShipTools.update_comm(clis = [:codex])
+            # Resolve the plugin id from the installed launcher's actual override. If either end drifts the cache lookup fails.
+            launcher = read(joinpath(home, ".local", "bin", "ccx"), String)
+            id = match(r"-c 'plugins\.([^@']+)@([^']+)\.enabled=true'", launcher)
+            @test id !== nothing
+            name, market = id.captures
+            cache = joinpath(ShipTools.codex_home(), "plugins", "cache", market, name)
+            @test !ispath(joinpath(marketplace, name))
+            @test !occursin(name, read(joinpath(marketplace, "marketplace.json"), String))
+            @test !ispath(cfg)
+            @test readdir(joinpath(ShipTools.codex_home(), "skills")) == ["sot-chat-post", "sot-comm", "sot-session-start"]
+            if Sys.iswindows()
+                @test !ispath(cache) && !ispath(joinpath(dirname(cache), ".sot-row.install"))
+                return
+            end
+            root = joinpath(cache, only(readdir(cache)))
+            @test readdir(root) == [".codex-plugin", "skills"]
+            @test readdir(joinpath(root, "skills")) == sort(names)
+            manifest = joinpath(root, ".codex-plugin", "plugin.json")
+            @test success(pipeline(`jq -e --arg name $name '.name == $name and .skills == "./skills/" and (has("hooks") | not)' $manifest`; stdout = devnull))
+            for n in names
+                @test plugin_tree(joinpath(root, "skills", n)) == plugin_tree(joinpath(skills, n))
+            end
+            before = plugin_tree(cache)
+            write(joinpath(root, "obsolete"), "older release")
+            ShipTools.update_comm(clis = [:codex])
+            @test before == plugin_tree(cache)
+            for personal in ("# unrelated plugin\n[plugins.\"other@local\"]\nenabled = true\n",
+                             "[plugins.\"sot-row@sot-local\"]\nenabled = false # my choice\n",
+                             "plugins = { \"sot-row@sot-local\" = { enabled = true } }\n")
+                write(cfg, personal)
+                ShipTools.update_comm(clis = [:codex])
+                @test read(cfg, String) == personal
+            end
+        end
+    end
+end
+
+@testset "Row cache publication" begin
+    rules = Sys.iswindows() ? (:windows,) : (:windows, :interrupted_publish, :dead_new, :dead_previous,
+        :move_in, :personal, :replace_cache, :missing_skill, :incomplete, :lock_folder, :lock_file_link,
+        :lock_dangling_link, :dead_lock, :live_lock)
+    for rule in rules
+        @testset "$rule" begin
+            mktempdir() do home
+                tools = mkpath(joinpath(home, "tools"))
+                cp(realpath(something(Sys.which("jq"))), joinpath(tools, Sys.iswindows() ? "jq.exe" : "jq"))
+                in_home(home, "PATH" => tools) do
+                    cache = joinpath(ShipTools.codex_home(), "plugins", "cache", "sot-local", "sot-row")
+                    if rule === :windows
+                        ShipTools._publish_row_tree(cache; windows = true) do stage
+                            error("Windows tried to build the row plugin in $stage")
+                        end
+                        @test !ispath(dirname(cache))
+                        return
+                    end
+                    scratch = joinpath(mkpath(dirname(cache)), ".sot-row.install")
+                    lock = joinpath(scratch, "lock")
+                    stamp = joinpath(ShipTools.comm_home(), "VERSION")
+                    update() = ShipTools.update_comm(clis = [:codex])
+                    if rule === :interrupted_publish
+                        ShipTools._publish_row_tree(cache) do stage
+                            write(joinpath(mkpath(stage), "kept"), "old")
+                        end
+                        mv(cache, joinpath(scratch, "previous"))
+                        @test_throws "stop build" ShipTools._publish_row_tree(cache) do stage
+                            @test read(joinpath(cache, "kept"), String) == "old"
+                            error("stop build")
+                        end
+                        @test isfile(joinpath(cache, "kept"))
+                    elseif rule === :dead_new
+                        ShipTools._publish_row_tree(mkpath, cache)
+                        skills = joinpath(ShipTools.ROW_PLUGIN_VERSION, "skills")
+                        dropped = mkpath(joinpath(scratch, "new", skills, "dropped-skill"))
+                        write(joinpath(dropped, "SKILL.md"), "# Dropped skill")
+                        update()
+                        @test readdir(joinpath(cache, skills)) == sort(readlines(ShipTools.CODEX_ROW_SKILL_LIST))
+                    elseif rule === :dead_previous
+                        ShipTools._publish_row_tree(mkpath, cache)
+                        previous = mkpath(joinpath(scratch, "previous"))
+                        write(joinpath(previous, "old"), "previous release")
+                        update()
+                        @test isfile(stamp) && isdir(cache) && !ispath(previous)
+                    elseif rule === :move_in
+                        write(joinpath(mkpath(cache), "kept"), "old")
+                        @test_throws Exception ShipTools._publish_row_tree(identity, cache)
+                        @test read(joinpath(cache, "kept"), String) == "old"
+                    elseif rule === :personal
+                        refused() = @test_throws "does not belong to the installer: $scratch" ShipTools._publish_row_tree(mkpath, cache)
+                        write(scratch, "personal")
+                        refused()
+                        @test read(scratch, String) == "personal"
+                        rm(scratch)
+                        mkdir(scratch)
+                        refused()
+                        @test isempty(readdir(scratch))
+                        write(joinpath(scratch, "new"), "personal")
+                        refused()
+                        @test read(joinpath(scratch, "new"), String) == "personal"
+                        write(joinpath(scratch, "mine"), "personal")
+                        refused()
+                        @test read(joinpath(scratch, "mine"), String) == "personal"
+                        if Sys.isunix()
+                            rm(scratch; recursive = true)
+                            target = mkpath(joinpath(home, "elsewhere"))
+                            symlink(target, scratch)
+                            refused()
+                            rm(target)
+                            refused()
+                            @test readlink(scratch) == target
+                        end
+                    elseif rule === :replace_cache
+                        for kind in (Sys.isunix() ? (:file, :folder, :link, :dangling) : (:file, :folder))
+                            target = joinpath(home, "target")
+                            kind === :file && write(cache, "personal")
+                            kind === :folder && write(joinpath(mkpath(cache), "mine"), "personal")
+                            kind === :link && mkpath(target)
+                            kind in (:link, :dangling) && symlink(target, cache)
+                            ShipTools._publish_row_tree(cache) do stage
+                                write(joinpath(mkpath(stage), "new"), "release")
+                            end
+                            @test !islink(cache) && readdir(cache) == ["new"]
+                            rm(cache; recursive = true)
+                            if kind === :link
+                                @test isdir(target)
+                                rm(target)
+                            end
+                        end
+                    elseif rule === :missing_skill
+                        @test_throws "missing a listed skill" ShipTools._install_row_plugin(ShipTools.codex_home(), mkpath(joinpath(home, "skills")))
+                        @test !ispath(cache)
+                    elseif rule === :incomplete
+                        write(scratch, "personal")
+                        @test_throws "install INCOMPLETE" update()
+                        @test !ispath(stamp)
+                        @test isfile(joinpath(home, ".agents", "plugins", "marketplace.json"))
+                    elseif rule in (:lock_folder, :lock_file_link, :lock_dangling_link)
+                        touch(joinpath(mkpath(scratch), "sot-row-stage"))
+                        target = joinpath(scratch, "target")
+                        if rule === :lock_folder
+                            write(joinpath(mkdir(lock), "keep"), "personal")
+                        else
+                            rule === :lock_file_link && write(target, "personal")
+                            symlink(basename(target), lock)
+                        end
+                        entries = readdir(scratch)
+                        @test_throws ["install INCOMPLETE", "row plugin lock does not belong to the installer: $lock"] update()
+                        @test readdir(scratch) == entries
+                        @test !ispath(cache) && !ispath(stamp)
+                        if rule === :lock_folder
+                            @test isdir(lstat(lock)) && readdir(lock) == ["keep"] && read(joinpath(lock, "keep"), String) == "personal"
+                        else
+                            @test islink(lock) && readlink(lock) == basename(target)
+                            @test rule === :lock_file_link ? read(target, String) == "personal" : !ispath(lstat(target))
+                        end
+                    elseif rule === :dead_lock
+                        mkpath(scratch)
+                        touch(joinpath(scratch, "sot-row-stage"))
+                        write(lock, "$(typemax(Int32)) $(gethostname())")
+                        inode = stat(lock)
+                        @test (@elapsed update()) < 30
+                        @test isfile(stamp) && isdir(cache) && Base.Filesystem.samefile(inode, stat(lock))
+                        holder = ShipTools._row_lock(lock)
+                        @test holder !== nothing
+                        isnothing(holder) || close(holder)
+                    else
+                        mkpath(scratch)
+                        touch(joinpath(scratch, "sot-row-stage"))
+                        holder = ShipTools._row_lock(lock)
+                        try
+                            @test_logs (:info, r"Skipping row plugin") match_mode=:any update()
+                            @test isfile(stamp) && !ispath(cache)
+                            @test isfile(joinpath(home, ".agents", "plugins", "marketplace.json"))
+                        finally
+                            close(holder)
+                        end
+                    end
+                end
+            end
+        end
+    end
+end
+
+@testset "Claude-only install keeps row skills in its own layer" begin
+    mktempdir() do home
+        in_home(home) do
+            ShipTools.update_comm(clis = [:claude])
+            @test !ispath(joinpath(home, ".agents", "plugins", "sot-row"))
+            @test !ispath(joinpath(ShipTools.codex_home(), "plugins"))
+            expected = Dict(n => plugin_tree(joinpath(src, n)) for src in ShipTools.CLAUDE_SKILL_SRCS
+                for n in readdir(src) if isfile(joinpath(src, n, "SKILL.md")) && !(n in ShipTools.CLAUDE_GLOBAL_SKILLS))
+            layer = ShipTools.claude_layer_skills()
+            @test Dict(n => plugin_tree(joinpath(layer, n)) for n in readdir(layer)) == expected
+        end
+    end
+end

@@ -99,7 +99,7 @@ of each.
    the trust restart (rows' `run/trust_restart.rs`) recognizes the row's own trust dialog (`Quick safety check:`) and not
    the added-folder one, so a layer record lost to Claude Code's own save (docs/defects.md: REAUTH-TRUST-LOST) leaves
    that dialog to a person; a concurrent edit of the file by another process (claude's own) is the writer's stated limit; a `CLAUDE_CONFIG_DIR` that is relative or not UTF-8 records nothing.
-7. **A skill and a work-state hook exist only where a leg of the recipe runs, except four onboarding skills.** The
+7. **Plain Claude loads the four onboarding skills. Claude rows and `ccb` add the row layer. Plain Codex with its default settings leaves the row skills to `ccx`.** The
    installer puts every Claude skill but four under `<comm home>/claude-layer/.claude/skills/`. The four, `sot-gh-auth`,
    `sot-install`, `sot-setup` and `sot-statusline-setup` (`CLAUDE_GLOBAL_SKILLS` in `src/sources.jl`, the one list), are
    what a person runs before any row exists, so they install into the global Claude skills folder as before, which every
@@ -130,6 +130,21 @@ of each.
    installed files, and that a shell runs each hook command the leg is given from a comm folder whose name holds a space
    and a quote (`tests/test-hook-commands.sh`, under whatever bash runs it: macOS's 3.2 and Linux's 3.2.57 on the hosted runs;
    `agent-exec` is Unix only, so Git Bash, whose quoting is the same POSIX form, is not run).
+   Codex loads the three messaging skills and the work-state plugin globally. The skills-only plugin
+   `sot-row@sot-local` carries the Claude sources named in `codex/shared-skills.txt`. The installer publishes it
+   in the versioned Codex cache on Unix, replacing the product's whole folder. Windows skips this publish until it
+   has a Codex row launcher. With no cached plugin, Codex 0.171.0 rendered the prompt with the ccx override,
+   zero row skills and no warning. A retry restores a displaced tree.
+   Only this publish takes a nonblocking lock. A dead holder releases it. A live holder makes a competing install
+   skip this publish with a message and finish its other stages. Any other lock failure reports the path or system
+   error and ends the install as INCOMPLETE in about three seconds in the measured cases, without removing personal files.
+   The installer leaves the row plugin out of the
+   marketplace and the personal configuration. Fresh, resume and continue launches by `ccx` enable it even over
+   a personal false setting. Codex 0.171.0 listed zero, six, then zero row skills before, during and after the
+   override with a default configuration. An explicit personal true setting also enables it in plain Codex. The plugin listing omitted it. Resuming a thread on a shared background
+   server and discovery from a plain request in a live row await checks after release (`CODEX-ROW-SKILL-DISCOVERY`).
+   Tests: `test/codex_tests.jl` (installation, contention and recovery), `tests/test-ccx-launch.sh` and
+   `tests/test-ccx-resume-default.sh` (launch argv), and `tests/test-skill-templates.sh` (manual's skill list).
 8. **An install removes only exact copies of what an earlier installer placed.** The installer, `ShipTools.update_comm`,
    visits every Claude configuration folder (the install's own, `~/.claude`, each `~/.claude-auth/<name>`). In a skills
    folder it removes a skill directory only when its contents hash to a version of that skill the repo shipped
@@ -196,7 +211,7 @@ of each.
     executable, else `PATH`, else `~/.local/share/sot/bin/sotd`, else `~/.local/bin/sotd`, and execs `sotd agent-exec
     claude` with the caller's flags in order (guarantee 1), or says `ccb: sotd not found` and exits 1. `ccx` has no
     daemon recipe behind it: it builds the Codex argv itself (`codex [resume <id>]
-    --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust --no-alt-screen <prompt>`), requesting
+    --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust --no-alt-screen -c 'plugins.sot-row@sot-local.enabled=true' <prompt>`), requesting
     inline rendering on fresh and resumed launches. Codex 0.171.0's help describes this mode as preserving terminal
     scrollback. The stub tests verify only the arguments. The capsule keeps up to 200 rows of scrollback, as it does
     for Claude. A person's check in a real Codex row is still needed to see whether inline history reaches that buffer,
@@ -447,7 +462,7 @@ junction and copy fallbacks of guarantee 5, forward-slash spellings of the trust
 
 ## Files
 `claude/`: `bin/ccb`, the wrappers `bin/show-result`, `bin/sot-fe`, `bin/sot-gh-auth`, and the skills. `codex/`:
-`bin/ccx`. `spawn/` (the four row-lifecycle CLIs), `worktree/` (the four /worktree scripts), `sot-fe/` (the frontend and
+`bin/ccx`, the row skill list `shared-skills.txt`. `spawn/` (the four row-lifecycle CLIs), `worktree/` (the four /worktree scripts), `sot-fe/` (the frontend and
 REPL CLI and `sot-nav.sh`), `tests/` (their hermetic suites), `sot-gh-auth.sh`. Daemon half:
 `rust/backend/src/agents/` (its `CLAUDE.md` points here). Installer half: `src/adapters.jl` (the adapter stages),
 `src/skills.jl` (the layer's skills and the one-time move), `src/claude_hooks.jl` (the hook retirement), `src/sources.jl`

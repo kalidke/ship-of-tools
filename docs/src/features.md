@@ -34,8 +34,7 @@ added is listed in [What's new in 0.7.1](whats-new.md).
 Each agent session is one row in Sessions mode, on this machine or on any
 connected host. The row colour is the agent's work state, so you can see which
 session needs you without opening each one; the colours are listed in
-[Work-state colours](concepts/work-state.md). Codex sessions have no REPL
-integration yet: only Claude Code sessions run Julia in the shared REPL.
+[Work-state colours](concepts/work-state.md). Codex rows load the Julia REPL skill through the `sot-row` plugin.
 
 ```@raw html
 <DemoLoop name="sessions" caption="Demo session rows changing colour as a script sets their work states: green working, red waiting for your answer, purple waiting on a job, blue done, gray idle. Each row's ready tag means its supervisor has a live agent process running." />

@@ -31,7 +31,7 @@ to pin one).
   [Previews](../guide/previews.md)).
 
 !!! warning "Try it in a VM or a separate account"
-    The installer changes your own agent setup (the Codex skills and plugin
+    The installer changes your own agent setup (the Codex skills and plugins
     into your global `~/.codex` and `~/.agents`, and it removes the Claude
     skills and hooks an earlier release put in `~/.claude`), and there is no
     isolated mode yet. See
@@ -95,7 +95,7 @@ Help drawer.
 
 ## [4. Start an agent session](@id start-session)
 
-Codex sessions have no REPL skill yet; the REPL steps below are Claude Code only.
+The REPL example below uses Claude Code. A Codex row also receives the Julia REPL skill through `ccx`.
 
 1. Press **`s`** for Sessions mode.
 2. Move to **`[+ create new]`** and press **Enter** to open the directory
