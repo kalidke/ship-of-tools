@@ -202,6 +202,8 @@ pub async fn handle_hello(
         posts_plain_text: true,
         // A person's chat post and file share go out under their own user token (chat guarantees 12 and 32).
         posts_as_person: true,
+        // The update's state is not told in a hello yet (wire guarantee 16).
+        update: None,
     };
 
     let mut out: HandlerOutput = Vec::with_capacity(1 + replay_entries.len());

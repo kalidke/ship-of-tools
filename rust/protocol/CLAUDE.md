@@ -41,8 +41,9 @@ name is in this crate's one op table.
    `WorkspaceListEntry.active_at` (the row's last activity, rows' rule) is an additive string defaulting to empty, and
    empty is a daemon before the field, which the window reads as the signal to sort by `agent_status_at`; the list entry's
    previous shape is pinned in `ops/workspace_tests.rs` (`a_list_entry_grows_by_its_last_activity_and_stays_additive`).
-   The families with none are agent, browse, lane, monitor, pty, repl, update, the rest of workspace and the preview
-   payloads (`ir.rs`), and the other page payloads have no previous-shape fixtures.
+   The families with none are agent, browse, lane, monitor, pty, repl, update's check and apply payloads (the two
+   `update` fields have guarantee 16's), the rest of workspace and the preview payloads (`ir.rs`), and the other page
+   payloads have no previous-shape fixtures.
 4. **A child's output is read by lines, lossily, so no byte ends a reader.** A line is the bytes up to `\n`, less a
    `\r` before it, decoded lossily, through `ChildLines` or `blocking_child_lines` only; `rust/clippy.toml`'s
    child-output group refuses tokio's and std's strict line readers. Each user keeps its own proof (the sidecars'
@@ -277,10 +278,47 @@ name is in this crate's one op table.
     `a_megabyte_of_openers_is_read_in_bounded_time` (seven shapes, wall time under 3 s; the quadratic scan it replaced took
     minutes on the first).
 
+16. **The state of a computer's update is one type with one set of words, and a bad one never costs a connection.**
+    `ops/update.rs`: `UpdateState { phase, version, detail, armed, checked_s, unread }`. `phase` is an `UpdatePhase`
+    (`unchecked`, `none`, `found`, `preparing`, `ready`, `not_applied`, `blocked`, `off`, `check_failed`; a phase a later
+    release adds reads as `other`); `version` the release the phase is about, bare, with no leading `v`; `detail` one
+    sentence a person can act on; `armed` the version a start would apply now, sent only when it is another than
+    `version`; `checked_s` the seconds since the last check that ran, counted by the teller at each send; `unread` true
+    when the teller could not read the armed update from disk within its bound for this answer, so the state is what it
+    last read. Every field but `phase` is defaulted and left out when empty, none or false. The strings are free text
+    from files and from a child's output, printed on a terminal that may be another computer's, so each is bounded and
+    cleaned in one place (`bounded`) when written, when read and when worded, never refused: every control character
+    (the ESC of an escape sequence, a newline, a carriage return, the C1 controls) becomes a space, so a reason forges no
+    row of a table and moves no cursor; `version` and `armed` are at most `MAX_UPDATE_VERSION` (64) bytes and `detail`
+    `MAX_UPDATE_DETAIL` (300); and a string past its bound keeps its beginning and its end with ` … ` where it was cut,
+    because a sentence names the command to run at its end and a cause chain names its fault there. The words are in one
+    place: `UpdateState::line` is the line that says a state whole (the `UPDATE` cell of `sotd status`; an `unread` state
+    ends `; as last read, the disk did not answer in time`), and `UpdateState::mark` the long and the short words of the
+    standing mark a window draws, or none: only a release found, preparing, ready or not applied, and a blocked install
+    record, have a mark. The state rides two carriers, `HelloRes.update` and `DaemonVersion.update`, each defaulted,
+    left out when none, and read leniently (`lenient_update`): a value that is not an update state reads as none and
+    never refuses its carrier, because a hello reply that does not parse is a window that cannot connect.
+    `DaemonVersion.update_line` is the daemon's own `line` of that state, for a reader that cannot call `line` (the shell
+    tools), so no second set of words is written in shell; it is left out when empty, and this type never reads it, so
+    no value of it refuses the answer. `update.state` is the evt that carries the latest state, not a history.
+    Mechanism: three defaulted fields and one new op name in `op_table!`, so `PROTOCOL_VERSION` stays 4. What an older
+    reader does: it reads past the new keys of a hello reply or a version answer (plain serde structs; the last
+    release's frozen shapes parse the grown ones) and reads `update.state` as any evt it does not know (guarantee 10).
+    What a newer reader does with an older daemon: the fields are absent and read as none. Limits: nothing sends the
+    state yet: no daemon fills any of the fields and none emits the evt, and no window reads them; the words carry no
+    age but the last check's, in whole minutes, hours or days; a cause in `detail` can hold a local path, and it goes
+    only to the person's own window, `sotd status` and `sot-fe version`; a reader in another language that prints
+    `update_line` cleans it itself, since only this crate's readers clean what they read; cleaning removes control
+    characters only, not text that merely looks like another row. Tests `ops/update_tests.rs`:
+    `an_update_state_that_does_not_decode_never_refuses_its_hello`,
+    `a_string_past_its_bound_keeps_both_ends_and_shows_the_cut`, `no_control_character_of_a_state_reaches_a_reader`,
+    `every_phase_has_its_words_and_five_have_a_mark`, `the_update_state_evt_is_declared_in_the_one_table`;
+    `ops/session_tests.rs`: `a_hello_and_a_version_answer_carry_the_update_state_and_stay_additive`.
+
 ## Owns
 The frame, `Kind` and `PROTOCOL_VERSION` (`lib.rs`); the codec (`codec.rs`); child lines (`child_lines.rs`); the op
 names, declared once in `op_table!` (`ops/mod.rs`), which also gives `op::ALL`, so a declared op joins the server's first-frame test with no list to keep; and every op's payload type (`ops/`, its page lists the families; the link family's constants `LINK`, `CHUNK`,
-`WINDOW` and `MAX_CHANNELS` are in `ops/link.rs`); the chat record (`chat.rs`, with `TextSegment`, the Slack app manifest and its address) and the chat family (`ops/chat.rs`); the selection op, its payloads (the drawing too), `selection_digest` and `whole_lines` (`ops/selection.rs`); the drawing's raster (`ink.rs`); the tree and preview payloads and the binary
+`WINDOW` and `MAX_CHANNELS` are in `ops/link.rs`); the chat record (`chat.rs`, with `TextSegment`, the Slack app manifest and its address) and the chat family (`ops/chat.rs`); the selection op, its payloads (the drawing too), `selection_digest` and `whole_lines` (`ops/selection.rs`); the update's state and its words (`ops/update.rs`: `UpdateState`, `UpdatePhase`); the drawing's raster (`ink.rs`); the tree and preview payloads and the binary
 preview cap `PREVIEW_BINARY_CAP` (`ir.rs`); the version string and `is_release_build` (`version.rs`, `build.rs`); the
 annotation, physical-scale, page-URL, video-suffix, page-reply, terminal-escape and chat text grammars; the daemon's frame writes and byte pipe (`reply.rs`:
 `HandlerOutput`, `write_frame_to`, `write_frame_within`, `reject`; `pipe.rs`: `pipe_bidirectional`), which services take from
@@ -321,6 +359,7 @@ Same on all three; the blocking codec is the one the ssh bridge and shell wrappe
 | 13 | the selection op | `ops/selection_tests.rs` (the list under guarantee 13) |
 | 14 | the drawing's raster | `ink_tests.rs` (the three tests under guarantee 14) |
 | 15 | terminal escapes | `escapes_tests.rs` (the five tests under guarantee 15) |
+| 16 | the update's state | `ops/update_tests.rs` (the five tests under guarantee 16); `ops/session_tests.rs`: `a_hello_and_a_version_answer_carry_the_update_state_and_stay_additive` |
 
 ## Files
 - `Cargo.toml`: the crate manifest (feature `test-support`, dev only); depends on platform alone of ours
@@ -333,7 +372,7 @@ Same on all three; the blocking codec is the one the ssh bridge and shell wrappe
 - `src/ink.rs`: the drawing's one raster (guarantee 14): `raster_dims`, `ink_radius`, `paint_segment`, `segments`, `mask`.
 - `src/ir.rs`: the wire's tree and preview payload types
 - `src/lib.rs`: `Frame`, `Kind`, `PROTOCOL_VERSION` and the crate's re-exports
-- `src/ops/`: the op names and payload types, one file per family; `ops/chat.rs` is the chat family (guarantee 12), `ops/selection.rs` the selection op (guarantee 13)
+- `src/ops/`: the op names and payload types, one file per family; `ops/chat.rs` is the chat family (guarantee 12), `ops/selection.rs` the selection op (guarantee 13), `ops/update.rs` the update ops and the update's state (guarantee 16)
 - `src/pipe.rs`: `pipe_bidirectional`, the raw byte pipe after a connect frame (the daemon's `proxy.connect` and `lane.connect`)
 - `src/reply.rs`: `HandlerOutput`, the bounded frame write and the error frame for a refused connect
 - `src/physical_scale.rs`: PhysicalScale, ScaleAxis and parse_physical_scale, shared by preview reads, writes and display.

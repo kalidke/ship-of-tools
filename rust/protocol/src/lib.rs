@@ -41,7 +41,7 @@ pub use ops::{
     ReplErrorOut, ReplEvalReq, ReplEvalRes, ReplExecuteInput, ReplExecuteReq, ReplExecuteRes,
     ReplFrame, ReplFrameEvt, ReplRunFileReq, ReplRunFileRes, ReplValueOut, StackFrame,
     ToggleHiddenReq, ToggleHiddenRes, TreeChildrenReq, TreeChildrenRes, TreeRootReq, TreeRootRes,
-    UpdateApplyReq, UpdateApplyRes, UpdateCheckReq, UpdateCheckRes, VersionQueryReq,
+    UpdateApplyReq, UpdateApplyRes, UpdateCheckReq, UpdateCheckRes, UpdatePhase, UpdateState, VersionQueryReq,
     VersionQueryRes, VideoOpenReq, VideoOpenRes, WorkspaceActivateReq, WorkspaceActivateRes,
     WorkspaceCreateReq, WorkspaceCreateRes, WorkspaceDestroyReq, WorkspaceDestroyRes,
     WorkspaceListEntry, WorkspaceListReq, WorkspaceListRes, WorkspaceReauthReq,

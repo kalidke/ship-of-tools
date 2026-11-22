@@ -551,6 +551,8 @@ pub async fn handle_version_query(
         host: crate::rows::store::declared_host(),
         hosts_toml_hash: refreshed.hash.unwrap_or_default(),
         uptime_s: clients.uptime().as_secs(),
+        update: None,
+        update_line: String::new(),
     };
     let snap = clients.snapshot_with_active();
     let client_rows = snap

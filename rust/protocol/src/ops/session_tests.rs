@@ -270,6 +270,8 @@ mod version_query_tests {
                 host: "test-host".into(),
                 hosts_toml_hash: "deadbeefcafef00d".into(),
                 uptime_s: 10_800,
+                update: None,
+                update_line: String::new(),
             },
             clients: vec![ClientVersion {
                 client_id: "fe-1".into(),
@@ -331,6 +333,8 @@ mod version_query_tests {
             host: "test-host".into(),
             hosts_toml_hash: String::new(),
             uptime_s: 5,
+            update: None,
+            update_line: String::new(),
         };
         let json = serde_json::to_value(&new).unwrap();
         let old: DaemonVersion066 = serde_json::from_value(json).expect("an older reader parses the new answer");
@@ -391,6 +395,103 @@ mod version_query_tests {
         assert_eq!(res.daemon.lane_build, "abc");
         assert_eq!(res.daemon.host, "");
         assert_eq!(res.daemon.hosts_toml_hash, "");
+    }
+}
+
+#[cfg(test)]
+mod update_state_tests {
+    use super::{DaemonVersion, HelloRes, UpdatePhase, UpdateState};
+
+    /// The 0.7.3 reader's `HelloRes`, frozen: a window of the last release reading a reply of this one.
+    #[derive(Debug, serde::Deserialize)]
+    #[allow(dead_code, reason = "parsed to prove the reply reads, never read")]
+    struct HelloRes073 {
+        session_id: String,
+        revision: u64,
+        snapshot_pending: bool,
+        #[serde(default)]
+        host: Option<String>,
+        #[serde(default)]
+        project_root: Option<String>,
+        #[serde(default)]
+        label: Option<String>,
+        #[serde(default)]
+        clients_connected: usize,
+        #[serde(default)]
+        protocol: u32,
+        #[serde(default)]
+        app_version: String,
+        #[serde(default)]
+        proxy: bool,
+        #[serde(default)]
+        repl_running: Vec<u64>,
+        #[serde(default)]
+        takes_drawing: bool,
+        #[serde(default)]
+        posts_plain_text: bool,
+        #[serde(default)]
+        posts_as_person: bool,
+    }
+
+    /// The 0.7.3 reader's `DaemonVersion`, frozen.
+    #[derive(Debug, serde::Deserialize)]
+    #[allow(dead_code, reason = "parsed to prove the answer reads, never read")]
+    struct DaemonVersion073 {
+        app_version: String,
+        protocol: u32,
+        #[serde(default)]
+        lane_build: String,
+        #[serde(default)]
+        host: String,
+        #[serde(default)]
+        hosts_toml_hash: String,
+        #[serde(default)]
+        uptime_s: u64,
+    }
+
+    /// The hello reply and the version answer each grow by one defaulted field, `update`: the last release's whole
+    /// shapes read as carrying none, none is not written, a state round-trips, and the last release's readers parse
+    /// the grown shapes.
+    #[test]
+    fn a_hello_and_a_version_answer_carry_the_update_state_and_stay_additive() {
+        // The last release's whole reply and answer (a v0.7.3 daemon's), as it writes them.
+        let old_hello = r#"{"session_id":"s1","revision":3,"snapshot_pending":false,"host":"h","project_root":"/p","clients_connected":1,"protocol":4,"app_version":"0.7.3","proxy":true,"repl_running":[2],"takes_drawing":true,"posts_plain_text":true,"posts_as_person":true}"#;
+        let old_daemon = r#"{"app_version":"0.7.3","protocol":4,"lane_build":"","host":"h","hosts_toml_hash":"","uptime_s":9}"#;
+        let mut hello: HelloRes = serde_json::from_str(old_hello).expect("the last release's reply");
+        let mut daemon: DaemonVersion = serde_json::from_str(old_daemon).expect("the last release's answer");
+        assert_eq!((&hello.update, &daemon.update), (&None, &None), "an older daemon tells no state");
+        assert_eq!(serde_json::to_value(&hello).unwrap().get("update"), None, "none is not written");
+        assert_eq!(serde_json::to_value(&daemon).unwrap().get("update"), None, "none is not written");
+
+        let state = UpdateState { version: "0.7.4".into(), detail: "applies when Ship of Tools is next started on this computer".into(), ..UpdateState::of(UpdatePhase::Ready) };
+        hello.update = Some(state.clone());
+        daemon.update = Some(UpdateState { checked_s: Some(60), ..UpdateState::of(UpdatePhase::None) });
+        let (hello_json, daemon_json) = (serde_json::to_value(&hello).unwrap(), serde_json::to_value(&daemon).unwrap());
+        assert_eq!(
+            hello_json["update"],
+            serde_json::json!({"phase": "ready", "version": "0.7.4", "detail": "applies when Ship of Tools is next started on this computer"})
+        );
+        assert_eq!(daemon_json["update"], serde_json::json!({"phase": "none", "checked_s": 60}));
+        let back: HelloRes = serde_json::from_value(hello_json.clone()).unwrap();
+        assert_eq!(back.update, Some(state));
+        let back: DaemonVersion = serde_json::from_value(daemon_json.clone()).unwrap();
+        assert_eq!(back.update.map(|u| (u.phase, u.checked_s)), Some((UpdatePhase::None, Some(60))));
+
+        let old: HelloRes073 = serde_json::from_value(hello_json).expect("the last release's window reads the grown reply");
+        assert_eq!((old.protocol, old.posts_as_person), (4, true));
+        let old: DaemonVersion073 = serde_json::from_value(daemon_json.clone()).expect("the last release's reader reads the grown answer");
+        assert_eq!(old.uptime_s, 9);
+
+        // The daemon's own line beside the state, for a reader that cannot word one: written when there is one, and
+        // never read by this type, so no value of it refuses the answer.
+        assert_eq!(daemon_json.get("update_line"), None, "no line is not written");
+        daemon.update_line = "up to date (checked 1 min ago)".into();
+        let mut with_line = serde_json::to_value(&daemon).unwrap();
+        assert_eq!(with_line["update_line"], "up to date (checked 1 min ago)");
+        let _: DaemonVersion073 = serde_json::from_value(with_line.clone()).expect("the last release's reader reads past the line");
+        with_line["update_line"] = serde_json::json!(7);
+        let back: DaemonVersion = serde_json::from_value(with_line).expect("a line that is no string refuses nothing");
+        assert_eq!((back.update_line.as_str(), back.uptime_s), ("", 9));
     }
 }
 

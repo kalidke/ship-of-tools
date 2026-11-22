@@ -1167,6 +1167,15 @@ owned by `docs/CLAUDE.md`.
 - **WIN-INSTALL-LISTS-WHOLE-PROCESS-TABLE** [note] From reading code, never seen in use: the installer's process listing on Windows (`rust/backend/src/install/procs.rs`) asks for the whole process table through CIM, the query that ran past 30 s twice in a hosted test (WIN-CIM-LISTING-30S, closed for the test alone). An install on a loaded Windows computer could wait as long.
 - **GATE-SCOPE-SHELL-READER-OF-RUST-FILE** [note] From reading code: `agents/tests/test-sot-fe-chat.sh` reads `rust/protocol/src/ops/told_words_cases.tsv`, and a scoped gate run of a change to that file alone selects the protocol crate and not the agents shell suite, so `sot-fe`'s words could drift from the file unseen until a whole run. The gate's stated limit (a shell test that reads another folder is added by hand); the fix is a row for it.
 - **HOSTED-ONLY-GATE-SUITES** [note] From a review, the class LOCAL-GATE-OMITS-ITS-SCOPE-SUITE was one case of: eleven suites for the gate's own scripts run only in the hosted checks job (`test-rc-gate-basename.sh`, `test-rc-gate-logs.sh`, `test-rc-gate-installer.sh`, `test-rc-gate-target.sh`, `test-gate-target-lock.py` among them), so a change to `rc-gate.sh` can pass the local gate and turn the hosted run red. Not seen red. The fix for the class is one check in the scope suite: every hosted `scripts/tests/test-*` step is either run by the local gate or exempted with its reason.
+- **UPDATE-STATE-NOT-SHOWN** [feature] The maintainer asked on 2026-11-22 whether a person can tell that a newer
+  release was found and is being prepared in the background, and gave the go-ahead the same day, for 0.7.4, for a
+  standing mark in the window near the version and the same in `sotd status`. Until it is built the only sign is one
+  status-line notice held 10 s; the rest is in the daemon's log. Built so far: the wire's part, the state's one type
+  with its words, a defaulted `update` field on the hello reply and on the version answer, and the evt name
+  `update.state` (wire guarantee 16). Nothing fills or reads them yet, so a person sees nothing new. Left: the
+  daemon's owner of the state, written by the update pipeline and agreeing with the pending pointer on disk; the
+  `UPDATE` column of `sotd status` and the line of `sot-fe version`; the hello's field and the evt sent to a window;
+  the mark on the window's bottom border, on a computer with a daemon and on a window-only computer.
 
 ## chat
 

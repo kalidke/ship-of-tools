@@ -180,6 +180,11 @@ pub struct HelloRes {
     /// daemon built before the field posts it as the app, so a window tells the person which it is. Left out when false.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub posts_as_person: bool,
+    /// The state of this daemon's update when it is the owner of one (wire guarantee 16), read from memory. Left out
+    /// when none; absent from a daemon built before the field. A value that is not an update state reads as none and
+    /// never refuses the reply.
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "super::update::lenient_update")]
+    pub update: Option<UpdateState>,
 }
 
 /// `fe.command.send` request (ADR 0025) — ask the daemon to drive the
@@ -377,6 +382,15 @@ pub struct DaemonVersion {
     /// printing no uptime rather than failing to parse.
     #[serde(default)]
     pub uptime_s: u64,
+    /// The state of this daemon's update (wire guarantee 16), as `HelloRes.update` is: left out when none, absent from
+    /// a daemon built before the field, and a value that is not an update state reads as none.
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "super::update::lenient_update")]
+    pub update: Option<UpdateState>,
+    /// `update` in the daemon's own words, `UpdateState::line`, for a reader that cannot word a state itself (the shell
+    /// tools). Left out when empty and absent from a daemon built before it; no reader of this type reads it, so its
+    /// value never refuses the answer.
+    #[serde(default, skip_deserializing, skip_serializing_if = "String::is_empty")]
+    pub update_line: String,
 }
 
 /// One box this daemon has heard `fe.sessions` from whose connection has

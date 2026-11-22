@@ -381,6 +381,9 @@ pub mod op {
     /// flip and brings up the new version. `will_restart` is true only under
     /// a service manager; otherwise the user's next launch completes it.
     pub const UPDATE_APPLY: &str = "update.apply";
+    /// Server to client push: the state of this daemon's update changed. Payload [`crate::ops::UpdateState`], the
+    /// latest state and not a history. A reader that does not know the op ignores it like any unknown evt.
+    pub const UPDATE_STATE: &str = "update.state";
     /// TCP proxy handshake (ADR 0035). Sent behind a `handoff` hello on a
     /// DEDICATED daemon-socket connection (never on the multiplexed control
     /// connection): `ProxyConnectReq { port, token? }`. The daemon validates
