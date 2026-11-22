@@ -135,6 +135,19 @@ async fn a_window_selection_reaches_the_rows_prompt_hook_and_its_end_withdraws_i
     env.kill_daemon_bounded().await;
 }
 
+fn check_figure_hook(recorded: &str, ws: &str) -> std::path::PathBuf {
+    let printed: serde_json::Value = serde_json::from_str(&run_hook(recorded)).expect("the hook prints one JSON object");
+    assert_eq!(printed["systemMessage"], "Drawing: fig.png (1 stroke)");
+    let context = printed["hookSpecificOutput"]["additionalContext"].as_str().unwrap();
+    assert_eq!(printed["hookSpecificOutput"]["hookEventName"], "UserPromptSubmit");
+    let picture = context.split(" is ").nth(1).and_then(|t| t.split(" (drawing ").next()).expect("the picture's path");
+    assert!(picture.ends_with(&format!(".sot/captures/ink-{ws}.png")), "{picture}");
+    let image = image::open(picture).expect("the picture decodes").to_rgb8();
+    assert_eq!(image.dimensions(), (64, 48));
+    assert!(image.pixels().any(|pixel| pixel.0 != [10, 200, 30]), "the green source carries ink");
+    picture.into()
+}
+
 #[tokio::test]
 async fn a_window_drawing_reaches_the_rows_prompt_hook_and_its_end_withdraws_it() {
     let env = Env::new("seldraw");
@@ -146,17 +159,12 @@ async fn a_window_drawing_reaches_the_rows_prompt_hook_and_its_end_withdraws_it(
     let req = SelectionSetReq { workspace_id: ws.clone(), selection: None, drawing: Some(drawing) };
     let reply = call(&mut window, window_id, op::SELECTION_SET, serde_json::to_value(req).unwrap()).await.payload;
     assert_eq!(reply["state"], "shared", "{reply}");
-    let printed: serde_json::Value = serde_json::from_str(&run_hook(&recorded)).expect("the hook prints one JSON object");
-    assert_eq!(printed["systemMessage"], "Drawing: fig.png (1 stroke)");
-    let context = printed["hookSpecificOutput"]["additionalContext"].as_str().unwrap();
-    let picture = context.split(" is ").nth(1).and_then(|t| t.split(" (drawing ").next()).expect("the picture's path");
-    assert!(picture.ends_with(&format!(".sot/captures/ink-{ws}.png")), "{picture}");
-    assert_eq!(image::image_dimensions(picture).expect("the picture decodes"), (64, 48));
+    let picture = check_figure_hook(&recorded, &ws);
 
     // the window's connection ending withdraws it; the picture stays
     drop(window);
     poll_until(|| async { run_hook(&recorded).is_empty().then_some(()) }, BOUND, "the window's end to withdraw its drawing").await;
-    assert!(Path::new(picture).is_file(), "the picture stays");
+    assert!(picture.is_file(), "the picture stays");
     env.kill_daemon_bounded().await;
 }
 
@@ -270,33 +278,33 @@ async fn codex_selection_follows_the_launcher_across_resets() {
     );
     assert!(marker.is_file());
 
-    let drawing = Drawing {
-        base: InkBase::Figure {
-            node_id: "files:fig.png".into(),
-        },
-        strokes: vec![vec![[0, 0], [1, 1]]],
-    };
-    let req = SelectionSetReq {
+    let drawing = SelectionSetReq {
         workspace_id: ws.clone(),
         selection: None,
-        drawing: Some(drawing),
+        drawing: Some(Drawing {
+            base: InkBase::Figure { node_id: "files:fig.png".into() },
+            strokes: vec![vec![[20_000, 20_000], [40_000, 40_000]]],
+        }),
     };
-    let reply = call(
-        &mut window,
-        id + 2,
-        op::SELECTION_SET,
-        serde_json::to_value(req).unwrap(),
-    )
-    .await;
-    assert_eq!(reply.payload["code"], "no_agent");
-    assert!(!env.workspace_project_root.join(".sot/captures").exists());
-    assert!(run_hook(&recorded).is_empty());
-    assert_eq!(
-        set(&mut window, id + 3, &ws, Some((2, "gamma"))).await["state"],
-        "shared"
-    );
+    let drawing = serde_json::to_value(drawing).unwrap();
+    let reply = call(&mut window, id + 2, op::SELECTION_SET, drawing.clone()).await.payload;
+    assert_eq!(reply["state"], "shared", "{reply}");
+    let picture = check_figure_hook(&fs::read_to_string(&record).unwrap(), &ws);
+    assert_eq!(set(&mut window, id + 3, &ws, Some((2, "gamma"))).await["state"], "shared");
+    let text: serde_json::Value = serde_json::from_str(&run_hook(&recorded)).unwrap();
+    assert_eq!(text["systemMessage"], "Selection: a.txt lines 3-3");
+    assert!(!text["hookSpecificOutput"]["additionalContext"].as_str().unwrap().contains("ink-"));
     assert_eq!(set(&mut window, id + 4, &ws, None).await["state"], "shared");
     assert!(run_hook(&recorded).is_empty());
+
+    // The current launcher with a cache missing its prompt hook holds the drawing.
+    fs::remove_file(hooks.join("hooks/hooks.json")).unwrap();
+    fs::remove_file(&record).unwrap();
+    reset();
+    poll_until(|| async { record.exists().then_some(()) }, BOUND, "the launcher to exec with an incomplete cache").await;
+    let reply = call(&mut window, id + 5, op::SELECTION_SET, drawing.clone()).await.payload;
+    assert_eq!(reply["state"], "held", "{reply}");
+    fs::write(hooks.join("hooks/hooks.json"), fs::read(agents.join("codex/row-hooks.json")).unwrap()).unwrap();
 
     fs::write(&binding, "12345678-1234-4567-8123-123456789abc\n").unwrap();
     // An older launcher ignores the marker argument. Inspect the row the instant it starts.
@@ -312,16 +320,21 @@ async fn codex_selection_follows_the_launcher_across_resets() {
     .await;
     assert_eq!(entry.trim(), "clear");
     assert_eq!(
-        set(&mut window, id + 5, &ws, Some((1, "beta"))).await["state"],
+        set(&mut window, id + 6, &ws, Some((1, "beta"))).await["state"],
         "held"
     );
+    let reply = call(&mut window, id + 7, op::SELECTION_SET, drawing).await.payload;
+    assert_eq!(reply["state"], "held", "{reply}");
+    assert_eq!(check_figure_hook(&recorded, &ws), picture);
     drop(window);
     poll_until(
         || async { (!Path::new(selection).exists()).then_some(()) },
         BOUND,
-        "the last setter to withdraw its text",
+        "the last setter to withdraw its drawing",
     )
     .await;
+
+    assert!(picture.is_file(), "withdrawal leaves the picture on disk");
 
     // A leg cannot start beside a marker it could not clear, even on the watchdog's retries.
     fs::create_dir(&marker).unwrap();

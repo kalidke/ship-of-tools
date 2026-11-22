@@ -49,8 +49,8 @@ pub(crate) fn write_marker(state_dir: &Path, agent_kind: &str, env: &[(String, S
 /// The agent kinds that take a selection; every other kind answers `no_agent`.
 const TAKES_SELECTION: [&str; 2] = ["claude", "codex"];
 
-/// The agent kinds that take a drawing; a Codex row answers `no_agent` before composition.
-const TAKES_DRAWING: [&str; 1] = ["claude"];
+/// Unix rows use the same prompt hook for text and drawings. Only Claude has a drawing-capable leg elsewhere.
+const TAKES_DRAWING: &[&str] = if cfg!(unix) { &TAKES_SELECTION } else { &["claude"] };
 
 /// Held across a drawing's composite and its publish: one drawing at a time in the daemon, so the file names the
 /// picture on disk and the digest it states. A text selection takes only the setter lock.

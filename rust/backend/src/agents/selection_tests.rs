@@ -457,7 +457,24 @@ fn digest_of(d: &Drawing) -> String {
 
 #[tokio::test]
 async fn a_drawing_is_the_rows_selection_until_it_is_withdrawn() {
-    let (state, project, workspaces, folder) = drawing_row("claude", "ws-dr-1");
+    check_drawing_lifetime("claude").await;
+    #[cfg(unix)]
+    check_drawing_lifetime("codex").await;
+
+    let d = drawing(InkBase::Canvas, 30_000);
+    let refused: &[&str] = if cfg!(unix) { &["none", ""] } else { &["codex", "none", ""] };
+    for &kind in refused {
+        let (state, project, workspaces, folder) = drawing_row(kind, "ws-dr-k");
+        std::fs::write(folder.join(FILE_NAME), "old").unwrap();
+        let got = set_drawing(Some(state.path()), &workspaces, true, 9_003_005, "ws-dr-k", &d).await;
+        assert_eq!(got, Err(selection_code::NO_AGENT), "row 5: {kind:?}");
+        assert!(!folder.join(FILE_NAME).exists(), "row 5: {kind:?} refusal removes the file");
+        assert!(!project.path().join(".sot").exists(), "row 5: {kind:?} composes nothing");
+    }
+}
+
+async fn check_drawing_lifetime(kind: &str) {
+    let (state, project, workspaces, folder) = drawing_row(kind, "ws-dr-1");
     let file = folder.join(FILE_NAME);
     let figure = || InkBase::Figure { node_id: "files:fig.png".to_string() };
     let draw = |serial: u64, id: &str, d: Drawing| {
@@ -469,7 +486,7 @@ async fn a_drawing_is_the_rows_selection_until_it_is_withdrawn() {
 
     // 1. a shared drawing publishes the file, which names a picture that exists and the drawing's digest
     let d = drawing(figure(), 30_000);
-    assert_eq!(draw(9_003_001, "ws-dr-1", d.clone()).await, Ok(SelectionState::Held), "row 1: no marker");
+    assert_eq!(draw(9_003_001, "ws-dr-1", d.clone()).await, Ok(SelectionState::Held), "row 1: {kind} without marker");
     let (named, digest) = named_by(&file);
     assert_eq!(std::fs::canonicalize(&named).unwrap(), std::fs::canonicalize(&picture).unwrap(), "row 1: the picture");
     assert_eq!(digest, digest_of(&d), "row 1: the digest");
@@ -521,16 +538,6 @@ async fn a_drawing_is_the_rows_selection_until_it_is_withdrawn() {
     forget(9_003_004);
     std::fs::write(&file, "from an earlier process").unwrap();
     assert!(clear_unowned(state.path(), "ws-dr-1") && !file.exists(), "row 4: the walk removes an unowned file");
-
-    // 5. only a Claude row takes a drawing
-    for kind in ["codex", "none", ""] {
-        let (state, project, workspaces, folder) = drawing_row(kind, "ws-dr-k");
-        std::fs::write(folder.join(FILE_NAME), "old").unwrap();
-        let got = set_drawing(Some(state.path()), &workspaces, true, 9_003_005, "ws-dr-k", &d).await;
-        assert_eq!(got, Err(selection_code::NO_AGENT), "row 5: {kind:?}");
-        assert!(!folder.join(FILE_NAME).exists(), "row 5: {kind:?} refusal removes the file");
-        assert!(!project.path().join(".sot").exists(), "row 5: {kind:?} composes nothing");
-    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

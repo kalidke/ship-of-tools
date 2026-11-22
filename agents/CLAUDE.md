@@ -370,8 +370,8 @@ of each.
   share made before the walk reaches its row stays. Once the walk is done every file names a selection a live
   connection of this process set. A poisoned lock is taken as it is (each change to the map is one insert or remove).
   A drawing (`SelectionSetReq.drawing`) is the same slot: after the window check, the state root and the row, the handler
-  takes the process-wide compose lock (a `tokio::sync::Mutex`) and, under it, reads the agent kind (only `claude`,
-  `TAKES_DRAWING`; any other kind answers `no_agent`), has files' `compose` write the picture on the blocking pool (off the connection's loop),
+  takes the process-wide compose lock (a `tokio::sync::Mutex`) and, under it, checks `takes_drawing` (Claude on all
+  supported hosts and Codex on Unix; other kinds answer `no_agent`), has files' `compose` write the picture on the blocking pool (off the connection's loop),
   renders it with `render_drawing` and publishes through the same `apply` under the setter lock. The compose lock spans
   the picture's write and the file's publish, so two drawings from two connections go one at a time and, after each
   drawing's publish, the file names the picture on disk and the digest it holds (the digest is `selection_digest` of
@@ -387,15 +387,17 @@ of each.
   Limits: a removal that fails at a connection's end or in the walk has nobody to answer: it is logged once, the
   entry is dropped, and the next walk removes the file; the startup Cleanup runs no walk, so a row it could not end
   keeps an earlier process's file until a later resume; on Windows a publish or removal that meets an open read can fail, which is
-  `publish_failed` and the old file may remain. A real Codex window still needs to confirm the notice, source lines and full span
-  (docs/defects.md: CODEX-SELECTION-WINDOW). Codex drawings and the window's clear after an error reply (A7) remain unbuilt. Tests:
+  `publish_failed` and the old file may remain. A real Codex window still needs to confirm the notice, source lines, full span
+  and that the agent opens the named PNG and sees the marks (docs/defects.md: CODEX-SELECTION-WINDOW). The window's
+  clear after an error reply (A7) remains unbuilt. Tests:
   `selection::tests::the_row_file_holds_the_last_shared_selection_or_nothing`, one
   row per path (a failed removal and a link to a device among them), `the_replies_are_the_wire_frames`
   (a decode refusal leaves a published file), `the_reply_says_who_will_hear` (`no_agent`, `shared` and `held`), `the_marker_follows_the_leg_that_wrote_it` (the marker: written for a Claude leg with the variable and the hook, removed for a Claude leg that lacks either, left to ccx for Codex), `tests/selection.rs::a_window_selection_reaches_the_rows_prompt_hook_and_its_end_withdraws_it` (the whole path, a real daemon and a stub `claude`: the hook prints the selection, then nothing after a clear, then nothing after the window's end), `a_setters_end_or_the_start_up_walk_withdraws_only_stale_selections` (the setter map, a real guard's end, `clear_unowned`), `a_drawing_is_the_rows_selection_until_it_is_withdrawn` (publish, clear, refusals, kinds, replacement and both withdrawals for a drawing), `two_drawings_at_once_leave_the_file_naming_the_picture_it_holds`, `tests/selection.rs::a_window_drawing_reaches_the_rows_prompt_hook_and_its_end_withdraws_it` (the whole path: the hook names a picture that decodes, the window's end empties it),
   `rows::run::resume::selection_tests::the_walk_clears_each_registered_rows_unowned_selection` (the walk's call); `server::context::tests::only_a_named_frontends_connection_may_share_a_selection` (real connections of each
   role: only a named `fe` is not `not_a_window`).
   `tests/selection.rs::codex_selection_follows_the_launcher_across_resets` covers the older and current launchers,
-  contention, text delivery and withdrawal, drawing refusal and the exhausted restarts after a marker cannot be cleared.
+  contention, text and drawing replacement, a marked PNG at the path printed by the hook, drawing withdrawal,
+  a held drawing on the older launcher and the exhausted restarts after a marker cannot be cleared.
   In `tests/test-ccx-launch.sh`, the `selection marker at native exec` cases exercise each stamp condition, an
   unwritable marker and a failed exec. `tests/test-ccx-resume-default.sh` checks the marker for both explicit resume
   and continue, with and without flag support. In `test/codex_tests.jl`, `installed ccx marks the installer's row

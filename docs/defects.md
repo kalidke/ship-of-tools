@@ -535,10 +535,13 @@ owned by `docs/CLAUDE.md`.
   the id after each switch and whether a child hook retains the parent's id. After clear, compaction and resume,
   verify that the session names its handle and handoff once, the open question stays stamped, and no second join occurs.
 
-- **CODEX-SELECTION-WINDOW** [note] A Linux stub verifies the text hook and withdrawal across Codex launches.
+- **CODEX-SELECTION-WINDOW** [note] A Linux stub verifies the selection hook, marked PNG and withdrawal across Codex launches.
   To close, select plain text and rendered Markdown in fresh and resumed Codex rows in a real window. At the next
   prompt verify the notice, file, inclusive source lines and the full 2,000 UTF-16 units. Switch rows, then clear
   the selection and check subsequent prompts in each row and an ordinary session for delivery to the intended row only.
+  Draw a distinctive mark over a figure and a different mark on the blank canvas. At the next prompt for each,
+  check that Codex opens the named PNG and describes the mark. Replace the drawing with text, clear it, and check
+  that the old picture is absent from the next prompt.
   After release, start a row with `--no-daemon` while a shared server is running. Check that the row resumes an
   earlier conversation, that `/resume` lists the project's conversations, and that the session otherwise behaves as before.
 
