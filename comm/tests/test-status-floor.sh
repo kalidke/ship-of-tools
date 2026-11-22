@@ -286,13 +286,27 @@ check "an effort turn (many tool calls) ending green with no marker gets one sof
 check "a long quiet turn is an effort by duration" case_long_quiet_user_turn_is_an_effort_by_duration
 check "a short exchange step is never nudged" case_short_exchange_turn_is_never_nudged
 check "a short Codex turn floors without an effort hold" case_codex_effort 3 40
+check "shipped comm and hook filters use jq 1.6 variable names" case_jq16_keywords
 check "a Codex turn at the tool threshold is held once with its true counts" case_codex_effort 8 60 "This turn ran 8 tool calls over 1 min "
 check "a quiet Codex turn at the time threshold is held once with its true counts" case_codex_effort 2 300 "This turn ran 2 tool calls over 5 min "
 check "a Codex turn past both thresholds is held once with its true counts" case_codex_effort 10 375 "This turn ran 10 tool calls over 6 min "
-for condition in missing null empty malformed other stale; do
+for condition in missing null malformed; do
+    check "regression: unknown Codex effort ($condition) still honors mail before the final marker" case_unknown_effort "$condition"
+done
+for condition in empty other stale; do
     check "unknown Codex effort ($condition) still honors mail before the final marker" case_unknown_effort "$condition"
 done
 check "a Claude tail without a prompt has unknown effort" case_claude_without_turn_boundary
+check "Claude holds a long turn on the measured lower bounds in its tail" case_full_tail claude
+check "Codex holds a long turn on the measured lower bounds in its tail" case_full_tail codex
+check "Claude holds a full tail of progress records on elapsed time alone" case_quiet_full_tail claude
+check "Codex holds a full tail of turn events on elapsed time alone" case_quiet_full_tail codex
+check "Claude holds on eight calls with no known duration" case_claude_measurement 8 "" "" "8 tool calls"
+check "Claude holds on the duration even when the call blocks are unreadable" case_claude_measurement null "2026-01-01T00:00:00Z" "2026-01-01T00:06:00Z" "6 min"
+check "Claude reports zero elapsed minutes for equal timestamps" case_claude_measurement 8 "2026-01-01T00:00:00Z" "2026-01-01T00:00:00Z" "8 tool calls over 0 min"
+check "a short turn with unknown duration ends without a numeric comparison error" case_claude_measurement 1 "" "" ""
+check "Codex counts eight calls even when the clock runs backwards" case_codex_effort 8 -60 "This turn ran 8 tool calls and ends"
+check "a Codex Stop never stamps a marker from Claude records" case_codex_skips_claude_slice
 check "an effort on a machine wake is not nudged" case_effort_machine_turn_is_not_nudged
 check "the turn auditor reads the row's facts, not its state" case_the_auditor_reads_the_facts_not_the_state
 check "marker variants (bold closing before the colon, a heading) still stamp" case_marker_variants_bold_after_and_heading_still_stamp

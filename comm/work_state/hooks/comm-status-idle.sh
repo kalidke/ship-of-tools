@@ -239,8 +239,8 @@ fi
 # `user` record whose content is a string / carries no tool_result -- tool
 # results are `user` records too). One jq pass over that slice feeds two
 # things: the effort counter (tool calls + wall seconds) and the closing text
-# the marker check below searches. Without a prompt in the tail the counts
-# are unknown. The available text still participates in the marker check.
+# the marker check below searches. A full tail without its prompt gives
+# lower bounds. A short tail without a prompt contributes only marker text.
 #
 # The text is EVERY assistant text block in the slice, joined in order, not
 # just the last assistant record's (2026-09-14, live incident: a long reply
@@ -259,19 +259,20 @@ fi
 # The recorded reasons reach jq on stdin, ahead of the tail and each wrapped
 # as {stop_feedback: R}, never through argv: a reason can hold free text, and
 # MSYS2 rewrites an argument that looks like a path.
-EFFORT_TOOLS=8; EFFORT_SECS=300
-turn_tools=""; turn_secs=""; last_text=""; prompt_text=""
+EFFORT_TOOLS=8; EFFORT_SECS=300; TAIL_LINES=3000
+counts=""; last_text=""; prompt_text=""
 # turn_id is the Codex Stop schema's extension. Its marker comes from the
 # final message below; its effort is measured only after mail and markers pass.
 turn_id="$(jqget '.turn_id | strings')"
 if [ -z "$turn_id" ] && [ -n "$tp" ] && [ -r "$tp" ]; then
     turn_json="$( { jq -cR 'fromjson? | strings | {stop_feedback: .}' "$fb_file" 2>/dev/null
-                    tail -n 3000 "$tp" 2>/dev/null; } | jq -sc '
+                    tail -n "$TAIL_LINES" "$tp" 2>/dev/null; } | jq -sc --argjson limit "$TAIL_LINES" '
         def is_prompt: .type=="user" and ((.message.content|type)=="string"
             or (([.message.content[]? | .type] | index("tool_result")) == null));
         def is_own_feedback($fb): (.message.content) as $c | .isMeta == true and ($c|type)=="string"
             and any($fb[]; "Stop hook feedback:\n" + . == $c);
-        def secs: sub("\\.[0-9]+Z$"; "Z") | (try fromdateiso8601 catch 0);
+        def secs($lower): try (capture("^(?<sec>[^.Z]+)(?<frac>\\.[0-9]+)?Z$")
+            | ((.sec+"Z")|fromdateiso8601) + (if $lower then ("0"+(.frac // "")|tonumber) else 0 end)) catch empty;
         def prompt_of: (.message.content) as $c
             | if ($c|type)=="string" then $c
               else ([$c[]? | select(.type=="text") | .text] | join("\n")) end;
@@ -279,16 +280,19 @@ if [ -z "$turn_id" ] && [ -n "$tp" ] && [ -r "$tp" ]; then
         | [.[] | select(.stop_feedback? == null)]
         | ([to_entries[] | select(.value | is_prompt and (is_own_feedback($fb) | not)) | .key] | last) as $h
         | (if $h == null then . else .[$h+1:] end) as $turn
-        | ([$turn[] | select(.type=="assistant") | .message.content[]? | select(.type=="text") | .text] | join("\n")) as $text
-        | if $h == null then {text: $text, prompt: ""}
+        | ([$turn[] | select(.type=="assistant") | .message.content[]? | select(.type?=="text") | .text] | join("\n")) as $text
+        | if $h == null and (length < $limit or all(.[]; .type!="assistant" and .type!="user" and .type!="progress" and .type!="system"))
+          then {text: $text, prompt: ""}
           else
-            ([$turn[] | select(.type=="assistant") | .message.content[]? | select(.type=="tool_use")] | length) as $n
-            | ((.[$h].timestamp // "") | if . == "" then 0 else secs end) as $t0
-            | (([$turn[] | select(.type=="assistant") | .timestamp // empty] | last // "") | if . == "" then 0 else secs end) as $t1
-            | {tools: $n, secs: (if $t0 > 0 and $t1 >= $t0 then $t1 - $t0 else null end), text: $text, prompt: (.[$h] | prompt_of)}
+            (try ([$turn[] | select(.type=="assistant") | .message.content[] | select(.type=="tool_use")] | length) catch null) as $n
+            | (if $h==null then [$turn[] | .timestamp | secs(true)]
+               else [.[$h].timestamp, ([$turn[] | select(.type=="assistant") | .timestamp // empty] | last)]
+                    | map(secs(false) // null) end) as $times
+            | ($times[0]) as $t0 | ($times[-1]) as $t1
+            | {tools:$n, secs:(if ($times|length)>=2 and $t0!=null and $t1 >= $t0 then ($t1 - $t0 | floor) else null end), lower:($h==null),
+               text:$text, prompt:(if $h==null then "" else .[$h] | prompt_of end)}
           end' 2>/dev/null)"
-    turn_tools="$(printf '%s' "$turn_json" | jq -j '.tools // empty' 2>/dev/null)"
-    turn_secs="$(printf '%s' "$turn_json" | jq -j '.secs // empty' 2>/dev/null)"
+    counts="$(printf '%s' "$turn_json" | jq -j '[.lower,.tools,.secs] | join("|")' 2>/dev/null)"
     last_text="$(printf '%s' "$turn_json" | jq -r '.text // ""' 2>/dev/null)"
     # Last prompt record's own text (2026-09-15, turn-origin correction below):
     # empty when the turn is longer than the tail ($h was null) -- the origin
@@ -599,30 +603,37 @@ esac
 # back-and-forth (owes nothing). Short turns never trip this, whatever they
 # did; the thresholds are the effort/exchange line, not a work detector.
 if [ "$origin" = user ] && [ -n "$turn_id" ] && [ -f "$tp" ] && [ -r "$tp" ]; then
-    # Rollout call records have no turn id. Only count them after the most
-    # recent task_started if it names this Stop's turn, up to its completion
-    # if already recorded. Outputs and command-completion events are echoes.
-    counts="$(tail -n 3000 "$tp" | jq -sj --arg id "$turn_id" '
+    # Rollout calls have no turn id. If the start fell out of a full tail,
+    # use that tail only while its turn IDs agree with the Stop payload.
+    counts="$(tail -n "$TAIL_LINES" "$tp" | jq -sj --arg id "$turn_id" --argjson limit "$TAIL_LINES" '
         def event($kind): .type=="event_msg" and .payload.type==$kind;
         def seconds: capture("^(?<sec>[^.Z]+)(?<frac>\\.[0-9]+)?Z$")
             | ((.sec+"Z")|fromdateiso8601) + (("0"+(.frac // ""))|tonumber);
         ([to_entries[] | select(.value | event("task_started")) | .key] | last) as $start
-        | select($start != null and .[$start].payload.turn_id==$id)
-        | .[$start:]
+        | if $start==null then select(length==$limit and any(.[]; .type=="response_item" or .type=="event_msg" or .type=="turn_context")
+                                    and all(.[] | .payload.turn_id? // empty; .==$id))
+          else select(.[$start].payload.turn_id==$id) | .[$start:] end
         | (first(to_entries[] | select(.value | event("task_complete") and .payload.turn_id==$id) | .key)
-           // (length-1)) as $end
-        | select($end > 0) | .[:$end+1]
-        | ((last.timestamp|seconds) - (first.timestamp|seconds) | floor) as $secs
-        | select($secs >= 0)
-        | [([.[] | select(.type=="response_item" and (.payload.type | strings | endswith("_call")))] | length),
-           $secs] | @tsv' 2>/dev/null)" || counts=""
-    read -r turn_tools turn_secs <<< "$counts"
+           // (length-1)) as $finish
+        | select($finish > 0) | .[:$finish+1]
+        | (if $start==null then [.[] | .timestamp | try seconds catch empty]
+           else [first.timestamp,last.timestamp] | map(try (seconds // null) catch null) end) as $times
+        | ((select(($times|length)>=2) | ($times[-1]|numbers) - ($times[0]|numbers) | floor | select(. >= 0)) // null) as $secs
+        | ([.[] | select(.type=="response_item") | .payload.type]
+           | if all(.[]; type=="string") then map(select(endswith("_call"))) | length else null end) as $n
+        | [($start==null),$n,$secs] | join("|")' 2>/dev/null)" || counts=""
 fi
-if [ "$origin" = user ] && [ -n "$turn_tools" ] && [ -n "$turn_secs" ] &&
-    { [ "$turn_tools" -ge "$EFFORT_TOOLS" ] || [ "$turn_secs" -ge "$EFFORT_SECS" ]; }; then
-    emit_block "$(jq -nc --arg n "$turn_tools" --arg m "$((turn_secs / 60))" '{
+IFS='|' read -r lower turn_tools turn_secs <<< "$counts"
+if [ "$origin" = user ] &&
+    { { [ -n "$turn_tools" ] && [ "$turn_tools" -ge "$EFFORT_TOOLS" ]; } ||
+      { [ -n "$turn_secs" ] && [ "$turn_secs" -ge "$EFFORT_SECS" ]; }; }; then
+    prefix=""; measure=""
+    [ "$lower" != true ] || prefix="at least "
+    [ -z "$turn_tools" ] || measure="$prefix$turn_tools tool calls"
+    [ -z "$turn_secs" ] || measure="${measure:+$measure over }$prefix$((turn_secs / 60)) min"
+    emit_block "$(jq -nc --arg measure "$measure" '{
       decision: "block",
-      reason: ("This turn ran " + $n + " tool calls over " + $m + " min and ends with no closing marker. IF it CLOSED a work effort (a result landed, a fix shipped, a diagnosis was reached, a decision point arrived), close with the sitrep block now, as the last thing in your reply: a line  SITREP: <one-line headline>  then the chain (issue in context, diagnosis, design, result with its scale, interpretation, plan) in plain words -- no hashes, paths, names, backticks or bullets. IF this turn was a step in a live back-and-forth with the user, end normally: no block is owed. This will not fire again this turn.")
+      reason: ("This turn ran " + $measure + " and ends with no closing marker. IF it CLOSED a work effort (a result landed, a fix shipped, a diagnosis was reached, a decision point arrived), close with the sitrep block now, as the last thing in your reply: a line  SITREP: <one-line headline>  then the chain (issue in context, diagnosis, design, result with its scale, interpretation, plan) in plain words -- no hashes, paths, names, backticks or bullets. IF this turn was a step in a live back-and-forth with the user, end normally: no block is owed. This will not fire again this turn.")
     }')"
     exit 0
 fi

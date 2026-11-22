@@ -411,11 +411,46 @@ case_plain_user_turn_without_marker_floors_blue_unnudged() {
 }
 
 # ---- effort vs exchange (2026-09-10): a long green turn is asked once ----
+# The stager follows comm/bin-folders.txt, including extensionless commands.
+# Inspect jq and its two shell wrappers. Join continued option lines first.
+jq16_names() {
+    perl -0777 -ne '
+        BEGIN { $kw = qr/(?:and|as|break|catch|def|elif|else|end|foreach|if|import|include|label|module|or|reduce|then|try)\b/ }
+        sub reject { print "$ARGV: reserved jq 1.6 variable $_[0]\n"; $bad = 1 }
+        if ($ARGV =~ /\.jq$/) { reject($1) if /\$($kw)/; next }
+        s/^[ \t]*\#[^\n]*//mg;
+        s/\\\r?\n/ /g;
+        while (/(?:^|[\s\$(|;&])(?:jq|sot_jq|jqget)[ \t]+((?:[^\x27"\n]++|"[^"\n]*"|\x27[^\x27]*\x27)*)/g) {
+            my $args = $1;
+            reject($1) if $args =~ /--(?:arg|argjson|slurpfile|rawfile|argfile)\s+["\x27]?($kw)/;
+            reject($1) if $args =~ /\\\$($kw)/;
+            while ($args =~ /\x27([^\x27]*)\x27|"([^"\n]*)"/g) {
+                my $literal = $1;
+                reject($1) if defined $literal && $literal =~ /\$($kw)/;
+            }
+        }
+        END { exit($bad ? 1 : 0) }
+    ' "$@"
+}
+case_jq16_keywords() {
+    local probe="$WORK/keyword-probe" out rc=0
+    cat > "$probe" <<'JQ_PROBE'
+sot_jq -n --arg v 'data' \
+    '1 as $end | $v'
+jqget '$then'
+jq -n --argjson if 0 '.'
+JQ_PROBE
+    out="$(jq16_names "$probe")" || rc=$?
+    [ "$rc" -eq 1 ] && [ "$out" = "$probe: reserved jq 1.6 variable end
+$probe: reserved jq 1.6 variable then
+$probe: reserved jq 1.6 variable if" ] || { echo "    scanner probe failed: $out"; return 1; }
+    jq16_names "$SCRIPTS_DIR"/*
+}
 # Synthetic Codex rollout. The older turn, outputs, and command-completion events
 # must not inflate the number of calls made by the model in the current turn.
 codex_rollout() {  # TOOLS SECONDS
     jq -nc --argjson calls "$1" --argjson secs "$2" '
-        def record($s; $type; $p): {timestamp: ((1760000000+$s)|todate), type:$type, payload:$p};
+        def record($s; $type; $p): {timestamp: ((1760000000+$s)|todate|sub("Z$";".125Z")), type:$type, payload:$p};
         def start($s; $id): record($s; "event_msg"; {type:"task_started",turn_id:$id,started_at:(1760000000+$s)});
         start(-3600; "older"), record(-1; "response_item"; {type:"function_call", call_id:"old"}),
         start(0; "current"), record(0; "turn_context"; {turn_id:"current"}),
@@ -465,9 +500,65 @@ case_unknown_effort() {  # TRANSCRIPT CONDITION
 case_claude_without_turn_boundary() {
     local tr="$WORK/claude-tail.jsonl" out
     seed idle; W "$GENUINE"
-    printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"Finished."}]}}' > "$tr"
+    jq -nc 'range(10) | {type:"assistant", message:{content:[{type:"tool_use"}]}}' > "$tr"
     out="$(printf '%s' "$tr" | jq -Rsc '{transcript_path:.,stop_hook_active:false}' | bash "$HOOKS_DIR/comm-status-idle.sh")"
     [ -z "$out" ] && expect done/-/-/-/d end || { echo "    missing prompt produced a hold: $out"; return 1; }
+}
+case_claude_measurement() {  # NUMBER-OF-CALLS START-TIMESTAMP END-TIMESTAMP EXPECTED-MEASURE
+    local tr="$WORK/claude-measured.jsonl" out
+    seed idle; W "$GENUINE"
+    jq -nc --argjson n "$1" --arg t0 "$2" --arg t1 "$3" '
+        {type:"user", timestamp:$t0, message:{content:"go"}},
+        (if $n==null then {type:"assistant",timestamp:$t1,message:{content:null}}
+         else range($n) | {type:"assistant", timestamp:$t1, message:{content:[{type:"tool_use"}]}} end)' > "$tr" || return 1
+    out="$(printf '%s' "$tr" | jq -Rsc '{transcript_path:.}' | bash "$HOOKS_DIR/comm-status-idle.sh" 2>&1)" || return 1
+    if [ -z "$4" ]; then
+        [ -z "$out" ] && expect done/-/-/-/d end || { echo "    unexpected output: $out"; return 1; }
+    else
+        effort_message "$out" "$4"
+    fi
+}
+effort_message() {
+    [ -n "$1" ] && printf '%s' "$1" | jq -e --arg m "$2" '
+        .decision=="block" and (.reason|startswith("This turn ran " + $m + " and ends with no closing marker."))' >/dev/null &&
+        expect working/user/-/-/- held || { echo "    expected '$2', got '$1'"; return 1; }
+}
+case_full_tail() {  # AGENT
+    local tr="$WORK/long.jsonl" out
+    seed idle; W "$GENUINE"
+    if [ "$1" = codex ]; then
+        codex_rollout 1000 361 || return 1
+        printf '%s\n' '{"type":"response_item","payload":{"type":"reasoning"}}' >> "$WORK/codex.jsonl"
+        out="$(codex_stop "$WORK/codex.jsonl" "Finished.")"
+        effort_message "$out" "at least 999 tool calls over at least 6 min"
+    else
+        jq -nc '{type:"user",message:{content:"go"}},
+            (range(3002) as $i | {type:"assistant", timestamp:(if $i==3000 then "2026-01-01T00:06:00.125Z"
+                 elif $i==3001 then null else "2026-01-01T00:00:00.125Z" end), message:{content:[{type:"tool_use"}]}})' > "$tr" || return 1
+        out="$(printf '%s' "$tr" | jq -Rsc '{transcript_path:.}' | bash "$HOOKS_DIR/comm-status-idle.sh")"
+        effort_message "$out" "at least 3000 tool calls over at least 6 min"
+    fi
+}
+case_quiet_full_tail() {
+    local tr="$WORK/quiet-tail.jsonl" out
+    seed idle; W "$GENUINE"
+    jq -nc --arg agent "$1" '
+        (if $agent=="codex" then {type:"event_msg",payload:{type:"task_started",turn_id:"current"}}
+         else {type:"user",message:{content:"go"}} end),
+        (range(3000) as $i
+         | (if $agent=="codex" then {type:"event_msg",payload:{type:"item_completed",turn_id:"current",item:{type:"Reasoning"}}}
+            else {type:"progress"} end)
+         + {timestamp:(if $i==2999 then "2026-01-01T00:05:00.625Z" else "2026-01-01T00:00:00.625Z" end)})' > "$tr" || return 1
+    if [ "$1" = codex ]; then out="$(codex_stop "$tr" "Finished.")"
+    else out="$(printf '%s' "$tr" | jq -Rsc '{transcript_path:.}' | bash "$HOOKS_DIR/comm-status-idle.sh")"; fi
+    effort_message "$out" "at least 0 tool calls over at least 5 min"
+}
+case_codex_skips_claude_slice() {
+    local tr="$WORK/wrong-shape.jsonl" out
+    seed idle; W "$GENUINE"
+    printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"SITREP-WAITING: prior job"}]}}' > "$tr"
+    out="$(codex_stop "$tr" "Finished.")"
+    [ -z "$out" ] && expect done/-/-/-/d end
 }
 case_effort_user_turn_without_marker_gets_one_soft_nudge() {
     seed idle; W "$GENUINE"
