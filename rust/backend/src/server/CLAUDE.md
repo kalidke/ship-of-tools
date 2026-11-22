@@ -172,7 +172,9 @@ of each.
     and the server-owned modules at the crate root (`clients*`, `session`, `daemon_log`, `paths`): the services take
     `Session` (the revision ring's handle) as an argument, and no longer take the roster: pages is given the window's key
     and the away windows as a closure, and `PageVerbs` with the states, handle and window lookups and fe-command bus;
-    the updater the count of attached windows, `selection.set`'s handler `Shared.window` (the hello's role `fe` with a
+    the updater the count of attached windows and the owner of the update's state (`update::Status`, distribution's,
+    made in `run` and kept in `Services`; `version.query` and `update.check` are handed the same one),
+    `selection.set`'s handler `Shared.window` (the hello's role `fe` with a
     non-empty name, `clients::window_name`; test `context_tests.rs`: `only_a_named_frontends_connection_may_share_a_selection`).
     That no service reaches the roster or
     the entry's items through the crate is a convention until the crates are cut, held by review, not by the compiler.
@@ -218,7 +220,7 @@ of each.
 ## Calls out
 `run`, and `refuse_live_socket` for the early check in `main.rs`. Services reach nothing here; the roster (`Clients`,
 `ClientGuard`) is handed to a handler that needs a window fact as a value or a closure (`handle_docs_open` takes the
-window's key and `away_sites`, `spawn_periodic` the count of attached windows, `handle_selection_set` `Shared.window`, whether the
+window's key and `away_sites`, `spawn_periodic` the count of attached windows and the update's `Status`, which `handle_version_query` and `handle_update_check` are handed too, `handle_selection_set` `Shared.window`, whether the
 hello is a window's: role `fe` with a non-empty name, `clients::window_name`, which the roster's window-connection, report and in-use queries share; the active-frontend resolution still accepts an empty name).
 `run` builds one `PageVerbs` after the fe-command bus and roster exist, then calls `start_page_servers` before accepting
 control connections. All page listeners share its separate body-reader, polling and action budgets. Its blocking closures use the checked fresh

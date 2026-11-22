@@ -213,7 +213,7 @@ where
 async fn serve(frame: Frame, shared: &Shared) -> Result<HandlerOutput> {
     let Services {
         session, mathjax, pluto, workspaces, ws_events_tx, clients, topology_store, topo_changed_tx, agent_events_tx,
-        links, fe_command_tx, leases, chat, ..
+        links, fe_command_tx, leases, chat, update, ..
     } = &shared.services;
     let (req_id, payload) = (frame.id, frame.payload);
     // Each arm evaluates to `Result<HandlerOutput>`; `finish_dispatch`
@@ -306,10 +306,10 @@ async fn serve(frame: Frame, shared: &Shared) -> Result<HandlerOutput> {
             crate::clients::handle_fe_presence(req_id).await
         }
         op::FE_SESSIONS => crate::clients::handle_fe_sessions(req_id, payload, clients, Some(shared.serial)).await,
-        op::UPDATE_CHECK => crate::update::handle_update_check(req_id).await,
+        op::UPDATE_CHECK => crate::update::handle_update_check(req_id, update).await,
         op::UPDATE_APPLY => crate::update::handle_update_apply(req_id, fe_command_tx, leases).await,
         op::VERSION_QUERY => {
-            crate::clients::handle_version_query(req_id, clients, topology_store, topo_changed_tx).await
+            crate::clients::handle_version_query(req_id, clients, topology_store, topo_changed_tx, update).await
         }
         op::TOPOLOGY_SET => {
             crate::topology::set::handle_topology_set(

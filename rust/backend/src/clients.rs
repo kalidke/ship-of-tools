@@ -532,12 +532,18 @@ fn distinct_client_ids(by_conn: &HashMap<u64, ClientInfo>) -> String {
 /// nothing else had already announced. Never a file watcher (the file can
 /// be on a network filesystem); this op and `topology.*` are the only
 /// re-read triggers.
+///
+/// It also reads the armed update from disk again (`Status::reconcile`, bounded) before it answers, so the `update`
+/// it carries is true of the disk now.
 pub async fn handle_version_query(
     req_id: u64,
     clients: &crate::clients::Clients,
     topology: &crate::topology::store::TopologyStore,
     topo_tx: &broadcast::Sender<crate::topology::store::TopologyChanged>,
+    update: &crate::update::Status,
 ) -> Result<HandlerOutput> {
+    let read = update.reconcile().await;
+    let state = sot_protocol::UpdateState { unread: !read, ..update.state() };
     let refreshed = topology.refresh();
     if refreshed.changed {
         let _ = topo_tx.send(crate::topology::store::TopologyChanged {
@@ -551,8 +557,8 @@ pub async fn handle_version_query(
         host: crate::rows::store::declared_host(),
         hosts_toml_hash: refreshed.hash.unwrap_or_default(),
         uptime_s: clients.uptime().as_secs(),
-        update: None,
-        update_line: String::new(),
+        update_line: state.line(),
+        update: Some(state),
     };
     let snap = clients.snapshot_with_active();
     let client_rows = snap

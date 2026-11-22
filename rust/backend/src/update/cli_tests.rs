@@ -227,6 +227,112 @@ async fn a_pointer_that_cannot_be_read_is_refused_with_the_error() {
     assert!(why(full("v0.6.6-rc9.14", "0.6.6-rc9.14").as_bytes()).await.is_none());
 }
 
+/// The state of the daemon's update says ready exactly where the verb answers ok for a pointer that is there. A pointer
+/// the verb refuses is not applied with the verb's own words, and one it cannot read with no version. No other file
+/// name in the folder is read: two names that are not the pointer's leave nothing armed.
+#[tokio::test]
+async fn ready_is_exactly_what_the_pointer_verb_answers_ok_for() {
+    use crate::update::{Chase, Disk, Status};
+    use sot_protocol::UpdatePhase as P;
+    let pointer = |dir: &tempfile::TempDir| dir.path().join("updates").join(format!("pending-{T}.json"));
+    let (at, over) = (("0.6.6-rc9.13", "c0"), Some(("0.6.6-rc9.14", Some(("0.6.6-rc9.13", "c0")))));
+    let fitting = prefix(at, over);
+    let stale = prefix(("0.6.6-rc9.14-dev+d94ed0fac", "c1"), Some(("0.6.6-rc9.13", Some(("0.6.6-rc9.12", "c0")))));
+    let below = prefix(at, Some(("0.6.6-rc9.13", None)));
+    let unprepared = prefix(at, over);
+    prepare(&unprepared, "0.6.6-rc9.14", None);
+    let empty = prefix(at, over);
+    std::fs::write(pointer(&empty), b"").unwrap();
+    let cut = prefix(at, over);
+    let whole = std::fs::read(pointer(&cut)).unwrap();
+    std::fs::write(pointer(&cut), &whole[..whole.len() / 2]).unwrap();
+    let no_install = prefix(at, Some(("0.6.6-rc9.13", None)));
+    std::fs::remove_file(no_install.path().join("install.json")).unwrap();
+    let nothing = prefix(at, None);
+    // A whole pointer under two names that are not the pointer's: a suffix after it, and quote marks inside it with a
+    // line of shell text after (a name an installer's shell wrote once).
+    let strays = prefix(at, None);
+    let named = |name: String| std::fs::write(strays.path().join("updates").join(name), &whole).unwrap();
+    named(format!("pending-{T}.json.stale-rc9.13-20261016"));
+    #[cfg(unix)]
+    named(format!("pending-'{T}'.json\n    echo armed"));
+
+    // (the case, its folder, the version the state names)
+    let table = [
+        ("a pointer armed over the install on disk", &fitting, "0.6.6-rc9.14"),
+        ("a pointer armed over another install", &stale, "0.6.6-rc9.13"),
+        ("a pointer at the installed version", &below, "0.6.6-rc9.13"),
+        ("a pointer whose stage records no prepare", &unprepared, "0.6.6-rc9.14"),
+        ("an empty file at the pointer's name", &empty, ""),
+        ("a pointer cut short", &cut, ""),
+        ("a pointer with no install to compare with", &no_install, "0.6.6-rc9.13"),
+        ("nothing armed", &nothing, ""),
+        ("only names that are not the pointer's", &strays, ""),
+    ];
+    let mut ready = Vec::new();
+    for (case, dir, version) in table {
+        let verb = refusal(dir.path(), T).await;
+        let updates = dir.path().join("updates");
+        let status = Status::new(Chase::Unchecked, false, move || Some(Disk { updates: updates.clone(), target: T.into(), unit: false }));
+        status.reconcile().await;
+        let state = status.state();
+        let there = pointer(dir).exists();
+        assert_eq!(state.phase == P::Ready, there && verb.is_none(), "{case}: {state:?} where the verb says {verb:?}");
+        assert_eq!(state.version, version, "{case}");
+        match (there, verb) {
+            (false, verb) => assert_eq!((state.phase, verb), (P::Unchecked, None), "{case}: nothing armed"),
+            (true, None) => assert_eq!(state.detail, "applies when Ship of Tools is next started on that computer", "{case}"),
+            (true, Some(why)) => assert_eq!((state.phase, state.detail.as_str()), (P::NotApplied, why.as_str()), "{case}: the verb's words"),
+        }
+        if state.phase == P::Ready {
+            ready.push(case);
+        }
+    }
+    assert_eq!(ready, ["a pointer armed over the install on disk", "a pointer with no install to compare with"]);
+    for unreadable in [&empty, &cut] {
+        let why = refusal(unreadable.path(), T).await.unwrap();
+        assert!(why.starts_with("unreadable pointer: "), "{why}");
+    }
+
+    // The one place the two differ: a pointer that cannot be read where there is no install to compare with. The verb
+    // answers ok there, as it always has (the apply's own checks drop such a file), and the state says nothing armed.
+    std::fs::write(pointer(&no_install), b"{not a pointer").unwrap();
+    assert_eq!(refusal(no_install.path(), T).await, None, "the verb refuses nothing where there is no install");
+    assert_eq!(code(&no_install).await, 0);
+    let updates = no_install.path().join("updates");
+    let status = Status::new(Chase::Unchecked, false, move || Some(Disk { updates: updates.clone(), target: T.into(), unit: false }));
+    assert!(status.reconcile().await);
+    assert_eq!(status.state().phase, P::Unchecked, "nothing armed");
+}
+
+/// A release this daemon armed is ready while its pointer is on disk. When another process drops the pointer without a
+/// restart of the daemon (the launcher's drop of a refused pointer, an installer run at the installed version) the
+/// state says the release is found and why, never up to date; and it is ready again when the pointer is back.
+#[tokio::test]
+async fn a_release_armed_here_is_found_again_when_its_pointer_goes() {
+    use crate::update::{Chase, Disk, Status};
+    use sot_protocol::UpdatePhase as P;
+    let dir = prefix(("0.6.6-rc9.13", "c0"), Some(("0.6.6-rc9.14", Some(("0.6.6-rc9.13", "c0")))));
+    let file = dir.path().join("updates").join(format!("pending-{T}.json"));
+    let whole = std::fs::read(&file).unwrap();
+    let updates = dir.path().join("updates");
+    let status = Status::new(Chase::Unchecked, false, move || Some(Disk { updates: updates.clone(), target: T.into(), unit: false }));
+    status.checked(Chase::None);
+    status.set_chase(super::super::chase_at_end(&fake_identity("v0.6.6-rc9.14"), &Ok(Pipeline::Armed)));
+    assert!(status.reconcile().await);
+    assert_eq!((status.state().phase, status.state().version.as_str()), (P::Ready, "0.6.6-rc9.14"));
+
+    std::fs::remove_file(&file).unwrap();
+    assert!(status.reconcile().await);
+    let gone = status.state();
+    assert_eq!((gone.phase, gone.version.as_str()), (P::Found, "0.6.6-rc9.14"), "{gone:?}");
+    assert!(gone.line().starts_with("0.6.6-rc9.14 found: it was armed here and the armed update is no longer on disk"), "{}", gone.line());
+
+    std::fs::write(&file, whole).unwrap();
+    assert!(status.reconcile().await);
+    assert_eq!(status.state().phase, P::Ready);
+}
+
 // The review's measurement: a no-record release pointer above a dev stamp used to be answered `ok`.
 #[tokio::test]
 async fn a_pointer_with_no_record_never_applies_onto_a_dev_build() {

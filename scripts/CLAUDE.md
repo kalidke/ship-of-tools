@@ -372,6 +372,69 @@ Update (`rust/updater`, `rust/backend/src/update*`, `rust/frontend/src/selfupdat
   install, or an install on a host the topology names with neither key. `sotd update stage` is the operator's and may
   arm at or below. A stage verifies the sums and digests and prepares the checkout at the tag's commit, clean, under
   the stage lock, before it arms.
+- The state of a daemon's update has one owner, `Status` (`rust/backend/src/update/status.rs`), made once at the
+  daemon's start (`boot_status`) and told in the wire's one type (`UpdateState`, wire guarantee 16). It keeps two
+  facts. The chase is what this process's updater is doing about the newest release: memory only, written by
+  `update.rs`'s own steps and nothing else (`run_check_once` after the check: nothing found, found, off, blocked, a
+  check that could not run, and the check's instant; `stage_prepare_arm_inner` at its refusals, before the stage, and at
+  its end, `chase_at_end`), and rebuilt by the next check after a restart. The armed fact is the disk's: the pending
+  pointer, read through `cli::judge`, the one judgment `sotd update pointer` answers with, so the state says ready
+  exactly where the verb answers ok for a pointer that is there (the one difference: a pointer that cannot be read
+  where there is no install record is ok to the verb and nothing armed to the state), and a pointer the verb refuses
+  or cannot read is not applied with the verb's words (an unreadable one with no version). The state told is a pure
+  function of the two (`status::told`): a pointer that fits is ready, whatever the checks say (an operator's stage
+  onto a dev install reads ready), unless this process chases another release (found, staging, or not made ready),
+  which then comes first with the pointer's version beside it; a release whose own pointer fits is ready in every
+  phase of its chase, so the daily check of an armed release, which stages and arms it again, changes nothing a reader
+  is told; else a pointer the apply would refuse is not applied, unless a release is chased; else the chase's own
+  phase. Up to date is said only by a check that found nothing above the install: an arm leaves a chase that claims
+  no result (`Chase::Armed`), so a release this daemon armed whose pointer another process then drops or applies reads
+  found, with that reason, until the next check, never up to date. What applies a ready update is said in words that
+  read right in a row about another computer and on a computer with no window (`status::applies`: that computer's
+  `sotd.service`, a start of Ship of Tools on that computer, or, in `auto` mode, that daemon's daily check with no
+  client attached). A dev build and update mode off say off from the start and run no check; a daemon whose host the
+  topology gives neither key says off when its pipeline is turned away, not a release it will never stage. A failed
+  stage is the block `update.check` reports as `update blocked: <cause>`, for its own release only, until the chase is
+  written again (the next attempt's start, or a later check's result).
+  **The disk's readings are bounded for every caller.** The owner reads the disk again (`reconcile`) at four points:
+  the daemon's start, begun by `boot_status` in a task of its own; a pipeline's end; the start of each daily check;
+  and each `version.query`. Every read of a reading (the install record and `hosts.toml`, read through std, as well as
+  the pointer and the prepare's record) runs on a thread of the blocking pool, one reading at a time. A caller waits
+  for a reading begun after its call for at most `RECONCILE_BOUND`, 1 s, which is shorter than the shortest wait of a
+  caller of `version.query` (3 s: `sotd status`, the installer's restart step, `sotd topology status`; 5 s: the comm
+  book); past it the caller goes on with the fact last read, `reconcile` answers false and logs one warning, and the
+  reading goes on alone and writes its fact when it ends. `version.query` then answers at once with the state marked
+  `unread`, which its words say (`; as last read, the disk did not answer in time`), so a slow or hung disk reads as an
+  old state and never as a daemon that does not answer. A reading its caller stopped waiting for stays the one in
+  flight: no second reading is begun beside it, so a read that hangs holds one thread of the blocking pool and
+  nothing else, and callers at once are each answered within the one bound. A write that changes nothing a reader is
+  told wakes no reader.
+  Limits: ready is the verb's ok, not the apply: the apply scripts check more after the verb (the stage's manifest,
+  binaries and digests, the checkout and its commit, a pointer for the tag already installed, the staging lock) and
+  drop a pointer that fails, after which the next check prepares it again; those checks are the scripts' own, in
+  shell and PowerShell, and the owner does not repeat them. Nothing watches the folder, so a pointer written, dropped
+  or applied by another process (the installer, an operator's `sotd update stage`, another host's daemon on a shared
+  home) reaches the state at the next of the four points, at most a day late when nothing asks. The state is told by
+  `version.query` alone, and no hello and no event carries it yet. While a second attempt stages, `update.check` says
+  ok and the state says preparing. `auto` mode's words are said of every armed update while the mode is on. A check
+  that finds a release while a pipeline `update.check` started is running writes found over preparing until that
+  pipeline ends (nothing in the product sends `update.check`). A daemon with no install record beside its binary
+  reads the updates folder its updater resolves, which for a source build on a computer with the product installed is
+  the product's. A reading that never ends holds its blocking thread until the process ends, and each `version.query`
+  meanwhile logs the warning. Each reading resolves the updates folder and reads the install record again, so an
+  install that warns there (an ignored `SOT_UPDATE_ROOT`, a record whose prefix is not the binary's) warns at each.
+  Tests `rust/backend/src/update/status_tests.rs`: `the_state_is_what_the_chase_and_the_armed_pointer_say`,
+  `the_ready_words_read_right_in_a_row_about_another_computer`, `a_state_written_again_unchanged_wakes_no_reader`;
+  `update/cli_tests.rs`: `ready_is_exactly_what_the_pointer_verb_answers_ok_for`,
+  `a_release_armed_here_is_found_again_when_its_pointer_goes`; `update_tests.rs`:
+  `each_step_of_the_pipeline_is_the_state_a_reader_sees`, `the_chase_a_run_leaves_claims_no_more_than_the_run_did`,
+  `a_runs_end_and_a_checks_start_read_the_disk_again`, `the_daemons_own_install_decides_what_its_state_reads` (the
+  owner a daemon starts with, in a copy of the test binary under a prefix: its first reading, the unit's words, and
+  the host with neither key), `a_check_that_is_off_or_blocked_says_why_in_the_state`,
+  `a_successful_stage_clears_the_recorded_block_before_prepare`,
+  `a_recorded_stage_block_overlays_status_for_its_own_tag_only`; `clients_tests.rs`:
+  `a_version_answer_carries_the_update_state_as_the_disk_has_it`,
+  `a_version_answer_never_waits_on_a_disk_that_hangs` (a FIFO stands for the install record).
 
 Apply (`sot-apply.sh`, `sot-apply.ps1`):
 - It verifies the whole stage before it mutates, restores on a failure after mutation and exits 0 (fail-open); a

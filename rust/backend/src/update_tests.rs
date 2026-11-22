@@ -433,8 +433,44 @@ fn only_a_host_named_with_neither_key_runs_no_sotd() {
     assert_eq!(answers, [true, false, false, false]);
 }
 
-/// The recorded block is process-wide: tests that record or clear it run one at a time.
-static STAGE_BLOCK_TEST: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+/// An owner of the update's state for a test, with nothing armed wherever it looks.
+fn a_status() -> Status {
+    Status::new(Chase::Unchecked, false, || None)
+}
+
+/// The next state a reader was told, within 30 s.
+async fn next_told(told: &mut tokio::sync::mpsc::UnboundedReceiver<sot_protocol::UpdateState>) -> sot_protocol::UpdateState {
+    tokio::time::timeout(Duration::from_secs(30), told.recv()).await.expect("a state within 30 s").expect("the reader is alive")
+}
+
+/// A pointer for `version` armed at `<updates>/pending-<target>.json`, for this platform's target, and the target. With
+/// no install record beside the folder there is nothing to compare it with, so it fits.
+fn arm_on_disk(updates: &std::path::Path, version: &str, over: Option<(&str, &str)>) -> String {
+    let target = sot_updater::platform::this_platform().unwrap().to_string();
+    let identity = ReleaseIdentity {
+        target: target.clone(),
+        asset: sot_updater::platform::platform_asset(version).unwrap(),
+        ..fake_identity(&format!("v{version}"))
+    };
+    let state = PreparedState { schema: 1, identity: identity.clone(), checkout: "/x".into(), commit: "cc".into(), julia_instantiated: true, mathjax_deps: false, prepared_at: 1 };
+    let stage = sot_updater::stage_dir(updates, &identity);
+    std::fs::create_dir_all(&stage).unwrap();
+    std::fs::write(stage.join("prepared.json"), serde_json::to_string(&state).unwrap()).unwrap();
+    let pointer = PendingPointer { identity, ..pointer("v0.0.0", over) };
+    std::fs::write(sot_updater::pending::pointer_path(updates, &target), serde_json::to_string(&pointer).unwrap()).unwrap();
+    target
+}
+
+/// An owner that looks for its armed pointer in `updates`, which it has not read yet.
+fn a_status_over(updates: &std::path::Path, target: &str) -> Status {
+    let (updates, target) = (updates.to_path_buf(), target.to_string());
+    Status::new(Chase::Unchecked, false, move || Some(Disk { updates: updates.clone(), target: target.clone(), unit: false }))
+}
+
+/// A stage of `version` that failed with `cause`, as the pipeline writes it.
+fn stage_failed(version: &str, cause: &str) -> Chase {
+    Chase::NotApplied { version: version.into(), cause: PipelineError::Stage(cause.into()).to_string(), block: Some(cause.into()) }
+}
 
 /// A release folder for this platform that stages, and the config and identity that stage it.
 #[cfg(unix)]
@@ -471,18 +507,245 @@ async fn staged_release(dir: &std::path::Path) -> (UpdaterConfig, ReleaseIdentit
     (cfg, id)
 }
 
-/// The block a failed commit recorded stops describing reality the moment the next attempt stages: the prepare that
+/// The block a failed commit recorded stops describing reality the moment the next attempt begins: the prepare that
 /// follows can take an hour, and `update.check` must not report the old reason meanwhile.
 #[cfg(unix)]
 #[tokio::test]
 async fn a_successful_stage_clears_the_recorded_block_before_prepare() {
-    let _block = STAGE_BLOCK_TEST.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let (cfg, id) = staged_release(dir.path()).await;
-    record_stage_block(&id.tag, "Access is denied. (os error 5)");
-    let staged = stage_prepare_arm_with(&cfg, &id, None, Writer::Automatic).await;
-    assert!(matches!(staged, Ok(Pipeline::Staged)), "{staged:?}");
-    assert_eq!(overlay_stage_block(ok_outcome(id)).status, "ok");
+    let status = a_status();
+    status.set_chase(stage_failed(&id.version, "Access is denied. (os error 5)"));
+    assert_eq!(overlay_stage_block(&status, ok_outcome(id.clone())).status, "update blocked: Access is denied. (os error 5)");
+    stage_prepare_arm_inner(&status, &cfg, &id).await;
+    assert!(sot_updater::is_staged(&cfg.updates_root, &id).await, "the stage landed");
+    assert_eq!(overlay_stage_block(&status, ok_outcome(id)).status, "ok");
+}
+
+/// Each step of the daemon's pipeline is the state a reader is told, in order, on a release folder that stages and has
+/// no install to prepare for: found by the check, preparing while it stages, then found with the reason nothing more
+/// was done. A stage that fails is not applied with the step's words, marks only its own release for `update.check`,
+/// and the next attempt clears it. A run turned away because another is under way writes nothing.
+#[cfg(unix)]
+#[tokio::test]
+async fn each_step_of_the_pipeline_is_the_state_a_reader_sees() {
+    use sot_protocol::UpdatePhase as P;
+    let dir = tempfile::tempdir().unwrap();
+    let (cfg, id) = staged_release(dir.path()).await;
+    let status = a_status();
+    let mut told = status.told_at_each_change();
+    let brief = |s: sot_protocol::UpdateState| (s.phase, s.version, s.detail);
+
+    status.checked(chase_of_check(&ok_outcome(id.clone())));
+    assert_eq!(brief(next_told(&mut told).await), (P::Found, "9.9.9".to_string(), String::new()));
+    stage_prepare_arm_inner(&status, &cfg, &id).await;
+    assert_eq!(brief(next_told(&mut told).await), (P::Preparing, "9.9.9".to_string(), String::new()));
+    assert_eq!(brief(next_told(&mut told).await), (P::Found, "9.9.9".to_string(), "no install record here to prepare for".to_string()));
+    assert_eq!(status.state().line(), "9.9.9 found: no install record here to prepare for");
+
+    // The same release offered from a folder that holds no asset, into a fresh updates folder: the stage fails.
+    let empty = dir.path().join("empty");
+    std::fs::create_dir_all(&empty).unwrap();
+    let broken = UpdaterConfig { fetcher: Fetcher::Dir(empty), updates_root: dir.path().join("updates-2"), ..cfg.clone() };
+    stage_prepare_arm_inner(&status, &broken, &id).await;
+    assert_eq!(next_told(&mut told).await.phase, P::Preparing);
+    let failed = next_told(&mut told).await;
+    let block = status.stage_block("9.9.9").expect("a failed stage is the block of its own release");
+    assert_eq!((failed.phase, failed.version.as_str(), failed.detail.as_str()), (P::NotApplied, "9.9.9", format!("staging update failed: {block}").as_str()));
+    assert_eq!(status.stage_block("9.9.10"), None, "a failed stage of one release never marks another");
+    assert_eq!(overlay_stage_block(&status, ok_outcome(fake_identity("v9.9.10"))).status, "ok");
+
+    // A run turned away because one is under way writes nothing.
+    PIPELINE_RUNNING.store(true, std::sync::atomic::Ordering::Release);
+    stage_prepare_arm(&status, &cfg, &id).await;
+    PIPELINE_RUNNING.store(false, std::sync::atomic::Ordering::Release);
+    assert_eq!(status.state().phase, P::NotApplied, "the run that was turned away wrote nothing");
+
+    stage_prepare_arm_inner(&status, &cfg, &id).await;
+    assert_eq!(next_told(&mut told).await.phase, P::Preparing);
+    assert_eq!(next_told(&mut told).await.phase, P::Found);
+    assert_eq!(status.stage_block("9.9.9"), None, "the next attempt clears the block");
+}
+
+/// What a run of the pipeline leaves of the chase claims no more than the run did: an arm leaves the disk to say ready
+/// and never says up to date, a release the arm refused or kept a newer one over is not applied with the arm's own
+/// sentence, a stage with nothing to prepare for is found with the reason, and a step that failed is not applied with
+/// the step's words, the stage's cause alone being the block.
+#[test]
+fn the_chase_a_run_leaves_claims_no_more_than_the_run_did() {
+    let id = fake_identity("v9.9.9");
+    let not_applied = |cause: &str, block: Option<&str>| Chase::NotApplied { version: "9.9.9".into(), cause: cause.into(), block: block.map(String::from) };
+    let unreadable = UnreadableInstall { path: "/p/install.json".into(), cause: "EOF while parsing".into(), missing: false };
+    let table: Vec<(Result<Pipeline, PipelineError>, Chase)> = vec![
+        (Ok(Pipeline::Armed), Chase::Armed { version: "9.9.9".into() }),
+        (Ok(Pipeline::Staged), Chase::Found { version: "9.9.9".into(), detail: "no install record here to prepare for".into() }),
+        (Ok(Pipeline::NotArmed(ArmOutcome::MarkedBad)), not_applied("this release crash-looped after an apply and is marked bad", None)),
+        (Ok(Pipeline::NotArmed(ArmOutcome::NotAboveInstall)), not_applied("the release is not above the installed build", None)),
+        (Ok(Pipeline::NotArmed(ArmOutcome::KeptNewer)), not_applied("a newer release is already armed", None)),
+        (Ok(Pipeline::NotArmed(ArmOutcome::Pinned)), not_applied("the install is pinned", None)),
+        (Ok(Pipeline::NotArmed(ArmOutcome::DevInstall)), not_applied("the install is a dev build", None)),
+        (Ok(Pipeline::NotArmed(ArmOutcome::UnreadableInstall(unreadable.clone()))), not_applied(&unreadable.sentence(), None)),
+        (Err(PipelineError::Stage("Access is denied. (os error 5)".into())), not_applied("staging update failed: Access is denied. (os error 5)", Some("Access is denied. (os error 5)"))),
+        (Err(PipelineError::Prepare("no julia".into())), not_applied("preparing update failed: no julia", None)),
+        (Err(PipelineError::Arm("the lock is held".into())), not_applied("arming update failed: the lock is held", None)),
+    ];
+    for (result, chase) in table {
+        assert_eq!(chase_at_end(&id, &result), chase, "{result:?}");
+    }
+}
+
+/// The disk is read again when a run of the pipeline ends and when a daily check begins, with nobody asking: an owner
+/// that has never read its folder says ready after each, for a pointer that was armed there meanwhile.
+#[cfg(unix)]
+#[test]
+fn a_runs_end_and_a_checks_start_read_the_disk_again() {
+    use sot_protocol::UpdatePhase as P;
+    let _guard = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _restore = crate::paths::EnvGuard::capture("SOT_UPDATE_ROOT");
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let armed = dir.path().join("armed").join("updates");
+    std::fs::create_dir_all(&armed).unwrap();
+    let target = arm_on_disk(&armed, "9.9.9", None);
+
+    // A run's end: the release folder stages and has no install to prepare for, so the chase ends at found; the disk
+    // holds a pointer for that release, which only the reading at the run's end can have told.
+    let after_a_run = a_status_over(&armed, &target);
+    assert_eq!(after_a_run.state().phase, P::Unchecked, "nothing read yet");
+    let (cfg, id) = rt.block_on(staged_release(dir.path()));
+    rt.block_on(stage_prepare_arm_inner(&after_a_run, &cfg, &id));
+    assert_eq!((after_a_run.state().phase, after_a_run.state().version.as_str()), (P::Ready, "9.9.9"), "{:?}", after_a_run.state());
+
+    // A check's start: the check finds a pinned install and reaches no release source.
+    let pinned = dir.path().join("pinned");
+    std::fs::create_dir_all(pinned.join("updates")).unwrap();
+    std::fs::write(pinned.join("install.json"), r#"{"schema":1,"prefix":"/p","version":"0.7.3","pinned":true}"#).unwrap();
+    std::env::set_var("SOT_UPDATE_ROOT", pinned.join("updates"));
+    let after_a_check = a_status_over(&armed, &target);
+    let (leases, (tx, _rx)) = (Leases::new(Some("boot".into()), None, None, false), broadcast::channel(4));
+    let updater = Updater { current: "0.7.3".into(), dev: false, mode: Mode::Notify, repo: "o/r".into() };
+    rt.block_on(run_check_once(&updater, &after_a_check, &tx, &|| 0, &leases));
+    let state = after_a_check.state();
+    assert_eq!((state.phase, state.version.as_str(), state.checked_s.is_some()), (P::Ready, "9.9.9", true), "{state:?}");
+}
+
+/// The probe of `the_daemons_own_install_decides_what_its_state_reads` runs in a copy of this binary placed under a
+/// prefix (a no-op without its variable): `boot` makes the owner a daemon starts with and waits for the state its own
+/// first reading tells; `guest` runs the pipeline for a release above the install. The state's line is printed between
+/// markers.
+#[test]
+fn probe_the_update_state_from_a_prefix() {
+    let Some(mode) = std::env::var_os("SOT_TEST_PROBE_UPDATE_STATE") else { return };
+    let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+    let said = rt.block_on(async {
+        if mode == "guest" {
+            let (status, id) = (a_status(), fake_identity("v9.9.9"));
+            let cfg = UpdaterConfig { repo: id.repo.clone(), current_version: "9.9.8".into(), fetcher: Fetcher::Dir("/nowhere".into()), updates_root: "/nowhere".into() };
+            stage_prepare_arm_inner(&status, &cfg, &id).await;
+            return status.state().line();
+        }
+        let status = boot_status();
+        let began = std::time::Instant::now();
+        while status.state().phase != sot_protocol::UpdatePhase::Ready && began.elapsed() < Duration::from_secs(10) {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        status.state().line()
+    });
+    println!("PROBE[{said}]");
+}
+
+/// The owner a daemon starts with reads the install its binary runs from: the pointer armed under that prefix, for this
+/// platform, told before anything asks (its first reading is its own), with what applies it taken from the install
+/// record's service. And the pipeline of a daemon whose host the topology gives neither `daemon` nor `frontend` says
+/// off, where the same release on a host that runs a daemon is not applied with the refusal's words.
+#[test]
+fn the_daemons_own_install_decides_what_its_state_reads() {
+    let scratch = tempfile::tempdir().unwrap();
+    let prefix = scratch.path().join("opt");
+    std::fs::create_dir_all(prefix.join("bin")).unwrap();
+    std::fs::create_dir_all(prefix.join("updates")).unwrap();
+    let exe = prefix.join("bin").join(std::env::current_exe().unwrap().file_name().unwrap());
+    sot_platform::test_exec::write_executable(&exe, std::fs::read(std::env::current_exe().unwrap()).unwrap());
+    let hosts = scratch.path().join("hosts.toml");
+    std::fs::write(&hosts, "hub = \"us-hub\"\n[host.us-hub]\ndaemon = true\n[host.us-guest]\n").unwrap();
+    let probe = |mode: &str, me: &str, record: &str| {
+        std::fs::write(prefix.join("install.json"), record).unwrap();
+        let ran = sot_platform::test_wait::run_within(
+            std::process::Command::new(&exe)
+                .args(["--exact", "update::tests::probe_the_update_state_from_a_prefix", "--nocapture", "--test-threads=1"])
+                .env("SOT_TEST_PROBE_UPDATE_STATE", mode)
+                .env("SOT_HOSTS", &hosts)
+                .env("SOT_SELF_HOST", me)
+                .env_remove("SOT_UPDATE_ROOT"),
+            Duration::from_secs(60),
+        );
+        let text = ran.stdout;
+        text.split_once("PROBE[").and_then(|(_, rest)| rest.lines().next()?.strip_suffix(']')).map(str::to_string).unwrap_or(text)
+    };
+    let record = |version: &str, service: &str| format!(r#"{{"schema":1,"prefix":"/p","version":"{version}","commit":"c0","daemon":true,"service":"{service}"}}"#);
+
+    arm_on_disk(&prefix.join("updates"), "9.9.9", Some(("9.9.8", "c0")));
+    assert_eq!(
+        probe("boot", "us-hub", &record("9.9.8", "systemd")),
+        "9.9.9 ready: applies when that computer's sotd.service next starts (a start of Ship of Tools there, or a restart of the service)"
+    );
+    assert_eq!(probe("boot", "us-hub", &record("9.9.8", "none")), "9.9.9 ready: applies when Ship of Tools is next started on that computer");
+
+    assert_eq!(probe("guest", "us-guest", &record("9.9.8", "none")), "off: hosts.toml gives this host neither daemon nor frontend, so it takes no update of its own");
+    assert_eq!(probe("guest", "us-hub", &record("9.9.9", "none")), "9.9.9 not applied: v9.9.9 is not above the installed 9.9.9");
+}
+
+/// A check that is off or blocked says why in the state. A dev build and update mode off run no check and no task, so
+/// the state says so from the start; a pinned install and an install record that cannot be read are found by the
+/// check, which reaches no release source for either.
+#[test]
+fn a_check_that_is_off_or_blocked_says_why_in_the_state() {
+    use sot_protocol::UpdatePhase as P;
+    let updater = |dev, mode| Updater { current: "0.7.3".into(), dev, mode, repo: "o/r".into() };
+    assert_eq!(updater(true, Mode::Notify).start_chase(), Chase::Off { why: "dev build".into() });
+    assert_eq!(updater(false, Mode::Off).start_chase(), Chase::Off { why: "update mode off".into() });
+    assert_eq!(updater(false, Mode::Auto).start_chase(), Chase::Unchecked);
+    let start = Status::new(updater(true, Mode::Notify).start_chase(), false, || None).state();
+    assert_eq!((start.phase, start.line().as_str(), start.checked_s), (P::Off, "off: dev build", None), "no check ran");
+
+    let _guard = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _restore = crate::paths::EnvGuard::capture("SOT_UPDATE_ROOT");
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("updates")).unwrap();
+    std::env::set_var("SOT_UPDATE_ROOT", dir.path().join("updates"));
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let status = a_status();
+    let leases = Leases::new(Some("boot".into()), None, None, false);
+    let (tx, _rx) = broadcast::channel(4);
+    let check = |record: &str| {
+        std::fs::write(dir.path().join("install.json"), record).unwrap();
+        rt.block_on(run_check_once(&updater(false, Mode::Notify), &status, &tx, &|| 0, &leases));
+        status.state()
+    };
+
+    let pinned = check(r#"{"schema":1,"prefix":"/p","version":"0.7.3","pinned":true}"#);
+    assert_eq!(pinned.phase, P::Off);
+    assert_eq!(pinned.line(), "off: pinned at 0.7.3: automatic updates stay off for this install until a run that names no version");
+    assert_eq!(pinned.mark(), None, "the person's own choice has no mark");
+
+    let cut = check(r#"{"schema":1,"prefix":"/p","version":"0.7.3","pinned":tr"#);
+    assert_eq!(cut.phase, P::Blocked);
+    assert!(cut.detail.starts_with(UNREADABLE_LEAD), "{}", cut.detail);
+    assert!(cut.detail.contains(if cfg!(windows) { "install.ps1 -Version" } else { "install.sh --version" }), "names the repair run: {}", cut.detail);
+    assert_eq!(cut.mark().map(|(long, _)| long).as_deref(), Some("updates off: install record unreadable"));
+    assert!(cut.checked_s.is_some(), "the check that found it ran");
+
+    // Both of the record's sentences still name the repair run after they cross the wire, on a path long enough that
+    // the sentence passes the wire's bound: the bound keeps a sentence's end.
+    let run = if cfg!(windows) { "`install.ps1 -Version <version>`" } else { "`install.sh --version <version>`" };
+    for missing in [false, true] {
+        let path = format!("/home/{}/.local/share/sot/install.json", "a".repeat(120));
+        let why = UnreadableInstall { path: path.into(), cause: "EOF while parsing a value at line 1 column 57".into(), missing }.sentence();
+        assert!(why.len() > sot_protocol::ops::MAX_UPDATE_DETAIL, "the sentence is past the bound: {}", why.len());
+        let told = serde_json::to_value(Status::new(Chase::Blocked { why }, false, || None).state()).unwrap();
+        let read: sot_protocol::UpdateState = serde_json::from_value(told).unwrap();
+        assert!(read.line().contains(run) && read.line().starts_with("off: install.json "), "missing {missing}: {}", read.line());
+    }
 }
 
 /// Each step says so on the log, which `sotd update stage` sends to stderr: the stage and, when there is an install to
@@ -501,7 +764,6 @@ async fn the_pipeline_logs_a_line_for_each_step() {
             Ok(())
         }
     }
-    let _block = STAGE_BLOCK_TEST.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let (cfg, id) = staged_release(dir.path()).await;
     let buf = Buf::default();
@@ -725,17 +987,17 @@ fn ok_outcome(id: ReleaseIdentity) -> CheckOutcome {
 // release's check is not tainted by an older tag's recorded block.
 #[test]
 fn a_recorded_stage_block_overlays_status_for_its_own_tag_only() {
-    let _block = STAGE_BLOCK_TEST.blocking_lock();
-    clear_stage_block(); // isolate from any other test's leftover state
-    record_stage_block("v9.9.9", "Access is denied. (os error 5)");
+    let status = a_status();
+    status.set_chase(stage_failed("9.9.9", "Access is denied. (os error 5)"));
 
-    let blocked = overlay_stage_block(ok_outcome(fake_identity("v9.9.9")));
+    let blocked = overlay_stage_block(&status, ok_outcome(fake_identity("v9.9.9")));
     assert_eq!(blocked.status, "update blocked: Access is denied. (os error 5)");
 
-    let unrelated = overlay_stage_block(ok_outcome(fake_identity("v9.9.10")));
+    let unrelated = overlay_stage_block(&status, ok_outcome(fake_identity("v9.9.10")));
     assert_eq!(unrelated.status, "ok");
 
-    clear_stage_block();
-    let after_clear = overlay_stage_block(ok_outcome(fake_identity("v9.9.9")));
+    // Only a failed stage is a block: a prepare that failed is told by the state alone.
+    status.set_chase(Chase::NotApplied { version: "9.9.9".into(), cause: "preparing update failed: no julia".into(), block: None });
+    let after_clear = overlay_stage_block(&status, ok_outcome(fake_identity("v9.9.9")));
     assert_eq!(after_clear.status, "ok");
 }

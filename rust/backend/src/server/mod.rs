@@ -258,8 +258,11 @@ pub async fn run(opts: Opts) -> Result<()> {
     // handle). A source build, a `+` in its version (the whole fleet), disables it at the hard
     // guard inside `spawn_periodic`, which logs the disabled state and
     // returns without spawning anything.
+    // The owner of the update's state is made here and read by `version.query` and `update.check`; it begins its own
+    // first reading of the armed pointer, in a task of its own.
+    let update = crate::update::boot_status();
     let roster = clients.clone();
-    crate::update::spawn_periodic(fe_command_tx.clone(), move || roster.count(), leases.clone());
+    crate::update::spawn_periodic(update.clone(), fe_command_tx.clone(), move || roster.count(), leases.clone());
 
     // The project chat: the hub fact decides before any chat file is opened; a daemon that is not the hub holds none.
     // It retires with the daemon's other in-process services (lifecycle's terminal).
@@ -280,7 +283,7 @@ pub async fn run(opts: Opts) -> Result<()> {
     if let Some(path) = opts.socket {
         let services = Services {
             session, mathjax, pluto, files_mode, preview_changed_tx, label, workspaces, ws_events_tx, agent_events_tx,
-            links, fe_command_tx, repl_frame_tx, clients, topology_store, topo_changed_tx, leases, chat,
+            links, fe_command_tx, repl_frame_tx, clients, topology_store, topo_changed_tx, leases, chat, update,
         };
         tasks.push(tokio::spawn(run_local(path, services)));
     }

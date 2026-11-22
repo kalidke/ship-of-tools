@@ -26,6 +26,8 @@ pub(super) struct Services {
     pub(super) topo_changed_tx: broadcast::Sender<TopologyChanged>,
     pub(super) leases: Arc<Leases>,
     pub(super) chat: Arc<crate::chat::Chat>,
+    /// The state of this daemon's update: the updater writes it, `version.query` and `update.check` read it.
+    pub(super) update: crate::update::Status,
 }
 
 #[cfg(test)]
@@ -50,6 +52,7 @@ impl Services {
             topo_changed_tx: broadcast::channel(8).0,
             leases: Arc::new(Leases::new(Some("boot".to_string()), None, None, false)),
             chat: crate::chat::Chat::off(),
+            update: crate::update::Status::new(crate::update::Chase::Unchecked, false, || None),
         }
     }
 }

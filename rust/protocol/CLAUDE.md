@@ -304,8 +304,10 @@ name is in this crate's one op table.
     Mechanism: three defaulted fields and one new op name in `op_table!`, so `PROTOCOL_VERSION` stays 4. What an older
     reader does: it reads past the new keys of a hello reply or a version answer (plain serde structs; the last
     release's frozen shapes parse the grown ones) and reads `update.state` as any evt it does not know (guarantee 10).
-    What a newer reader does with an older daemon: the fields are absent and read as none. Limits: nothing sends the
-    state yet: no daemon fills any of the fields and none emits the evt, and no window reads them; the words carry no
+    What a newer reader does with an older daemon: the fields are absent and read as none. Limits: the daemon
+    fills `DaemonVersion.update` and `update_line` in every `version.query` answer (distribution's owner,
+    `scripts/CLAUDE.md` under Update) and nothing reads them yet; no daemon fills the hello's field or emits the evt,
+    and no window reads either; the words carry no
     age but the last check's, in whole minutes, hours or days; a cause in `detail` can hold a local path, and it goes
     only to the person's own window, `sotd status` and `sot-fe version`; a reader in another language that prints
     `update_line` cleans it itself, since only this crate's readers clean what they read; cleaning removes control

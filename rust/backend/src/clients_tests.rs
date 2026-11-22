@@ -467,7 +467,8 @@ mod fe_sessions_tests {
         let topology = crate::topology::store::TopologyStore::new(
             std::env::temp_dir().join(format!("sot-fe-sessions-blocker1-test-{}", std::process::id())),
         );
-        let out = handle_version_query(1, &clients, &topology, &topo_tx)
+        let update = crate::update::Status::new(crate::update::Chase::Unchecked, false, || None);
+        let out = handle_version_query(1, &clients, &topology, &topo_tx, &update)
             .await
             .expect("handler ok");
         let payload = &out[0].0.payload;
@@ -482,6 +483,143 @@ mod fe_sessions_tests {
             clients_arr.iter().any(|c| c.get("sessions").is_some_and(|s| !s.is_null())),
             "the still-attached connection must keep listing its own sessions: {payload}"
         );
+    }
+}
+
+#[cfg(test)]
+mod update_state_tests {
+    use super::handle_version_query;
+    use crate::clients::Clients;
+    use crate::update::{Chase, Disk, Status};
+
+    /// `version.query` reads the armed update from disk again before it answers, so its `update` is what the disk holds
+    /// at that call: nothing armed, a pointer that would apply, a pointer the apply would refuse, and nothing again.
+    #[tokio::test]
+    async fn a_version_answer_carries_the_update_state_as_the_disk_has_it() {
+        let _env = crate::paths::EnvPinned::fresh();
+        let dir = tempfile::tempdir().unwrap();
+        let updates = dir.path().join("updates");
+        std::fs::create_dir(&updates).unwrap();
+        let target = "linux-x86_64";
+        let pointer = updates.join(format!("pending-{target}.json"));
+        let status = Status::new(Chase::Unchecked, false, {
+            let updates = updates.clone();
+            move || Some(Disk { updates: updates.clone(), target: target.into(), unit: true })
+        });
+        let clients = Clients::new();
+        let (topo_tx, _rx) = tokio::sync::broadcast::channel(1);
+        let topology = crate::topology::store::TopologyStore::new(dir.path().join("hosts.toml"));
+        let (clients, topology, topo_tx, status) = (&clients, &topology, &topo_tx, &status);
+        let ask = || async move {
+            let out = handle_version_query(1, clients, topology, topo_tx, status).await.expect("handler ok");
+            out[0].0.payload["daemon"]["update"].clone()
+        };
+        assert_eq!(ask().await, serde_json::json!({"phase": "unchecked"}), "nothing armed, no check yet");
+
+        std::fs::write(
+            &pointer,
+            format!(
+                r#"{{"schema":1,"repo":"kalidke/ship-of-tools","tag":"v9.9.9","version":"9.9.9","target":"{target}",
+                    "asset":"sot-9.9.9-{target}.tar.gz","asset_sha256":"{}","checkout":"/x","commit":"cc","armed_at":1}}"#,
+                "ab".repeat(32)
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            ask().await,
+            serde_json::json!({"phase": "ready", "version": "9.9.9", "detail": "applies when that computer's sotd.service next starts (a start of Ship of Tools there, or a restart of the service)"}),
+            "a pointer armed since the last answer"
+        );
+        // The daemon's own line beside the state, for a reader that cannot word one.
+        let out = handle_version_query(1, clients, topology, topo_tx, status).await.expect("handler ok");
+        assert_eq!(
+            out[0].0.payload["daemon"]["update_line"],
+            "9.9.9 ready: applies when that computer's sotd.service next starts (a start of Ship of Tools there, or a restart of the service)"
+        );
+
+        // An install appears whose stage folder records no prepare: the apply would drop this pointer.
+        std::fs::write(dir.path().join("install.json"), r#"{"schema":1,"prefix":"/p","version":"9.9.8","commit":"c0"}"#).unwrap();
+        let refused = ask().await;
+        assert_eq!((&refused["phase"], &refused["version"]), (&serde_json::json!("not_applied"), &serde_json::json!("9.9.9")), "{refused}");
+        assert!(refused["detail"].as_str().unwrap().starts_with("no record of a prepare for this stage"), "{refused}");
+
+        std::fs::remove_file(&pointer).unwrap();
+        assert_eq!(ask().await, serde_json::json!({"phase": "unchecked"}), "the pointer went, applied or dropped by another process");
+    }
+}
+
+#[cfg(test)]
+mod update_state_bound_tests {
+    use super::handle_version_query;
+    use crate::clients::Clients;
+    use crate::update::{Chase, Disk, Status};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    /// Ends a read that hangs on the FIFO at `0` when the test ends, however it ends: a held writer lets the reader's
+    /// open return, and its drop is the reader's end of file. A runtime waits for its blocking threads when it drops.
+    struct Release(std::path::PathBuf);
+    impl Drop for Release {
+        fn drop(&mut self) {
+            drop(std::fs::OpenOptions::new().read(true).write(true).open(&self.0));
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    /// A read of the install record that hangs (a FIFO nobody writes to stands for a disk that does not answer) holds
+    /// one reading and nothing else. Every `version.query` meanwhile is answered within the shortest wait of its
+    /// callers (3 s, `sotd status`) with the state last read, marked unread, three at once no later than one; no second
+    /// reading is begun beside the hung one; and when the read ends the next answer is read again.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_version_answer_never_waits_on_a_disk_that_hangs() {
+        let _env = crate::paths::EnvPinned::fresh();
+        let dir = tempfile::tempdir().unwrap();
+        let updates = dir.path().join("updates");
+        std::fs::create_dir(&updates).unwrap();
+        let record = dir.path().join("install.json");
+        sot_platform::test_wait::run_within(std::process::Command::new("mkfifo").arg(&record), Duration::from_secs(10)).ok();
+        let release = Release(record.clone());
+
+        let readings = Arc::new(AtomicUsize::new(0));
+        let status = Status::new(Chase::Unchecked, false, {
+            let (updates, readings) = (updates.clone(), readings.clone());
+            move || {
+                readings.fetch_add(1, Ordering::SeqCst);
+                Some(Disk { updates: updates.clone(), target: "linux-x86_64".into(), unit: false })
+            }
+        });
+        let clients = Clients::new();
+        let (topo_tx, _rx) = tokio::sync::broadcast::channel(1);
+        let topology = Arc::new(crate::topology::store::TopologyStore::new(dir.path().join("hosts.toml")));
+        let ask = |id: u64| {
+            let (clients, topology, topo_tx, status) = (clients.clone(), topology.clone(), topo_tx.clone(), status.clone());
+            tokio::spawn(async move {
+                let out = handle_version_query(id, &clients, &topology, &topo_tx, &status).await.expect("handler ok");
+                out[0].0.payload["daemon"].clone()
+            })
+        };
+
+        let began = Instant::now();
+        for answer in [ask(1), ask(2), ask(3)] {
+            let left = Duration::from_secs(3).saturating_sub(began.elapsed());
+            let daemon = tokio::time::timeout(left, answer).await.expect("an answer within the 3 s `sotd status` waits").unwrap();
+            assert_eq!(daemon["update"], serde_json::json!({"phase": "unchecked", "unread": true}), "the last state, marked");
+            assert_eq!(daemon["update_line"], "not checked yet; as last read, the disk did not answer in time");
+        }
+        assert_eq!(readings.load(Ordering::SeqCst), 1, "a second reading was begun beside the one that hangs");
+
+        drop(release);
+        let read_again = Instant::now();
+        loop {
+            let daemon = tokio::time::timeout(Duration::from_secs(3), ask(4)).await.expect("an answer").unwrap();
+            if daemon["update"] == serde_json::json!({"phase": "unchecked"}) {
+                break;
+            }
+            assert!(read_again.elapsed() < Duration::from_secs(10), "the disk answers again and the state stays unread: {daemon}");
+        }
+        assert!(readings.load(Ordering::SeqCst) >= 2, "the answer after the hang was not read again");
     }
 }
 

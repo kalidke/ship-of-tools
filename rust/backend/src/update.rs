@@ -32,7 +32,9 @@ use sot_updater::{CheckOutcome, Fetcher, InstallFile, InstallManifest, ReleaseId
 
 mod cli;
 mod refusal;
+mod status;
 pub(crate) use cli::{run, USAGE};
+pub(crate) use status::{Chase, Disk, Status};
 use refusal::{apply_refusal, arm_refusal, host_runs_no_sotd};
 
 use sot_protocol::reply::HandlerOutput;
@@ -163,6 +165,22 @@ impl Updater {
         }
     }
 
+    /// What the state of the update is before any check: off where no check ever runs.
+    fn start_chase(&self) -> Chase {
+        self.check_off().map_or(Chase::Unchecked, |why| Chase::Off { why: why.into() })
+    }
+
+    /// Why this process runs no check at all, or `None`: the hard guard, then the update mode.
+    fn check_off(&self) -> Option<&'static str> {
+        if self.dev {
+            Some("dev build")
+        } else if self.mode == Mode::Off {
+            Some("update mode off")
+        } else {
+            None
+        }
+    }
+
     /// Mechanism config for the shared crate; errors when no updates root can
     /// be resolved (no install manifest and no usable env — never a temp dir).
     fn mechanism(&self) -> Result<UpdaterConfig> {
@@ -186,11 +204,8 @@ impl Updater {
             update_available: false,
             status: status.into(),
         };
-        if self.dev {
-            return disabled("disabled: dev build");
-        }
-        if self.mode == Mode::Off {
-            return disabled("disabled: update mode off");
+        if let Some(why) = self.check_off() {
+            return disabled(&format!("disabled: {why}"));
         }
         match self.check_basis() {
             Ok(version) => {
@@ -225,50 +240,12 @@ impl Updater {
 static PIPELINE_RUNNING: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
-/// (tag, reason) of the most recent stage that exhausted its commit-rename
-/// backoff (Defect 0c), or `None` once a stage has since succeeded. A single
-/// slot, not a map: only the LATEST release being chased can be blocked in a
-/// way worth surfacing, and [`overlay_stage_block`] only applies it to a
-/// check whose identity carries the SAME tag, so a superseding release's
-/// check is never tainted by an older tag's failure.
-static LAST_STAGE_BLOCK: std::sync::Mutex<Option<(String, String)>> = std::sync::Mutex::new(None);
-
-fn record_stage_block(tag: &str, reason: &str) {
-    if let Ok(mut guard) = LAST_STAGE_BLOCK.lock() {
-        *guard = Some((tag.to_string(), reason.to_string()));
-    }
-}
-
-fn clear_stage_block() {
-    if let Ok(mut guard) = LAST_STAGE_BLOCK.lock() {
-        *guard = None;
-    }
-}
-
-/// Overlay a recorded stage block onto a check outcome's status — the check
-/// itself succeeded ("ok"), but the release it names never manages to
-/// commit, and a bare "ok" is exactly how one box hid the fact that it
-/// never updated for two releases running. Only applies when `out`'s
-/// identity is the SAME tag that failed to commit.
-fn overlay_stage_block(mut out: CheckOutcome) -> CheckOutcome {
-    if let Some(id) = &out.identity {
-        if let Ok(guard) = LAST_STAGE_BLOCK.lock() {
-            if let Some((tag, reason)) = guard.as_ref() {
-                if *tag == id.tag {
-                    out.status = format!("update blocked: {reason}");
-                }
-            }
-        }
-    }
-    out
-}
-
 /// Stage → prepare → arm: the full background pipeline for one discovered
 /// release (Phase C2). Prepare and arm run only on release installs (an
 /// install manifest exists) — a dev/canary box without one stops after the
 /// stage, exactly the pre-C2 behavior. Julia envs are instantiated for
 /// backend roles (`local`/`be-only`); `remote` prepares the checkout only.
-async fn stage_prepare_arm(cfg: &UpdaterConfig, id: &ReleaseIdentity) {
+async fn stage_prepare_arm(status: &Status, cfg: &UpdaterConfig, id: &ReleaseIdentity) {
     use std::sync::atomic::Ordering;
     if PIPELINE_RUNNING
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -277,7 +254,7 @@ async fn stage_prepare_arm(cfg: &UpdaterConfig, id: &ReleaseIdentity) {
         tracing::debug!(tag = %id.tag, "update pipeline already running — skipping duplicate");
         return;
     }
-    let result = stage_prepare_arm_inner(cfg, id).await;
+    let result = stage_prepare_arm_inner(status, cfg, id).await;
     PIPELINE_RUNNING.store(false, Ordering::Release);
     result
 }
@@ -327,9 +304,6 @@ pub(crate) async fn stage_prepare_arm_with(
 ) -> Result<Pipeline, PipelineError> {
     tracing::info!(tag = %id.tag, "staging");
     sot_updater::stage(&updater_spawner(), cfg, id).await.map_err(|e| PipelineError::Stage(chain(&e)))?;
-    // Defect 0c: the commit landed, so a block recorded for a PRIOR attempt (this tag or an older one) no longer
-    // describes reality — and the prepare below can take an hour.
-    clear_stage_block();
     let Some(install) = install else {
         return Ok(Pipeline::Staged);
     };
@@ -346,32 +320,37 @@ pub(crate) async fn stage_prepare_arm_with(
     }
 }
 
-async fn stage_prepare_arm_inner(cfg: &UpdaterConfig, id: &ReleaseIdentity) {
+/// The pipeline for the daemon's own install, each step written to `status` as it begins or ends: a refusal before the
+/// download (not applied; off for a host that runs no sotd, which has nothing to repair), preparing while the stage, the
+/// prepare and the arm run, and at the end the armed fact read from disk again with what the run left of the chase.
+async fn stage_prepare_arm_inner(status: &Status, cfg: &UpdaterConfig, id: &ReleaseIdentity) {
+    let not_applied = |cause: String, block: Option<String>| Chase::NotApplied { version: id.version.clone(), cause, block };
     let install = match InstallManifest::of_current_exe() {
         InstallFile::Read(install) => Some(install),
         InstallFile::Absent => None,
         InstallFile::Unreadable(unreadable) => {
             tracing::warn!(tag = %id.tag, "not staging: {}", unreadable.sentence());
+            status.set_chase(not_applied(unreadable.sentence(), None));
             return;
         }
     };
     // Refused before the download: `arm` re-reads the install under the lock and is the authority, this only spares
     // a stale or foreign daemon the bytes and the prepare.
+    let guest = install.is_some() && host_runs_no_sotd();
     let refusal = install.as_ref().and_then(|i| match InstalledBuild::try_read(&i.updates_root()) {
-        Ok(installed) => arm_refusal(host_runs_no_sotd(), installed.as_ref(), id),
+        Ok(installed) => arm_refusal(guest, installed.as_ref(), id),
         Err(unreadable) => Some(unreadable.sentence()),
     });
     if let Some(why) = refusal {
         tracing::info!(tag = %id.tag, "not staging: {why}");
+        status.set_chase(if guest { Chase::Off { why: NO_SOTD_HERE.into() } } else { not_applied(why, None) });
         return;
     }
+    status.set_chase(Chase::Preparing { version: id.version.clone() });
     let result = stage_prepare_arm_with(cfg, id, install.as_ref(), Writer::Automatic).await;
-    // Defect 0c: the shared crate already retried the commit rename for about a minute before giving up. Record it so
-    // the NEXT check reports the concrete reason instead of a bare "ok" that hides a release which never manages to
-    // land — the failure mode a healthy-looking, never-updating box actually exhibited. A landed stage clears it.
-    if let Err(PipelineError::Stage(cause)) = &result {
-        record_stage_block(&id.tag, cause);
-    }
+    // The disk first, then what the run left of the chase: one change for a reader, to ready when the arm answered.
+    status.reconcile().await;
+    status.set_chase(chase_at_end(id, &result));
     match result {
         Err(PipelineError::Stage(cause)) => tracing::warn!(tag = %id.tag, error = %cause, "staging update failed"),
         Err(PipelineError::Prepare(e)) => tracing::warn!(tag = %id.tag, error = %e, "preparing update failed — not arming"),
@@ -386,6 +365,65 @@ async fn stage_prepare_arm_inner(cfg: &UpdaterConfig, id: &ReleaseIdentity) {
         }
         Ok(Pipeline::Armed) => {}
     }
+}
+
+/// The chase a run of the pipeline leaves. Armed claims no result: the pointer on disk says ready, and a release the
+/// arm refused, or kept a newer one over, is not applied with the arm's own sentence. A failed stage keeps its cause as
+/// the block `update.check` reports for this release (the shared crate already retried the commit rename for about a
+/// minute before giving up): a bare "ok" there is how a healthy-looking box hid that it never updated.
+fn chase_at_end(id: &ReleaseIdentity, result: &Result<Pipeline, PipelineError>) -> Chase {
+    let version = || id.version.clone();
+    let not_applied = |cause: String, block: Option<String>| Chase::NotApplied { version: version(), cause, block };
+    match result {
+        Err(e @ PipelineError::Stage(cause)) => not_applied(e.to_string(), Some(cause.clone())),
+        Err(e) => not_applied(e.to_string(), None),
+        Ok(Pipeline::Staged) => Chase::Found { version: version(), detail: "no install record here to prepare for".into() },
+        Ok(Pipeline::Armed) => Chase::Armed { version: version() },
+        Ok(Pipeline::NotArmed(outcome)) => not_applied(outcome.not_armed_because().unwrap_or_default(), None),
+    }
+}
+
+/// Why a host the topology gives neither `daemon` nor `frontend` takes no update: the install it runs from is another
+/// host's, on a shared home.
+const NO_SOTD_HERE: &str = "hosts.toml gives this host neither daemon nor frontend, so it takes no update of its own";
+
+/// Does the install record say a unit runs the daemon? The unit applies an armed update at each of its starts.
+fn runs_under_a_unit(install: InstallFile) -> bool {
+    install.manifest().and_then(|m| m.service).is_some_and(|s| s == "systemd")
+}
+
+/// The chase a check's outcome is: a release found, nothing found, off or blocked with the check's own reason, or a
+/// check that could not run.
+fn chase_of_check(out: &CheckOutcome) -> Chase {
+    if out.update_available {
+        return Chase::Found { version: out.latest.clone(), detail: String::new() };
+    }
+    match out.status.strip_prefix("disabled: ") {
+        Some(why) if why.starts_with(UNREADABLE_LEAD) || why.starts_with(MISSING_LEAD) => Chase::Blocked { why: why.into() },
+        Some(why) => Chase::Off { why: why.into() },
+        None if out.status == "ok" => Chase::None,
+        None => Chase::CheckFailed { why: out.status.clone() },
+    }
+}
+
+/// The owner of this daemon's update state, as the process starts: off for a dev build or update mode off, which run no
+/// check, and not checked yet otherwise; the armed pointer is read where this process's updates folder resolves. Its
+/// first reading of the disk is begun here, in a task of its own, so an armed update is told before any check and no
+/// listener waits on a file.
+pub(crate) fn boot_status() -> Status {
+    let updater = Updater::from_env();
+    let status = Status::new(updater.start_chase(), updater.mode == Mode::Auto, || {
+        Some(Disk {
+            updates: sot_updater::resolve_updates_root().ok()?,
+            target: sot_updater::platform::this_platform()?.to_string(),
+            unit: runs_under_a_unit(InstallManifest::of_current_exe()),
+        })
+    });
+    tokio::spawn({
+        let status = status.clone();
+        async move { status.reconcile().await }
+    });
+    status
 }
 
 /// Pure: given the declared topology (if any), this box's own name, and
@@ -487,6 +525,7 @@ fn notify_text(latest: &str, current: &str) -> String {
 /// `fe.command.send` uses), then stages. Emits exactly one boot log describing
 /// the updater's state (the ADR-required dev-build info line lives here).
 pub fn spawn_periodic(
+    status: Status,
     fe_command_tx: broadcast::Sender<FeCommandEvt>,
     attached: impl Fn() -> usize + Send + Sync + 'static,
     leases: Arc<Leases>,
@@ -512,7 +551,7 @@ pub fn spawn_periodic(
     tokio::spawn(async move {
         first_check_wait().await;
         loop {
-            run_check_once(&updater, &fe_command_tx, &attached, &leases).await;
+            run_check_once(&updater, &status, &fe_command_tx, &attached, &leases).await;
             tokio::time::sleep(CHECK_INTERVAL).await;
         }
     });
@@ -523,11 +562,14 @@ pub fn spawn_periodic(
 /// the apply owner. All failures degrade to a log line; the task never dies.
 async fn run_check_once(
     updater: &Updater,
+    status: &Status,
     fe_command_tx: &broadcast::Sender<FeCommandEvt>,
     attached: &(impl Fn() -> usize + ?Sized),
     leases: &Leases,
 ) {
+    status.reconcile().await;
     let out = updater.check().await;
+    status.checked(chase_of_check(&out));
     if out.update_available {
         tracing::info!(latest = %out.latest, current = %updater.current, "update available");
         let evt = FeCommandEvt {
@@ -546,10 +588,11 @@ async fn run_check_once(
             Ok(cfg) => cfg,
             Err(e) => {
                 tracing::warn!(error = %e, "no staging root — skipping stage");
+                status.set_chase(Chase::Found { version: id.version.clone(), detail: format!("no staging root: {e}") });
                 return;
             }
         };
-        stage_prepare_arm(&cfg, &id).await;
+        stage_prepare_arm(status, &cfg, &id).await;
 
         if updater.mode == Mode::Auto {
             let armed = matches!(
@@ -586,13 +629,27 @@ async fn run_check_once(
 
 // ─── On-demand op handler ───────────────────────────────────────────────
 
+/// Overlay a failed stage onto a check outcome's status — the check
+/// itself succeeded ("ok"), but the release it names never manages to
+/// commit, and a bare "ok" is exactly how one box hid the fact that it
+/// never updated for two releases running. Only applies when `out`'s
+/// identity is the SAME release whose stage failed, as the owner of the
+/// update's state holds it, so a superseding release's check is never
+/// tainted by an older one's failure.
+fn overlay_stage_block(status: &Status, mut out: CheckOutcome) -> CheckOutcome {
+    if let Some(reason) = out.identity.as_ref().and_then(|id| status.stage_block(&id.version)) {
+        out.status = format!("update blocked: {reason}");
+    }
+    out
+}
+
 /// `update.check` op (ADR 0030 §4). Runs the check synchronously (fast — one
 /// HTTPS request), reports current/latest/availability + the pinned release
 /// identity + whether the release is already staged, and — when an update is
 /// available but not yet staged — kicks a background stage so the response
 /// isn't blocked on a multi-MB download.
 /// Never errors on a failed check: the failure rides in `status`.
-pub async fn handle_update_check(req_id: u64) -> Result<HandlerOutput> {
+pub async fn handle_update_check(req_id: u64, status: &Status) -> Result<HandlerOutput> {
     let updater = Updater::from_env();
     // Hard ceiling: this handler runs as a job off the connection's loop
     // (`place`), and a wedged network path must still degrade to a status
@@ -610,7 +667,7 @@ pub async fn handle_update_check(req_id: u64) -> Result<HandlerOutput> {
     // Defect 0c: a healthy check keeps saying "ok" even while the release it
     // found is stuck failing to commit — this is what the hub reports, so
     // it's where the block has to surface.
-    let out = overlay_stage_block(out);
+    let out = overlay_stage_block(status, out);
     let mechanism = updater.mechanism().ok();
     // The status probes hit the filesystem (and git, for prepared) — bound
     // them too, or a hung NFS checkout leaves the check unanswered.
@@ -639,7 +696,8 @@ pub async fn handle_update_check(req_id: u64) -> Result<HandlerOutput> {
     if out.update_available && !armed {
         if let (Some(id), Some(cfg)) = (out.identity.clone(), mechanism) {
             // Fire-and-forget: make progress without holding the op response open.
-            tokio::spawn(async move { stage_prepare_arm(&cfg, &id).await });
+            let status = status.clone();
+            tokio::spawn(async move { stage_prepare_arm(&status, &cfg, &id).await });
         }
     }
 
@@ -720,10 +778,7 @@ pub async fn handle_update_apply(
     if let Some(why) = apply_refusal(foreign, InstalledBuild::try_read(&cfg.updates_root), &pending) {
         return refuse(&why);
     }
-    let will_restart = install
-        .manifest()
-        .and_then(|m| m.service)
-        .is_some_and(|s| s == "systemd");
+    let will_restart = runs_under_a_unit(install);
     let tag = pending.identity.tag.clone();
     tracing::info!(tag = %tag, will_restart, "update.apply: exiting for the apply owner to flip");
 

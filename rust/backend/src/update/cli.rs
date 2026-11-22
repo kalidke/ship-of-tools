@@ -217,24 +217,48 @@ async fn refusal(prefix: &Path, target: &str) -> Option<String> {
 
 /// [`refusal`] with the role question asked of `wants_backend`, only once a pointer fits: the pointer's own checks come first.
 async fn refusal_for(prefix: &Path, target: &str, wants_backend: impl FnOnce() -> bool) -> Option<String> {
-    let updates = prefix.join("updates");
-    let installed = InstalledBuild::try_read(&updates);
-    if matches!(installed, Ok(None)) {
-        return None;
-    }
-    let ptr = match pending::read(&updates, target).await {
-        Ok(None) => return None,
+    judge_for(&prefix.join("updates"), target, wants_backend).await.refusal
+}
+
+/// What the judge read of the pointer armed for a target: the version it arms when it parses, and why it must not apply.
+/// Neither is nothing armed; a version alone is a pointer the apply takes; a refusal with no version is a pointer that
+/// cannot be read.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(super) struct Judged {
+    pub(super) version: Option<String>,
+    pub(super) refusal: Option<String>,
+}
+
+/// The judge for the daemon's own install, whose updates folder is `updates`: the verb's answer with the pointer's
+/// version beside it, so the state of the update says ready exactly where `sotd update pointer` answers ok for a
+/// pointer that is there.
+pub(super) async fn judge(updates: &Path, target: &str) -> Judged {
+    judge_for(updates, target, || backend_role_here(updates.parent().unwrap_or(updates))).await
+}
+
+/// The one judgment of the pointer at `<updates>/pending-<target>.json`, the only file name it reads there.
+async fn judge_for(updates: &Path, target: &str, wants_backend: impl FnOnce() -> bool) -> Judged {
+    let installed = InstalledBuild::try_read(updates);
+    // Not an install of ours: there is nothing to compare, so nothing is refused, a pointer that cannot be read included.
+    let no_install = matches!(installed, Ok(None));
+    let ptr = match pending::read(updates, target).await {
+        Ok(None) => return Judged::default(),
         Ok(Some(ptr)) => ptr,
-        Err(e) => return Some(format!("unreadable pointer: {e:#}")),
+        Err(_) if no_install => return Judged::default(),
+        Err(e) => return Judged { version: None, refusal: Some(format!("unreadable pointer: {e:#}")) },
     };
-    if let Some(why) = pending::pointer_refusal(&ptr, installed) {
-        return Some(why);
+    let version = Some(ptr.identity.version.clone());
+    if no_install {
+        return Judged { version, refusal: None };
     }
-    let prepared = match PreparedState::read(&sot_updater::stage_dir(&updates, &ptr.identity)).await {
+    if let Some(why) = pending::pointer_refusal(&ptr, installed) {
+        return Judged { version, refusal: Some(why) };
+    }
+    let prepared = match PreparedState::read(&sot_updater::stage_dir(updates, &ptr.identity)).await {
         Ok(state) => Ok(state.julia_instantiated),
         Err(e) => Err(format!("{e:#}")),
     };
-    fit_refusal(wants_backend(), target.starts_with("windows"), prepared)
+    Judged { version, refusal: fit_refusal(wants_backend(), target.starts_with("windows"), prepared) }
 }
 
 /// Does the role wanted for the install at `prefix` include a backend? The record is `install.json`'s `daemon` bit; one

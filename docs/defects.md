@@ -1172,8 +1172,10 @@ owned by `docs/CLAUDE.md`.
   standing mark in the window near the version and the same in `sotd status`. Until it is built the only sign is one
   status-line notice held 10 s; the rest is in the daemon's log. Built so far: the wire's part, the state's one type
   with its words, a defaulted `update` field on the hello reply and on the version answer, and the evt name
-  `update.state` (wire guarantee 16). Nothing fills or reads them yet, so a person sees nothing new. Left: the
-  daemon's owner of the state, written by the update pipeline and agreeing with the pending pointer on disk; the
+  `update.state` (wire guarantee 16); and the daemon's owner of the state (`rust/backend/src/update/status.rs`,
+  distribution's contract under Update), written by the check and the update pipeline, agreeing with the pending
+  pointer on disk through the judgment `sotd update pointer` answers with, and carried by every `version.query`
+  answer. No command prints it yet, so a person sees nothing new. Left: the
   `UPDATE` column of `sotd status` and the line of `sot-fe version`; the hello's field and the evt sent to a window;
   the mark on the window's bottom border, on a computer with a daemon and on a window-only computer.
 
