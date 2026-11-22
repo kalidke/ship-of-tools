@@ -143,6 +143,13 @@ of each.
    checked with fixtures and the hook schema. A live row still needs the checks in `CODEX-ROOT-THREAD-HOOKS`. Between a
    conversation switch and the next start or submit hook the file can name the conversation just left, possibly already unloaded. Mail stays
    in the inbox for the next poll. The daemon does not yet use the binding for waking.
+   A second `SessionStart` command restores the owning row's context after `clear`, `compact` and `resume`. It runs
+   the shared `comm-session-start.sh --again` and returns its successful lines once in `hookSpecificOutput.additionalContext`.
+   These lines name the pinned handle, its handoff when present and any open question. The hook reads the existing
+   registration and leaves the question and inbox cursor in place. Fresh startup uses the launcher's prompt. Fork and
+   subagent starts, nested launches, a foreign capsule, disabled hooks and bootstrap failures receive no recovery text.
+   The source names and output shape come from the installed Codex 0.171.0 schemas. Live delivery awaits the check
+   in `CODEX-ROOT-THREAD-HOOKS`. The binding command runs independently at the same event.
    The installer publishes the plugin in the versioned Codex cache on Unix, replacing the product's whole folder.
    Windows skips this publish until it
    has a Codex row launcher. With no cached plugin, Codex 0.171.0 rendered the prompt with the ccx override,
@@ -335,7 +342,7 @@ of each.
   watchdog stops restarting the supervisor when its budget runs out. The producer passes the marker path as
   `--selection-marker`. At native exec, ccx writes it when the row selection path is set, the outgoing argv enables the
   row plugin and includes `--no-daemon`, the installed script is executable and the sole cached version declares
-  the matching hook file with exactly the selection and binding commands at their expected events. If ccx cannot
+  the matching hook file with exactly the selection, binding and context recovery commands at their expected events. If ccx cannot
   write the marker, Codex still starts and text answers `held`. A failed exec removes a marker ccx wrote. The daemon leaves this write to ccx.
   **Run UUID.** The producer clears the previous leg's marker. Adoption after a downgrade can retain one.
   **Hook receipt.** The marker records the launch checks. It cannot confirm a callback or a later settings change.

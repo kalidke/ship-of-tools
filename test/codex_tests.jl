@@ -199,6 +199,10 @@ end
             @test readchomp(`jq -r '.hooks.UserPromptSubmit[0].hooks[1].command' $hooks`) == binding_cmd
             @test occursin("sot-codex-binding-hook.sh", binding_cmd)
             @test isfile(joinpath(ShipTools.comm_home(), "bin", "sot-codex-binding-hook.sh"))
+            @test readchomp(`jq -c '.hooks.SessionStart[0].hooks | map(.type)' $hooks`) == "[\"command\",\"command\"]"
+            recovery = readchomp(`jq -r '.hooks.SessionStart[0].hooks[1].command' $hooks`)
+            @test occursin("sot-codex-session-start-hook.sh", recovery)
+            @test isfile(joinpath(ShipTools.comm_home(), "bin", "sot-codex-session-start-hook.sh"))
             for n in names
                 @test plugin_tree(joinpath(root, "skills", n)) == plugin_tree(joinpath(skills, n))
             end

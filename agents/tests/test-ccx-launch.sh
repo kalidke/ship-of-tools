@@ -164,6 +164,7 @@ case_marker_condition() (
         script) chmod -x "$script" ;;
         command) jq '.hooks.UserPromptSubmit[0].hooks[0].command += " || true"' "$src" > "$cache/hooks/hooks.json" ;;
         binding-command) jq '.hooks.SessionStart[0].hooks[0].command += " || true"' "$src" > "$cache/hooks/hooks.json" ;;
+        recovery-command) jq '.hooks.SessionStart[0].hooks[1].command += " || true"' "$src" > "$cache/hooks/hooks.json" ;;
         undeclared) printf '{}' > "$cache/.codex-plugin/plugin.json" ;;
         extra-version) cp -R "$cache" "$later" &&
             jq '.version = "0.2.0"' "$cache/.codex-plugin/plugin.json" > "$later/.codex-plugin/plugin.json" || exit 1 ;;
@@ -197,7 +198,7 @@ case_marker_condition() (
         [ "$status" = 0 ] && [ -f "$CODEX_LOG" ] && [ ! -e "$MARKER" ] && [ ! -e "$CODEX_LOG.marked" ]
     fi
 )
-for condition in fresh path override script command binding-command undeclared extra-version missing-hook malformed hand unwritable old-codex failed-help signaled-probe argv-no-flag failed-exec; do
+for condition in fresh path override script command binding-command recovery-command undeclared extra-version missing-hook malformed hand unwritable old-codex failed-help signaled-probe argv-no-flag failed-exec; do
     check "selection marker at native exec ($condition)" case_marker_condition "$condition"
 done
 

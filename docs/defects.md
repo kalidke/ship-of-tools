@@ -532,7 +532,8 @@ owned by `docs/CLAUDE.md`.
 - **CODEX-ROOT-THREAD-HOOKS** [note] The row binding uses the root `session_id` from Codex hook inputs.
   After release, check the live events and the bound id on a fresh start, resume, new conversation, clear,
   compaction, fork and child agent. Record which switches emit a start hook, whether the first prompt corrects
-  the id after each switch and whether a child hook retains the parent's id.
+  the id after each switch and whether a child hook retains the parent's id. After clear, compaction and resume,
+  verify that the session names its handle and handoff once, the open question stays stamped, and no second join occurs.
 
 - **CODEX-SELECTION-WINDOW** [note] A Linux stub verifies the text hook and withdrawal across Codex launches.
   To close, select plain text and rendered Markdown in fresh and resumed Codex rows in a real window. At the next

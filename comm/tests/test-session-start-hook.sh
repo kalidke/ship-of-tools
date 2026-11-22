@@ -117,6 +117,87 @@ case_a_failing_start_exits_zero_and_shows_why() {
 }
 check "a start that fails leaves the hook at exit 0 with its stderr on stdout" case_a_failing_start_exits_zero_and_shows_why
 
+# The row plugin gets one independent stdin per command. Exercise the installed command in the actual capsule ancestry gate.
+if [ "$(uname -s)" = Linux ] || [ "$(uname -s)" = Darwin ]; then
+    hooks_json="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/agents/codex/row-hooks.json"
+    pin="$WORK/testhost__own.txt"
+    cp "$SOT_COMM_SELF_FILE" "$pin" || exit 2
+    export SOT_COMM_SELF_FILE="$pin" SOT_WORKSPACE_ID=own SOT_AGENT_KIND=codex SOT_CODEX_THREAD_FILE="$WORK/thread"
+    export SOT_COMM_HOOKS=on SOTD_BIN="$GUARD_SOTD"
+    question='Which file ("A" or "B") should be kept?'
+    jq --arg name "$NAME" --arg q "$question" '.agents[$name] += {workspace_id:"own",question:$q}' "$REGISTRY" > "$WORK/registry" &&
+        cp "$WORK/registry" "$REGISTRY" && touch "$HANDOFF" || exit 2
+    cat > "$WORK/native" <<'SH'
+#!/usr/bin/env bash
+exec -a codex bash -c '"$@"; exit $?' _ "$@"
+SH
+    chmod +x "$WORK/native"
+    codex_event() (
+        local cmd
+        cmd=$(jq -er '.hooks.SessionStart[0].hooks[1].command' "$hooks_json") || { echo "  missing recovery command"; exit 1; }
+        cd "$PROJECT" || exit 2
+        printf '%s' "$1" | in_row "${2:-own}" "$WORK/native" "${@:3}" bash -c "$cmd" > "$WORK/out" 2> "$WORK/err" &&
+            [ ! -s "$WORK/err" ]
+    )
+    payload() { jq -nc --arg source "$1" '{source:$source, hook_event_name:"SessionStart", session_id:"12345678-1234-4567-8123-123456789abc"}'; }
+    quiet_event() { codex_event "$@" && [ ! -s "$WORK/out" ]; }
+
+    case_codex_sources() {
+        local source
+        ( cd "$PROJECT" && in_row own "$WORK/native" "$HOOK" ) > "$WORK/expected" || return 1
+        grep -F "identity=ok" "$WORK/expected" >/dev/null && grep -F "$HANDOFF" "$WORK/expected" >/dev/null &&
+            grep -F "$question" "$WORK/expected" >/dev/null || { echo "  the shared start did not restore the fixture"; return 1; }
+        for source in clear compact resume; do
+            codex_event "$(payload "$source")" &&
+                jq -se --rawfile expected "$WORK/expected" '. == [{hookSpecificOutput:{hookEventName:"SessionStart",additionalContext:$expected}}]' "$WORK/out" >/dev/null || return 1
+        done
+        quiet_event "$(payload startup)" && quiet_event "$(payload fork)"
+    }
+    check "clear, compact and resume give exactly the shared start lines once; startup and fork are silent" case_codex_sources
+
+    case_codex_no_rejoin() {
+        local inbox="$SOT_COMM_HOME/inbox/$NAME.jsonl" cursor="$SOT_COMM_HOME/read/$NAME.cursor"
+        mkdir -p "$SOT_COMM_HOME/inbox" "$SOT_COMM_HOME/read"
+        printf '{"to":"%s","from":"peer","msg":"old-mark"}\n{"to":"%s","from":"peer","msg":"next-mark"}\n' "$NAME" "$NAME" > "$inbox"
+        printf '1\n' > "$cursor"
+        cp "$pin" "$WORK/pin-before" && cp "$REGISTRY" "$WORK/registry-before" && cp "$cursor" "$WORK/cursor-before" || return 1
+        codex_event "$(payload compact)" && grep -F 'nothing was re-joined' "$WORK/out" >/dev/null &&
+            cmp -s "$REGISTRY" "$WORK/registry-before" && cmp -s "$pin" "$WORK/pin-before" && cmp -s "$cursor" "$WORK/cursor-before" || return 1
+        ( cd "$PROJECT" && in_row own "$WORK/native" "$SCRIPTS_DIR/comm-poll.sh" ) > "$WORK/polled" || return 1
+        grep -F next-mark "$WORK/polled" >/dev/null && ! grep -F old-mark "$WORK/polled" >/dev/null
+    }
+    check "recovery keeps the pinned handle, question and cursor; the next poll reads just the unread mail" case_codex_no_rejoin
+
+    case_codex_owner() {
+        local event
+        event=$(payload resume)
+        quiet_event "$event" other && quiet_event "$event" own "$WORK/native" &&
+            SOT_CODEX_THREAD_FILE= quiet_event "$event" &&
+            quiet_event "$(jq -c '.hook_event_name="SubagentStart" | .agent_id="child"' <<< "$event")" &&
+            quiet_event "$(jq -c '.agent_type="worker"' <<< "$event")" &&
+            SOT_AGENT_KIND=claude quiet_event "$event"
+    }
+    check "a foreign capsule, nested or hand-started launcher, and child events receive no identity" case_codex_owner
+
+    case_codex_silent_failures() (
+        local event
+        event=$(payload clear)
+        SOT_COMM_HOOKS=off quiet_event "$event" && quiet_event '{' && quiet_event "$event {}" || exit 1
+        SOT_COMM_SELF_FILE="$WORK/missing-pin" quiet_event "$event" || exit 1
+        cp "$REGISTRY" "$WORK/registered" || exit 1
+        jq --arg name "$NAME" 'del(.agents[$name])' "$WORK/registered" > "$REGISTRY" || exit 1
+        quiet_event "$event" || exit 1
+        cp "$WORK/registered" "$REGISTRY" || exit 1
+        mv "$SCRIPTS_DIR/comm-session-start.sh" "$WORK/original-start" || exit 1
+        trap 'mv "$WORK/original-start" "$SCRIPTS_DIR/comm-session-start.sh"' EXIT
+        quiet_event "$event" || exit 1
+        printf '#!/bin/sh\necho "BOOTSTRAP-ARM handle=partial identity=ok WAKE: daemon"\necho partial\necho failed >&2\nexit 7\n' > "$SCRIPTS_DIR/comm-session-start.sh"
+        chmod +x "$SCRIPTS_DIR/comm-session-start.sh"
+        quiet_event "$event"
+    )
+    check "hooks off, invalid input or pin, and a missing or failing bootstrap silently succeed" case_codex_silent_failures
+fi
+
 echo ""
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

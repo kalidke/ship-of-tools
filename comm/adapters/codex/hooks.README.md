@@ -46,7 +46,10 @@ propagate — verified).
 The separate `sot-row` plugin uses `agents/codex/row-hooks.json`. On `SessionStart` and `UserPromptSubmit` it
 saves the root conversation UUID from the event's `session_id` in the file named by the Codex leg.
 The binding command writes silently. The prompt event also runs the selection command, which prints the
-window's selection. The launcher checks both event definitions before marking selection available.
+window's selection. A separate session-start command wraps the shared read-only bootstrap on clear, compaction and
+resume. It puts the handle, handoff and any open question in `hookSpecificOutput.additionalContext` for the model.
+Startup already gets the launcher prompt. Forks and child starts receive no recovery text. The launcher checks both
+event definitions before marking selection available.
 
 ## The two rules this file must obey
 

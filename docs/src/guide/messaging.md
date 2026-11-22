@@ -13,12 +13,11 @@ A Claude Code or Codex session created in Sessions mode runs
 row's name — and starts listening. From then on the session is addressable as
 `@<handle>` from any other session, on any connected host.
 
-A Claude Code session that you clear (`/clear`) or that compacts its own
-context stays joined: Ship of Tools runs a read-only form of the same start by
-itself, which tells the session its handle, its handoff file and any question its
-row kept, and changes nothing about the row's state. A bare `/clear` is enough.
-This applies to sessions started after the update; Codex sessions and a
-`/resume` typed in a live session do not get it.
+When you clear a Claude Code or Codex row, or its context is compacted, the session stays joined. Its start
+hook restores the handle, the handoff file if one exists, and any question still waiting for you. The question
+stays open and the next poll continues from the same place. Codex also restores this context on resume.
+A bare `/clear` is enough. These hooks apply to sessions launched with the updated integration.
+In a live Claude Code session, `/resume` runs without the read-only hook.
 
 ## Ask, tell, broadcast
 
