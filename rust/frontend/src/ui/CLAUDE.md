@@ -1189,7 +1189,12 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   with its connection: `connected` (from `on_connected`, before the state that follows the `Connected` event) begins
   with nothing said, `told` (the event's one arm in `ui/events.rs`) keeps only the local daemon's state, and
   `disconnected` (from `on_disconnected`) forgets it, so the mark is what a connected daemon last said, it goes when
-  the launcher stops the daemon to apply, and the daemon that comes back says its state again. A harness instance
+  the launcher stops the daemon to apply, and the daemon that comes back says its state again. Where no daemon of
+  this computer has spoken (no local connection, as on a computer whose window is its only updater, or a local daemon
+  that predates the state and says nothing) the mark is the state of the window's own update check
+  (`selfupdate::state`, distribution's contract, which `chrome_labels` hands to `UpdateMark::mark` each frame); once
+  the local daemon speaks, its word is the mark, a state with no mark included, and where the daemon owns updates
+  the window has no state of its own. A harness instance
   (`--ephemeral`, any `--capture`) draws none, so a screenshot never depends on what a release source answered.
   The window words nothing: the mark's long words, its short ones and its kind are the wire's (`UpdateState::mark`,
   wire guarantee 16). `chrome::status::update_mark_words` picks the long words where they fit the room, else the short
@@ -1202,17 +1207,21 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   drawn where the stamp is not. Nothing is written to the status line, and the 10 s notice of a release found is as
   before. Limits: a long mark runs over the border's junction under a pane divider, as a long dev stamp does; the
   mark shows no age and no download progress; a state arrives only when the daemon tells it (a change, or the
-  window's connect), and the window already draws about once a second, so no waker is added; a window whose
-  computer runs no daemon of its own (its only connections are remote) draws no mark; the stamp's `be` half is the
+  window's connect), and the window already draws about once a second, so no waker is added, and the window's own state, written on another thread, shows
+  at most about a second late; the window's own check runs once, at its start, so its state is that run's last step
+  for the window's life, a yellow `not applied` and a green that a second window's start has since applied included,
+  and its ready is not judged against the install as a daemon's is (distribution's contract has both limits and what
+  each costs: one extra start); the stamp's `be` half is the
   selected computer's daemon while the mark is always this computer's, so on a row of another computer the two
   sit side by side and speak of different computers. Tests: `chrome::update_mark::tests::{the_mark_is_the_local_daemons_word_and_goes_with_its_connection,
-  a_harness_instance_draws_no_mark}`, `chrome::status::tests::the_mark_takes_its_long_words_its_short_words_or_nothing`,
+  a_harness_instance_draws_no_mark, the_windows_own_state_shows_only_where_no_local_daemon_spoke}`, `chrome::status::tests::the_mark_takes_its_long_words_its_short_words_or_nothing`,
   `chrome::view::tests::the_mark_is_on_the_bottom_border_after_the_stamp_and_moves_no_pane` (through
   `ChromeView::paint`: every row above the border, every rect and scroll the frame returns and the stamp equal with
   and without a mark, the words by the room at four widths, a color a kind), and the native fixture
   `the_update_mark_is_drawn_for_this_computers_own_daemon` (the window's own event queue to drawn frames, so only
   under a display: the three State calls, the snapshot in `chrome_labels`, both word forms at two text sizes, another
-  computer's word drawn nowhere, the link's end and return, a harness instance). One real frame of each word form
+  computer's word drawn nowhere, the link's end and return, the window's own state drawn before a local daemon speaks
+  and after its link ends, a harness instance). One real frame of each word form
   was looked at under a virtual display (2026-11-22). No person has used it yet.
 - `Pointer` privately owns the pointer between events: the last position (winit reports it only on motion) and the
   wheel's fractional rows, stored by the wheel adapter and cleared when the agent pane consumes a gesture.

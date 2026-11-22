@@ -138,3 +138,46 @@ fn the_declared_topology_wins_over_a_stale_recorded_bit() {
     // listed with neither key.
     assert!(!backend_owns_updates(Some(&t), "laptop", Some(true)));
 }
+
+// Each step of the window's own update that has a mark is a state in the wire's one type, and so a mark in the wire's
+// words: the same mark a daemon's state of that phase has.
+#[test]
+fn each_step_of_the_windows_own_update_is_a_state() {
+    use sot_protocol::{MarkKind, UpdatePhase as P};
+    let told = |step: Step<'_>| {
+        let state = step.state();
+        let mark = state.mark().map(|mark| (mark.long, mark.kind));
+        (state.phase, state.version, state.detail, mark)
+    };
+    let s = String::from;
+    let ready = |version: &str| Some((format!("update {version} ready: quit keeping sessions, then start again"), MarkKind::Ready));
+    assert_eq!(
+        told(Step::Blocked("install.json cannot be read")),
+        (P::Blocked, s(""), s("install.json cannot be read"), Some((s("updates off: install record unreadable"), MarkKind::Warning)))
+    );
+    assert_eq!(told(Step::Preparing("9.9.9")), (P::Preparing, s("9.9.9"), s(""), Some((s("update 9.9.9 preparing"), MarkKind::Coming))));
+    assert_eq!(
+        told(Step::Ready("9.9.9")),
+        (P::Ready, s("9.9.9"), s("applies when Ship of Tools is next started on this computer"), ready("9.9.9"))
+    );
+    assert_eq!(
+        told(Step::NotApplied("9.9.9", s("staging failed: no space"), None)),
+        (P::NotApplied, s("9.9.9"), s("staging failed: no space"), Some((s("update 9.9.9 not applied"), MarkKind::Warning)))
+    );
+    // A newer release kept over this one: what the next start applies is the mark, and nothing warns.
+    let kept = Step::NotApplied("9.9.9", s("a newer release is already armed"), Some(s("9.9.10")));
+    assert_eq!(kept.state().armed, "9.9.10");
+    assert_eq!(told(kept), (P::NotApplied, s("9.9.9"), s("a newer release is already armed"), ready("9.9.10")));
+}
+
+// The slot is what the last step told, and none before the first.
+#[test]
+fn the_windows_state_is_what_its_last_step_told() {
+    assert_eq!(state(), None, "no step yet in this process");
+    tell(Step::Preparing("9.9.9"));
+    assert_eq!(state().map(|s| s.phase), Some(sot_protocol::UpdatePhase::Preparing));
+    tell(Step::Ready("9.9.9"));
+    let told = state().expect("a state");
+    assert_eq!((told.phase, told.version.as_str()), (sot_protocol::UpdatePhase::Ready, "9.9.9"));
+    set_state_for_test(None);
+}

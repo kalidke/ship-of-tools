@@ -1,5 +1,5 @@
 //! What the window holds of its own computer's update, for the standing mark on the bottom border: the state the
-//! local daemon last said. No `impl State` lives here.
+//! local daemon last said, and where none spoke the window's own (`selfupdate::state`). No `impl State` lives here.
 
 use crate::net::dial::HostKey;
 use sot_protocol::{Mark, UpdateState};
@@ -8,7 +8,8 @@ use sot_protocol::{Mark, UpdateState};
 /// its update is the one this window's next start applies. Another computer's daemon is never shown (its state is in
 /// `sotd status`). The word lives with its connection: a `Connected` begins with nothing said, the state follows it,
 /// and a `Disconnected` forgets it, so the mark is what a connected daemon last said and a daemon that went away to
-/// apply says so again when it is back.
+/// apply says so again when it is back. On a computer whose window is its only updater no local daemon speaks, and the
+/// mark is the state of the window's own check.
 pub(in crate::ui) struct UpdateMark {
     /// The dial host whose connection is this computer's own daemon, and what it has said on this connection.
     local: Option<(HostKey, Option<UpdateState>)>,
@@ -45,12 +46,14 @@ impl UpdateMark {
         }
     }
 
-    /// The mark to draw, in the wire's words, or none.
-    pub(in crate::ui) fn mark(&self) -> Option<Mark> {
+    /// The mark to draw, in the wire's words, or none: the local daemon's word where it has spoken on its live
+    /// connection, else `own`, the state of this window's own update check.
+    pub(in crate::ui) fn mark(&self, own: Option<UpdateState>) -> Option<Mark> {
         if self.harness {
             return None;
         }
-        self.local.as_ref()?.1.as_ref()?.mark()
+        let said = self.local.as_ref().and_then(|(_, said)| said.clone());
+        said.or(own)?.mark()
     }
 }
 

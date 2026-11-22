@@ -207,8 +207,9 @@ applies it, not applied or off with the reason), with one line of the same in `s
 had been a notice held 10 s; and the window draws a mark after its version stamp on the bottom border while there
 is something to tell of the update of the computer it runs on (a release found, being prepared, ready with how to
 apply it without ending the sessions, not applied, or updates off for an unreadable install record), from that
-computer's daemon (UPDATE-STATE-NOT-SHOWN, Closed; drawn on Linux under a virtual display only, used by no
-person). Since 2026-11-21 the repo quotes no person (the
+computer's daemon, or from the window's own start-up check on a computer that runs no daemon, where ready is not
+judged against the install (UPDATE-STATE-NOT-SHOWN and UPDATE-MARK-WINDOW-ONLY-COMPUTER, Closed; drawn on Linux
+under a virtual display only, used by no person). Since 2026-11-21 the repo quotes no person (the
 maintainer's rule, in the root `CLAUDE.md`): every quotation in a tracked file was rewritten in reported form, and
 the defects check carries a net for the common forms. v0.7.2 was published 2026-11-19. It is 0.7.1 with two faults on a Mac fixed, cut from `main`
 on the maintainer's word with no candidate once the tests had passed: the whole local gate at the commit that was cut,

@@ -245,7 +245,7 @@ impl State {
             self.active_link.backend_version(),
         );
         // The mark of this computer's update, snapshotted with the stamp it is drawn after.
-        let update_mark = self.update_mark.mark();
+        let update_mark = self.update_mark.mark(crate::selfupdate::state());
         (clock_now, battery, last_key, version_stamp, version_skew, update_mark)
     }
 

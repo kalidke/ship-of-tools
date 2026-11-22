@@ -456,6 +456,33 @@ Update (`rust/updater`, `rust/backend/src/update*`, `rust/frontend/src/selfupdat
   `a_recorded_stage_block_overlays_status_for_its_own_tag_only`; `clients_tests.rs`:
   `a_version_answer_carries_the_update_state_as_the_disk_has_it`,
   `a_version_answer_never_waits_on_a_disk_that_hangs` (a FIFO stands for the install record).
+- Where the window is a computer's only updater (`rust/frontend/src/selfupdate.rs`: no daemon of that computer owns
+  updates), the window's own startup check tells the states that have a mark, in the same type, so the window's mark
+  reads there as it does on a computer with a daemon. One slot in the window's memory (`STATE`), one writer (`tell`),
+  one reader (`selfupdate::state`, which fe-ui's `UpdateMark` shows only where no daemon of this
+  computer has spoken). A step with a mark is a `Step`, and `Step::state` is the one mapping: an install record that
+  cannot be read is blocked; a release being staged and prepared is preparing; a release armed, now or by an earlier
+  start, is ready; a stage, a prepare or an arm that failed, and an arm that refused, are not applied with the cause,
+  and when another release's pointer is on disk (a newer one kept over this one) its version rides in `armed`, so the
+  mark says that one is ready (wire guarantee 16). A step with no mark tells nothing and leaves the slot empty: a
+  guard that turns the check away by choice or by build, nothing above the install, a check that could not run; each
+  would be the first and only thing its run tells, and the slot's one reader draws the same from an empty slot. Where
+  the daemon on this computer owns updates the guard writes nothing either: that state is the daemon's to tell.
+  Limits: the check runs once, at the window's start, so the slot keeps its last step for the window's life (a
+  release published later is found by the next start, and a ready update stays ready until that start); nothing reads
+  the disk again, so a pointer another program arms or drops while the window runs is not seen, and when a second
+  window's start applies the update the first window still says ready; a refused arm stays not applied, yellow,
+  until the window closes, also where nothing is wrong (the install moved to that version meanwhile, is pinned or is
+  a dev build), where a daemon's next check would correct it; ready is not judged against the install: the check
+  says ready for a pointer of the found release, and rides any other pointer's version in `armed`, without the
+  judgment `sotd update pointer` answers with, which lives in the daemon's program (`rust/backend/src/update/cli.rs`)
+  and has no second owner here, so a pointer armed over an install an installer run has since moved reads ready, the
+  next start drops it, that start's check arms again, and the start after applies (from reading, not run); the slot
+  is per process, so two windows on one computer each tell their own check's step (the one that waits at the stage
+  lock says preparing); which step is told at which point of `run` rests on reading, since `run` asks a release
+  source and no test runs it. On such a computer `sot --update-status` says how far the
+  update has got, and the cause of a step that failed is in the window's log. Tests `selfupdate_tests.rs`:
+  `each_step_of_the_windows_own_update_is_a_state`, `the_windows_state_is_what_its_last_step_told`.
 
 Apply (`sot-apply.sh`, `sot-apply.ps1`):
 - It verifies the whole stage before it mutates, restores on a failure after mutation and exits 0 (fail-open); a

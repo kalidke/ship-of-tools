@@ -36,13 +36,64 @@
 //
 // Runs on a small dedicated thread + current-thread runtime so the winit
 // main thread and the transport runtime never wait on it. Outcomes go to
-// tracing; the in-UI badge is Phase C4 polish (the daemon's broadcast notify
-// already surfaces availability to attached FEs).
+// tracing, and each step is also the state of this window's own update
+// (`state`), which the window draws as its update mark where no daemon on
+// this computer says one (fe-ui's `UpdateMark`).
 
-use sot_protocol::app_version;
+use sot_protocol::{app_version, UpdatePhase, UpdateState};
 use sot_updater::pending::{ArmOutcome, InstalledBuild, Writer};
 use sot_updater::prepare::{PrepareSpec, PreparedState};
 use sot_updater::{Fetcher, InstallFile, InstallManifest, UpdaterConfig};
+
+/// A step of this window's own update that has a mark, as the state a person is told. The same type and words a
+/// daemon tells its own with (wire guarantee 16), so the mark reads the same on a computer whose window is its only
+/// updater. A step with no mark tells nothing (a check turned away by choice or by build, nothing above the install, a
+/// check that could not run): each is the first and only thing its run would tell, and the slot's one reader draws
+/// the same from an empty slot.
+#[derive(Debug)]
+enum Step<'a> {
+    /// The install's record cannot be read, so nothing is checked: `why`.
+    Blocked(&'a str),
+    /// The release is being staged and prepared.
+    Preparing(&'a str),
+    /// The release is armed: the next start applies it.
+    Ready(&'a str),
+    /// The release was found and not made ready, with the cause; and the version of another release armed on disk,
+    /// when one is (a newer one kept over this one), which the mark then says is ready.
+    NotApplied(&'a str, String, Option<String>),
+}
+
+impl Step<'_> {
+    fn state(&self) -> UpdateState {
+        let of = |phase, version: &str, detail: &str| UpdateState { version: version.into(), detail: detail.into(), ..UpdateState::of(phase) };
+        match self {
+            Step::Blocked(why) => of(UpdatePhase::Blocked, "", why),
+            Step::Preparing(version) => of(UpdatePhase::Preparing, version, ""),
+            Step::Ready(version) => of(UpdatePhase::Ready, version, "applies when Ship of Tools is next started on this computer"),
+            Step::NotApplied(version, cause, armed) => UpdateState { armed: armed.clone().unwrap_or_default(), ..of(UpdatePhase::NotApplied, version, cause) },
+        }
+    }
+}
+
+/// The state of this window's own update: the last step of its startup check that has a mark. None before one, and
+/// for the whole run where the daemon on this computer owns updates and tells their state itself. Memory only: one
+/// slot, one writer (`tell`).
+static STATE: std::sync::Mutex<Option<UpdateState>> = std::sync::Mutex::new(None);
+
+/// The state of this window's own update, if its own check has one.
+pub fn state() -> Option<UpdateState> {
+    STATE.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+}
+
+fn tell(step: Step<'_>) {
+    *STATE.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(step.state());
+}
+
+/// For a test of what reads the slot: the slot is `state` from now.
+#[cfg(test)]
+pub(crate) fn set_state_for_test(state: Option<UpdateState>) {
+    *STATE.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = state;
+}
 
 /// Window policy: native async output kills its direct child on cancellation; it does not contain descendants.
 struct WindowSpawner;
@@ -100,7 +151,12 @@ fn guard() -> std::result::Result<InstallManifest, String> {
                     .into(),
             );
         }
-        InstallFile::Unreadable(unreadable) => return Err(format!("fe self-update: {}", unreadable.sentence())),
+        InstallFile::Unreadable(unreadable) => {
+            // Told here, where it is known: no check runs over a record that cannot be read.
+            let why = unreadable.sentence();
+            tell(Step::Blocked(&why));
+            return Err(format!("fe self-update: {why}"));
+        }
     };
     if backend_owns_updates_here(&install) {
         return Err("fe self-update: the backend on this machine owns updates (declared topology, install.json, or the default), skipping".into());
@@ -259,6 +315,7 @@ async fn run(install: InstallManifest, current: String) {
         }
         Err(unreadable) => {
             tracing::warn!(tag = %id.tag, "fe self-update: {}", unreadable.sentence());
+            tell(Step::Blocked(&unreadable.sentence()));
             return;
         }
         Ok(_) => {}
@@ -275,6 +332,7 @@ async fn run(install: InstallManifest, current: String) {
     });
     if at.armed {
         tracing::info!(tag = %id.tag, "fe self-update: already armed — the next converge or launcher start applies it, nothing to do this run");
+        tell(Step::Ready(&id.version));
         return;
     }
     tracing::info!(
@@ -284,9 +342,11 @@ async fn run(install: InstallManifest, current: String) {
         partial_bytes = at.partial_bytes.unwrap_or(0),
         "fe self-update: newer release found — continuing from what is already on disk"
     );
+    tell(Step::Preparing(&id.version));
     let staged = sot_updater::stage(&WindowSpawner, &cfg, &id).await;
     if let Err(e) = staged {
         tracing::warn!(tag = %id.tag, error = %e, "fe self-update: staging failed");
+        tell(Step::NotApplied(&id.version, format!("staging failed: {e}"), None));
         return;
     }
     // The FE only ever reaches here when the backend doesn't own updates
@@ -304,10 +364,21 @@ async fn run(install: InstallManifest, current: String) {
         Ok(s) => s,
         Err(e) => {
             tracing::warn!(tag = %id.tag, error = %e, "fe self-update: prepare failed — not arming");
+            tell(Step::NotApplied(&id.version, format!("prepare failed: {e}"), None));
             return;
         }
     };
-    match sot_updater::pending::arm(&cfg.updates_root, &id, &state.checkout, &state.commit, Writer::Automatic).await {
+    let armed = sot_updater::pending::arm(&cfg.updates_root, &id, &state.checkout, &state.commit, Writer::Automatic).await;
+    match &armed {
+        Ok(ArmOutcome::Armed) => tell(Step::Ready(&id.version)),
+        Ok(not_armed) => {
+            // Another release's pointer on disk (a newer one kept over this one) is what the next start applies.
+            let other = sot_updater::pending::read(&cfg.updates_root, &id.target).await.ok().flatten().map(|p| p.identity.version);
+            tell(Step::NotApplied(&id.version, not_armed.not_armed_because().unwrap_or_default(), other.filter(|v| *v != id.version)));
+        }
+        Err(e) => tell(Step::NotApplied(&id.version, format!("arming failed: {e}"), None)),
+    }
+    match armed {
         Ok(ArmOutcome::Armed) => {
             tracing::info!(tag = %id.tag, "fe self-update: armed — applies at next launch")
         }

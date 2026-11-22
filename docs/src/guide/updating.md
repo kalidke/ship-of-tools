@@ -208,8 +208,28 @@ computer: its `be` half is the daemon of the selected session's computer, while 
 So a laptop whose sessions run on a hub can read `fe 0.7.3 · be 0.7.3` and then `update 0.7.4 ready: ...`; after its
 restart it reads `fe 0.7.4 · be 0.7.3` in yellow, and stays so until the hub is updated, because the hub's update is
 not the laptop's to apply. The mark goes away while the window has no connection to
-its own computer's daemon and comes back when the daemon says its state again. A window on a computer that runs no
-daemon of its own shows no mark. The notice on the status line when a release is found still appears, for ten seconds.
+its own computer's daemon and comes back when the daemon says its state again. The notice on the status line when a
+release is found still appears, for ten seconds.
+
+On a computer that runs no daemon of its own, where the window checks for updates itself when it starts, the mark is
+that check's: the same words, for the update the window's next start applies. Its sessions run on another computer
+and no close of this window ends them, so to apply a ready update there, close the window any way and start it
+again: the launcher applies the update before the window opens, and nothing restarts on the other computer. That
+check runs once, at the window's start, and nothing reads the disk again while the window runs, so the mark is what
+the check came to then:
+
+- A release published later is found by the next start.
+- A yellow `not applied` stays until the window closes, also where nothing is wrong: when the update was refused
+  because the install had moved to that version meanwhile, is pinned or is a source build. On a computer with a
+  daemon the next daily check corrects such a mark.
+- When a second window's start applies the update, the first window still shows it green.
+- A green mark there is not checked against what is installed, as a daemon's is. If an installer run moved the
+  install after the update was prepared, the mark still says ready; the next start removes the prepared update
+  instead of applying it, that window's check prepares it again if it is still newer, and the start after that
+  applies it.
+
+There `sot --update-status` says how far the update has got, and the cause of a step that failed is in the window's
+log.
 
 To see where a computer's update stands, run `sotd status`. Its last column, `UPDATE`, is what each computer's daemon
 says of its own update:
