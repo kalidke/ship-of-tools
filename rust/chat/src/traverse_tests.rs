@@ -425,13 +425,17 @@ async fn a_pass_paces_its_reads() {
         let (fake, api, history) = serve(posts(History::new(), 1..5).cap(1)).await;
         let got = pass(&api, &order(None, &[], None), &ts(U), pace).await;
         assert_eq!((got.outcome, got.reads), (Outcome::Complete, 4));
-        // The first request's arrival is late by its connection's handshake, which the test does not own, so the first gap
-        // is held to a quarter of the pace (a skipped pace there is one round trip, far below it) and every later gap to
-        // three quarters.
+        // The pace is between sends, and the fake records arrivals. An arrival is late by what the test does not own (the
+        // first by its connection's handshake, any by the runner's scheduling), and a late arrival shortens the gap to the
+        // next one: a hosted macOS run saw 46 ms between the third and fourth arrivals at a pace of 400 ms. So each
+        // arrival is held to its distance from the first, which a late arrival can only lengthen: read `i` is sent at
+        // least `i` paces after the first, and the first may arrive up to three quarters of a pace late. A skipped pace
+        // anywhere leaves a later read a whole pace short of that, less one round trip.
         let asked = history.asked();
-        for (i, gap) in asked.windows(2).map(|w| w[1] - w[0]).enumerate() {
-            let least = if i == 0 { pace / 4 } else { pace * 3 / 4 };
-            assert!(gap >= least, "gap {i} between reads was {gap:?}, pace {pace:?}");
+        let since: Vec<Duration> = asked.iter().map(|at| *at - asked[0]).collect();
+        for (i, at) in since.iter().enumerate().skip(1) {
+            let least = pace * i as u32 - pace * 3 / 4;
+            assert!(*at >= least, "read {i} arrived {at:?} after the first, pace {pace:?}, arrivals {since:?}");
         }
         fake.shutdown().await;
     })
