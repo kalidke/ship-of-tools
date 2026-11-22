@@ -63,7 +63,8 @@ the source file and the region, with the crop attached.
 
 Text selected with the mouse in a markdown, source or plain text preview is
 given to the session's agent at its next prompt, labeled with the file and its
-line numbers. Claude Code sessions only. See
+line numbers. Text selection is built for Claude Code sessions and for Codex sessions on Unix.
+Delivery in a real Codex session still needs checking. See
 [Selecting text](guide/drawing.md#Selecting-text).
 
 ### Order of the session strip

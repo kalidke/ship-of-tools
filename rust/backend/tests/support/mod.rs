@@ -373,7 +373,7 @@ pub async fn create_ready_workspace_then_stop_its_supervisor(
     (workspace_id, state_dir_path)
 }
 /// Poll `workspace.list` until `workspace_id`'s row reaches `want_phase`,
-/// asserting it never reports `"terminal"` along the way (a competing
+/// failing early if it reports `"terminal"` while waiting for another phase (a competing
 /// spawn racing the still-held fence would be the WRONG way to reach
 /// this test's own target phase).
 pub async fn poll_for_phase(conn: &mut Conn, next_id: &mut u64, workspace_id: &str, want_phase: &str, timeout: Duration) {
@@ -384,10 +384,10 @@ pub async fn poll_for_phase(conn: &mut Conn, next_id: &mut u64, workspace_id: &s
         let payload = call(conn, id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
         if let Some(row) = find_row(&payload, workspace_id) {
             assert_eq!(row["runtime"], "capsule", "row: {row:?}");
-            assert_ne!(row["phase"].as_str(), Some("terminal"), "row went terminal instead of {want_phase}: {row:?}");
             if row["phase"].as_str() == Some(want_phase) {
                 return;
             }
+            assert_ne!(row["phase"].as_str(), Some("terminal"), "row went terminal instead of {want_phase}: {row:?}");
         }
         assert!(Instant::now() < deadline, "timed out waiting for workspace.list to report phase \"{want_phase}\"");
         tokio::time::sleep(Duration::from_millis(200)).await;

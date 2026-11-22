@@ -122,31 +122,7 @@ function _install_adapter(cli::Symbol; unhooked::Vector{String} = String[])
             install_file(joinpath(CODEX_PLUGIN_SRC, ".codex-plugin", "plugin.json"),
                          joinpath(pdir, ".codex-plugin", "plugin.json"))
             txt = replace(read(CODEX_HOOKS_JSON_SRC, String), "\$HOME" => homedir())
-            # codex REJECTS the whole hooks file — every event, silently — if it
-            # carries ANY unrecognized top-level key (the config struct is
-            # deny_unknown_fields). A "_comment" key documenting the file did
-            # exactly that, for weeks. Fail loudly here instead of shipping a
-            # file that installs nothing.
-            #
-            # The scanner does NOT validate JSON syntax, and on malformed input
-            # (unbalanced braces) a stray key can sit at depth <= 0 and be
-            # missed — measured, not hypothetical. So require the "hooks" key to
-            # be PRESENT as well: that fails closed on truncated, array-rooted
-            # or empty files, and on any future scanner bug. test/codex_tests.jl
-            # additionally parses the file for real.
-            ks = _json_toplevel_keys(txt)
-            "hooks" in ks || error("""
-                codex hooks.json has no top-level "hooks" key — the file is truncated,
-                mangled, or not the shape codex expects. Nothing would install and no
-                session would ever show its work-state.""")
-            stray = filter(!=("hooks"), ks)
-            isempty(stray) || error("""
-                codex hooks.json has unrecognized top-level key(s): $(join(stray, ", ")).
-                codex silently rejects the ENTIRE file when one is present — every hook
-                would report Installed=0 and no session would ever show its work-state.
-                Only "hooks" may appear at the top level; put prose in
-                comm/adapters/codex/hooks.README.md instead.""")
-            write(joinpath(pdir, "hooks", "hooks.json"), txt)
+            _write_codex_hooks(joinpath(pdir, "hooks", "hooks.json"), txt)
             mp = joinpath(homedir(), ".agents", "plugins", "marketplace.json")
             # Replace the file only when it is absent or byte-identical to a
             # version we wrote (see CODEX_MARKETPLACE_PAYLOADS). Fail closed on

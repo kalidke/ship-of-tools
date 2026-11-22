@@ -35,6 +35,12 @@ mkdir -p "$STUB_DIR"
 ARGV_LOG="$WORK/argv.log"
 cat > "$STUB_DIR/codex" <<'EOF'
 #!/bin/sh
+case "$*" in
+    --help|'resume --help')
+        echo "$*" >> "$ARGV_LOG_PATH.help"
+        if [ "$*" = --help ] || [ "${RESUME_FLAG:-listed}" = listed ]; then echo '  --no-daemon'; fi
+        exit 0 ;;
+esac
 : > "$ARGV_LOG_PATH"
 for a in "$@"; do
     printf '%s\n' "$a" >> "$ARGV_LOG_PATH"
@@ -64,7 +70,7 @@ run_ccx() {  # extra ccx args...
         PATH="$STUB_DIR:$PATH" \
         SOT_COMM_HOME="$EMPTY_COMM_HOME" \
         CODEX_HOME="$CODEX_HOME_DIR" \
-        "$CCX" "$@" >/dev/null 2>"$WORK/stderr.log"
+        bash "$CCX" "$@" >/dev/null 2>"$WORK/stderr.log"
     )
 }
 
@@ -83,7 +89,7 @@ case_row_env_starts_fresh() {
         SOT_COMM_HOME="$EMPTY_COMM_HOME" \
         CODEX_HOME="$CODEX_HOME_DIR" \
         SOT_WORKSPACE_ID="ws-row-1" \
-        "$CCX" >/dev/null 2>"$WORK/stderr.log"
+        bash "$CCX" >/dev/null 2>"$WORK/stderr.log"
     )
     started_fresh
 }
@@ -102,7 +108,7 @@ case_hand_run_ccx_inside_a_capsule_row_starts_fresh() {
         CODEX_HOME="$CODEX_HOME_DIR" \
         SOT_WORKSPACE_ID="ws-capsule-row-1" \
         SOT_RUNTIME="capsule" \
-        "$CCX" >/dev/null 2>"$WORK/stderr.log"
+        bash "$CCX" >/dev/null 2>"$WORK/stderr.log"
     )
     started_fresh
 }
@@ -118,7 +124,7 @@ case_launch_argv() {
         set -- resume "$id"
         prompt="Your pane was restarted; this is the same conversation resumed. $prompt Then continue exactly where you left off."
     fi
-    printf '%s\n' "$@" --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust --no-alt-screen -c 'plugins.sot-row@sot-local.enabled=true' "$prompt" \
+    printf '%s\n' "$@" --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust --no-alt-screen -c 'plugins.sot-row@sot-local.enabled=true' --no-daemon "$prompt" \
         | diff -u - "$ARGV_LOG"
 }
 
@@ -149,7 +155,7 @@ run_ccx_with_lib() {  # extra ccx args...
         PATH="$STUB_DIR:$PATH" \
         SOT_COMM_HOME="$LIB_COMM_HOME" \
         CODEX_HOME="$CODEX_HOME_DIR" \
-        "$CCX" "$@" >/dev/null 2>"$WORK/stderr.log"
+        bash "$CCX" "$@" >/dev/null 2>"$WORK/stderr.log"
     )
 }
 
@@ -182,6 +188,28 @@ check_launch_forms
 check_launch_forms --capsule
 check "--capsule: the first prompt names the session's handoff when one exists" case_capsule_prompt_names_the_handoff_when_one_exists
 check "--capsule: the first prompt names no handoff when none exists" case_capsule_prompt_names_no_handoff_when_none_exists
+
+case_resumed_marker() {
+    local cache="$CODEX_HOME_DIR/plugins/cache/sot-local/sot-row/0.1.0" marker="$WORK/resumed marker"
+    local support="$1"
+    shift
+    mkdir -p "$cache/.codex-plugin" "$cache/hooks" || return 1
+    printf '%s\n' '{"name":"sot-row","version":"0.1.0","hooks":"./hooks/hooks.json"}' > "$cache/.codex-plugin/plugin.json"
+    cp "$SCRIPT_DIR/../codex/row-hooks.json" "$cache/hooks/hooks.json" &&
+        cp "$SCRIPT_DIR/../sot-selection-hook.sh" "$EMPTY_COMM_HOME/bin/" || return 1
+    rm -f "$marker" "$ARGV_LOG" "$ARGV_LOG.help"
+    RESUME_FLAG="$support" SOT_SELECTION_FILE="$WORK/selection.json" run_ccx --capsule --selection-marker "$marker" "$@" || return 1
+    [ "$(cat "$ARGV_LOG.help")" = 'resume --help' ] && [ "$(sed -n 1p "$ARGV_LOG")" = resume ] || return 1
+    if [ "$support" = listed ]; then
+        [ "$(grep -Fxc -- --no-daemon "$ARGV_LOG")" = 1 ] && [ -f "$marker" ] && [ ! -s "$marker" ]
+    else
+        ! grep -Fxq -- --no-daemon "$ARGV_LOG" && [ ! -e "$marker" ]
+    fi
+}
+check "an explicit resume marks the capsule leg" case_resumed_marker listed --resume "$ROLLOUT_ID"
+check "a continue marks the resumed capsule leg" case_resumed_marker listed --continue
+check "an explicit resume without flag support starts with text held" case_resumed_marker absent --resume "$ROLLOUT_ID"
+check "a continue without flag support starts with text held" case_resumed_marker absent --continue
 
 echo "---"
 echo "PASS=$PASS FAIL=$FAIL"

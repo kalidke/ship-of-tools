@@ -236,7 +236,7 @@ fn the_reply_says_who_will_hear() {
     // 2. a kind that takes none is refused and loses its file; a clear answers shared for any row
     insert("ws-claude-k", "claude");
     assert!(ask(true, "ws-claude-k", good()).is_ok(), "row 2: claude takes one");
-    for kind in ["codex", "none", "gemini", ""] {
+    for kind in ["none", "gemini", ""] {
         let id = format!("ws-{kind}-k");
         insert(&id, kind);
         std::fs::write(file(&id), "old").unwrap();
@@ -246,16 +246,32 @@ fn the_reply_says_who_will_hear() {
     }
 
     // 3. an accepted selection is shared when the marker exists and held when it does not
-    assert_eq!(ask(true, "ws-claude", good()), Ok(SelectionState::Held), "row 3: no marker");
-    std::fs::write(state_dir_for(state.path(), "ws-claude").join(MARKER_NAME), "").unwrap();
-    assert_eq!(ask(true, "ws-claude", good()), Ok(SelectionState::Shared), "row 3: marker");
-    std::fs::remove_file(state_dir_for(state.path(), "ws-claude").join(MARKER_NAME)).unwrap();
-    assert_eq!(ask(true, "ws-claude", good()), Ok(SelectionState::Held), "row 3: marker removed");
+    insert("ws-codex", "codex");
+    for id in ["ws-claude", "ws-codex"] {
+        let marker = state_dir_for(state.path(), id).join(MARKER_NAME);
+        assert_eq!(
+            ask(true, id, good()),
+            Ok(SelectionState::Held),
+            "{id}: no marker"
+        );
+        std::fs::write(&marker, "").unwrap();
+        assert_eq!(
+            ask(true, id, good()),
+            Ok(SelectionState::Shared),
+            "{id}: marker"
+        );
+        std::fs::remove_file(marker).unwrap();
+        assert_eq!(
+            ask(true, id, good()),
+            Ok(SelectionState::Held),
+            "{id}: marker removed"
+        );
+    }
 }
 
 /// The marker the launch writes, read by the handler: a leg answers `shared` only when it carries the variable and (Claude)
-/// the hook in its argv, and the marker of an earlier leg does not outlive a leg that lacks them. A Codex leg writes no
-/// marker, and its row is answered `no_agent`.
+/// the hook in its argv, and the marker of an earlier leg does not outlive a leg that lacks them. The Codex launcher owns its
+/// marker whichever process finishes first.
 #[test]
 fn the_marker_follows_the_leg_that_wrote_it() {
     let state = tempfile::tempdir().unwrap();
@@ -293,10 +309,13 @@ fn the_marker_follows_the_leg_that_wrote_it() {
     launch("ws-mk-claude", "claude", &var, &hooked);
     launch("ws-mk-claude", "claude", &[], &hooked);
     assert_eq!(answer("ws-mk-claude"), Ok(SelectionState::Held), "row 2: no variable, the earlier marker removed");
-    // 3. a Codex leg has none, whatever its argv, until its wiring is built
+    // The daemon may finish spawning before or after ccx stamps the Codex leg.
+    let marker = folder("ws-mk-codex").join(MARKER_NAME);
     launch("ws-mk-codex", "codex", &var, &hooked);
-    assert!(!folder("ws-mk-codex").join(MARKER_NAME).exists(), "row 3: a codex leg writes no marker");
-    assert_eq!(answer("ws-mk-codex"), Err(selection_code::NO_AGENT), "row 3: codex");
+    assert_eq!(answer("ws-mk-codex"), Ok(SelectionState::Held));
+    std::fs::write(&marker, "").unwrap();
+    launch("ws-mk-codex", "codex", &[], &plain);
+    assert_eq!(answer("ws-mk-codex"), Ok(SelectionState::Shared));
     // 4. a folder the supervisor has not made yet is made for the marker
     let fresh = folder("ws-mk-fresh").join("nested");
     write_marker(&fresh, "claude", &var, &hooked).unwrap();
@@ -308,8 +327,19 @@ fn a_setters_end_or_the_start_up_walk_withdraws_only_stale_selections() {
     let state = tempfile::tempdir().unwrap();
     let project = tempfile::tempdir().unwrap();
     let workspaces = Workspaces::new();
-    for id in ["ws-wd-1", "ws-wd-2", "ws-wd-3"] {
-        let mut row = Workspace::from_label(id, project.path().to_path_buf(), false, "claude".into(), String::new(), String::new());
+    for (id, kind) in [
+        ("ws-wd-1", "codex"),
+        ("ws-wd-2", "claude"),
+        ("ws-wd-3", "codex"),
+    ] {
+        let mut row = Workspace::from_label(
+            id,
+            project.path().to_path_buf(),
+            false,
+            kind.into(),
+            String::new(),
+            String::new(),
+        );
         row.workspace_id = id.to_string();
         std::fs::create_dir_all(state_dir_for(state.path(), id)).unwrap();
         workspaces.insert(row);

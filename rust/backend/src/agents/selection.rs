@@ -25,12 +25,15 @@ use crate::rows::{Workspace, Workspaces};
 pub(crate) const FILE_NAME: &str = "selection.json";
 
 /// The marker's name in the row's state folder: present when the row's current agent was started with the hook.
-const MARKER_NAME: &str = "selection-hook";
+pub(crate) const MARKER_NAME: &str = "selection-hook";
 
 /// Records, in the row's state folder, whether the leg just started hears a selection: the marker exists when the row's
 /// agent is Claude, the leg carries `SOT_SELECTION_FILE` in `env`, and its `argv` carries the selection hook; it is
-/// removed otherwise. Codex legs have none until the Codex wiring is built.
+/// removed otherwise. A Codex leg clears its marker in the producer and ccx owns its write at native exec.
 pub(crate) fn write_marker(state_dir: &Path, agent_kind: &str, env: &[(String, String)], argv: &[String]) -> std::io::Result<()> {
+    if agent_kind == "codex" {
+        return Ok(());
+    }
     let marker = state_dir.join(MARKER_NAME);
     let hears = agent_kind == "claude"
         && env.iter().any(|(k, _)| k == "SOT_SELECTION_FILE")
@@ -43,12 +46,10 @@ pub(crate) fn write_marker(state_dir: &Path, agent_kind: &str, env: &[(String, S
     sot_platform::host::write_durable(&marker, b"")
 }
 
-/// The agent kinds that take a selection; every other kind answers `no_agent`. A Codex row answers `no_agent` until the
-/// Codex wiring is built.
-const TAKES_SELECTION: [&str; 1] = ["claude"];
+/// The agent kinds that take a selection; every other kind answers `no_agent`.
+const TAKES_SELECTION: [&str; 2] = ["claude", "codex"];
 
-/// The agent kinds that take a drawing; a Codex row answers `no_agent` for one until the
-/// Codex wiring is built.
+/// The agent kinds that take a drawing; a Codex row answers `no_agent` before composition.
 const TAKES_DRAWING: [&str; 1] = ["claude"];
 
 /// Held across a drawing's composite and its publish: one drawing at a time in the daemon, so the file names the

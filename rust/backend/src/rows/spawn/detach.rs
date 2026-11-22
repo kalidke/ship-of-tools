@@ -274,6 +274,13 @@ pub(crate) fn spawn_detached_supervisor(
         let inject_at = args.len();
         args.extend(first_run_only(agent_argv).into_iter().map(std::ffi::OsString::from));
         args.push("--".into());
+        #[cfg(unix)]
+        if agent_kind == "codex" {
+            // The winning supervisor runs this before each leg, including a reset with an older ccx.
+            let clear_and_exec = r#"rm -f -- "$0" && exec "$@" --selection-marker "$0""#;
+            args.extend(["/bin/sh", "-c", clear_and_exec].map(Into::into));
+            args.push(state_dir.join(crate::agents::selection::MARKER_NAME).into());
+        }
         args.extend(agent_argv.iter().map(std::ffi::OsString::from));
         Line {
             program,

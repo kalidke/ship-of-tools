@@ -3,6 +3,7 @@
 //! that records its environment and sleeps, a window connection sends `selection.set`, and the row's prompt hook
 //! (`agents/sot-selection-hook.sh`, run with the stub's recorded environment) prints the selection; a clear, and the
 //! window's connection ending, each leave the hook printing nothing. No agent program runs and no live daemon is touched.
+//! A Codex row replaces an older launcher with the current one and resets back to the older one under the same supervisor.
 
 #[allow(dead_code, reason = "the shared fixture serves more suites than this one uses")]
 mod support;
@@ -12,13 +13,20 @@ use std::time::Duration;
 
 use sot_protocol::ops::{Drawing, InkBase, SelectedText, SelectionSetReq, TextPos};
 use sot_protocol::{op, selection_digest, HelloReq};
-use support::{call, connect_and_hello, poll_for_phase, poll_until, sot_capsule_exe, try_connect, Conn, Env, BOUND};
+use support::{
+    call, connect_and_hello, poll_for_phase, poll_until, sot_capsule_exe, try_connect, Conn, Env,
+    BOUND, BUDGET_WAIT, SHORT_BACKOFF,
+};
 
-/// A `claude` that records its environment, whole, in `record` (published by a rename) and sleeps.
-fn write_recording_claude(dir: &Path, record: &Path) {
+/// A stub agent that records its environment, whole, in `record` (published by a rename) and sleeps.
+fn write_recording_agent(dir: &Path, name: &str, record: &Path) {
     std::fs::create_dir_all(dir).expect("mkdir stub bin");
-    let script = format!("#!/bin/sh\nenv > '{r}.part' && mv '{r}.part' '{r}'\nexec sleep 120\n", r = record.display());
-    sot_platform::test_exec::write_executable(&dir.join("claude"), script);
+    let script = format!(r#"#!/bin/sh
+if [ "$*" = --help ]; then echo '  --no-daemon'; exit 0; fi
+env > '{r}.part' && mv '{r}.part' '{r}'
+exec sleep 120
+"#, r = record.display());
+    sot_platform::test_exec::write_executable(&dir.join(name), script);
 }
 
 /// A hello as a window's: the role `fe` and a name, which is what `selection.set` requires of its connection.
@@ -65,9 +73,9 @@ fn run_hook(record: &str) -> String {
     sot_platform::test_wait::run_within(&mut cmd, BOUND).ok().stdout
 }
 
-/// A started Claude row in `env`'s project (holding `a.txt` and `fig.png`) whose stub `claude` recorded its environment:
+/// A started row in `env`'s project (holding `a.txt` and `fig.png`) whose stub recorded its environment:
 /// the daemon's connection, the row id and the recorded environment.
-async fn start_row(env: &Env) -> (Conn, String, String) {
+async fn start_row(env: &Env, kind: &str) -> (Conn, String, String) {
     assert!(sot_capsule_exe().is_file(), "sot-capsule not found next to sotd: build it first");
     // the Claude layer, so the leg's recipe carries the hooks and the row's marker is written
     let skill = env.comm_root.join("claude-layer/.claude/skills/sot-session-start");
@@ -75,17 +83,17 @@ async fn start_row(env: &Env) -> (Conn, String, String) {
     std::fs::write(skill.join("SKILL.md"), "---\nname: sot-session-start\n---\n").unwrap();
     let record = env._tmp.path().join("leg.env");
     let stub = env._tmp.path().join("stubbin");
-    write_recording_claude(&stub, &record);
+    write_recording_agent(&stub, if kind == "codex" { "ccx" } else { "claude" }, &record);
     std::fs::write(env.workspace_project_root.join("a.txt"), "alpha\nbeta\ngamma\n").unwrap();
     image::RgbImage::from_pixel(64, 48, image::Rgb([10, 200, 30])).save(env.workspace_project_root.join("fig.png")).unwrap();
-    env.spawn_sotd_with_path_and_env(&stub, &[]);
+    env.spawn_sotd_with_path_and_env(&stub, &[("CODEX_HOME", env.home_root.join(".codex").to_str().unwrap()), SHORT_BACKOFF]);
 
     let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
     let create = serde_json::json!({
         "label": "selhook-row",
         "project_root": env.workspace_project_root.to_string_lossy(),
         "runtime": "capsule",
-        "agent": "claude",
+        "agent": kind,
     });
     let res = call(&mut conn, next_id, op::WORKSPACE_CREATE, create).await;
     next_id += 1;
@@ -93,7 +101,7 @@ async fn start_row(env: &Env) -> (Conn, String, String) {
     let ws = res.payload["workspace_id"].as_str().expect("workspace_id").to_string();
     // ready: the launch is settled, so the marker has been written
     poll_for_phase(&mut conn, &mut next_id, &ws, "ready", BOUND.max(Duration::from_secs(60))).await;
-    let recorded = poll_until(|| async { std::fs::read_to_string(&record).ok() }, BOUND, "the stub claude's recorded environment").await;
+    let recorded = poll_until(|| async { std::fs::read_to_string(&record).ok() }, BOUND, "the stub agent's recorded environment").await;
     assert!(recorded.lines().any(|l| l.starts_with("SOT_SELECTION_FILE=")), "the leg names its selection file: {recorded}");
     assert_eq!(run_hook(&recorded), "", "before any selection the hook prints nothing");
 
@@ -103,7 +111,7 @@ async fn start_row(env: &Env) -> (Conn, String, String) {
 #[tokio::test]
 async fn a_window_selection_reaches_the_rows_prompt_hook_and_its_end_withdraws_it() {
     let env = Env::new("selhook");
-    let (_control, ws, recorded) = start_row(&env).await;
+    let (_control, ws, recorded) = start_row(&env, "claude").await;
 
     // 1. a window's selection is shared, and the hook prints it
     let (mut window, mut window_id) = connect_as_window(&env).await;
@@ -130,7 +138,7 @@ async fn a_window_selection_reaches_the_rows_prompt_hook_and_its_end_withdraws_i
 #[tokio::test]
 async fn a_window_drawing_reaches_the_rows_prompt_hook_and_its_end_withdraws_it() {
     let env = Env::new("seldraw");
-    let (_control, ws, recorded) = start_row(&env).await;
+    let (_control, ws, recorded) = start_row(&env, "claude").await;
     let (mut window, window_id) = connect_as_window(&env).await;
 
     // a drawing over the figure is shared, and the hook names a picture that decodes
@@ -149,5 +157,178 @@ async fn a_window_drawing_reaches_the_rows_prompt_hook_and_its_end_withdraws_it(
     drop(window);
     poll_until(|| async { run_hook(&recorded).is_empty().then_some(()) }, BOUND, "the window's end to withdraw its drawing").await;
     assert!(Path::new(picture).is_file(), "the picture stays");
+    env.kill_daemon_bounded().await;
+}
+
+#[tokio::test]
+async fn codex_selection_follows_the_launcher_across_resets() {
+    use sot_capsule::row::{socket_path_in, RowClient};
+    use std::fs;
+
+    let env = Env::new("codex-selection");
+    let (_control, ws, recorded) = start_row(&env, "codex").await;
+    let (mut window, id) = connect_as_window(&env).await;
+    assert_eq!(
+        set(&mut window, id, &ws, Some((1, "beta"))).await["state"],
+        "held"
+    );
+    let selection = recorded
+        .lines()
+        .find_map(|s| s.strip_prefix("SOT_SELECTION_FILE="))
+        .unwrap();
+    let folder = Path::new(selection).parent().unwrap();
+    let hash = sot_platform::host::state_dir::state_dir_hash(folder);
+    let socket = socket_path_in(env._runtime_tmp.path(), &hash).unwrap();
+    let mut lane = RowClient::connect(&socket, "selection-test", BOUND).unwrap();
+    let mut reset = || {
+        let run = lane
+            .call("row.status", serde_json::json!({}), BOUND)
+            .unwrap()
+            .payload["run"]
+            .clone();
+        let end = lane
+            .call(
+                "row.end_run",
+                serde_json::json!({"run":run,"reason":"test"}),
+                BOUND,
+            )
+            .unwrap();
+        assert_eq!(end.payload["outcome"], "ended");
+        assert_eq!(
+            lane.call("row.reset", serde_json::json!({}), BOUND)
+                .unwrap()
+                .payload["outcome"],
+            "reset"
+        );
+    };
+    let agents = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../agents");
+    let stub = env._tmp.path().join("stubbin");
+    let record = env._tmp.path().join("leg.env");
+    let hooks = env
+        .home_root
+        .join(".codex/plugins/cache/sot-local/sot-row/0.1.0");
+    fs::create_dir_all(hooks.join("hooks")).unwrap();
+    fs::create_dir_all(hooks.join(".codex-plugin")).unwrap();
+    fs::write(
+        hooks.join(".codex-plugin/plugin.json"),
+        r#"{"name":"sot-row","version":"0.1.0","hooks":"./hooks/hooks.json"}"#,
+    )
+    .unwrap();
+    fs::write(
+        hooks.join("hooks/hooks.json"),
+        fs::read(agents.join("codex/row-hooks.json")).unwrap(),
+    )
+    .unwrap();
+    fs::create_dir_all(env.comm_root.join("bin")).unwrap();
+    sot_platform::test_exec::write_executable(
+        &env.comm_root.join("bin/sot-selection-hook.sh"),
+        fs::read(agents.join("sot-selection-hook.sh")).unwrap(),
+    );
+    write_recording_agent(&stub, "codex", &record);
+    sot_platform::test_exec::write_executable(
+        &stub.join("ccx"),
+        fs::read(agents.join("codex/bin/ccx")).unwrap(),
+    );
+    fs::remove_file(&record).unwrap();
+    reset();
+    poll_until(
+        || async { record.exists().then_some(()) },
+        BOUND,
+        "the current launcher to exec codex",
+    )
+    .await;
+    assert_eq!(
+        set(&mut window, id + 1, &ws, Some((1, "beta"))).await["state"],
+        "shared"
+    );
+    let output: serde_json::Value =
+        serde_json::from_str(&run_hook(&fs::read_to_string(&record).unwrap())).unwrap();
+    assert_eq!(output["systemMessage"], "Selection: a.txt lines 2-2");
+    assert!(output["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap()
+        .contains("\nbeta\n"));
+
+    // The winning leg keeps its marker when a second supervisor cannot claim the row.
+    let marker = folder.join("selection-hook");
+    let mut contender = std::process::Command::new(sot_capsule_exe());
+    contender
+        .env_clear()
+        .env("HOME", &env.home_root)
+        .env("SOT_RUNTIME_DIR", env._runtime_tmp.path())
+        .arg("supervise")
+        .arg(folder)
+        .args(["--start", "--", "/bin/rm", "-f"])
+        .arg(&marker);
+    let rejected = sot_platform::test_wait::run_within(&mut contender, BOUND);
+    assert_eq!(
+        rejected.status.code(),
+        Some(sot_capsule::supervisor::EXIT_CONTENDED),
+        "{rejected}"
+    );
+    assert!(marker.is_file());
+
+    let drawing = Drawing {
+        base: InkBase::Figure {
+            node_id: "files:fig.png".into(),
+        },
+        strokes: vec![vec![[0, 0], [1, 1]]],
+    };
+    let req = SelectionSetReq {
+        workspace_id: ws.clone(),
+        selection: None,
+        drawing: Some(drawing),
+    };
+    let reply = call(
+        &mut window,
+        id + 2,
+        op::SELECTION_SET,
+        serde_json::to_value(req).unwrap(),
+    )
+    .await;
+    assert_eq!(reply.payload["code"], "no_agent");
+    assert!(!env.workspace_project_root.join(".sot/captures").exists());
+    assert!(run_hook(&recorded).is_empty());
+    assert_eq!(
+        set(&mut window, id + 3, &ws, Some((2, "gamma"))).await["state"],
+        "shared"
+    );
+    assert_eq!(set(&mut window, id + 4, &ws, None).await["state"], "shared");
+    assert!(run_hook(&recorded).is_empty());
+
+    // An older launcher ignores the marker argument. Inspect the row the instant it starts.
+    fs::remove_file(&record).unwrap();
+    sot_platform::test_exec::write_executable(&stub.join("ccx"), format!(
+        "#!/bin/sh\nif [ -e \"${{SOT_SELECTION_FILE%/*}}/selection-hook\" ]; then echo stale; else echo clear; fi > '{}'\nexec sleep 120\n", record.display()));
+    reset();
+    let entry = poll_until(
+        || async { fs::read_to_string(&record).ok().filter(|s| !s.is_empty()) },
+        BOUND,
+        "the older launcher to record its entry",
+    )
+    .await;
+    assert_eq!(entry.trim(), "clear");
+    assert_eq!(
+        set(&mut window, id + 5, &ws, Some((1, "beta"))).await["state"],
+        "held"
+    );
+    drop(window);
+    poll_until(
+        || async { (!Path::new(selection).exists()).then_some(()) },
+        BOUND,
+        "the last setter to withdraw its text",
+    )
+    .await;
+
+    // A leg cannot start beside a marker it could not clear, even on the watchdog's retries.
+    fs::create_dir(&marker).unwrap();
+    fs::write(marker.join("keep"), "original").unwrap();
+    fs::remove_file(&record).unwrap();
+    reset();
+    let (mut control, mut id) = connect_and_hello(&env.socket_path).await;
+    poll_for_phase(&mut control, &mut id, &ws, "terminal", BUDGET_WAIT).await;
+    assert!(env.daemon_log_since(0).contains("restart budget exhausted"));
+    assert!(!record.exists(), "the older launcher ran beside an uncleared marker");
+    assert_eq!(fs::read(marker.join("keep")).unwrap(), b"original");
     env.kill_daemon_bounded().await;
 }

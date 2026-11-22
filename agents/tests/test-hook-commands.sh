@@ -80,6 +80,26 @@ case_a_missing_selection_script_is_a_silent_no_op() {
 check "a selection hook command whose script is not installed exits 0 and prints nothing" \
     case_a_missing_selection_script_is_a_silent_no_op
 
+case_codex_silent_without_script_or_selection() {
+    local cmd mode sel script="$COMM/bin/sot-selection-hook.sh"
+    cmd=$(jq -er '.hooks.UserPromptSubmit[0].hooks[0].command' "$(dirname "${BASH_SOURCE[0]}")/../codex/row-hooks.json") || return 1
+    for mode in missing-script no-row; do
+        sel="$WORK/selection.json"
+        if [ "$mode" = no-row ]; then
+            printf '#!/bin/sh\necho unexpected invocation >&2\nexit 1\n' > "$script"
+            chmod +x "$script"
+            sel=
+        else
+            rm -f "$script"
+        fi
+        ( export SOT_COMM_HOME="$COMM" SOT_SELECTION_FILE="$sel"
+          [ -n "$sel" ] || unset SOT_SELECTION_FILE
+          head -c 1048576 /dev/zero | bash -c "$cmd" > "$WORK/out" 2> "$WORK/err"
+        ) && [ ! -s "$WORK/out" ] && [ ! -s "$WORK/err" ] || return 1
+    done
+}
+check "the serialized Codex command drains stdin silently without a row or an installed script" case_codex_silent_without_script_or_selection
+
 echo ""
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

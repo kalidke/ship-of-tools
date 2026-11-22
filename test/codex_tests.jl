@@ -1,13 +1,12 @@
 # Tests for src/codex.jl: the Codex hooks payload, marketplace registry and home profile export parsing.
 
-@testset "codex hooks payload" begin
+function check_hooks_payload(hooks_path, events)
     # This file has died silently twice — an unrecognized top-level key
     # (codex rejects the WHOLE file) and a wrong event-key case (the key is
     # dropped). Neither reports an error anywhere: the only symptom is that
     # every codex session stops reporting its work-state, which reads as a
     # Ship of Tools bug rather than a parse failure. These checks are the
     # cheap standing guard; see comm/adapters/codex/hooks.README.md.
-    hooks_path = ShipTools.CODEX_HOOKS_JSON_SRC
     @test isfile(hooks_path)
     txt = read(hooks_path, String)
 
@@ -23,7 +22,8 @@
     # (3) Event keys are PascalCase. serde(rename = "...") with no alias, in
     # 0.142.5 and 0.146 alike, so a snake_case key is an unrecognized inner
     # key and is dropped in silence.
-    for ev in ("UserPromptSubmit", "PostToolUse", "Stop", "PermissionRequest")
+    @test sort(split(readchomp(`jq -r '.hooks | keys[]' $hooks_path`), '\n')) == sort(events)
+    for ev in events
         @test occursin("\"$ev\"", txt)
     end
     # A snake_case twin is not a harmless fallback: if it ever became a
@@ -39,8 +39,17 @@
     # whatever `clis`, so `install_comm(clis = [:codex])` on its own deploys
     # the scripts the payload references too.
     sources = ShipTools._comm_bin_shipped()
-    for m in eachmatch(r"\$HOME/\.sot-comm/bin/([A-Za-z0-9._-]+)", txt)
+    for m in eachmatch(r"/bin/([A-Za-z0-9._-]+)", txt)
         @test m.captures[1] in sources
+    end
+end
+
+@testset "codex hooks payload" begin
+    check_hooks_payload(ShipTools.CODEX_HOOKS_JSON_SRC, ["UserPromptSubmit", "PostToolUse", "Stop", "PermissionRequest"])
+    # The global plugin is the shipped work-state plugin, including its original command bytes.
+    for (path, digest) in [(ShipTools.CODEX_HOOKS_JSON_SRC, "a52d37fadd48c8424e918654f3cd253025ee9761de9515ae1dd0232931edccb1"),
+                           (joinpath(ShipTools.CODEX_PLUGIN_SRC, ".codex-plugin", "plugin.json"), "332fb2edaf3cf0e1e0bb9b5114fd9938b9ef97b0ae2d8521be1b4d946b3711c5")]
+        @test bytes2hex(Base.invokelatest(Base.require(ShipTools._SHA_ID).sha256, replace(read(path, String), "\r\n" => "\n"))) == digest
     end
 end
 
@@ -174,10 +183,18 @@ end
                 return
             end
             root = joinpath(cache, only(readdir(cache)))
-            @test readdir(root) == [".codex-plugin", "skills"]
+            @test readdir(root) == [".codex-plugin", "hooks", "skills"]
             @test readdir(joinpath(root, "skills")) == sort(names)
             manifest = joinpath(root, ".codex-plugin", "plugin.json")
-            @test success(pipeline(`jq -e --arg name $name '.name == $name and .skills == "./skills/" and (has("hooks") | not)' $manifest`; stdout = devnull))
+            @test success(pipeline(`jq -e --arg name $name '.name == $name and .skills == "./skills/" and .hooks == "./hooks/hooks.json"' $manifest`; stdout = devnull))
+            hooks = joinpath(root, "hooks", "hooks.json")
+            check_hooks_payload(hooks, ["UserPromptSubmit"])
+            groups = readchomp(`jq -c '.hooks.UserPromptSubmit | map(keys)' $hooks`)
+            @test groups == "[[\"hooks\"]]"
+            @test readchomp(`jq -c '.hooks.UserPromptSubmit[0].hooks | map(.type)' $hooks`) == "[\"command\"]"
+            command = readchomp(`jq -r '.hooks.UserPromptSubmit[0].hooks[0].command' $hooks`)
+            target = only(eachmatch(r"/bin/([A-Za-z0-9._-]+)", command)).captures[1]
+            @test target == "sot-selection-hook.sh" && isfile(joinpath(ShipTools.comm_home(), "bin", target))
             for n in names
                 @test plugin_tree(joinpath(root, "skills", n)) == plugin_tree(joinpath(skills, n))
             end
@@ -191,6 +208,28 @@ end
                 write(cfg, personal)
                 ShipTools.update_comm(clis = [:codex])
                 @test read(cfg, String) == personal
+            end
+            @testset "installed ccx marks the installer's row plugin at native launch" begin
+                marker = joinpath(home, "selection-hook")
+                native = joinpath(tools, "codex")
+                write(native, raw"""#!/bin/sh
+                    if [ "$*" = --help ]; then echo '  --no-daemon'; exit 0; fi
+                    for arg do
+                        if [ "$arg" = --no-daemon ] && [ -f "$TEST_MARKER" ] && [ ! -s "$TEST_MARKER" ]; then
+                            echo marked
+                            exit 0
+                        fi
+                    done
+                    exit 1
+                    """)
+                chmod(native, 0o755)
+                chmod(joinpath(ShipTools.comm_home(), "bin", "comm-join.sh"), 0o644)
+                ccx = joinpath(home, ".local", "bin", "ccx")
+                launch = Cmd(`$ccx --capsule --selection-marker $marker`; dir = home)
+                withenv("PATH" => "$tools:/usr/bin:/bin", "TEST_MARKER" => marker,
+                        "SOT_SELECTION_FILE" => joinpath(home, "selection.json")) do
+                    @test readchomp(launch) == "marked"
+                end
             end
         end
     end

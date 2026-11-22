@@ -104,6 +104,16 @@ case_a_long_input_on_stdin_is_read_whole() {
 }
 check "a 1 MiB input on stdin is read whole, the file still printed, no writer meets a closed pipe" case_a_long_input_on_stdin_is_read_whole
 
+case_codex_reads_the_prompt_and_prints_the_selection() {
+    local cmd comm="$WORK/comm with space"
+    cmd=$(jq -er '.hooks.UserPromptSubmit[0].hooks[0].command' "$(dirname "${BASH_SOURCE[0]}")/../codex/row-hooks.json") || return 1
+    mkdir -p "$comm/bin" && cp "$HOOK" "$comm/bin/" || return 1
+    printf '{"systemMessage":"Selection: test"}' > "$WORK/selection.json"
+    head -c 1048576 /dev/zero | SOT_COMM_HOME="$comm" SOT_SELECTION_FILE="$WORK/selection.json" bash -c "$cmd" > "$WORK/out" 2> "$WORK/err" || return 1
+    cmp "$WORK/selection.json" "$WORK/out" && [ ! -s "$WORK/err" ]
+}
+check "the serialized Codex command drains a large prompt and delivers the selection through the runtime comm home" case_codex_reads_the_prompt_and_prints_the_selection
+
 echo ""
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

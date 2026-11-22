@@ -5,7 +5,8 @@ canvas, or text you select. It goes to the selected session, the one the agent p
 you can circle a peak in a figure and ask what it is, or select a paragraph and ask for a shorter one. This page calls
 a drawing or a selection *shared* while the agent is given it.
 
-This works in Claude Code sessions only; see [What is not built](#What-is-not-built).
+Claude Code sessions accept text and drawings. Codex sessions on Unix accept text. Offering a drawing to a Codex
+session also withdraws the text previously shared with it.
 
 ## Before you start
 
@@ -99,7 +100,8 @@ or with one of Unicode's line separators.
 
 When you release a selection or a stroke, the window tells Ship of Tools' service on the computer that runs the
 session. At your next prompt Claude Code shows one line in the agent pane: its own words `UserPromptSubmit says:`,
-then a label of what was shared. The agent is given more than the label:
+then a label of what was shared. On Unix the Codex prompt hook produces the same selection label, text and line
+numbers in tests. Delivery to the agent and the notice you see still need checking in a real Codex session.
 
 | You shared | The label | The agent is given |
 |---|---|---|
@@ -161,12 +163,13 @@ given. A new conversation forgets it.
 
 `selection held: this row's agent started before it could take one; restart the row to share`, and the same words
 for a drawing, mean the session's agent was started without the part of Ship of Tools that hands it a selection or a
-drawing. Every session started on 0.7.0 is one, and stays one after the computer is updated to 0.7.1.
+drawing. Every session started on 0.7.0 stays in this state after the update to 0.7.1. On an updated service,
+a Codex session started before this release answers `held` until you restart the session.
 
 End the session (`Shift+d` twice on it in Sessions mode) and start a new one in the same folder, then select or draw
-again; `/resume` in the new session brings the earlier conversation back. If a session started on 0.7.1 says `held`
-too, Ship of Tools' files for Claude Code are most likely missing: run the installer, as [Updating](updating.md)
-describes, and start the session once more.
+again. Use `/resume` in the new session to return to an earlier conversation. If a new session still says `held`,
+run the installer on the computer running the session, then restart the session and select the text again.
+Codex also needs a version that lists `--no-daemon` in its help for that launch. See [Updating](updating.md).
 
 ## Other things the window says
 
@@ -180,7 +183,7 @@ over a picture that is not an image file is under [What is not built](#What-is-n
 | `the drawing is full: undo or clear` | The drawing holds no more ink. Undo or clear to draw more. |
 | `Can't draw here: there is no image file to draw on.` | `d` where the preview shows no image file. |
 | `Can't draw while the connection notice covers the preview.` | The preview is covered by a notice that this window and Ship of Tools on the session's computer cannot work together, usually because one of them needs updating. The notice says why; nothing can be drawn until it is gone. |
-| `selection not shared: this row's agent takes none`, `drawing not shared: this row's agent takes none` | The session's agent is not Claude Code. |
+| `selection not shared: this row's agent takes none`, `drawing not shared: this row's agent takes none` | Text requires a Claude Code or Codex session. A drawing requires a Claude Code session. |
 | `selection not shared: this host's daemon does not take selections`, `drawing not shared: this daemon cannot take a drawing; update it` | The computer that runs the session has an older Ship of Tools. Update it. |
 | `drawing not shared: the image is over 40 megapixels` | The image is too large to draw on. |
 | `drawing not shared: the daemon cannot read this image` | The service could not read the file as a picture. |
@@ -188,8 +191,7 @@ over a picture that is not an image file is under [What is not built](#What-is-n
 
 ## What is not built
 
-- **Sessions other than Claude Code.** A Codex session's agent is given neither a selection nor a drawing; the window
-  says so each time, with the `takes none` message in the table above.
+- **Drawings in Codex sessions.** Selecting text is supported. Offering a drawing displays the `takes none` message.
 - **Drawing over a PDF page, an SVG or a video's poster frame.** `d` works over image files only. Over any other
   picture it draws nothing, and the box says, for a PDF page:
 

@@ -130,8 +130,10 @@ of each.
    installed files, and that a shell runs each hook command the leg is given from a comm folder whose name holds a space
    and a quote (`tests/test-hook-commands.sh`, under whatever bash runs it: macOS's 3.2 and Linux's 3.2.57 on the hosted runs;
    `agent-exec` is Unix only, so Git Bash, whose quoting is the same POSIX form, is not run).
-   Codex loads the three messaging skills and the work-state plugin globally. The skills-only plugin
-   `sot-row@sot-local` carries the Claude sources named in `codex/shared-skills.txt`. The installer publishes it
+   Codex loads the three messaging skills and the work-state plugin globally. The row plugin
+   `sot-row@sot-local` carries the Claude sources named in `codex/shared-skills.txt` and one unfiltered
+   `UserPromptSubmit` command. The command reads the whole prompt and runs the installed selection script through
+   the runtime comm home when a row selection path and the script are present. The installer publishes it
    in the versioned Codex cache on Unix, replacing the product's whole folder. Windows skips this publish until it
    has a Codex row launcher. With no cached plugin, Codex 0.171.0 rendered the prompt with the ccx override,
    zero row skills and no warning. A retry restores a displaced tree.
@@ -141,8 +143,9 @@ of each.
    The installer leaves the row plugin out of the
    marketplace and the personal configuration. Fresh, resume and continue launches by `ccx` enable it even over
    a personal false setting. Codex 0.171.0 listed zero, six, then zero row skills before, during and after the
-   override with a default configuration. An explicit personal true setting also enables it in plain Codex. The plugin listing omitted it. Resuming a thread on a shared background
-   server and discovery from a plain request in a live row await checks after release (`CODEX-ROW-SKILL-DISCOVERY`).
+   override with a default configuration. An explicit personal true setting also enables it in plain Codex. The plugin listing omitted it.
+   Where the installed command supports `--no-daemon`, `ccx` starts the row in its own process even with a shared
+   background server running. Discovery from a plain request in a live row awaits a check after release (`CODEX-ROW-SKILL-DISCOVERY`).
    Tests: `test/codex_tests.jl` (installation, contention and recovery), `tests/test-ccx-launch.sh` and
    `tests/test-ccx-resume-default.sh` (launch argv), and `tests/test-skill-templates.sh` (manual's skill list).
 8. **An install removes only exact copies of what an earlier installer placed.** The installer, `ShipTools.update_comm`,
@@ -211,8 +214,10 @@ of each.
     executable, else `PATH`, else `~/.local/share/sot/bin/sotd`, else `~/.local/bin/sotd`, and execs `sotd agent-exec
     claude` with the caller's flags in order (guarantee 1), or says `ccb: sotd not found` and exits 1. `ccx` has no
     daemon recipe behind it: it builds the Codex argv itself (`codex [resume <id>]
-    --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust --no-alt-screen -c 'plugins.sot-row@sot-local.enabled=true' <prompt>`), requesting
-    inline rendering on fresh and resumed launches. Codex 0.171.0's help describes this mode as preserving terminal
+    --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust --no-alt-screen -c 'plugins.sot-row@sot-local.enabled=true' [--no-daemon] <prompt>`), requesting
+    inline rendering on fresh and resumed launches. Once per launch, `ccx` reads `codex --help` for a fresh
+    conversation or `codex resume --help` for a resolved resume, including a continue. It adds `--no-daemon`
+    only when that help succeeds and lists the option. Codex 0.171.0's help describes inline mode as preserving terminal
     scrollback. The stub tests verify only the arguments. The capsule keeps up to 200 rows of scrollback, as it does
     for Claude. A person's check in a real Codex row is still needed to see whether inline history reaches that buffer,
     whether the view survives reattachment and resizing, and how the composer and menus appear in the window
@@ -293,8 +298,8 @@ of each.
   directory, a pipe or device, a missing or unreadable file is `not_file_text`), then `check_selection` and
   `render_selection`. An accepted selection is published by platform's durable publish (a whole file or none) and
   answers `shared` when the marker `<row state folder>/selection-hook` exists (the row's current agent was started with
-  the hook) and `held` when it does not; only `claude` rows (`TAKES_SELECTION`) take a selection; any other
-  kind, a Codex row among them until the Codex wiring is built, answers `no_agent` and loses its file; a clear removes the file and answers `shared` for any row; every refusal
+  the hook) and `held` when it does not; `claude` and `codex` rows (`TAKES_SELECTION`) take text. Any other
+  kind answers `no_agent` and loses its file; a clear removes the file and answers `shared` for any row; every refusal
   (`not_file_text`, `bad_node_id`, `no_agent`) and a failed publish (`publish_failed`) removes it first. A removal that fails
   answers `publish_failed` in place of the refusal's own code, and the old file stays. A request the wire refuses at
   decode (a start not before the end, a `len` outside 1 to 2 MiB, an over-long id) is answered `handler_error` and
@@ -303,7 +308,7 @@ of each.
   `publish_failed` and a clear answers `shared`; no marker exists there either. The relative path in the rendering is
   files' `path_to_node_id` less its prefix, so on Unix a file named `a\b.txt` is shown as `a/b.txt`. A file swapped for a
   named pipe between the type check and the open blocks the connection loop, the stall the server contract states.
-  The marker is written by `rows::spawn::detach::spawn_detached_supervisor` (both callers: the first start and the
+  For a Claude leg the marker is written by `rows::spawn::detach::spawn_detached_supervisor` (both callers: the first start and the
   watchdog's restart) through `selection::write_marker`, after a launch that started a supervisor (on Unix a contended launch
   started nothing and leaves the live supervisor's marker; on Windows the launch always reports a start, and a launch whose
   supervisor then exits 70 on the held fence has written the marker from its own argv over the live leg's, which is wrong
@@ -312,8 +317,22 @@ of each.
   (`layer::carries_selection_hook`); it is removed otherwise. `publish` reads the marker only to choose `shared` or `held` for an accepted selection; a kind that takes none answers `no_agent` whatever the marker says.
   A supervisor started before the release has no marker. The marker describes the last launch: between a leg's exit and
   its restart, or after a downgrade and an upgrade that adopts the older supervisor, it can describe another leg; and a
-  failed write or removal (logged as not brought up to date) leaves the earlier launch's marker. A reset leg in the same supervisor runs with that supervisor's
-  argv and environment, so the marker stays true for it; it survives a daemon restart. The absolute path in the rendering is the operating system's spelling (backslashes on Windows), which the
+  failed write or removal (logged as not brought up to date) leaves the earlier launch's marker. A reset Claude leg in the same supervisor runs with that supervisor's
+  argv and environment, so the marker stays true for it; it survives a daemon restart. The Unix Codex producer removes the marker before running any installed
+  `ccx --capsule` on every leg. If the producer cannot clear the old marker, the row's agent does not start and the
+  watchdog stops restarting the supervisor when its budget runs out. The producer passes the marker path as
+  `--selection-marker`. At native exec, ccx writes it when the row selection path is set, the outgoing argv enables the
+  row plugin and includes `--no-daemon`, the installed script is executable and the sole cached version declares
+  the matching hook file with exactly the selection command. If ccx cannot write the marker, Codex still starts and
+  text answers `held`. A failed exec removes a marker ccx wrote. The daemon leaves this write to ccx.
+  **Run UUID.** The producer clears the previous leg's marker. Adoption after a downgrade can retain one.
+  **Hook receipt.** The marker records the launch checks. It cannot confirm a callback or a later settings change.
+  **Status probe.** Until the next leg starts, a selection can read the last leg's marker after that leg exits.
+  **Shared background server.** With `--no-daemon`, Codex runs the session and invokes its prompt hook in the row's
+  own process environment. On older Codex versions without the flag, the session starts and text answers `held`.
+  The daemon still writes accepted text to the row's selection file in this case.
+  Isolation across simultaneous fresh, resumed and ordinary sessions still needs a window check.
+  The absolute path in the rendering is the operating system's spelling (backslashes on Windows), which the
   file's JSON escapes. The published text is the file's text at the read; a file that changes
   later leaves that snapshot until the window clears it. Withdrawal: one process-wide map behind one lock holds per
   row the roster serial of the connection that set the file and the file's path; the serial comes from one counter for
@@ -349,13 +368,19 @@ of each.
   Limits: a removal that fails at a connection's end or in the walk has nobody to answer: it is logged once, the
   entry is dropped, and the next walk removes the file; the startup Cleanup runs no walk, so a row it could not end
   keeps an earlier process's file until a later resume; on Windows a publish or removal that meets an open read can fail, which is
-  `publish_failed` and the old file may remain. Unbuilt: the Codex wiring, whose premises, all untested, are that Codex shows the hook's message, passes its context to the model whole (a selection of 2,000 characters) and, for a drawing, can open the picture the rendering names; the
-  window's clear after an error reply (A7). Tests:
+  `publish_failed` and the old file may remain. A real Codex window still needs to confirm the notice, source lines and full span
+  (docs/defects.md: CODEX-SELECTION-WINDOW). Codex drawings and the window's clear after an error reply (A7) remain unbuilt. Tests:
   `selection::tests::the_row_file_holds_the_last_shared_selection_or_nothing`, one
   row per path (a failed removal and a link to a device among them), `the_replies_are_the_wire_frames`
-  (a decode refusal leaves a published file), `the_reply_says_who_will_hear` (`no_agent`, `shared` and `held`), `the_marker_follows_the_leg_that_wrote_it` (the marker: written for a Claude leg with the variable and the hook, removed for a leg that lacks either, none for Codex), `tests/selection.rs::a_window_selection_reaches_the_rows_prompt_hook_and_its_end_withdraws_it` (the whole path, a real daemon and a stub `claude`: the hook prints the selection, then nothing after a clear, then nothing after the window's end), `a_setters_end_or_the_start_up_walk_withdraws_only_stale_selections` (the setter map, a real guard's end, `clear_unowned`), `a_drawing_is_the_rows_selection_until_it_is_withdrawn` (publish, clear, refusals, kinds, replacement and both withdrawals for a drawing), `two_drawings_at_once_leave_the_file_naming_the_picture_it_holds`, `tests/selection.rs::a_window_drawing_reaches_the_rows_prompt_hook_and_its_end_withdraws_it` (the whole path: the hook names a picture that decodes, the window's end empties it),
+  (a decode refusal leaves a published file), `the_reply_says_who_will_hear` (`no_agent`, `shared` and `held`), `the_marker_follows_the_leg_that_wrote_it` (the marker: written for a Claude leg with the variable and the hook, removed for a Claude leg that lacks either, left to ccx for Codex), `tests/selection.rs::a_window_selection_reaches_the_rows_prompt_hook_and_its_end_withdraws_it` (the whole path, a real daemon and a stub `claude`: the hook prints the selection, then nothing after a clear, then nothing after the window's end), `a_setters_end_or_the_start_up_walk_withdraws_only_stale_selections` (the setter map, a real guard's end, `clear_unowned`), `a_drawing_is_the_rows_selection_until_it_is_withdrawn` (publish, clear, refusals, kinds, replacement and both withdrawals for a drawing), `two_drawings_at_once_leave_the_file_naming_the_picture_it_holds`, `tests/selection.rs::a_window_drawing_reaches_the_rows_prompt_hook_and_its_end_withdraws_it` (the whole path: the hook names a picture that decodes, the window's end empties it),
   `rows::run::resume::selection_tests::the_walk_clears_each_registered_rows_unowned_selection` (the walk's call); `server::context::tests::only_a_named_frontends_connection_may_share_a_selection` (real connections of each
   role: only a named `fe` is not `not_a_window`).
+  `tests/selection.rs::codex_selection_follows_the_launcher_across_resets` covers the older and current launchers,
+  contention, text delivery and withdrawal, drawing refusal and the exhausted restarts after a marker cannot be cleared.
+  In `tests/test-ccx-launch.sh`, the `selection marker at native exec` cases exercise each stamp condition, an
+  unwritable marker and a failed exec. `tests/test-ccx-resume-default.sh` checks the marker for both explicit resume
+  and continue, with and without flag support. In `test/codex_tests.jl`, `installed ccx marks the installer's row
+  plugin at native launch` runs the installed launcher against the published cache.
 - The selection check and its rendering (`rust/backend/src/agents/selection_check.rs`, pure, no I/O, called by the handler).
   `check_selection` accepts exactly the file's own text at the
   window's range: it refuses (`not_file_text`) a start not before the end (the wire's decode refuses it too; the function
@@ -484,8 +509,7 @@ One test per guarantee, named for it; `cargo test -p sot-backend agents::` runs 
 | 4 | `env::tests::capsule_supervisor_env_*` (`capsule_supervisor_env_starts_claude_in_its_classic_renderer`), `nesting_env_scrub_list_is_pinned`, `every_row_leg_names_its_selection_file`, `a_verbatim_state_folder_gives_the_plain_forward_slash_form` (Windows only), `ccx_unsets_the_nesting_markers_the_scrub_list_names`, `tests/test-ccx-launch.sh` (`--capsule` keeps the selection file, a bare `ccx` drops it), `tests/capsule_workspaces/session_env.rs` (a real row's session names its own state folder's file), `rows::spawn::detach::start_mode_tests::the_scrub_comes_before_the_rows_pairs_so_the_row_keeps_its_selection_file`, `sotd_bin_value_*`, `the_leg_never_inherits_a_sotd_bin_its_own_start_path_rejected`; `tests/agent_exec.rs` |
 | 5 | `accounts::tests::*`, `account_links::tests::*`; `tests/test-spawn-capsule-workspace.sh` ("no --account: a claude row gets the spawning session's account") |
 | 6 | `folder_trust::tests::*` (`two_preparations_never_share_a_temporary_name`, `the_restart_asks_the_scope_the_record_uses`), `trust_declaration::tests::*`, `env::trust_declaration_controls::*`, `env::trust_scope_controls::*` (`a_recorded_or_already_trusted_preparation_is_one_info_line_naming_the_file`, `a_claude_preparation_marks_its_trust_file_and_no_other_file`), `env::trust_config_controls::*`; the layer: `folder_trust::tests::the_layer_is_recorded_wherever_it_lies_once_a_prefix_is_declared`, `the_layer_is_recorded_beside_what_the_file_already_holds`, `no_declaration_or_a_relative_one_records_no_layer`, `env::trust_scope_controls::a_declared_box_records_the_ready_layer_beside_the_row_and_an_undeclared_one_neither`, `a_layer_that_is_not_ready_is_not_recorded`, `the_layer_is_recorded_under_the_spelling_its_add_dir_carries` (Unix); `tests/trust_declare.rs`, `tests/trust_premises.rs` |
-| 7 | `argv::tests::the_layer_rides_the_recipe_and_a_plain_claude_has_none`, `a_layer_without_the_bootstrap_skill_is_left_out_and_the_prompt_goes_with_it`, `the_layer_reaches_the_capsule_leg_the_reauth_leg_and_agent_exec`, `a_callers_settings_json_is_merged_with_the_recipes_hooks`, `layer::tests::*` (`the_selection_hook_rides_the_recipe`);
-`tests/agent_exec.rs::agent_exec_claude_carries_the_layer_when_installed`; `tests/test-hook-commands.sh` (six commands, the selection hook's among them, and a missing selection script a silent no-op); `tests/test-selection-hook.sh` (the script's rows: unset, empty, missing, a directory, an empty file, the rendering byte for byte, a path with a space, unreadable, a 1 MiB input on stdin; laid flat and executable in the staged bin); `comm/tests/test-session-start-hook.sh` (the hook's output names the handle and the handoff, exits 0 with none, prints and joins nothing with hooks off); `a_recipe_hook_the_caller_already_has_is_not_added_twice`, `a_callers_settings_of_another_shape_is_passed_as_given`; `test/layer_tests.jl`, `test/protect_tests.jl` ("the mail check and the subagent guard stay in the user's settings"). A leg that carries the layer was proved at its argv, not by running Claude Code |
+| 7 | `argv::tests::the_layer_rides_the_recipe_and_a_plain_claude_has_none`, `a_layer_without_the_bootstrap_skill_is_left_out_and_the_prompt_goes_with_it`, `the_layer_reaches_the_capsule_leg_the_reauth_leg_and_agent_exec`, `a_callers_settings_json_is_merged_with_the_recipes_hooks`, `layer::tests::*` (`the_selection_hook_rides_the_recipe`); `tests/agent_exec.rs::agent_exec_claude_carries_the_layer_when_installed`; `tests/test-hook-commands.sh` (all six Claude commands, including the selection command with its script present or missing, and the serialized Codex command draining a long prompt silently with the script or row path missing); `tests/test-selection-hook.sh` (the script's rows: unset, empty, missing, a directory, an empty file, the rendering byte for byte, a path with a space, unreadable, a 1 MiB input on stdin; laid flat and executable in the staged bin, and the serialized Codex command delivering the selection from the runtime comm home); `comm/tests/test-session-start-hook.sh` (the hook's output names the handle and the handoff, exits 0 with none, prints and joins nothing with hooks off); `a_recipe_hook_the_caller_already_has_is_not_added_twice`, `a_callers_settings_of_another_shape_is_passed_as_given`; `test/layer_tests.jl`, `test/protect_tests.jl` ("the mail check and the subagent guard stay in the user's settings"). A leg that carries the layer was proved at its argv, not by running Claude Code |
 | 8 | `test/protect_tests.jl` (a person's skill, a symlinked skills folder, every configuration folder, a person's hook), `test/claude_hooks_tests.jl` (the settings retirement), `test/install_tests.jl` and `test/publish_tests.jl` (shared command preflight, replacement and cleanup) |
 | 9 | `tests/test-tools-wire-only.sh`, `tests/test-spawn-remote-no-local-row.sh`, `tests/test-sot-fe-endpoint-once.sh`, `tests/test-sot-fe-chat.sh` (the chat ops) |
 | 10 | `tests/test-ccb-agent-exec.sh`, `tests/test-ccx-launch.sh`, `tests/test-ccx-resume-default.sh` |

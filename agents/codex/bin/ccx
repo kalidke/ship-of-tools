@@ -19,6 +19,22 @@
 # which may carry another agent's nesting markers.
 unset CLAUDE_CODE_FORK_SUBAGENT CLAUDE_CODE_CHILD_SESSION CLAUDE_CODE_TEAMMATE_MODE CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS CLAUDECODE AI_AGENT CLAUDE_CODE_SESSION_ID
 
+RESUME_ID=""; FRESH=0; CONTINUE=0; CAPSULE=0; MARKER=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --fresh) FRESH=1 ;;
+        --resume) RESUME_ID="$2"; shift ;;
+        --continue) CONTINUE=1 ;;
+        --selection-marker) MARKER="$2"; shift ;;
+        --capsule) CAPSULE=1 ;;
+    esac
+    shift
+done
+
+# --capsule is the daemon's own leg for a row, which keeps its row's selection file; a ccx started by hand inside a
+# row has the outer row's file inherited and drops it, as the nesting markers above are.
+[ "$CAPSULE" = 1 ] || unset SOT_SELECTION_FILE
+
 # Daemon-spawned rows lack a login PATH (ADR 0023 gotcha): put ~/.local/bin
 # on it, and resolve codex by full path — it typically lives in an nvm bin
 # dir that the daemon's env has never heard of.
@@ -38,21 +54,6 @@ fi
 # session vanish silently (the 2026-07-05 boot_failed class). node lives
 # next to codex in the nvm bin dir; put that dir on PATH.
 export PATH="$(dirname "$CODEX_BIN"):$PATH"
-
-RESUME_ID=""; FRESH=0; CONTINUE=0; CAPSULE=0
-while [ $# -gt 0 ]; do
-    case "$1" in
-        --fresh) FRESH=1 ;;
-        --resume) RESUME_ID="$2"; shift ;;
-        --continue) CONTINUE=1 ;;
-        --capsule) CAPSULE=1 ;;
-    esac
-    shift
-done
-
-# --capsule is the daemon's own leg for a row, which keeps its row's selection file; a ccx started by hand inside a
-# row has the outer row's file inherited and drops it, as the nesting markers above are.
-[ "$CAPSULE" = 1 ] || unset SOT_SELECTION_FILE
 
 COMM="${SOT_COMM_HOME:-$HOME/.sot-comm}/bin"
 
@@ -119,8 +120,41 @@ HANDOFF_LINE="$( . "$COMM/comm-lib.sh" 2>/dev/null && sot_comm handoff-line "$HA
 PROMPT="You are the comm-aware agent${HANDLE:+ @$HANDLE} on the sot-comm network. House conventions are in your GLOBAL $CODEX_HOME_DIR/AGENTS.md (plus the project's own AGENTS.md when it has one, and \$SOT_MANUAL/docs/USING.md for product help). Then run: $COMM/comm-poll.sh — and handle what it prints. An idle row is woken by the typed line '[sot-comm] you have mail: run comm-poll.sh'; run it and handle what it prints.${HANDOFF_LINE:+ $HANDOFF_LINE}"
 # Request the inline renderer so conversation history can enter the terminal's scrollback.
 set -- --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust --no-alt-screen -c 'plugins.sot-row@sot-local.enabled=true'
+help_command=()
 if [ -n "$RESUME_ID" ]; then
+    help_command=(resume)
     set -- resume "$RESUME_ID" "$@"
     PROMPT="Your pane was restarted; this is the same conversation resumed. $PROMPT Then continue exactly where you left off."
 fi
+# Probe the command being launched. Older Codex versions can still start with their usual arguments.
+if native_help=$("$CODEX_BIN" "${help_command[@]}" --help) &&
+   grep -Eq '^[[:space:]]*--no-daemon([[:space:]]|$)' <<< "$native_help"; then
+    set -- "$@" --no-daemon
+fi
+stamped=
+if [ "$CAPSULE" = 1 ] && [ -n "$MARKER" ] && [ -n "${SOT_SELECTION_FILE:-}" ] && [ -f "$COMM/sot-selection-hook.sh" ] && [ -x "$COMM/sot-selection-hook.sh" ]; then
+    versions=("$CODEX_HOME_DIR"/plugins/cache/sot-local/sot-row/*)
+    root=${versions[0]}
+    manifest="$root/.codex-plugin/plugin.json"
+    hooks="$root/hooks/hooks.json"
+    command='hook="${SOT_COMM_HOME:-$HOME/.sot-comm}/bin/sot-selection-hook.sh"; if [ -n "${SOT_SELECTION_FILE:-}" ] && [ -f "$hook" ] && [ -x "$hook" ]; then exec "$hook"; fi; cat >/dev/null 2>&1; exit 0'
+    previous= isolated=0 enabled=0
+    for arg in "$@"; do
+        [ "$arg" != --no-daemon ] || isolated=1
+        if [ "$previous" = -c ] && [ "$arg" = 'plugins.sot-row@sot-local.enabled=true' ]; then enabled=1; fi
+        previous=$arg
+    done
+    if [ "$isolated" = 1 ] && [ "$enabled" = 1 ] &&
+       [ "${#versions[@]}" = 1 ] && [ -f "$manifest" ] && [ -f "$hooks" ] &&
+       jq -se --arg version "${root##*/}" 'length == 1 and
+         (.[0] | .name == "sot-row" and .version == $version and .hooks == "./hooks/hooks.json")' "$manifest" >/dev/null &&
+       jq -se --arg cmd "$command" '. == [{hooks:{UserPromptSubmit:[{hooks:[{type:"command",command:$cmd}]}]}}]' "$hooks" >/dev/null &&
+       : > "$MARKER"; then
+        stamped=$MARKER
+        shopt -s execfail
+    fi
+fi
 exec "$CODEX_BIN" "$@" "$PROMPT"
+status=$?
+[ -z "$stamped" ] || rm -f -- "$stamped" || exit 1
+exit "$status"

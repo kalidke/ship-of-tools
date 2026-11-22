@@ -24,8 +24,9 @@ mkdir -p "$SOT_COMM_HOME" && mv "$STAGE" "$SOT_COMM_HOME/bin" && STAGE="$SOT_COM
 PASS=0
 FAIL=0
 check() {
-    local desc="$1" fn="$2"
-    if "$fn"; then
+    local desc="$1"
+    shift
+    if "$@"; then
         echo "PASS: $desc"; PASS=$((PASS + 1))
     else
         echo "FAIL: $desc"; FAIL=$((FAIL + 1))
@@ -37,8 +38,19 @@ mkdir -p "$STUB_DIR"
 CODEX_LOG="$WORK/codex.log"; JOIN_LOG="$WORK/join.log"
 cat > "$STUB_DIR/codex" <<'STUB'
 #!/bin/sh
+if [ "$*" = --help ]; then
+    echo "$*" >> "$CODEX_LOG_PATH.help"
+    case "${FLAG_HELP:-listed}" in
+        absent) echo '  --no-daemon-extra' ;;
+        *) echo '  --no-daemon' ;;
+    esac
+    [ -z "${REPLACE_AFTER_HELP:-}" ] || mv "$REPLACE_AFTER_HELP" "$0" || exit 1
+    [ "${FLAG_HELP:-}" != failed ]
+    exit $?
+fi
 for a in "$@"; do printf '%s\n' "$a"; done > "$CODEX_LOG_PATH"
 printf '%s\n' "${SOT_SELECTION_FILE-<unset>}" > "$CODEX_LOG_PATH.sel"
+[ ! -f "${OBSERVE_MARKER:-}" ] || printf 'marked\n' > "$CODEX_LOG_PATH.marked"
 STUB
 chmod +x "$STUB_DIR/codex"
 cat > "$STAGE/comm-join.sh" <<'STUB'
@@ -58,15 +70,16 @@ run_ccx() {
     local name="$1" proj="$WORK/projects/p"
     shift
     mkdir -p "$proj"
-    rm -f "${CODEX_LOG:?}" "${JOIN_LOG:?}"
+    rm -f "${CODEX_LOG:?}" "$CODEX_LOG.help" "$CODEX_LOG.marked" "${JOIN_LOG:?}"
     (
         cd "$proj" || exit 1
         env CODEX_LOG_PATH="$CODEX_LOG" JOIN_LOG_PATH="$JOIN_LOG" CONTEXT_NAME="$name" \
             PATH="$STUB_DIR:$PATH" CODEX_HOME="$WORK/codex-home" "$@" \
-            "$CCX" --fresh ${CCX_FLAG-} >/dev/null 2>"$WORK/err"
+            bash "$CCX" --fresh ${CCX_FLAG-} --selection-marker "$MARKER" >/dev/null 2>"$WORK/err"
     )
 }
 
+MARKER="$WORK/marker outside row"
 case_the_join_names_no_handle_and_the_prompt_names_the_sessions() {
     run_ccx proj-box1 || { cat "$WORK/err"; return 1; }
     [ "$(cat "$JOIN_LOG")" = "args=" ] || { echo "  join: $(cat "$JOIN_LOG")"; return 1; }
@@ -87,14 +100,15 @@ case_no_handle_still_starts_codex_and_says_so() {
 }
 
 case_missing_codex_opens_a_shell() {
-    local bin="$WORK/shell-only"
+    local bin="$WORK/shell-only" runner
+    runner=$(command -v bash) || return 1
     mkdir -p "$bin" || return 1
     cat > "$bin/bash" <<'STUB'
 #!/bin/sh
 printf 'shell argc=%s\n' "$#"
 STUB
     chmod +x "$bin/bash" || return 1
-    HOME="$WORK/empty-home" PATH="$bin" "$CCX" --capsule >"$WORK/out" 2>"$WORK/err" || return 1
+    HOME="$WORK/empty-home" PATH="$bin" "$runner" "$CCX" --capsule >"$WORK/out" 2>"$WORK/err" || return 1
     [ "$(cat "$WORK/out")" = "shell argc=0" ] && grep -q 'ccx: codex not found' "$WORK/err"
 }
 
@@ -120,6 +134,57 @@ check "a join that gives no handle still starts Codex inline and reports the mis
 check "a missing Codex reports the cause and opens a shell with no arguments" case_missing_codex_opens_a_shell
 check "ccx --capsule keeps its row's selection file" case_a_capsule_leg_keeps_its_rows_selection_file
 check "a ccx started without --capsule drops the selection file it inherited" case_a_ccx_started_inside_a_row_drops_the_rows_selection_file
+
+case_marker_condition() (
+    local change="$1" cache="$WORK/codex-home/plugins/cache/sot-local/sot-row/0.1.0"
+    local later="$cache/../0.2.0" help=listed replacement= flag_count=1
+    local src="$SCRIPT_DIR/../codex/row-hooks.json" script="$STAGE/sot-selection-hook.sh" path="$WORK/row selection"
+    mkdir -p "$cache/hooks" "$cache/.codex-plugin" || exit 1
+    cp "$src" "$cache/hooks/hooks.json" || exit 1
+    printf '%s\n' '{"name":"sot-row","version":"0.1.0","hooks":"./hooks/hooks.json"}' > "$cache/.codex-plugin/plugin.json"
+    chmod +x "$script" || exit 1
+    rm -f "$MARKER"
+    CCX_FLAG=--capsule
+    case "$change" in
+        path) path= ;;
+        override) sed "s/ -c 'plugins.sot-row@sot-local.enabled=true'\$//" "$CCX" > "$WORK/ccx-no-override"; CCX="$WORK/ccx-no-override" ;;
+        script) chmod -x "$script" ;;
+        command) jq '.hooks.UserPromptSubmit[0].hooks[0].command += " || true"' "$src" > "$cache/hooks/hooks.json" ;;
+        undeclared) printf '{}' > "$cache/.codex-plugin/plugin.json" ;;
+        extra-version) cp -R "$cache" "$later" &&
+            jq '.version = "0.2.0"' "$cache/.codex-plugin/plugin.json" > "$later/.codex-plugin/plugin.json" || exit 1 ;;
+        missing-hook) rm "$cache/hooks/hooks.json" ;;
+        malformed) printf '{' > "$cache/hooks/hooks.json" ;;
+        hand) CCX_FLAG= ;;
+        unwritable) MARKER="$WORK/missing-parent/marker" ;;
+        old-codex) help=absent; flag_count=0 ;;
+        failed-help) help=failed; flag_count=0 ;;
+        argv-no-flag) sed 's/^    set -- "\$@" --no-daemon$/    :/' "$CCX" > "$WORK/ccx-no-flag" || exit 1
+            CCX="$WORK/ccx-no-flag"; flag_count=0 ;;
+        failed-exec) cp "$STUB_DIR/codex" "$WORK/good-codex" || exit 1
+            replacement="$WORK/broken-codex"
+            printf '#!/no/such/interpreter\n' > "$replacement" && chmod +x "$replacement" || exit 1 ;;
+    esac
+    run_ccx proj-box1 SOT_SELECTION_FILE="$path" OBSERVE_MARKER="$MARKER" FLAG_HELP="$help" REPLACE_AFTER_HELP="$replacement"
+    local status=$?
+    chmod +x "$script"
+    [ "$change" != extra-version ] || rm -rf -- "$later" || exit 1
+    [ "$(cat "$CODEX_LOG.help")" = --help ] || exit 1
+    if [ "$change" != failed-exec ]; then
+        [ -f "$CODEX_LOG" ] && [ "$(grep -Fxc -- --no-daemon "$CODEX_LOG")" = "$flag_count" ] || exit 1
+    fi
+    if [ "$change" = failed-exec ]; then
+        mv "$WORK/good-codex" "$STUB_DIR/codex"
+        [ "$status" -ne 0 ] && [ ! -e "$MARKER" ] && [ -s "$WORK/err" ]
+    elif [ "$change" = fresh ]; then
+        [ "$status" = 0 ] && [ -f "$MARKER" ] && [ ! -s "$MARKER" ] && [ -f "$CODEX_LOG.marked" ]
+    else
+        [ "$status" = 0 ] && [ -f "$CODEX_LOG" ] && [ ! -e "$MARKER" ] && [ ! -e "$CODEX_LOG.marked" ]
+    fi
+)
+for condition in fresh path override script command undeclared extra-version missing-hook malformed hand unwritable old-codex failed-help argv-no-flag failed-exec; do
+    check "selection marker at native exec ($condition)" case_marker_condition "$condition"
+done
 
 echo "---"
 echo "PASS=$PASS FAIL=$FAIL"

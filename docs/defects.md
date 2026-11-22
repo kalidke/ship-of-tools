@@ -529,9 +529,16 @@ owned by `docs/CLAUDE.md`.
 
 ## agents
 
+- **CODEX-SELECTION-WINDOW** [note] A Linux stub verifies the text hook and withdrawal across Codex launches.
+  To close, select plain text and rendered Markdown in fresh and resumed Codex rows in a real window. At the next
+  prompt verify the notice, file, inclusive source lines and the full 2,000 UTF-16 units. Switch rows, then clear
+  the selection and check subsequent prompts in each row and an ordinary session for delivery to the intended row only.
+  After release, start a row with `--no-daemon` while a shared server is running. Check that the row resumes an
+  earlier conversation, that `/resume` lists the project's conversations, and that the session otherwise behaves as before.
+
 - **CODEX-ROW-SKILL-DISCOVERY** [note] The prompt renderer and launcher argv cover fresh processes. After release,
-  resume a row thread on a shared background server and compare its skill inventory with a plain Codex session on
-  that server. In a live row, ask in ordinary words to create a project log and check that Codex selects the
+  compare the skill inventory of a resumed row running with `--no-daemon` with that of a plain Codex session.
+  In the live row, ask in ordinary words to create a project log and check that Codex selects the
   plugin skill and reads its bundled resources.
 
 - **CODEX-ROW-NO-SCROLLBACK** [note] `ccx` passes `--no-alt-screen` on fresh and resumed Codex launches, as verified
