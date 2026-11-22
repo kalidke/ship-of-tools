@@ -51,6 +51,9 @@ impl State {
         // "peer address unavailable" arm to port: a recipe
         // cannot fail to be observed the way `peer_addr()` could.
         self.hosts.host_resolved_dial.insert(event_host.clone(), resolved.clone());
+        // The update's mark is this computer's own daemon's word: its connection is named to the owner here, before
+        // the state that follows this event, and begins with nothing said.
+        self.update_mark.connected(&event_host, matches!(resolved, ResolvedDial::Local));
         // ADR 0035: arm the proxy for THIS host only when its own
         // daemon can proxy (capability) AND this FE actually
         // connected to it remotely (not the local pipe). Keyed
@@ -256,6 +259,7 @@ impl State {
     }
 
     pub(crate) fn on_disconnected(&mut self, event_host: HostKey, reason: String, refused: bool) {
+        self.update_mark.disconnected(&event_host);
         // A refusal says "daemon out of date" only while the daemon answers: a drop or a failed dial after it means
         // nothing answers now, so the host reads unreachable again.
         if !refused {

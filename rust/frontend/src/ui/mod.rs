@@ -235,6 +235,8 @@ struct State {
     contrast_dim: bool,
     /// The battery readout's cache.
     battery: BatteryGauge,
+    /// What this computer's own daemon last said of its update, for the mark after the version stamp.
+    update_mark: UpdateMark,
     /// Window-wide focus, prompt editing and close notices; runtime state only.
     focus_prompts: FocusPrompts,
     /// The four pane content rects from the most recent redraw, cached

@@ -129,6 +129,8 @@ struct NavFrame<'a> {
     repl_pkg: bool,
     /// Where to leave the painted buffer, for a test that reads cell colors.
     keep: Option<&'a std::cell::RefCell<Option<ratatui::buffer::Buffer>>>,
+    /// The update's mark, drawn after the version stamp.
+    update: Option<&'a sot_protocol::Mark>,
 }
 
 /// `paint_chrome_chat` from `nav`, and the nav pane's rect, the spill's segments and the nav scroll the frame ends
@@ -199,6 +201,7 @@ fn paint_chrome_nav(
         battery: &battery,
         version_stamp: &stamp,
         version_skew: false,
+        update_mark: nav.update,
         pty_screen: &screen,
         pane_overlay: &overlay,
         term_screen: None,
@@ -762,4 +765,61 @@ fn the_pickers_cursor_is_drawn_under_its_own_header_rows() {
             }
         }
     }
+}
+
+/// The update's mark is on the bottom border, one border cell after the version stamp, in the color of its kind, and
+/// it is only cells of that border: every other row of the frame, every rect the frame lays out, the nav's status
+/// rows (with a word held on them) and the stamp itself are the same with and without it. It takes its long words,
+/// its short ones or none by the room left before the corner, and is not drawn where the stamp is not.
+#[test]
+fn the_mark_is_on_the_bottom_border_after_the_stamp_and_moves_no_pane() {
+    use sot_protocol::{Mark, MarkKind};
+    let kept = std::cell::RefCell::new(None);
+    let frame = |width: u16, update: Option<&Mark>| {
+        let repl = ("draft".to_string(), Vec::new(), 0, DrawerContent::Repl);
+        paint_chrome_nav((width, 30), "pinned", file_rows(3, 0, 0), repl, None, NavFrame { update, keep: Some(&kept), ..Default::default() })
+    };
+    let ready = Mark { long: "update 0.7.4 ready: quit keeping sessions, then start again".into(), short: "0.7.4 ready".into(), kind: MarkKind::Ready };
+    let stamp = " fe 0 · be 0 ";
+    // A bare bottom row with `words`, a space either side, written over it one border cell after the stamp: the only
+    // cells a mark may change.
+    let with_words = |bare: &[String], words: &str| {
+        let mut row: Vec<char> = bare[29].chars().collect();
+        let at = 2 + stamp.chars().count() + 1;
+        for (i, c) in format!(" {words} ").chars().enumerate() {
+            row[at + i] = c;
+        }
+        row.into_iter().collect::<String>()
+    };
+
+    let (plain, marked) = (frame(120, None), frame(120, Some(&ready)));
+    assert_eq!(plain.0[..29], marked.0[..29], "a row above the bottom border changed");
+    assert!(plain.0.iter().any(|row| row.contains("pinned")), "the held word is on the status rows: {:#?}", plain.0);
+    assert_eq!((plain.1, plain.2, plain.3, plain.4, plain.5, plain.6, plain.8), (marked.1, marked.2, marked.3, marked.4, marked.5, marked.6, marked.8), "a rect or a scroll moved");
+    assert!(plain.0[29].chars().skip(2).collect::<String>().starts_with(&format!("{stamp}─")), "{}", plain.0[29]);
+    assert_eq!(marked.0[29], with_words(&plain.0, &ready.long));
+
+    // The color is the kind's: the stamp's own gray for a release on its way, green for ready, yellow for a warning.
+    for (kind, color) in [(MarkKind::Coming, Color::DarkGray), (MarkKind::Ready, Color::LightGreen), (MarkKind::Warning, Color::Yellow)] {
+        frame(120, Some(&Mark { kind, ..ready.clone() }));
+        let buf = kept.borrow_mut().take().expect("the painted buffer");
+        let first = 2 + stamp.chars().count() as u16 + 2;
+        assert_eq!((buf[(first, 29)].symbol(), buf[(first, 29)].fg), ("u", color), "{kind:?}");
+        assert_eq!(buf[(3, 29)].fg, Color::DarkGray, "the stamp keeps its own color beside a {kind:?} mark");
+    }
+
+    // The words by the room: 16 cells are the corner, the stamp and one border cell, 2 the mark's spaces, and the
+    // row's last 2 (one border cell and the corner) are left alone.
+    for (width, want) in [(79, Some(ready.long.as_str())), (78, Some(ready.short.as_str())), (31, Some(ready.short.as_str())), (30, None)] {
+        let (rows, bare) = (frame(width, Some(&ready)).0, frame(width, None).0);
+        match want {
+            Some(words) => assert_eq!(rows[29], with_words(&bare, words), "{width} cells"),
+            None => assert_eq!(rows[29], bare[29], "{width} cells: no words fit, so the border is the bare one"),
+        }
+        let end = |rows: &[String]| rows[29].chars().rev().take(2).collect::<String>();
+        assert_eq!(end(&rows), end(&bare), "{width} cells: the row's last two cells were written over: {}", rows[29]);
+    }
+    // Too narrow for the stamp: neither is drawn.
+    let narrow = frame(15, Some(&ready)).0;
+    assert!(!narrow[29].contains("fe") && !narrow[29].contains("ready"), "{}", narrow[29]);
 }

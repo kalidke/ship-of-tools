@@ -293,9 +293,25 @@ name is in this crate's one op table.
     `MAX_UPDATE_DETAIL` (300); and a string past its bound keeps its beginning and its end with ` … ` where it was cut,
     because a sentence names the command to run at its end and a cause chain names its fault there. The words are in one
     place: `UpdateState::line` is the line that says a state whole (the `UPDATE` cell of `sotd status`; an `unread` state
-    ends `; as last read, the disk did not answer in time`), and `UpdateState::mark` the long and the short words of the
-    standing mark a window draws, or none: only a release found, preparing, ready or not applied, and a blocked install
-    record, have a mark. The state rides two carriers, `HelloRes.update` and `DaemonVersion.update`, each defaulted,
+    ends `; as last read, the disk did not answer in time`), and `UpdateState::mark` the standing mark a window draws, or none: a
+    `Mark` of its long words, its short ones for a narrow window and its kind (`MarkKind`: `Coming` for a release found
+    or being prepared, `Ready`, `Warning`), so a window gives each kind one style and decides nothing. Only a release
+    found, preparing, ready or not applied, and a blocked install record, have a mark. Its words: `update <v> found`,
+    `update <v> preparing`, `update <v> ready: quit keeping sessions, then start again`, `update <v> not applied`,
+    `updates off: install record unreadable`; short `<v> found`, `<v> preparing`, `<v> ready`, `<v> not applied`,
+    `updates off`. The words of ready say the way to apply it that keeps the sessions and not that a start applies it:
+    read as only a next start they lead a person to close the last window, and a plain close of the last window ends
+    every session on that computer (lifecycle's contract); they hold where the sessions run elsewhere, since any quit
+    keeps them there, and on Linux and Windows through the quit key's question; on a Mac that runs its own sessions no
+    way to follow them is known (the quit key there is the system's Quit, a plain close; `docs/defects.md`,
+    MAC-NO-QUIT-KEEPING-SESSIONS) (`the_ready_mark_says_to_quit_keeping_sessions_and_never_only_a_next_start`). They name no
+    computer and no command: a window draws the mark of its own computer's update alone, and the command that says why
+    a release was not applied differs by computer (`sotd status` prints nothing of updates where there is no
+    `hosts.toml`; a window-only computer's is `sot --update-status`), so the mark sends a person to none; the manual
+    says where each is read. A release not applied beside one a start applies now (`armed` names another release: a
+    newer release kept over the one this daemon was chasing, or an older one still armed) has the mark of the one
+    that is ready, kind `Ready`, and warns of nothing, because nothing is wrong with what the next start does; `line`
+    still says both. The state rides two carriers, `HelloRes.update` and `DaemonVersion.update`, each defaulted,
     left out when none, and read leniently (`lenient_update`): a value that is not an update state reads as none and
     never refuses its carrier, because a hello reply that does not parse is a window that cannot connect.
     `DaemonVersion.update_line` is the daemon's own `line` of that state, for a reader that cannot call `line` (the shell
@@ -310,7 +326,8 @@ name is in this crate's one op table.
     prints `update_line` as the daemon sent it, with control bytes turned to spaces; the daemon fills a control
     connection's hello with the state it holds in memory and emits the evt at each change (the server's contract,
     guarantee 16), and the window's network side gives both to the window as one typed event (fe-net's contract), which
-    no view reads yet; the words carry no
+    the window's owner of the mark reads for its own computer's daemon alone (fe-ui's contract, `UpdateMark`); the
+    words carry no
     age but the last check's, in whole minutes, hours or days; a cause in `detail` can hold a local path, and it goes
     only to the person's own window, `sotd status` and `sot-fe version`; a reader in another language that prints
     `update_line` cleans it itself, since only this crate's readers clean what they read; cleaning removes control

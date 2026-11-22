@@ -320,6 +320,12 @@ pub(in crate::ui) fn version_label(fe: &str, be: Option<&str>) -> (String, bool)
     (format!(" fe {fe} · be {be} "), skew)
 }
 
+/// The words of the update's standing mark that fit `room` cells: its long words, else its short ones, else none.
+/// Never a cut word: a mark that is drawn is whole.
+pub(in crate::ui) fn update_mark_words(mark: &sot_protocol::Mark, room: u16) -> Option<&str> {
+    [mark.long.as_str(), mark.short.as_str()].into_iter().find(|words| unicode_width::UnicodeWidthStr::width(*words) <= usize::from(room))
+}
+
 /// How long every word written on the status line (`StatusLine::set`) holds
 /// it against a state line (the connection line a re-list or a workspace
 /// switch rebuilds, the agent pane's attach line), unless a newer word

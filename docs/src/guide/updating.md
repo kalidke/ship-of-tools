@@ -139,13 +139,77 @@ self-updates** and updates by `git pull` and a rebuild):
 
 | Mechanism | What it does | What you do |
 |-----------|--------------|-------------|
-| **Built-in update check** | The backend checks GitHub for new releases daily, **notifies the frontend**, and prepares the whole new version in the background: binaries, a tag-pinned checkout and instantiated Julia environments, verified against the release's `SHA256SUMS`. The staged version is applied at the next launch (or daemon restart) as an offline switch, with the previous version kept for rollback. | Nothing: you will see the notice; relaunch when convenient. |
+| **Built-in update check** | The backend checks GitHub for new releases daily, **notifies the frontend**, and prepares the whole new version in the background: binaries, a tag-pinned checkout and instantiated Julia environments, verified against the release's `SHA256SUMS`. The staged version is applied at the next launch (or daemon restart) as an offline switch, with the previous version kept for rollback. | Nothing: you will see the notice, and the mark on the window's bottom border while the update is found, being prepared or ready; start Ship of Tools again when convenient, quitting as the mark says so the sessions keep running. |
 | **Running the installer** | The **complete** update in one command, above: new binaries *and* the repo checkout moved to the new tag *and* Julia envs re-instantiated, with one verdict line. It is also what migrates a pre-0.6 install onto the auto-update layout. | Follow `docs/UPDATE-AGENT.md` (or tell an agent to fetch it and follow it). |
 
 `SOT_UPDATE_MODE` controls the built-in check: `notify` (the default) stages and applies at the next launch, `off`
 disables it, and `auto` additionally restarts the backend to apply, if no frontend is attached when the daily check arms
 an update (otherwise it applies at the next launch or restart). That restarts REPLs and kernels, so their in-memory state
 is lost, which is why it is opt-in; agent sessions survive it between 0.7 releases.
+
+While this computer's daemon has a newer release in hand, the window says so on its bottom border, right after the
+version stamp (`fe ... · be ...`), for as long as it is true:
+
+| The mark | What it means |
+|----------|---------------|
+| `update 0.7.4 found` (gray) | A newer release was found and nothing has begun to prepare it yet, or nothing can here. |
+| `update 0.7.4 preparing` (gray) | The release is being downloaded and its checkout and Julia environments built, which can take many minutes. |
+| `update 0.7.4 ready: quit keeping sessions, then start again` (green) | The release is prepared, and the next start of Ship of Tools on this computer applies it. Do not use the close button to get there: it ends this computer's sessions. Quit with `Ctrl+q` and answer Yes, then start Ship of Tools again; "Applying a ready update", below, says what that start does, and what is different on a Mac. |
+| `update 0.7.4 not applied` (yellow) | The release was found and could not be made ready, or a prepared update no longer fits what is installed. The reason is in this computer's row of `sotd status`, below. |
+| `updates off: install record unreadable` (yellow) | Automatic updates are off because the install's record cannot be read; `sotd status` names the installer run that repairs it. |
+
+Where the border has no room for those words the mark shortens (`0.7.4 ready`, `0.7.4 not applied`, `updates off`), and
+where even that does not fit it is not drawn. With nothing prepared there is no mark when the install is up to date,
+before the first check, when updates are off by choice (a source build, update mode off, a pinned install) or when a
+check could not run. A prepared update that fits the install is ready in every one of those states and shows green: an
+update an operator staged onto a source build, or one prepared before the daemon last restarted and not yet checked
+again. Two states have a line in `sotd status` and no mark, because nothing in them is ready: a prepared update whose
+file cannot be read, and a refused one whose version is not known. When one release could not be made ready while
+another is prepared, the mark is the prepared one's (`update 0.7.4 ready: quit keeping sessions, then start again`),
+because that is what the next start applies; `sotd status` says both. A newer release that is found or being prepared
+while an older one is ready shows as the newer one's gray mark; a start meanwhile applies the older one.
+
+**Applying a ready update.** The next start of Ship of Tools on that computer applies it: the launcher applies the
+update before the window opens, and restarts that computer's daemon on the new version.
+
+- The daemon's restart ends that computer's REPLs and its Pluto server, so what a REPL held in memory is lost.
+  Sessions and their agents keep running through it between 0.7 releases: a session's terminal runs outside the daemon,
+  and the restarted daemon finds it again.
+- Getting to that start is where sessions are lost. A plain close of the last window on a computer (the close button,
+  the system's close, `Cmd+q` on macOS) ends every session on that computer and their agents, as it always does (see
+  "What keeps running when the window closes"); the next start still applies the update, to a computer with no
+  sessions. To keep them, quit with `Ctrl+q` and answer Yes to **Keep the daemon and sessions running?** (No is the
+  default), then start Ship of Tools again. That is what the mark's words say.
+- On a Mac that runs its own sessions, no way to follow those words is known. The quit key there is `Cmd+q`, which
+  macOS's own Quit takes, and that Quit is a plain close: it ends the sessions without asking. Whether the question
+  can be reached on a Mac has not been tried on one. So on such a Mac the sessions end at the quit, and the next
+  start applies the update. A Mac whose sessions all run on another computer loses nothing by quitting.
+- A computer whose plan lists another computer's daemon (a hub with servers behind it) has a different launcher: it
+  applies the update itself while the daemon runs, and restarts the daemon afterward only when no window holds it.
+  Quitting with Yes and starting again ends the same way there. With a second window still open, the install is
+  switched and the daemon stays on the old version, with the launch notice `daemon out of date, restart when ready`,
+  until a start that finds no window holding it. (Read from the launch scripts; that case has not been run.)
+- On a Linux standard install the daemon is a user service: the launcher restarts the service, and the service's own
+  start applies the update. Restarting the service by hand applies it too, with no window start (`systemctl --user
+  restart sotd.service`); a window that stays open through that still runs the old version beside the new daemon, and
+  its stamp shows the two versions in yellow until that window is started again.
+- Where opening the window starts the daemon (macOS, Windows, a Linux install without the service), the launcher stops
+  the daemon, applies the update and starts the daemon again. On Windows that start is the shortcut.
+- On Linux and macOS, opening a second window is a start too: its launcher applies the update while the first window
+  is open.
+- The start checks the prepared files once more. If it finds them damaged, or finds that version already installed, it
+  applies nothing and removes the prepared update; the mark goes, and a damaged update is prepared again by the next
+  check.
+
+The mark is this computer's own: it is what the daemon on the computer the window runs on says, which is the update
+this window's next start applies. It says nothing of another computer the window is connected to (a laptop's window
+shows nothing of its hub's update); those are in `sotd status`. The version stamp beside it can speak of another
+computer: its `be` half is the daemon of the selected session's computer, while the mark is always this computer's.
+So a laptop whose sessions run on a hub can read `fe 0.7.3 · be 0.7.3` and then `update 0.7.4 ready: ...`; after its
+restart it reads `fe 0.7.4 · be 0.7.3` in yellow, and stays so until the hub is updated, because the hub's update is
+not the laptop's to apply. The mark goes away while the window has no connection to
+its own computer's daemon and comes back when the daemon says its state again. A window on a computer that runs no
+daemon of its own shows no mark. The notice on the status line when a release is found still appears, for ten seconds.
 
 To see where a computer's update stands, run `sotd status`. Its last column, `UPDATE`, is what each computer's daemon
 says of its own update:
@@ -156,7 +220,7 @@ says of its own update:
 | `up to date (checked 3 h ago)` | The last check found nothing newer than what is installed. |
 | `0.7.4 found` | A newer release was found. A reason after it says why nothing is being prepared; `it was armed here and the armed update is no longer on disk` means that computer had prepared it and another program has since removed or applied the prepared update, and the next check looks again. |
 | `0.7.4 preparing (can take many minutes)` | The release is being downloaded and its checkout and Julia environments built. |
-| `0.7.4 ready: ...` | The release is prepared. The words after it say what applies it, on the computer of that row: `applies when that computer's sotd.service next starts (a start of Ship of Tools there, or a restart of the service)`, or `applies when Ship of Tools is next started on that computer`. Starting Ship of Tools on another computer does not restart that computer's daemon. Where two computers share one install (a shared home folder), a start on either applies it for both, and the other's row reads found, as above, until its next check; its daemon runs the new version after its own restart. The start checks the prepared files once more; if it finds them damaged, or finds that version already installed, it applies nothing and removes the prepared update, and a damaged one is prepared again by the next check. |
+| `0.7.4 ready: ...` | The release is prepared. The words after it say what applies it, on the computer of that row: `applies when that computer's sotd.service next starts (a start of Ship of Tools there, or a restart of the service)`, or `applies when Ship of Tools is next started on that computer`. How to get to that start without ending that computer's sessions is under "Applying a ready update", above: a plain close of its last window ends them. Starting Ship of Tools on another computer does not restart that computer's daemon. Where two computers share one install (a shared home folder), a start on either applies it for both, and the other's row reads found, as above, until its next check; its daemon runs the new version after its own restart. The start checks the prepared files once more; if it finds them damaged, or finds that version already installed, it applies nothing and removes the prepared update, and a damaged one is prepared again by the next check. |
 | `0.7.5 preparing; 0.7.4 is ready meanwhile` | A newer release is being prepared while an earlier one is already ready. |
 | `0.7.4 not applied: ...` | The reason follows. Either the release was found and could not be made ready, and the next daily check tries again; or a prepared update no longer fits what is installed and would be refused, and it stays so until the next start on that computer removes it. |
 | `an armed update cannot be read; the next start drops it` | The file that names a prepared update is damaged; the next start removes it and the next check prepares the update again. |
@@ -173,7 +237,9 @@ Applying a ready update restarts that computer's daemon, which ends its REPLs an
 running between 0.7 releases. `sotd status` needs the computer's `hosts.toml`; on a computer without one,
 `sot-fe version` prints the same words for the one daemon it asks, on a line that begins `update` (`update  0.7.4
 ready: ...`, `update  off: dev build`). A daemon reads the prepared update from disk again each time it is asked, so
-both commands say what is on disk at that moment. Nothing in the window shows this state yet beyond the notice.
+both commands say what is on disk at that moment. The window's mark is told by its daemon when the state changes and
+when the window connects; an update prepared by another program (an installer run, an operator's stage) reaches it
+when the window next connects or the daemon next reads the disk.
 
 The daemon of a machine runs the check; a window runs it itself only where the daemon does not own updates (a host the
 topology declares `daemon = false`, a `frontend` entry or a `--backend` frontend-only install whose install runs no

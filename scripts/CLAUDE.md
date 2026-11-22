@@ -434,7 +434,8 @@ Update (`rust/updater`, `rust/backend/src/update*`, `rust/frontend/src/selfupdat
   or applied by another process (the installer, an operator's `sotd update stage`, another host's daemon on a shared
   home) reaches the state at the next of the five points, at most a day late when nothing asks and no window
   connects. The state is told by `version.query`, by a control connection's hello and by the `update.state` event;
-  no window draws it yet. While a second attempt stages, `update.check` says
+  a window draws its own computer's daemon's as the mark after its version stamp (fe-ui's contract, `UpdateMark`).
+  While a second attempt stages, `update.check` says
   ok and the state says preparing. `auto` mode's words are said of every armed update while the mode is on. A check
   that finds a release while a pipeline `update.check` started is running writes found over preparing until that
   pipeline ends (nothing in the product sends `update.check`). A daemon with no install record beside its binary

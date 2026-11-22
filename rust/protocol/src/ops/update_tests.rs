@@ -80,7 +80,7 @@ fn no_control_character_of_a_state_reaches_a_reader() {
     let read: UpdateState = serde_json::from_value(serde_json::json!({"phase": "not_applied", "version": "0.7.4\n", "detail": hostile, "armed": "0.7.3\u{1b}c"})).unwrap();
     assert_eq!(serde_json::to_value(&read).unwrap(), written);
     // The words clean a state that never crossed the wire, too.
-    for text in [told.line(), told.mark().unwrap().0, told.mark().unwrap().1, read.line()] {
+    for text in [told.line(), told.mark().unwrap().long, told.mark().unwrap().short, read.line()] {
         assert!(!text.chars().any(char::is_control), "{text:?}");
     }
     assert_eq!(told.line(), format!("0.7.4  not applied: {clean}; 0.7.3 c is ready meanwhile"));
@@ -91,7 +91,10 @@ fn no_control_character_of_a_state_reaches_a_reader() {
 #[test]
 fn every_phase_has_its_words_and_five_have_a_mark() {
     use UpdatePhase as P;
-    let mark = |long: &str, short: &str| Some((long.to_string(), short.to_string()));
+    let marked = |kind, long: &str, short: &str| Some(Mark { long: long.to_string(), short: short.to_string(), kind });
+    let mark = |long: &str, short: &str| marked(MarkKind::Coming, long, short);
+    let ready = |version: &str| marked(MarkKind::Ready, &format!("update {version} ready: quit keeping sessions, then start again"), &format!("{version} ready"));
+    let warn = |long: &str, short: &str| marked(MarkKind::Warning, long, short);
     let checked = |phase, detail: &str, secs| UpdateState { checked_s: Some(secs), ..state(phase, "", detail) };
     let armed = |phase, version: &str, detail: &str, armed: &str| UpdateState { armed: armed.into(), ..state(phase, version, detail) };
     let unit = "applies when that computer's sotd.service next starts (a start of Ship of Tools there, or a restart of the service)";
@@ -107,16 +110,19 @@ fn every_phase_has_its_words_and_five_have_a_mark() {
         (state(P::Preparing, "0.7.4", ""), "0.7.4 preparing (can take many minutes)", mark("update 0.7.4 preparing", "0.7.4 preparing")),
         (armed(P::Preparing, "0.7.5", "", "0.7.4"), "0.7.5 preparing; 0.7.4 is ready meanwhile", mark("update 0.7.5 preparing", "0.7.5 preparing")),
         (armed(P::Preparing, "0.7.4", "", "0.7.4"), "0.7.4 preparing (can take many minutes)", mark("update 0.7.4 preparing", "0.7.4 preparing")),
-        (state(P::Ready, "0.7.4", unit), "0.7.4 ready: applies when that computer's sotd.service next starts (a start of Ship of Tools there, or a restart of the service)", mark("update 0.7.4 ready: applies at next start", "0.7.4 ready")),
+        (state(P::Ready, "0.7.4", unit), "0.7.4 ready: applies when that computer's sotd.service next starts (a start of Ship of Tools there, or a restart of the service)", ready("0.7.4")),
         // A state the teller could not read from disk just now says so after its words, whatever its phase.
         (UpdateState { unread: true, ..checked(P::None, "", 3 * 3600) }, "up to date (checked 3 h ago); as last read, the disk did not answer in time", None),
-        (UpdateState { unread: true, ..state(P::Ready, "0.7.4", "") }, "0.7.4 ready; as last read, the disk did not answer in time", mark("update 0.7.4 ready: applies at next start", "0.7.4 ready")),
-        (state(P::Ready, "0.7.4", ""), "0.7.4 ready", mark("update 0.7.4 ready: applies at next start", "0.7.4 ready")),
-        (state(P::NotApplied, "0.7.4", "preparing update failed: no julia"), "0.7.4 not applied: preparing update failed: no julia", mark("update 0.7.4 not applied: see sotd status", "0.7.4 not applied")),
-        (armed(P::NotApplied, "0.7.5", "staging update failed: disk full", "0.7.4"), "0.7.5 not applied: staging update failed: disk full; 0.7.4 is ready meanwhile", mark("update 0.7.5 not applied: see sotd status", "0.7.5 not applied")),
+        (UpdateState { unread: true, ..state(P::Ready, "0.7.4", "") }, "0.7.4 ready; as last read, the disk did not answer in time", ready("0.7.4")),
+        (state(P::Ready, "0.7.4", ""), "0.7.4 ready", ready("0.7.4")),
+        (state(P::NotApplied, "0.7.4", "preparing update failed: no julia"), "0.7.4 not applied: preparing update failed: no julia", warn("update 0.7.4 not applied", "0.7.4 not applied")),
+        // A release not applied beside one a start applies now marks the one that is ready: an older one still armed,
+        // and a newer one kept over the release this daemon was chasing. The line says both.
+        (armed(P::NotApplied, "0.7.5", "staging update failed: disk full", "0.7.4"), "0.7.5 not applied: staging update failed: disk full; 0.7.4 is ready meanwhile", ready("0.7.4")),
+        (armed(P::NotApplied, "0.7.4", "a newer release is already armed", "0.7.5"), "0.7.4 not applied: a newer release is already armed; 0.7.5 is ready meanwhile", ready("0.7.5")),
         (state(P::NotApplied, "", "unreadable pointer: EOF"), "an armed update cannot be read; the next start drops it (unreadable pointer: EOF)", None),
         (state(P::NotApplied, "", ""), "an armed update cannot be read; the next start drops it", None),
-        (state(P::Blocked, "", "install.json cannot be read at /p/install.json"), "off: install.json cannot be read at /p/install.json", mark("updates off: install record unreadable", "updates off")),
+        (state(P::Blocked, "", "install.json cannot be read at /p/install.json"), "off: install.json cannot be read at /p/install.json", warn("updates off: install record unreadable", "updates off")),
         (state(P::Off, "", "dev build"), "off: dev build", None),
         (state(P::Off, "", "pinned at 0.7.3: automatic updates stay off for this install until a run that names no version"), "off: pinned at 0.7.3: automatic updates stay off for this install until a run that names no version", None),
         (checked(P::CheckFailed, "check unavailable: timed out", 2 * 3600), "check could not run 2 h ago: check unavailable: timed out", None),
@@ -127,6 +133,12 @@ fn every_phase_has_its_words_and_five_have_a_mark() {
     for (state, line, mark) in &table {
         assert_eq!(&state.line(), line, "{state:?}");
         assert_eq!(&state.mark(), mark, "{state:?}");
+    }
+    // No mark sends a person to a command, which would be wrong on a computer where that command says nothing of updates.
+    for (state, _, _) in &table {
+        for words in state.mark().iter().flat_map(|m| [&m.long, &m.short]) {
+            assert!(!words.contains("sotd") && !words.contains("sot-fe") && !words.contains("see "), "{words}");
+        }
     }
     let marked: std::collections::HashSet<UpdatePhase> = table.iter().filter(|(s, _, _)| s.mark().is_some()).map(|(s, _, _)| s.phase).collect();
     assert_eq!(marked, [P::Found, P::Preparing, P::Ready, P::NotApplied, P::Blocked].into_iter().collect(), "the five phases with a mark");
@@ -148,4 +160,21 @@ fn the_update_state_evt_is_declared_in_the_one_table() {
     assert_eq!(payload, serde_json::json!({"phase": "preparing", "version": "0.7.4"}));
     let unread = serde_json::to_value(UpdateState { unread: true, ..UpdateState::of(UpdatePhase::Unchecked) }).unwrap();
     assert_eq!(unread, serde_json::json!({"phase": "unchecked", "unread": true}), "unread is written only when true");
+}
+
+/// The mark of a ready update says the way to apply it that keeps the sessions, and not that a start applies it: a
+/// person who reads only of a next start closes the last window to get one, and a plain close of the last window ends
+/// every session on that computer. The words fit every computer: where the sessions run elsewhere any quit keeps them.
+#[test]
+fn the_ready_mark_says_to_quit_keeping_sessions_and_never_only_a_next_start() {
+    let kept_newer = UpdateState { armed: "0.7.5".into(), ..state(UpdatePhase::NotApplied, "0.7.4", "a newer release is already armed") };
+    for (state, version) in [(state(UpdatePhase::Ready, "0.7.4", ""), "0.7.4"), (kept_newer, "0.7.5")] {
+        let mark = state.mark().expect("a ready update has a mark");
+        assert_eq!(mark.kind, MarkKind::Ready);
+        assert_eq!(mark.long, format!("update {version} ready: quit keeping sessions, then start again"));
+        assert_eq!(mark.short, format!("{version} ready"));
+        for misread in ["next start", "close", "restart"] {
+            assert!(!mark.long.contains(misread), "{}", mark.long);
+        }
+    }
 }

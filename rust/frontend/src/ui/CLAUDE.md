@@ -176,7 +176,7 @@ last `fe-state.json` signature; `control::ReplyBar` owns the one reply a page of
 it is in view and its wait before Enter; `drawer::terminal::drawer::TerminalDrawer` owns the Terminal drawer's shell, its last
 pty size and its starting folder; `drawer::monitor::MonitorPane` owns the Monitor drawer; `chrome::StripMotion` owns the session strip's eased scroll and the brand wheels'
 spin; `chrome::NavSpill` owns the nav spill's deadline, collected segments and trigger cursor; `chrome::StatusLine`
-owns the status text, the hold every word keeps on it and the note a disconnect line carries; `preview::notice::PreviewNotice` owns the preview's boxed message, its text and the instant it was shown (no `impl State`); `chrome::BatteryGauge` owns the cached battery label;
+owns the status text, the hold every word keeps on it and the note a disconnect line carries; `preview::notice::PreviewNotice` owns the preview's boxed message, its text and the instant it was shown (no `impl State`); `chrome::BatteryGauge` owns the cached battery label; `chrome::UpdateMark` owns what this computer's own daemon last said of its update, for the mark after the version stamp;
 `input::pointer::Pointer` owns the pointer's last position and the wheel's sub-row residue; `proxy_arms::ProxyArms`
 owns the page proxy's proxied hosts, listener manager and armed listeners; `host_view::ActiveLink` owns the active
 connection's hello facts and `host_view::HelloRefusals` each host's refused hello; `render::gpu::Gpu` owns the
@@ -1181,6 +1181,39 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   frame looked at under a display; the `about_to_wait` calls of `floating_idle` rest on reading.
 - `BatteryGauge` privately owns the battery readout: the OS is asked at most every 30 s, the label is `None` with
   no battery or on an error (never a fake reading), and every frame between queries reuses it.
+- `UpdateMark` (`chrome/update_mark.rs`, a leaf module with no `impl State`) privately owns the standing mark of an
+  update: the dial host whose connection is this computer's own daemon (`ResolvedDial::Local`) and the state that
+  daemon has said on that connection (fe-net's `IncomingEvt::Update`). The mark is one computer's word, the local
+  daemon's, which shares the window's install, so it is the update this window's next start applies; another
+  computer's daemon is never shown (its state is in `sotd status`), so the words name no computer. The word lives
+  with its connection: `connected` (from `on_connected`, before the state that follows the `Connected` event) begins
+  with nothing said, `told` (the event's one arm in `ui/events.rs`) keeps only the local daemon's state, and
+  `disconnected` (from `on_disconnected`) forgets it, so the mark is what a connected daemon last said, it goes when
+  the launcher stops the daemon to apply, and the daemon that comes back says its state again. A harness instance
+  (`--ephemeral`, any `--capture`) draws none, so a screenshot never depends on what a release source answered.
+  The window words nothing: the mark's long words, its short ones and its kind are the wire's (`UpdateState::mark`,
+  wire guarantee 16). `chrome::status::update_mark_words` picks the long words where they fit the room, else the short
+  ones, else none, by cell width and never cut; `ChromeView::paint_version_stamp` writes them on the bottom border one
+  border cell after the stamp, a space either side, leaving the row's last two cells (one border cell and the corner
+  glyph), in one style a kind (the
+  stamp's own gray for a release found or being prepared, the border status's green for ready, the skew's yellow for a
+  warning); `chrome_labels` snapshots the mark for the draw closure with the stamp. It is cells of that border and
+  nothing else: no pane rectangle, status row or scroll moves for it, the stamp is never displaced, and it is not
+  drawn where the stamp is not. Nothing is written to the status line, and the 10 s notice of a release found is as
+  before. Limits: a long mark runs over the border's junction under a pane divider, as a long dev stamp does; the
+  mark shows no age and no download progress; a state arrives only when the daemon tells it (a change, or the
+  window's connect), and the window already draws about once a second, so no waker is added; a window whose
+  computer runs no daemon of its own (its only connections are remote) draws no mark; the stamp's `be` half is the
+  selected computer's daemon while the mark is always this computer's, so on a row of another computer the two
+  sit side by side and speak of different computers. Tests: `chrome::update_mark::tests::{the_mark_is_the_local_daemons_word_and_goes_with_its_connection,
+  a_harness_instance_draws_no_mark}`, `chrome::status::tests::the_mark_takes_its_long_words_its_short_words_or_nothing`,
+  `chrome::view::tests::the_mark_is_on_the_bottom_border_after_the_stamp_and_moves_no_pane` (through
+  `ChromeView::paint`: every row above the border, every rect and scroll the frame returns and the stamp equal with
+  and without a mark, the words by the room at four widths, a color a kind), and the native fixture
+  `the_update_mark_is_drawn_for_this_computers_own_daemon` (the window's own event queue to drawn frames, so only
+  under a display: the three State calls, the snapshot in `chrome_labels`, both word forms at two text sizes, another
+  computer's word drawn nowhere, the link's end and return, a harness instance). One real frame of each word form
+  was looked at under a virtual display (2026-11-22). No person has used it yet.
 - `Pointer` privately owns the pointer between events: the last position (winit reports it only on motion) and the
   wheel's fractional rows, stored by the wheel adapter and cleared when the agent pane consumes a gesture.
   Mouse routing focuses the agent or flowed-text preview before anchoring its selection; an outside left press

@@ -55,7 +55,7 @@ impl State {
         let mut owed_drawn = false;
         let mut leaving_drawn = false;
         let lease_notice = self.leases.notice();
-        let (clock_now, battery, last_key, version_stamp, version_skew) = self.chrome_labels();
+        let (clock_now, battery, last_key, version_stamp, version_skew, update_mark) = self.chrome_labels();
         let mode = self.nav.mode();
         let focus = self.focus_prompts.focus();
         let help_context = self.help_context();
@@ -158,7 +158,7 @@ impl State {
             pinned_preview_node_id: self.nav_cursor.pinned(), drawer, chat_body: chat_body.as_ref(), chat_title: &chat_title, chat_compose: chat_compose.as_ref(), chat_foot: 0, chat_body_end: (0, 0), monitor_host_connected,
             monitor_host_label: &monitor_host_label, repl_input: &repl_input, repl_lines: &repl_lines,
             repl_pkg_mode, help_state, help_bindings, help_context: &help_context, clock_now,
-            battery: &battery, version_stamp: &version_stamp, version_skew, pty_screen,
+            battery: &battery, version_stamp: &version_stamp, version_skew, update_mark: update_mark.as_ref(), pty_screen,
             pane_overlay: &pane_overlay, term_screen, owed_drawn, leaving_drawn, nav_scroll, preview_cells,
             repl_cells, new_pane_rects, new_repl_scroll, repl_scrollback_cells, repl_window,
             pty_size_observed, term_size_observed,
@@ -222,7 +222,7 @@ impl State {
         (status, nav_prompt_line, owed, owed_line, nav_line)
     }
 
-    fn chrome_labels(&mut self) -> (chrono::NaiveDateTime, Option<String>, Option<String>, String, bool) {
+    fn chrome_labels(&mut self) -> (chrono::NaiveDateTime, Option<String>, Option<String>, String, bool, Option<sot_protocol::Mark>) {
         // Local wall-clock of the machine running the frontend, sampled once
         // per frame and turned into the top-right chrome clock text at the
         // paint site below (`clock_label`, which also prefixes the date
@@ -244,7 +244,9 @@ impl State {
             &sot_protocol::app_version(),
             self.active_link.backend_version(),
         );
-        (clock_now, battery, last_key, version_stamp, version_skew)
+        // The mark of this computer's update, snapshotted with the stamp it is drawn after.
+        let update_mark = self.update_mark.mark();
+        (clock_now, battery, last_key, version_stamp, version_skew, update_mark)
     }
 
     fn concept_status_line(&self) -> String {
@@ -475,3 +477,7 @@ impl State {
         (preview_name, monitor_host_label, monitor_host_connected)
     }
 }
+
+#[cfg(test)]
+#[path = "update_mark_native_fixture_tests.rs"]
+mod update_mark_native_fixture_tests;

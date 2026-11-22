@@ -119,7 +119,7 @@ impl ApplicationHandler for FixturesDriver {
 }
 
 fn run_state_fixtures(state: &mut State) -> Result<()> {
-    let fixtures: [(&str, fn(&mut State) -> Result<()>); 39] = [
+    let fixtures: [(&str, fn(&mut State) -> Result<()>); 40] = [
         // First: the window's start-up picture is still the preview's.
         (
             "primary_u_over_the_start_picture_says_the_preview_shows_no_file",
@@ -232,6 +232,10 @@ fn run_state_fixtures(state: &mut State) -> Result<()> {
             State::a_row_of_wide_tables_arrives_without_shaping_them_in_its_first_frame,
         ),
         ("a_page_of_tables_shapes_only_the_rows_in_view", State::a_page_of_tables_shapes_only_the_rows_in_view),
+        (
+            "the_update_mark_is_drawn_for_this_computers_own_daemon",
+            State::the_update_mark_is_drawn_for_this_computers_own_daemon,
+        ),
     ];
     // Every fixture runs and reports; the child fails after the last if any failed.
     let mut failed = Vec::new();

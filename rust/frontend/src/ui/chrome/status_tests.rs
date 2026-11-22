@@ -312,3 +312,21 @@ fn a_flood_of_escape_openers_is_cut_in_bounded_time() {
     assert!(start.elapsed() < std::time::Duration::from_secs(3), "{:?}", start.elapsed());
     assert_eq!(rows.len(), 1);
 }
+
+/// The update's mark takes its long words where they fit, its short words where only those do, and nothing in less
+/// room; the words are never cut, and a wide character counts the cells it takes.
+#[test]
+fn the_mark_takes_its_long_words_its_short_words_or_nothing() {
+    use sot_protocol::{Mark, MarkKind};
+    let mark = Mark { long: "update 0.7.4 ready: quit keeping sessions, then start again".into(), short: "0.7.4 ready".into(), kind: MarkKind::Ready };
+    let (long, short) = (mark.long.len() as u16, mark.short.len() as u16);
+    assert_eq!((long, short), (59, 11));
+    for (room, want) in [(200, Some(mark.long.as_str())), (long, Some(mark.long.as_str())), (long - 1, Some(mark.short.as_str())), (short, Some(mark.short.as_str())), (short - 1, None), (0, None)] {
+        assert_eq!(update_mark_words(&mark, room), want, "{room} cells");
+    }
+    // A version in wide characters is measured in cells: four of them take eight.
+    let wide = Mark { long: "update \u{4e00}\u{4e8c}\u{4e09}\u{56db} found".into(), short: "\u{4e00}\u{4e8c}\u{4e09}\u{56db} found".into(), kind: MarkKind::Coming };
+    assert_eq!(update_mark_words(&wide, 20), Some(wide.short.as_str()), "the long words take 21 cells");
+    assert_eq!(update_mark_words(&wide, 21), Some(wide.long.as_str()));
+    assert_eq!(update_mark_words(&wide, 13), None, "the short words take 14 cells");
+}

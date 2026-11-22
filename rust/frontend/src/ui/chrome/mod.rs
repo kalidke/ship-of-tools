@@ -14,6 +14,7 @@ mod status;
 mod status_line;
 mod strip;
 mod theme;
+mod update_mark;
 mod view;
 
 pub(in crate::ui) use panes::*;
@@ -23,4 +24,5 @@ pub(in crate::ui) use status_line::StatusLine;
 pub(in crate::ui) use battery_gauge::BatteryGauge;
 pub(in crate::ui) use strip::*;
 pub(in crate::ui) use theme::*;
+pub(in crate::ui) use update_mark::UpdateMark;
 pub(in crate::ui) use layout::draw_wireframe;

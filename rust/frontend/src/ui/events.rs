@@ -187,8 +187,7 @@ impl State {
                     tracing::warn!(%bus, skipped, "daemon bus lost events on this connection");
                     self.on_chat_bus_lost(&event_host, &bus);
                 }
-                // No view reads the state of a daemon's update yet.
-                crate::net::transport::IncomingEvt::Update { .. } => {}
+                crate::net::transport::IncomingEvt::Update { state } => self.update_mark.told(&event_host, state),
                 crate::net::transport::IncomingEvt::Chat(evt) => self.on_chat(&event_host, evt),
                 crate::net::transport::IncomingEvt::Selection { req, reply } => {
                     self.on_selection_reply(&event_host, &req, reply)

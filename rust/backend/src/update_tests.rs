@@ -732,7 +732,7 @@ fn a_check_that_is_off_or_blocked_says_why_in_the_state() {
     assert_eq!(cut.phase, P::Blocked);
     assert!(cut.detail.starts_with(UNREADABLE_LEAD), "{}", cut.detail);
     assert!(cut.detail.contains(if cfg!(windows) { "install.ps1 -Version" } else { "install.sh --version" }), "names the repair run: {}", cut.detail);
-    assert_eq!(cut.mark().map(|(long, _)| long).as_deref(), Some("updates off: install record unreadable"));
+    assert_eq!(cut.mark().map(|mark| mark.long).as_deref(), Some("updates off: install record unreadable"));
     assert!(cut.checked_s.is_some(), "the check that found it ran");
 
     // Both of the record's sentences still name the repair run after they cross the wire, on a path long enough that

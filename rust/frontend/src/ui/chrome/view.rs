@@ -87,6 +87,8 @@ pub(super) struct ChromeView<'a> {
     pub(super) battery: &'a Option<String>,
     pub(super) version_stamp: &'a String,
     pub(super) version_skew: bool,
+    /// The standing mark of this computer's update, drawn after the stamp when there is one.
+    pub(super) update_mark: Option<&'a sot_protocol::Mark>,
     pub(super) pty_screen: &'a vt100::Screen,
     pub(super) pane_overlay: &'a Vec<String>,
     pub(super) term_screen: Option<&'a vt100::Screen>,
@@ -559,7 +561,7 @@ impl ChromeView<'_> {
         area: ratatui::layout::Rect,
         idle_title_style: Style,
     ) {
-        let ChromeView { version_stamp, version_skew, .. } = *self;
+        let ChromeView { version_stamp, version_skew, update_mark, .. } = *self;
         // FE/BE version stamp, left-aligned on the BOTTOM outer edge
         // — the mirror of the `nav · mode:` title on the top edge,
         // same `write_title` treatment and the same two-cell inset
@@ -590,6 +592,22 @@ impl ChromeView<'_> {
                         idle_title_style
                     },
                 );
+                // The update's mark, on the same row: one border cell after the stamp, a space either side of its
+                // words as the stamp has, and the row's last two cells (one border cell and the corner) left alone. It takes the words that
+                // fit that room whole (`update_mark_words`) and is not drawn where the stamp is not. Nothing else
+                // is laid out for it: it overwrites border cells only.
+                if let Some(mark) = update_mark {
+                    let x = area.x + 2 + stamp_cells + 1;
+                    let room = (area.x + area.width).saturating_sub(x + 2);
+                    if let Some(words) = update_mark_words(mark, room.saturating_sub(2)) {
+                        let style = match mark.kind {
+                            sot_protocol::MarkKind::Coming => idle_title_style,
+                            sot_protocol::MarkKind::Ready => Style::default().fg(Color::LightGreen),
+                            sot_protocol::MarkKind::Warning => Style::default().fg(Color::Yellow),
+                        };
+                        write_title(buf, x, bot_y, &format!(" {words} "), room, style);
+                    }
+                }
             }
         }
     }

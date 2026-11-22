@@ -87,7 +87,7 @@ through the channel types below.
   event (the wire's lenient read); an evt whose payload is no state is a warning and no event; a phase this window
   does not know is the event with `UpdatePhase::Other`. An older window reads past the hello's field and takes the
   evt on the generic path, which logs it at debug (`an_unknown_evt_op_reaches_the_generic_event_path`). fe-net keeps
-  no copy of the state. Limit: `ui/events.rs` routes the event to no owner yet, so the window draws nothing of it.
+  no copy of the state: `ui/events.rs` routes the event to fe-ui's `UpdateMark`, which keeps the local daemon's.
   Tests `transport::tests::a_hello_with_an_update_state_emits_it_after_connected_and_an_old_daemons_emits_none`,
   `reply_tests::an_update_state_evt_decodes_into_its_typed_event`.
 - The project chat is typed edges on the host's one control connection, so a remote host's chat costs no login and no

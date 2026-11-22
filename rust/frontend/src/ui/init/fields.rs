@@ -132,6 +132,7 @@ impl State {
             exit_deadline: ExitDeadline::new(),
             last_key: None,
             battery: BatteryGauge::default(),
+            update_mark: UpdateMark::new(harness),
             pacer: crate::ui::app::pacing::FramePacer::new(),
             strip_motion: Default::default(),
             focus_prompts: FocusPrompts::new(initial_focus(cli)),

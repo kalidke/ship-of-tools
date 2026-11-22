@@ -125,6 +125,26 @@ pub struct UpdateState {
     pub unread: bool,
 }
 
+/// The standing mark of a state ([`UpdateState::mark`]): its long words, its short ones for a narrow window, and how
+/// it reads at a glance.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Mark {
+    pub long: String,
+    pub short: String,
+    pub kind: MarkKind,
+}
+
+/// How a mark reads at a glance. The decision is the wire's; a window gives each kind one style and words nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MarkKind {
+    /// A release is on its way: found, or being prepared.
+    Coming,
+    /// The next start applies a release.
+    Ready,
+    /// Something to look at: a release not applied with nothing ready beside it, or an install record that cannot be read.
+    Warning,
+}
+
 /// What stands where a text past its bound was cut.
 const CUT_MARK: &str = " \u{2026} ";
 
@@ -188,18 +208,33 @@ impl UpdateState {
         }
     }
 
-    /// The standing mark a window draws for this state, its long words and its short ones, or `None` for a state that
-    /// has no mark: only a release found, preparing, ready or not applied, and a blocked install record, have one. The
-    /// one text of each, as `ChatCode::text` is a code's.
-    pub fn mark(&self) -> Option<(String, String)> {
-        let v = &bounded(&self.version, MAX_UPDATE_VERSION);
-        let about = |long: &str, short: &str| (!v.is_empty()).then(|| (format!("update {v} {long}"), format!("{v} {short}")));
+    /// The standing mark a window draws for this state, or `None` for a state that has no mark: only a release found,
+    /// preparing, ready or not applied, and a blocked install record, have one. The one text of each, as
+    /// `ChatCode::text` is a code's, and the one decision of how it reads ([`MarkKind`]). The words name no computer
+    /// and no command: a window draws the mark of its own computer's update alone, and where the reason of a release
+    /// not applied is read differs by computer. A release not applied beside one a start applies now (`armed`: a
+    /// newer release kept over this one, or an older one still armed) marks the one that is ready and warns of
+    /// nothing, because nothing is wrong with what the next start does; the release not applied is in the line.
+    /// The words of ready say the way to apply it that keeps the sessions (quit keeping them, then start again),
+    /// not that a start applies it: read as only a next start they lead a person to close the last window, and a
+    /// plain close of the last window ends every session on that computer.
+    pub fn mark(&self) -> Option<Mark> {
+        let (v, armed) = (bounded(&self.version, MAX_UPDATE_VERSION), bounded(&self.armed, MAX_UPDATE_VERSION));
+        let about = |v: &str, long: &str, short: &str, kind| {
+            (!v.is_empty()).then(|| Mark { long: format!("update {v} {long}"), short: format!("{v} {short}"), kind })
+        };
+        let ready = |v: &str| about(v, "ready: quit keeping sessions, then start again", "ready", MarkKind::Ready);
         match self.phase {
-            UpdatePhase::Found => about("found", "found"),
-            UpdatePhase::Preparing => about("preparing", "preparing"),
-            UpdatePhase::Ready => about("ready: applies at next start", "ready"),
-            UpdatePhase::NotApplied => about("not applied: see sotd status", "not applied"),
-            UpdatePhase::Blocked => Some(("updates off: install record unreadable".to_string(), "updates off".to_string())),
+            UpdatePhase::Found => about(&v, "found", "found", MarkKind::Coming),
+            UpdatePhase::Preparing => about(&v, "preparing", "preparing", MarkKind::Coming),
+            UpdatePhase::Ready => ready(&v),
+            UpdatePhase::NotApplied if !armed.is_empty() && armed != v => ready(&armed),
+            UpdatePhase::NotApplied => about(&v, "not applied", "not applied", MarkKind::Warning),
+            UpdatePhase::Blocked => Some(Mark {
+                long: "updates off: install record unreadable".to_string(),
+                short: "updates off".to_string(),
+                kind: MarkKind::Warning,
+            }),
             UpdatePhase::Unchecked | UpdatePhase::None | UpdatePhase::Off | UpdatePhase::CheckFailed | UpdatePhase::Other => None,
         }
     }
