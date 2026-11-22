@@ -45,7 +45,7 @@ impl State {
         } else {
             (Vec::new(), None)
         };
-        let media_paint_targets = self.prepare_media(show_md, md_rect, preview_scroll_px);
+        let media_paint_targets = self.prepare_media(show_md, md_rect, preview_rect, preview_scroll_px);
         let (scalebar_draw, media_paint_targets) = self.prepare_preview_text(lines, media_paint_targets,
             preview_rect, image_rect, png_rect, md_rect, preview_scroll_px, show_md, show_edit, show_fatal, &caption_draw)?;
         let (help_overlay_rect, dialog_rect, overlay_lines) = self.prepare_overlays()?;

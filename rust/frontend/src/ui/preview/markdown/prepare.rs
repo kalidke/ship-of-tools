@@ -2,9 +2,10 @@
 //! preview, caption, scalebar and table buffers as extra areas.
 
 use crate::ui::*;
+use crate::ui::preview::markdown::media::table_places;
 
 impl State {
-    pub(in crate::ui) fn prepare_media(&mut self, show_md: bool, md_rect: ScreenRect,
+    pub(in crate::ui) fn prepare_media(&mut self, show_md: bool, md_rect: ScreenRect, preview_rect: ScreenRect,
                      preview_scroll_px: f32) -> Vec<(usize, ScreenRect)> {
         // Walk the laid-out markdown buffer for FFFC placeholders, zip
         // with the shaped buffer's `media_blocks` by appearance order, and
@@ -19,18 +20,22 @@ impl State {
         };
         // Build / refresh per-table cosmic-text buffers — must run
         // before the extras are assembled below because the extras
-        // borrow each table buffer. The fn is a no-op
-        // when the buffer set already matches the shaped buffer's `media_blocks`
-        // (typical steady-state across redraws). It also resets
+        // borrow each table buffer. When the buffer set already matches
+        // the shaped buffer's `media_blocks` it builds nothing; once the
+        // set is whole it shapes nothing either (typical steady-state
+        // across redraws). It also resets
         // the table scroll to 0 whenever buffers are rebuilt, so
         // navigating to a different doc starts at scroll-left.
         // A covered preview (a full-height drawer or a maximized pane) builds nothing but keeps the set it holds, so
         // uncovering it draws the tables as they were, whatever the set's size. Markdown not shown drops the set (kept
         // when within the budget). The frame that first draws an arriving row, and the first that shows the tables
-        // after a frame that showed none, shapes no table when none is kept; the deferral is taken on every frame.
+        // after a frame that showed none, shapes no table; the deferral is taken on every frame. Any other frame
+        // shapes the table rows the pane shows, no margin, and, when there were none to shape, rows beyond the view
+        // for `BACKGROUND_SHAPING`, asking for the next frame while a row is left.
         let defer = self.md_media.take_defer();
         if show_md && !self.preview_covered() {
-            self.ensure_table_buffers(defer);
+            let places = table_places(&self.shaped.md().media_blocks, &media_paint_targets);
+            self.ensure_table_buffers(defer, &places, preview_rect);
         } else {
             if !show_md {
                 self.md_media.clear_tables();
@@ -206,36 +211,30 @@ impl State {
         // horizontally. TextBounds at preview-pane edges clip the
         // overflow glyph-by-glyph — no wgpu scissor needed.
         //
-        // We iterate `media_paint_targets` (in FFFC source order) and
-        // increment a `table_idx` counter on each Table encounter so it
-        // walks the table buffers parallel to the source-order TableBufferEntry
-        // build inside `ensure_table_buffers`.
+        // Each table's place is paired with its buffer by its index among the
+        // page's tables (`table_places`), the pairing `ensure_table_buffers`
+        // shapes by.
         if show_md && !self.md_media.tables().is_empty() {
-            let mut table_idx: usize = 0;
-            for (block_idx, rect) in &media_paint_targets {
-                let Some(block) = self.shaped.md().media_blocks.get(*block_idx) else {
-                    continue;
-                };
-                if !matches!(block, crate::ui::preview::markdown::MediaBlock::Table { .. }) {
-                    continue;
-                }
-                let Some(entry) = self.md_media.tables().get(table_idx) else {
-                    table_idx += 1;
-                    continue;
-                };
-                table_idx += 1;
+            for (table_idx, rect) in table_places(&self.shaped.md().media_blocks, &media_paint_targets) {
                 // Cull tables fully scrolled off the vertical viewport
                 // — TextBounds would catch them anyway but the cheap
-                // skip saves a glyphon TextArea entry.
-                if rect.y + rect.h < preview_rect.y || rect.y > preview_rect.y + preview_rect.h {
+                // skip saves a glyphon TextArea entry — and one with a
+                // row in view not yet shaped, whose place stays empty.
+                // The buffer starts at the first row in view, so it is
+                // drawn from that row's top.
+                let Some(entry) = self.md_media.tables().get(table_idx) else {
                     continue;
-                }
+                };
+                let Some(top) = entry.drawn_top(rect.y, &entry.rows_in(rect, preview_rect)) else {
+                    continue;
+                };
                 // `x` rides the shared horizontal scroll; `y` plants
-                // the table's first row exactly at the FFFC's screen
-                // y. The ExtraArea pipeline adds EXTRA_TOP_PAD_PX to
-                // the y, so we subtract it back here.
+                // the first row drawn exactly where that row of the
+                // table sits below the FFFC's screen y. The ExtraArea
+                // pipeline adds EXTRA_TOP_PAD_PX to the y, so we
+                // subtract it back here.
                 let table_x = rect.x - self.md_media.table_scroll_px();
-                let table_y = rect.y - crate::ui::render::text::EXTRA_TOP_PAD_PX;
+                let table_y = top - crate::ui::render::text::EXTRA_TOP_PAD_PX;
                 extras.push(crate::ui::render::text::ExtraArea {
                     buffer: &entry.buffer,
                     x: table_x,

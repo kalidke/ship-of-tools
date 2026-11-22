@@ -798,54 +798,145 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   row parks and restores its own.
 - `MarkdownMedia` privately owns the rest of the markdown media. Math and token requests go out only for keys
   neither cached nor in flight; a reply caches, settles its key and asks for one reflow (a math failure settles with
-  no reflow, so it cannot loop); a figure's landing or failure asks for one too, and the frame takes it once. Table
-  buffers are shaped only when their sources or metrics change, which also returns the shared horizontal scroll to the
-  left; the scroll is clamped each frame to the widest table. Shaping a table is the largest preview cost for a page
-  of tables (every row, shown or not, at natural width; its costs are in `docs/defects.md`,
-  PREVIEW-TABLES-FIRST-VIEW-SHAPES-ALL), so a set is not thrown away for a row's leaving: a set the frame no longer
-  shows is kept (`park`), newest first, within `PARKED_TABLE_BYTES`, 200,000 bytes of rendered table text (the text
-  `build_table_block` makes, box-drawing characters and padding included, not the markdown file's bytes). In a
-  reader's terms: one file of the diagnosed size (140,198 bytes of table text) stays warm beside the shown set, or any
-  number of others that total at most 59,802 bytes; three such sessions stepped in turn are all cold at every step,
-  each arriving as a first view. A document with more table text than the budget is never kept: its return from
-  another row, and from markdown not shown, is a first view. A byte of rendered table text held 76 to 520 resident
-  bytes in the measurements (the worst is padding: a table with one long cell pads every row to it), so the kept sets
-  hold up to about 104 MB beside the shown set. Nothing bounds the shown set: the text cap bounds the markdown file,
-  not what its tables render to (a 28 KB file with one 3,000-character cell and 2,000 short rows renders 6 MB of
-  table text, `docs/defects.md`, PREVIEW-TABLE-PADDING-AMPLIFIES). A kept set is taken back (`take_parked`) only for
-  the same table texts, in the same order and count, at the same font size and line height (`built_from`); its width
-  is fixed at 10,000 px and its color is applied at the draw, so nothing else shapes it. Both sizes are in the key, so
-  a set shaped at another size is never drawn and the tables follow a text-scale step, at the cost of one build per
-  step (the step back takes the earlier size's set when it is kept). A frame shapes no table when it shows no
-  markdown text (the set it holds is kept if within the budget), and when a full-height drawer or a maximized pane
-  covers the preview (`preview_covered`): a covered preview builds nothing and keeps the set it holds and the
-  tables' horizontal scroll, whatever the set's size. Uncovering draws that set at once when the page and the text
-  scale are unchanged; when either changed under the cover (a file rewritten, another file previewed, a text-scale
-  step, a row arriving under the cover), the uncover frame draws no tables and the next frame shapes them. A frame
-  shapes none, either, when `MarkdownMedia::defer_next` was called and no set is kept for the document:
-  `switch_to_workspace` calls it (a row's first frame), and so does every frame that shows no markdown or covers it,
-  so the first frame that shows the tables again (a row switched to under a cover, a picture or the editor gone)
-  defers too; `prepare_media` takes the deferral on every frame, so it never outlives the frame that spends it. A
-  deferred frame draws every pane with the tables' places empty (the walk reserves each table's height from its
-  rendered line count, so nothing moves), holds no set of another page, marks the pacer dirty and leaves the shaping
-  to the next frame. So a return to a row whose set is kept builds no table: the table stage of its first frame took
-  under 15 microseconds on every page measured, and the frame took under 5 ms in every measurement (0.5 to 4.1 ms,
-  the rest being the document's own text work, which the next frame does not pay). A page restored from parked bytes
-  with no kept set (an evicted set, a text scale changed while away) draws its text first and its tables a frame
-  later, in that frame. A page that arrives as a reply (a row's first visit, a `preview` command into the shown row, a
-  file that changed while the row was away) shapes its tables in the reply's own frame, as it did before the sets
-  were kept: that frame is not deferred, because a document that changes every few hundred ms would blank its tables
-  for a frame at each change. Not built: shaping only the tables in view, and the cheap shaping mode. Tests, in
-  media_store_tests.rs: `a_set_left_is_taken_back_for_the_same_sources_and_metrics_only` (each input of the key
-  changed alone), `the_sets_kept_stay_within_the_budget_oldest_first`,
-  `a_set_is_charged_its_rendered_bytes_whatever_it_holds` (a padding-only table: the charge is its bytes and each
-  padding character is a shaped glyph), `the_real_budget_keeps_a_set_at_it_and_drops_one_past_it` (at
-  `PARKED_TABLE_BYTES` itself, with its capacity and worst-case memory); the native fixture
-  `a_row_of_wide_tables_arrives_without_shaping_them_in_its_first_frame` (seven tables, about 100,000 characters of
-  table text: the tables each frame leaves are asserted, for a return, a cold arrival, a covered preview, an uncover
-  with and without a kept set, a page changed under the cover, a deferred frame that holds no set of another page, a
-  deferral outliving its frame and a deferred build's mark of the pacer, and a page over the budget through a cover
-  with its tables and their scroll; the one time bound is relative to the same window's own shaping of them). A math SVG is drawn by the worker, never on the window's
+  no reflow, so it cannot loop); a figure's landing or failure asks for one too, and the frame takes it once. A table
+  set holds an entry for every table of the page, keyed by its rendered text and metrics, each holding every row of
+  its table, none shaped at first; a new set returns the shared horizontal scroll to the left, and the scroll is
+  clamped each frame to the widest table. Every row is shaped at most once. A row in view is shaped by the first frame
+  not deferred whose pane shows it (`TableBufferEntry::rows_in`: from the first row whose foot is below the pane's top
+  to the last that ends at the bottom of the last whole row the pane holds, the draw's clip; no margin; `show`): a
+  reply's frame, the frame after a return with no set kept, the frame after an uncover, a text-scale step and a scroll
+  each shape the rows then in view that are not shaped yet, so a row that comes into view by scrolling is shaped and
+  drawn in the frame it arrives, and a page step or a jump past many tables shapes only the rows where it lands. A
+  frame not deferred that shapes no row in view shapes rows of the shown set beyond the view, those nearest the pane
+  first (then by table and row, so a table with no place goes last; `MarkdownMedia::shape_beyond`), until
+  `BACKGROUND_SHAPING`, 3 ms, has passed since it began, so at least one row. The budget is the time itself, since no
+  count of a row's text follows its cost: cosmic-text shapes a word for each break opportunity and one for each
+  space, so padding and CJK text cost what their words do not say. A row that alone takes longer than the budget is
+  still the unit, and one row can be any length (a row padded to a 3,000-character cell takes about 14 ms, one of
+  2,000 one-letter words about 18): that floor bounds a fill frame and a first view alike. Every frame that builds
+  tables (not one under a cover or with no markdown shown) marks the pacer dirty while the set holds a row not shaped
+  (`has_unshaped`), so the frames go on until the set is whole and stop there: each such frame shapes at least one
+  row and each but the last shapes for at least the budget, and nothing makes a row unshaped again, so a set is whole
+  within as many frames not deferred as it has rows left, and within one more than its rows' shaping time over the
+  budget. A fill frame is 3 to 4.5 ms longer than the same page's frame with nothing to shape, or longer by its one
+  row where a row takes more than the budget, and the next frame comes the pacer's 8.3 ms after its end, so the time
+  to a whole set grows with the shaping time of the page's tables, and the UI thread is about half busy until then,
+  more on a page whose rows each take longer than the budget (the frames and times measured are in
+  `docs/defects.md`, PREVIEW-TABLES-FIRST-VIEW-SHAPES-ALL). Once it is whole a wheel step, a page step and a jump
+  shape nothing. A frame that shapes rows in view, such as a person's key or scroll onto rows not shaped, shapes none
+  beyond them. The bound per frame is the rows the pane shows, or the budget and one row more, so no frame waits for
+  a whole table; a first
+  view, or a page step or a jump onto rows not shaped yet, costs a pane of rows, which for a pane full of wide rows is
+  the largest preview cost for a page of tables (its costs are in `docs/defects.md`,
+  PREVIEW-TABLES-FIRST-VIEW-SHAPES-ALL). The rows beyond the view are shaped only in frames that build tables: never
+  under a cover, with no markdown shown or in a deferred frame, and only in the shown set, so a set left for another
+  page or size waits, kept or not, and a kept set taken back goes on where it stopped. A harness or capture instance's
+  idle loop returns before the pacer can schedule a frame (`about_to_wait`), so there the rows beyond the view are
+  shaped only in the frames it draws for other reasons; the native fixtures draw every frame by `redraw`, so the rows
+  each frame shapes are the same at every run. A table's buffer starts at its first row in view (cosmic-text's scroll, set
+  every frame), so the drawing yields that row and those after it up to the first not shaped, and the table is drawn
+  from that row's place (`drawn_top`) when that row is shaped; otherwise its place stays empty this frame, at its
+  final height. Only a deferred frame leaves a row in view unshaped, so only a deferred frame draws a table short of
+  its rows in view or not at all, and the next frame draws them. Nothing a row's shaping changes is read
+  elsewhere: the walk reserves each place from the rendered line count, and a row wraps no line (`Wrap::None`: a row
+  wider than its 10,000 px buffer stays one drawn row), so its rows fill exactly its place and the page's layout is
+  the same before and after; its natural width, which the clamp reads, is known before shaping, the widest line's
+  characters at the monospace face's advance (`render::text::monospace_advance`). For text the face draws at that
+  advance (ASCII, box and block characters) the clamp does not depend on what is shaped. A row with wider text (CJK, an
+  emoji, a tab: a glyph from a fallback face or at another advance) raises the width when it is shaped, in view or
+  beyond it, so the clamp can grow during the fill and never falls, and a row in view is shaped before the clamp is
+  read, so no cell in view is out of reach (a review's example: a table of 30 plain rows and one CJK row at its foot
+  is 214.20 px wide by the estimate and 295.80 px once that row is shaped, the width shaping it whole gives). The
+  buffer's width, height
+  and metrics never change after it is made, since any change of them lays out every shaped row again. The other
+  readers of a page with tables read no table buffer: a selection, its copy and the source lines it shares with the
+  agent, and the hit test, read the markdown buffer, where a table is one placeholder that adds no text; cells hold
+  no link (`collect_inline_text` keeps their text). A set is not thrown away for a row's leaving: a set the frame no
+  longer shows is kept (`park`), newest first, within `PARKED_TABLE_BYTES`, 200,000 bytes of rendered table text (the
+  text `build_table_block` makes, box-drawing characters and padding included, not the markdown file's bytes), charged
+  for every table it holds, whatever rows are shaped. In a reader's terms: one file of the diagnosed size (140,198
+  bytes of table text) stays warm beside the shown set, or any number of others that total at most 59,802 bytes;
+  three such sessions stepped in turn are all cold at every step, each arriving as a first view. A document with more
+  table text than the budget is never kept: its return from another row, and from markdown not shown, is a first
+  view. A byte of rendered table text held 76 to 520 resident bytes shaped in the measurements (the worst is padding:
+  a table with one long cell pads every row to it), and a row not shaped holds its text alone, so the kept sets hold
+  up to about 104 MB beside the shown set. Nothing bounds the shown set: the text cap bounds the markdown file, not
+  what its tables render to (a 28 KB file with one 3,000-character cell and 2,000 short rows renders 6 MB of table
+  text, `docs/defects.md`, PREVIEW-TABLE-PADDING-AMPLIFIES). A kept set is taken back (`take_parked`) only for the same
+  table texts, in the same order and count, at the same font size and line height (`built_from`), with the rows it
+  had shaped: those are drawn at once and the others are shaped as they come into view; its width is fixed and its
+  color is applied at the draw, so nothing else shapes it. Both sizes are in the key, so a set shaped at another size
+  is never drawn and the tables follow a text-scale step, at the cost of the rows in view per step (the step back takes
+  the earlier size's set when it is kept). A pane resized shapes the rows it newly shows and none again, since the
+  buffers do not depend on the pane. A frame shapes no table when it shows no markdown text (the set it holds is kept
+  if within the budget), and when a full-height drawer or a maximized pane covers the preview (`preview_covered`): a
+  covered preview builds nothing and keeps the set it holds and the tables' horizontal scroll, whatever the set's
+  size. Uncovering draws that set at once when the page and the text scale are unchanged: each table from its first
+  row in view up to the first not shaped, which is all of them once the set is whole. Limit: an uncover that shows a
+  table whose first row in view was never shaped draws that table empty in the uncover frame, and one that shows
+  more rows than were shaped draws the rest a frame later; main shaped every table in the page's first frame and had
+  neither. It needs the cover to come before the fill reached those rows, within about 0.2 s of the page's first
+  view (the fill stops under a cover), so a page that arrives by itself while the person is at the drawer key. When
+  the page or the text scale changed under the cover (a file rewritten, another file previewed, a text-scale step, a
+  row arriving under the cover), the uncover frame draws no tables and the next frame shapes the rows in view. A frame
+  shapes none, either, when `MarkdownMedia::defer_next` was called: `switch_to_workspace` calls it (a row's first
+  frame), and so does every frame that shows no markdown or covers it, so the first frame that shows the tables again
+  (a row switched to under a cover, a picture or the editor gone) defers too; `prepare_media` takes the deferral on
+  every frame, so it never outlives the frame that spends it. A deferred frame takes back the page's kept set or
+  builds the page's set with none shaped, so it holds no set of another page, draws every pane with the place of a
+  table that has a row in view not shaped empty (nothing moves), marks the pacer dirty when such a row waits, and
+  leaves the shaping to the next frame. So a return to a row whose set is kept, at the pane it left, shapes no row:
+  on a page of about 130 KB of table text, its set whole or left mid-fill, the table stage of its first frame took 11
+  to 37 microseconds and the frame 3.6 to 8.8 ms in three measurements (2026-11-22; the rest is the document's own
+  text work, which the next frame does not pay, and the numbers move with the host's load). A page restored from parked bytes with no kept set (an evicted set, a text scale changed while away) draws
+  its text first and its rows in view a frame later, in that frame. A page that arrives as a reply (a row's first
+  visit, a `preview` command into the shown row, a file that changed while the row was away) shapes its rows in view
+  in the reply's own frame: that frame is not deferred, because a document that changes every few hundred ms would
+  blank its tables for a frame at each change. Each change makes a new set and starts the fill again, so a file
+  rewritten about once a second costs more of the UI thread than main did, which shaped it in one frame, where that
+  frame was short (about 200 ms), and about as much where it was long, while its longest frame is a third of main's or
+  less (measured in PREVIEW-TABLES-FIRST-VIEW-SHAPES-ALL). Not built: the cheap shaping mode. Tests, in
+  media_store_tests.rs:
+  `a_set_left_is_taken_back_for_the_same_sources_and_metrics_only` (each input of the key changed alone),
+  `the_sets_kept_stay_within_the_budget_oldest_first`, `a_set_is_charged_its_rendered_bytes_whatever_it_holds` (a
+  padding-only table: the charge is its bytes and each padding character is a shaped glyph),
+  `the_real_budget_keeps_a_set_at_it_and_drops_one_past_it` (at `PARKED_TABLE_BYTES` itself, with its capacity and
+  worst-case memory), `only_the_rows_in_view_are_shaped_and_a_kept_set_comes_back_as_it_was` (the rows of three
+  tables a pane shows, a deferred frame's wait, the place each is drawn from, a row not shaped again, and a set kept in
+  part charged whole and taken back with its rows),
+  `the_rows_beyond_the_view_are_shaped_nearest_first_until_the_budget_has_passed` (rows padded from 1 to about 300
+  characters and short ones: a budget of zero shapes one row a call whatever its text, nearest the view first and
+  then by row, the table with no place last, none once the set is whole, and no limit shapes every row left in one
+  call); in
+  tests.rs `a_table_row_is_one_drawn_row_however_wide`,
+  `a_tables_width_is_known_before_it_is_shaped_and_shaping_never_lowers_it`,
+  `a_tables_place_is_paired_by_its_index_among_the_tables`,
+  `a_table_shaped_row_by_row_draws_what_whole_shaping_draws` (a table of the fixture's kind and one of ordinary words,
+  at 60 seeded pane positions and four sideways scrolls: exactly the rows shown are shaped, and the rows drawn, their
+  places and every glyph's face, id and position are within 0.01 px of a table shaped whole, by the draw's clip) and
+  `a_table_whose_first_row_in_view_is_shaped_draws_its_rows_up_to_the_first_not_shaped` (a deferred frame's pane of
+  20 rows of which 8 are shaped draws those 8 as a table shaped whole does, and a pane whose first row is not shaped
+  draws nothing); the
+  native fixtures `a_row_of_wide_tables_arrives_without_shaping_them_in_its_first_frame` (seven tables, about 100,000
+  characters of table text: the shaped rows each frame leaves are asserted, for a return, a cold arrival, a covered
+  preview, an uncover with and without a kept set, a page changed under the cover, a deferred frame that holds no set
+  of another page, a deferral outliving its frame and a deferred build's mark of the pacer, and a page over the budget
+  through a cover with its rows and their scroll; the one time bound is relative to the same window's own shaping of
+  the rows in view) and `a_page_of_tables_shapes_only_the_rows_in_view` (five tables of 60 rows, each taller than the
+  pane: on each path each frame's shaped rows are asserted against the rows in view in its layout, every one of them
+  shaped, none beyond them in a frame that shaped one, and at least one beyond them in any other frame not deferred
+  while rows are left, how many being the time budget's, so printed and not asserted; a page step straight after a
+  first view shapes the rows it lands on and none beyond, the frames after shape rows beyond the view, and once they
+  have reached the rows a wheel step brings into view the step shapes none in view; a covered preview, the canvas and
+  a deferred frame shape none and the set goes on after; a set left for another row and for the canvas comes back
+  with its rows and their shapings; the set is whole within as many frames as it had rows left, and then the frame
+  asks for no other and a wheel step, a page step and a jump shape none;
+  a pane made shorter and taller again shapes no row twice; a text-scale step shapes the rows in view and the step back
+  takes the kept set back; and the clamp, the places, the page's height, the hit test and a selection across a table
+  with its source lines are the same before and after shaping; its one time bound is relative to the window's own
+  shaping of every row of the page). Limit: the glyphon pass that draws the
+  buffer from `drawn_top` rests on reading (the unit test reproduces its choice of rows with its own overlap test);
+  the fixtures read no pixel. A math SVG is drawn by the worker, never on the window's
   thread: the paint pass (`prepare_media`) collects the shown snippets that want a raster (`MathSvg::wants_raster`: not
   drawn, and not asked under the pane's generation) with each one's pixel size, and `request_rasters` asks for them as
   one batch (`SvgDraws::submit_batch`: one child for the frame's snippets, and for every other batched job waiting),

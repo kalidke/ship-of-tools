@@ -295,6 +295,94 @@ fn a_set_is_charged_its_rendered_bytes_whatever_it_holds() {
 }
 
 #[test]
+fn only_the_rows_in_view_are_shaped_and_a_kept_set_comes_back_as_it_was() {
+    use super::super::media::table_entry;
+    use crate::ui::render::quad::ScreenRect;
+    let mut fs = cosmic_text::FontSystem::new();
+    let mut media = MarkdownMedia::default();
+    // Three tables of ten rows of 15 px, placed one under another from y = 0.
+    let texts: Vec<String> = ["a", "b", "c"].iter().map(|c| format!("│ {c} │\n").repeat(10)).collect();
+    media.replace_tables(texts.iter().map(|text| table_entry(&mut fs, text.clone(), 12.0, 15.0)).collect());
+    let places: Vec<(usize, ScreenRect)> = (0..3).map(|t| (t, ScreenRect { x: 0.0, y: 150.0 * t as f32, w: 100.0, h: 150.0 })).collect();
+    let shaped = |media: &MarkdownMedia| -> Vec<Vec<usize>> {
+        media.tables().iter().map(|entry| {
+            entry.buffer.lines.iter().enumerate().filter(|(_, line)| line.layout_opt().is_some()).map(|(row, _)| row).collect()
+        }).collect()
+    };
+    let none: Vec<Vec<usize>> = vec![vec![]; 3];
+    assert_eq!(shaped(&media), none, "a new set shapes nothing");
+    // A pane from y = 120 to 200 holds rows 8 and 9 of the first table and rows 0 to 2 of the second whole; row 3
+    // ends past its foot, so it is not drawn.
+    let pane = ScreenRect { x: 0.0, y: 120.0, w: 100.0, h: 80.0 };
+    assert_eq!(media.show_rows(&mut fs, &places, pane, false), (true, 0), "a deferred frame leaves the rows in view waiting");
+    assert_eq!(shaped(&media), none);
+    assert_eq!(media.tables()[0].drawn_top(0.0, &(8..10)), None, "a table with a row in view not shaped is not drawn");
+    assert_eq!(media.show_rows(&mut fs, &places, pane, true), (false, 5));
+    assert_eq!(shaped(&media), [vec![8, 9], vec![0, 1, 2], Vec::<usize>::new()]);
+    assert_eq!(media.tables()[0].rows_in(places[0].1, pane), 8..10);
+    assert_eq!(media.tables()[0].drawn_top(0.0, &(8..10)), Some(120.0), "drawn from the first row in view, at its place");
+    assert_eq!(media.tables()[1].drawn_top(150.0, &(0..3)), Some(150.0));
+    // A row shaped once is not shaped again: a 15 px scroll shapes the one row that comes into view.
+    let shaping = |media: &MarkdownMedia| media.tables()[1].buffer.lines[0].shape_opt().as_ref().map(|line| line.spans.as_ptr() as usize);
+    let before = shaping(&media);
+    assert_eq!(media.show_rows(&mut fs, &places, ScreenRect { y: 135.0, ..pane }, true), (false, 1));
+    assert_eq!(shaped(&media), [vec![8, 9], vec![0, 1, 2, 3], Vec::<usize>::new()]);
+    assert_eq!(shaping(&media), before);
+    // The key and the charge are a table's text and metrics, shaped or not: a set kept with some rows shaped comes back
+    // with them, and the rest are shaped as they come into view.
+    media.clear_tables();
+    assert_eq!(media.parked[0].iter().map(TableBufferEntry::charge).sum::<usize>(), texts.concat().len());
+    let keys: Vec<&str> = texts.iter().map(String::as_str).collect();
+    assert!(media.take_parked(&sources(&keys, 12.0, 15.0)));
+    assert_eq!(shaped(&media), [vec![8, 9], vec![0, 1, 2, 3], Vec::<usize>::new()], "a kept set comes back with the rows it had shaped");
+}
+
+#[test]
+fn the_rows_beyond_the_view_are_shaped_nearest_first_until_the_budget_has_passed() {
+    use super::super::media::table_entry;
+    use crate::ui::render::quad::ScreenRect;
+    use std::time::Duration;
+    let mut fs = cosmic_text::FontSystem::new();
+    // Two tables of ten rows of 15 px. Row r of the first is padded to 33 r + 1 characters, up to about 300; the first
+    // is placed at y = 0, the second has no place this frame.
+    let first: String = (0..10).map(|r| format!("│ {:<width$}│\n", "x", width = 1 + 33 * r)).collect();
+    let texts = [first, "│ b │\n".repeat(10)];
+    let set = |fs: &mut cosmic_text::FontSystem| {
+        let mut media = MarkdownMedia::default();
+        media.replace_tables(texts.iter().map(|text| table_entry(fs, text.clone(), 12.0, 15.0)).collect());
+        media
+    };
+    let places = [(0, ScreenRect { x: 0.0, y: 0.0, w: 100.0, h: 150.0 })];
+    let pane = ScreenRect { x: 0.0, y: 60.0, w: 100.0, h: 30.0 };
+    let shaped = |media: &MarkdownMedia| -> Vec<(usize, usize)> {
+        media.tables().iter().enumerate().flat_map(|(table, entry)| {
+            entry.buffer.lines.iter().enumerate().filter(|(_, line)| line.layout_opt().is_some()).map(move |(row, _)| (table, row))
+        }).collect()
+    };
+    let mut media = set(&mut fs);
+    assert_eq!(media.show_rows(&mut fs, &places, pane, true), (false, 2), "rows 4 and 5 are in view");
+    // A budget of zero shapes one row a call, whatever its text: the two touching the view (3 and 6, the lower index
+    // first), then outward a row at a time on both sides, then the table with no place, until the set is whole.
+    let mut order = Vec::new();
+    while media.has_unshaped() && order.len() < 20 {
+        let before = shaped(&media);
+        media.shape_beyond(&mut fs, &places, pane, Duration::ZERO);
+        let new: Vec<(usize, usize)> = shaped(&media).into_iter().filter(|row| !before.contains(row)).collect();
+        assert_eq!(new.len(), 1, "a call with no time shaped {new:?}");
+        order.extend(new);
+    }
+    let want: Vec<(usize, usize)> = [3, 6, 2, 7, 1, 8, 0, 9].into_iter().map(|row| (0, row)).chain((0..10).map(|row| (1, row))).collect();
+    assert_eq!(order, want);
+    media.shape_beyond(&mut fs, &places, pane, Duration::ZERO);
+    assert_eq!(shaped(&media).len(), 20, "a whole set shapes nothing");
+    // With no limit one call shapes every row left.
+    let mut media = set(&mut fs);
+    media.show_rows(&mut fs, &places, pane, true);
+    media.shape_beyond(&mut fs, &places, pane, Duration::MAX);
+    assert!(!media.has_unshaped(), "a budget with no limit left rows");
+}
+
+#[test]
 fn the_real_budget_keeps_a_set_at_it_and_drops_one_past_it() {
     use super::super::media::unshaped;
     // What the contract says of the constant: a set of the diagnosed file's size (140,198 bytes of table text) is kept,

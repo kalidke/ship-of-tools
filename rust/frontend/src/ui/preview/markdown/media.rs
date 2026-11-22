@@ -7,7 +7,7 @@ use crate::ui::*;
 /// is the source text the buffer was last built from; on every redraw
 /// we compare it against the matching MediaBlock::Table so navigating
 /// to a doc with the same table count but different content still
-/// rebuilds. `natural_w_px` is the measured widest LayoutRun, used by
+/// rebuilds. `natural_w_px` is the widest line, used by
 /// the scroll clamp to keep the user from scrolling past the table's
 /// right edge.
 pub(in crate::ui) struct TableBufferEntry {
@@ -15,7 +15,12 @@ pub(in crate::ui) struct TableBufferEntry {
     /// The metrics it was shaped at: a text-scale change shapes again.
     font_px: f32,
     line_h_px: f32,
+    /// Every row of the table, each shaped at most once: by the first frame not deferred whose pane shows it
+    /// (`MarkdownMedia::show_rows`), or before that by a frame that shapes rows beyond the view
+    /// (`MarkdownMedia::shape_beyond`); the buffer starts at the first row in view, so it draws from there.
     pub(in crate::ui) buffer: cosmic_text::Buffer,
+    /// Before shaping, the widest line's characters at the monospace face's advance; after, never less than that, so
+    /// shaping a table never lowers the scroll clamp.
     pub(in crate::ui) natural_w_px: f32,
 }
 
@@ -26,8 +31,64 @@ impl TableBufferEntry {
         self.rendered == source && self.font_px == font_px && self.line_h_px == line_h_px
     }
 
-    /// What a kept buffer is charged: the bytes of its rendered table text.
+    /// What a kept buffer is charged: the bytes of its rendered table text, shaped or not.
     pub(super) fn charge(&self) -> usize { self.rendered.len() }
+
+    /// The rows of the table placed at `rect` that `pane` shows: from the first whose foot is below the pane's top
+    /// to the last that ends at the bottom of the last whole row the pane holds, the draw's clip.
+    pub(in crate::ui) fn rows_in(&self, rect: ScreenRect, pane: ScreenRect) -> std::ops::Range<usize> {
+        let pitch = self.line_h_px;
+        if pitch <= 0.0 {
+            return 0..0;
+        }
+        let bottom = whole_row_bottom(rect.y, pitch, pane.y + pane.h);
+        let first = ((pane.y - rect.y) / pitch).floor().max(0.0) as usize;
+        let end = (((bottom - rect.y) / pitch).round().max(0.0) as usize).min(self.buffer.lines.len());
+        first.min(end)..end
+    }
+
+    /// Starts the buffer at the first of `rows` and, when `shape`, shapes each of them not shaped yet; how many it
+    /// shaped.
+    pub(super) fn show(&mut self, font_system: &mut cosmic_text::FontSystem, rows: std::ops::Range<usize>, shape: bool) -> usize {
+        if rows.is_empty() {
+            return 0;
+        }
+        self.buffer.set_scroll(cosmic_text::Scroll::new(rows.start, 0.0, 0.0));
+        rows.filter(|row| shape && self.shape_row(font_system, *row)).count()
+    }
+
+    /// Shapes `row` at its natural width with no wrap, so it is one drawn row, unless it is shaped; whether it was now.
+    pub(super) fn shape_row(&mut self, font_system: &mut cosmic_text::FontSystem, row: usize) -> bool {
+        if !self.buffer.lines.get(row).is_some_and(|line| line.layout_opt().is_none()) {
+            return false;
+        }
+        let widths = self.buffer.line_layout(font_system, row).into_iter().flatten().map(|layout| layout.w);
+        self.natural_w_px = widths.fold(self.natural_w_px, f32::max);
+        true
+    }
+
+    /// Each row not shaped yet, with its distance from `pane` when the table is placed at `rect` (with no place, the
+    /// farthest).
+    pub(super) fn unshaped(&self, rect: Option<ScreenRect>, pane: ScreenRect) -> impl Iterator<Item = (f32, usize)> + '_ {
+        let pitch = self.line_h_px;
+        self.buffer.lines.iter().enumerate().filter(|(_, line)| line.layout_opt().is_none()).map(move |(row, _)| {
+            let top = rect.map_or(f32::INFINITY, |rect| rect.y + row as f32 * pitch);
+            ((pane.y - (top + pitch)).max(top - (pane.y + pane.h)).max(0.0), row)
+        })
+    }
+
+    pub(super) fn rows_shaped(&self, rows: &std::ops::Range<usize>) -> bool {
+        self.buffer.lines.get(rows.clone()).is_some_and(|lines| lines.iter().all(|line| line.layout_opt().is_some()))
+    }
+
+    /// Where the buffer is drawn from to show `rows` of the table placed at `top`: their first row's top, when the
+    /// buffer starts at it and that row is shaped; else `None`, and the place stays empty this frame. The drawing
+    /// yields the rows from there up to the first not shaped, which only a deferred frame leaves in view (an uncover
+    /// that shows more rows than were shaped draws those it has, and the next frame the rest).
+    pub(in crate::ui) fn drawn_top(&self, top: f32, rows: &std::ops::Range<usize>) -> Option<f32> {
+        (!rows.is_empty() && self.buffer.scroll().line == rows.start && self.rows_shaped(&(rows.start..rows.start + 1)))
+            .then(|| top + rows.start as f32 * self.line_h_px)
+    }
 }
 
 /// An entry that holds `rendered` and no shaped text, for the tests of what a kept set is charged.
@@ -37,38 +98,56 @@ pub(super) fn unshaped(rendered: String, font_px: f32, line_h_px: f32) -> TableB
     TableBufferEntry { rendered, font_px, line_h_px, buffer, natural_w_px: 0.0 }
 }
 
-/// One table's buffer at its natural width. 10_000 px is wider than any
-/// realistic GFM table so the box-drawing lines lay out without soft-wrap;
-/// `None` for height matches the main preview buffer's "extend past the rect"
-/// policy.
-pub(in crate::ui) fn table_buffer(
+/// One table's entry, its rows not shaped: its natural width is its widest line's characters at the monospace face's advance,
+/// so the scroll clamp is known before any table is shaped.
+pub(in crate::ui) fn table_entry(
     font_system: &mut cosmic_text::FontSystem,
     rendered: String,
     font_px: f32,
     line_h_px: f32,
 ) -> TableBufferEntry {
     let metrics = cosmic_text::Metrics::new(font_px, line_h_px);
-    let mut buf = cosmic_text::Buffer::new(font_system, metrics);
-    buf.set_size(font_system, Some(10_000.0), None);
-    let attrs = cosmic_text::Attrs::new()
-        .family(cosmic_text::Family::Monospace)
-        .metrics(metrics);
-    crate::ui::render::text::set_buffer_text(&mut buf, font_system, &rendered, attrs, cosmic_text::Shaping::Advanced);
-    buf.shape_until_scroll(font_system, false);
-    let mut natural_w_px: f32 = 0.0;
-    for run in buf.layout_runs() {
-        if run.line_w > natural_w_px {
-            natural_w_px = run.line_w;
-        }
-    }
-    TableBufferEntry {
-        rendered,
-        font_px,
-        line_h_px,
-        buffer: buf,
-        natural_w_px,
-    }
+    let advance = crate::ui::render::text::monospace_advance(font_system, metrics).unwrap_or(0.0);
+    let widest = rendered.lines().map(|line| line.chars().count()).max().unwrap_or(0);
+    let mut buffer = cosmic_text::Buffer::new_empty(metrics);
+    buffer.set_wrap(font_system, cosmic_text::Wrap::None);
+    // No height: with one, the drawing would stop inside a table taller than it.
+    buffer.set_size(font_system, Some(10_000.0), None);
+    let attrs = cosmic_text::Attrs::new().family(cosmic_text::Family::Monospace).metrics(metrics);
+    crate::ui::render::text::replace_buffer_lines(&mut buffer, 0..0, rendered.lines(), attrs);
+    TableBufferEntry { rendered, font_px, line_h_px, buffer, natural_w_px: widest as f32 * advance }
 }
+
+/// One table's entry, shaped.
+#[cfg(test)]
+pub(in crate::ui) fn table_buffer(
+    font_system: &mut cosmic_text::FontSystem,
+    rendered: String,
+    font_px: f32,
+    line_h_px: f32,
+) -> TableBufferEntry {
+    let mut entry = table_entry(font_system, rendered, font_px, line_h_px);
+    let rows = entry.buffer.lines.len();
+    entry.show(font_system, 0..rows, true);
+    entry
+}
+
+/// Each table's place among `targets` (a frame's media rects, by block), as its index among the page's tables.
+pub(in crate::ui) fn table_places(
+    blocks: &[crate::ui::preview::markdown::MediaBlock],
+    targets: &[(usize, ScreenRect)],
+) -> Vec<(usize, ScreenRect)> {
+    let mut tables = 0;
+    let index: Vec<Option<usize>> = blocks
+        .iter()
+        .map(|block| matches!(block, crate::ui::preview::markdown::MediaBlock::Table { .. }).then(|| {
+            tables += 1;
+            tables - 1
+        }))
+        .collect();
+    targets.iter().filter_map(|(block, rect)| Some((index.get(*block).copied().flatten()?, *rect))).collect()
+}
+
 
 /// Bottom of the last whole `pitch`-tall row of a buffer whose first row's
 /// top is at `top`, clipped at `limit`: a table reaching the pane bottom stops
@@ -217,15 +296,20 @@ impl State {
     /// wide GFM tables at natural width — see `TableBufferEntry`
     /// docstring. Compares the current `media_blocks` Table sources
     /// and metrics against the held set; if they differ, the set kept
-    /// for a document shown before is taken back, else the whole set is
-    /// shaped. A new set resets the horizontal scroll to 0 so navigation
-    /// between docs starts fresh. No-op when the set is in sync — typical
-    /// steady state across redraws. With `defer` (the frame that first
-    /// draws an arriving row, or that first shows the tables after a
-    /// frame that showed none) nothing is shaped: the tables' places,
-    /// which the walk reserves from the rendered text, stay empty and the
-    /// next frame shapes them.
-    pub(in crate::ui) fn ensure_table_buffers(&mut self, defer: bool) {
+    /// for a document shown before is taken back, else a set of every
+    /// table, none shaped, replaces it. A new set resets the horizontal
+    /// scroll to 0 so navigation between docs starts fresh. Then the
+    /// rows that `pane` shows of the tables at `places` (each table's
+    /// index and place this frame) not yet shaped are shaped; when
+    /// there were none, rows beyond the view are, nearest first, for
+    /// `BACKGROUND_SHAPING`, and while a row is left the pacer is marked.
+    /// With `defer` (the frame that first draws an arriving row, or
+    /// that first shows the tables after a frame that showed none)
+    /// nothing is shaped: a table whose first row in view is not shaped
+    /// draws nothing, its place, which the walk reserves from the
+    /// rendered text, empty, one whose later rows in view are not draws
+    /// the rows before them, and the next frame shapes those rows.
+    pub(in crate::ui) fn ensure_table_buffers(&mut self, defer: bool, places: &[(usize, ScreenRect)], pane: ScreenRect) {
         use crate::ui::preview::markdown::MediaBlock;
         // Snapshot the (rendered, font_px, line_h_px) of every Table in
         // current source order. Snapshot avoids the &mut self / &self
@@ -245,22 +329,21 @@ impl State {
                 _ => None,
             })
             .collect();
-        if self.md_media.tables_match(&snapshots) {
-            return;
+        if !self.md_media.tables_match(&snapshots) && !self.md_media.take_parked(&snapshots) {
+            let set = self.canvas.shape(|fs| {
+                snapshots.into_iter().map(|(rendered, font_px, line_h_px)| table_entry(fs, rendered, font_px, line_h_px)).collect()
+            });
+            self.md_media.replace_tables(set);
         }
-        if self.md_media.take_parked(&snapshots) {
-            return;
+        let (waiting, shaped) = self.canvas.shape(|fs| self.md_media.show_rows(fs, places, pane, !defer));
+        // A frame that shaped no row in view shapes a few more toward the whole set, nearest the view first, and the
+        // frames go on until none is left.
+        if !defer && shaped == 0 {
+            self.canvas.shape(|fs| self.md_media.shape_beyond(fs, places, pane, super::media_store::BACKGROUND_SHAPING));
         }
-        if defer && !snapshots.is_empty() {
-            self.md_media.clear_tables();
+        if waiting || self.md_media.has_unshaped() {
             self.pacer.mark_dirty();
-            return;
         }
-        let mut tables = Vec::with_capacity(snapshots.len());
-        for (rendered, font_px, line_h_px) in snapshots {
-            tables.push(self.canvas.shape(|fs| table_buffer(fs, rendered, font_px, line_h_px)));
-        }
-        self.md_media.replace_tables(tables);
     }
 
     /// Drain the shaped buffer's `pending_token_fences` and fire

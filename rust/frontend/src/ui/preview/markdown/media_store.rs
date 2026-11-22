@@ -10,6 +10,7 @@ use crate::ui::preview::image::svg_run::{Job, Outcome};
 use crate::ui::preview::image::svg_wire::Ask;
 use super::{MathMetrics, MathMetricsMap, BODY_SIZE as MD_BODY_SIZE};
 use crate::net::transport::MarkdownToken;
+use crate::ui::render::quad::ScreenRect;
 
 /// A math snippet's key at the drawing worker. A figure's is a URL that resolved to a project file, none of which holds
 /// `://` (`resolve_figure_node_id`), so the two never meet.
@@ -39,6 +40,17 @@ fn math_key(job: &str) -> Option<(String, bool)> {
 /// rendered table text) beside the shown one; a document with more than this is never kept.
 pub(in crate::ui) const PARKED_TABLE_BYTES: usize = 200_000;
 
+/// The time a frame that shapes no row in view spends shaping rows beyond the view, nearest it first, until the set is
+/// whole: rows until it has passed, so at least one. It is the quantity itself, since nothing countable in a row's
+/// text follows its cost (cosmic-text shapes a word for each break opportunity and one for each space, so padding and
+/// CJK text cost what their words do not say). A row that alone takes longer is still the unit, and one row can be any
+/// length. A person's key that comes during the frame waits for it: at 3 ms a fill frame was 3 to 4.5 ms longer than
+/// the same page's frame with nothing to shape, on every page measured whose rows each take less than that; on the
+/// three pages also tried at 2 and at 4 ms it was 2.6 to 3.2 and 4.5 to 5.1 ms longer, and 4 ms ended the fill only 6
+/// to 20 percent sooner. The frames and times to a whole set are in `docs/defects.md`,
+/// PREVIEW-TABLES-FIRST-VIEW-SHAPES-ALL.
+pub(in crate::ui) const BACKGROUND_SHAPING: std::time::Duration = std::time::Duration::from_millis(3);
+
 /// Math and token requests go out only for keys neither cached nor in flight; a reply caches its entry, settles the
 /// key and asks for one reflow, which the frame takes once.
 #[derive(Default)]
@@ -59,9 +71,11 @@ pub(in crate::ui) struct MarkdownMedia {
     /// buffer was built from; on every redraw the chrome compares it
     /// against the current `media_blocks` so navigating to a doc with
     /// the same table count but different content still rebuilds.
-    /// Each buffer is laid out at huge width (no soft-wrap) and
-    /// `natural_w_px` is the measured max line width — used by the
-    /// scroll clamp.
+    /// The set holds every table of the page; a row is shaped, at huge
+    /// width with no wrap, once the pane shows it or a frame shapes it
+    /// beyond the view, and `natural_w_px` is the max line width, from
+    /// the monospace advance and the rows shaped — used by the scroll
+    /// clamp.
     tables: Vec<TableBufferEntry>,
     /// The table sets of documents shown before, newest first, within `PARKED_TABLE_BYTES`: a return to a document
     /// takes its set back instead of shaping it again. A set is taken only for the same sources at the same metrics.
@@ -119,7 +133,47 @@ impl MarkdownMedia {
         self.park(old, PARKED_TABLE_BYTES);
     }
 
-    /// The kept set shaped from exactly `sources` becomes the shown one; whether there was one.
+    /// Each table of the shown set at `places` (its index and place) starts its buffer at its first row `pane` shows
+    /// and, when `shape`, shapes the rows there not shaped yet; whether a row in view is left unshaped, and how many
+    /// rows it shaped.
+    pub(in crate::ui) fn show_rows(&mut self, font_system: &mut cosmic_text::FontSystem, places: &[(usize, ScreenRect)],
+                     pane: ScreenRect, shape: bool) -> (bool, usize) {
+        let (mut waiting, mut shaped) = (false, 0);
+        for (table, rect) in places {
+            if let Some(entry) = self.tables.get_mut(*table) {
+                let rows = entry.rows_in(*rect, pane);
+                shaped += entry.show(font_system, rows.clone(), shape);
+                waiting |= !entry.rows_shaped(&rows);
+            }
+        }
+        (waiting, shaped)
+    }
+
+    /// Shapes rows of the shown set not shaped yet, those nearest `pane` first (then by table and row), until `budget`
+    /// has passed: at least one row, so a budget of zero shapes one and `Duration::MAX` every row left.
+    pub(in crate::ui) fn shape_beyond(&mut self, font_system: &mut cosmic_text::FontSystem, places: &[(usize, ScreenRect)],
+                        pane: ScreenRect, budget: std::time::Duration) {
+        let mut wanted: Vec<(f32, usize, usize)> = self.tables.iter().enumerate().flat_map(|(table, entry)| {
+            let rect = places.iter().find(|(placed, _)| *placed == table).map(|(_, rect)| *rect);
+            entry.unshaped(rect, pane).map(move |(distance, row)| (distance, table, row))
+        }).collect();
+        wanted.sort_unstable_by(|a, b| a.0.total_cmp(&b.0).then((a.1, a.2).cmp(&(b.1, b.2))));
+        let began = std::time::Instant::now();
+        for (_, table, row) in wanted {
+            self.tables[table].shape_row(font_system, row);
+            if began.elapsed() >= budget {
+                break;
+            }
+        }
+    }
+
+    /// Whether a row of the shown set is not shaped yet.
+    pub(in crate::ui) fn has_unshaped(&self) -> bool {
+        self.tables.iter().any(|entry| entry.buffer.lines.iter().any(|line| line.layout_opt().is_none()))
+    }
+
+    /// The kept set built from exactly `sources`, shaped in whole or in part, becomes the shown one; whether there was
+    /// one.
     pub(in crate::ui) fn take_parked(&mut self, sources: &[(String, f32, f32)]) -> bool {
         let Some(i) = self.parked.iter().position(|set| set_matches(set, sources)) else { return false };
         let set = self.parked.remove(i);

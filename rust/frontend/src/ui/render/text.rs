@@ -43,6 +43,17 @@ pub(crate) fn set_buffer_text(
     buffer.set_text(font_system, &one_paragraph_per_line(text), attrs, shaping);
 }
 
+/// The monospace face's advance (physical px) at `metrics`, measured over ten characters; `None` when nothing shapes
+/// (no monospace font installed).
+pub(crate) fn monospace_advance(font_system: &mut FontSystem, metrics: Metrics) -> Option<f32> {
+    let mut buf = Buffer::new(font_system, metrics);
+    buf.set_size(font_system, Some(2000.0), None);
+    set_buffer_text(&mut buf, font_system, "xxxxxxxxxx", Attrs::new().family(Family::Monospace), Shaping::Basic);
+    buf.shape_until_scroll(font_system, false);
+    let total = buf.layout_runs().find_map(|run| run.glyphs.last().map(|last| last.x + last.w).filter(|total| *total > 0.0))?;
+    Some(total / 10.0)
+}
+
 /// Replace lines `range` of `buffer` with one line for each of `lines`, each a line's text without its end, in `attrs`:
 /// the line `set_buffer_rich_text` makes of a span in its default attributes, through `one_paragraph_per_line`, with any
 /// CR or LF made a space as well, so each line is one bidi paragraph. The other lines keep their shaping and layout;
@@ -333,27 +344,7 @@ impl TextLayer {
     ///
     /// Returns `None` on shape failure (no monospace font installed
     /// — caller should fall back to the static BASE_CELL_W * scale).
-    pub fn monospace_advance(&mut self) -> Option<f32> {
-        let mut buf = Buffer::new(&mut self.font_system, self.metrics);
-        buf.set_size(&mut self.font_system, Some(2000.0), None);
-        set_buffer_text(
-            &mut buf,
-            &mut self.font_system,
-            "xxxxxxxxxx",
-            Attrs::new().family(Family::Monospace),
-            Shaping::Basic,
-        );
-        buf.shape_until_scroll(&mut self.font_system, false);
-        for run in buf.layout_runs() {
-            if let Some(last) = run.glyphs.last() {
-                let total = last.x + last.w;
-                if total > 0.0 {
-                    return Some(total / 10.0);
-                }
-            }
-        }
-        None
-    }
+    pub fn monospace_advance(&mut self) -> Option<f32> { monospace_advance(&mut self.font_system, self.metrics) }
 
     pub fn prepare(
         &mut self,
