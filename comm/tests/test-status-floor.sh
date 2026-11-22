@@ -305,8 +305,17 @@ check "Codex holds a long turn on the measured lower bounds in its tail" case_fu
 check "Claude holds a full tail of progress records on elapsed time alone" case_quiet_full_tail claude
 check "Codex holds a full tail of turn events on elapsed time alone" case_quiet_full_tail codex
 check "Claude holds on eight calls with no known duration" case_claude_measurement 8 "" "" "8 tool calls"
-check "Claude holds on the duration even when the call blocks are unreadable" case_claude_measurement null "2026-01-01T00:00:00Z" "2026-01-01T00:06:00Z" "at least 0 tool calls over at least 6 min"
-check "a partial Claude count just below five minutes floors without rounding up" case_claude_measurement null "2026-01-01T00:00:00.875Z" "2026-01-01T00:05:00.125Z" ""
+check "Claude holds on the duration even when the call blocks are unreadable" case_claude_measurement 0 "2026-01-01T00:00:00Z" "2026-01-01T00:06:00Z" "at least 0 tool calls over at least 6 min" true
+for unreadable in false true; do
+    prefix=""
+    [ "$unreadable" = false ] || prefix="at least "
+    check "Claude passes a 299.25-second turn (unreadable record: $unreadable)" case_claude_measurement \
+        2 "2026-01-01T00:00:00.875Z" "2026-01-01T00:05:00.125Z" "" "$unreadable"
+    check "Claude holds a 300.25-second turn at five minutes (unreadable record: $unreadable)" case_claude_measurement \
+        2 "2026-01-01T00:00:00.875Z" "2026-01-01T00:05:01.125Z" "${prefix}2 tool calls over ${prefix}5 min" "$unreadable"
+done
+check "Claude prints four minutes for an eight-call turn just under five" case_claude_measurement \
+    8 "2026-01-01T00:00:00.000000001Z" "2026-01-01T00:05:00Z" "8 tool calls over 4 min"
 check "Claude counts the observed calls alongside unreadable call records" case_partial_call_count claude-block
 check "an unreadable assistant message preserves Claude's observed calls" case_partial_call_count claude-message
 check "Codex counts the observed calls alongside unreadable response items" case_partial_call_count codex

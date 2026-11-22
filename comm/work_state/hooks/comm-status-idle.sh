@@ -242,8 +242,8 @@ fi
 # the marker check below searches. A full tail without its prompt gives
 # lower bounds only if it contains Claude records. A Codex rollout from a
 # Stop without a turn ID cannot establish Claude effort from its span.
-# A short tail without a prompt contributes only marker text.
-#
+# A short tail without a prompt contributes only marker text. To floor elapsed seconds exactly,
+# subtract the whole seconds and borrow one if the ending fraction is smaller than the starting fraction.
 # The text is EVERY assistant text block in the slice, joined in order, not
 # just the last assistant record's (2026-09-14, live incident: a long reply
 # opened with SITREP-WAITING: but the hook nudged "no closing marker" anyway).
@@ -273,8 +273,8 @@ if [ -z "$turn_id" ] && [ -n "$tp" ] && [ -r "$tp" ]; then
             or (([.message.content[]? | .type] | index("tool_result")) == null));
         def is_own_feedback($fb): (.message.content) as $c | .isMeta == true and ($c|type)=="string"
             and any($fb[]; "Stop hook feedback:\n" + . == $c);
-        def secs($lower): try (capture("^(?<sec>[^.Z]+)(?<frac>\\.[0-9]+)?Z$")
-            | ((.sec+"Z")|fromdateiso8601) + (if $lower then ("0"+(.frac // "")|tonumber) else 0 end)) catch empty;
+        def secs: try (capture("^(?<sec>[^.Z]+)(?:\\.(?<frac>[0-9]+))?Z$")
+            | [((.sec+"Z")|fromdateiso8601), ((.frac // "")|sub("0+$"; ""))]) catch empty;
         def prompt_of: (.message.content) as $c
             | if ($c|type)=="string" then $c
               else ([$c[]? | select(.type=="text") | .text] | join("\n")) end;
@@ -288,13 +288,13 @@ if [ -z "$turn_id" ] && [ -n "$tp" ] && [ -r "$tp" ]; then
           else
             [$turn[] | select(.type=="assistant") | (.message.content? // null)
              | if type=="array" then .[] | ((.type? | strings) // null) else null end] as $kinds
-            | any($kinds[]; .==null) as $partial
-            | (if $h==null then [$turn[] | .timestamp | secs(true)]
+            | (if $h==null then [$turn[] | .timestamp | secs]
                else [.[$h].timestamp, ([$turn[] | select(.type=="assistant") | .timestamp // empty] | last)]
-                    | map(secs($partial) // null) end) as $times
+                    | map(secs // null) end) as $times
             | ($times[0]) as $t0 | ($times[-1]) as $t1
-            | {tools:([$kinds[] | select(.=="tool_use")] | length), lower:($h==null or $partial),
-               secs:(if ($times|length)>=2 and $t0!=null and $t1 >= $t0 then ($t1 - $t0 | floor) else null end),
+            | {tools:([$kinds[] | select(.=="tool_use")] | length), lower:($h==null or any($kinds[]; .==null)),
+               secs:(if ($times|length)>=2 and $t0!=null and $t1 >= $t0
+                     then $t1[0] - $t0[0] - (if $t1[1] < $t0[1] then 1 else 0 end) else null end),
                text:$text, prompt:(if $h==null then "" else .[$h] | prompt_of end)}
           end' 2>/dev/null)"
     counts="$(printf '%s' "$turn_json" | jq -j '[.lower,.tools,.secs] | join("|")' 2>/dev/null)"

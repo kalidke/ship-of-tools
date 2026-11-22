@@ -533,13 +533,13 @@ case_partial_call_count() {  # codex, claude-block, or claude-message
     fi
     effort_message "$out" "at least 9 tool calls over at least 1 min"
 }
-case_claude_measurement() {  # NUMBER-OF-CALLS START-TIMESTAMP END-TIMESTAMP EXPECTED-MEASURE
+case_claude_measurement() {  # NUMBER-OF-CALLS START-TIMESTAMP END-TIMESTAMP EXPECTED-MEASURE [UNREADABLE]
     local tr="$WORK/claude-measured.jsonl" out
     seed idle; W "$GENUINE"
-    jq -nc --argjson n "$1" --arg t0 "$2" --arg t1 "$3" '
+    jq -nc --argjson n "$1" --arg t0 "$2" --arg t1 "$3" --argjson unreadable "${5:-false}" '
         {type:"user", timestamp:$t0, message:{content:"go"}},
-        (if $n==null then {type:"assistant",timestamp:$t1,message:{content:null}}
-         else range($n) | {type:"assistant", timestamp:$t1, message:{content:[{type:"tool_use"}]}} end)' > "$tr" || return 1
+        (range($n) | {type:"assistant", timestamp:$t1, message:{content:[{type:"tool_use"}]}}),
+        (select($unreadable) | {type:"assistant", timestamp:$t1, message:{content:null}})' > "$tr" || return 1
     out="$(printf '%s' "$tr" | jq -Rsc '{transcript_path:.}' | bash "$HOOKS_DIR/comm-status-idle.sh" 2>&1)" || return 1
     if [ -z "$4" ]; then
         [ -z "$out" ] && expect done/-/-/-/d end || { echo "    unexpected output: $out"; return 1; }
