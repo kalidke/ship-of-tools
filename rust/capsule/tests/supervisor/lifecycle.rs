@@ -67,6 +67,15 @@ fn full_lifecycle_status_end_run_and_clean_exit() {
 /// so all `TRIALS` succeeding by chance is astronomically unlikely
 /// (~0.5^20), while an immediate, connection-triggered wake makes every
 /// single trial land near-instantly, every time, deterministically.
+///
+/// Since 2026-11-22 the probes are judged by count: at most `LATE_ALLOWED` of
+/// `TRIALS` may reach the bound. On a loaded computer one probe can pass 50 ms
+/// with the wake in place (a probe needs several thread wake-ups, and its
+/// dial lands on the edge of the row acceptor's own 10 ms look), which the
+/// test does not own; measured, the code before and after a change with no
+/// part in this path both failed the all-probes rule under eight busy loops a
+/// CPU. A status bound by the poll still fails: at a coin flip a probe, two
+/// or fewer late of twenty has a chance of about 2 in 10,000.
 #[test]
 fn a_status_probe_against_an_idle_supervisor_is_not_poll_bound() {
     let _serial = serial();
@@ -113,11 +122,13 @@ fn a_status_probe_against_an_idle_supervisor_is_not_poll_bound() {
         "idle-supervisor query_status over {TRIALS} trials: max={:?}, all={elapsed_all:?}",
         elapsed_all.iter().max().unwrap()
     );
+    const LATE_ALLOWED: usize = 2;
+    let late = elapsed_all.iter().filter(|e| **e >= TIGHT_BOUND).count();
     assert!(
-        elapsed_all.iter().all(|e| *e < TIGHT_BOUND),
-        "expected every one of {TRIALS} status probes against an idle supervisor to complete in well \
-         under {TIGHT_BOUND:?} (half of MAIN_LOOP_POLL) -- got {elapsed_all:?}. A single probe passing \
-         this bound could be luck; ALL {TRIALS} passing is only possible if the main loop wakes on the \
-         incoming connection immediately rather than waiting out its own poll cadence"
+        late <= LATE_ALLOWED,
+        "expected at most {LATE_ALLOWED} of {TRIALS} status probes against an idle supervisor to reach \
+         {TIGHT_BOUND:?} (half of MAIN_LOOP_POLL) -- {late} did: {elapsed_all:?}. A single probe passing \
+         this bound could be luck; nearly all of {TRIALS} passing is only possible if the main loop wakes on \
+         the incoming connection immediately rather than waiting out its own poll cadence"
     );
 }
