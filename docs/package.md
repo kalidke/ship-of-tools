@@ -197,7 +197,11 @@ return renders the session's whole parked document again before its
 first frame, PREVIEW-DOCUMENT-RESHAPED-AT-EVERY-ARRIVAL). Also on `main` past the release, asked by the maintainer on
 2026-11-22 and used by no person yet: a new session starts first in the session strip's recent order, and a session
 with no agent is placed by its creation where it sorted last; typing into a session does not move it yet
-(RECENT-ORDER-LEAVES-SESSIONS-WITHOUT-AN-AGENT, open; built, not landed). Since 2026-11-21 the repo quotes no person (the
+(RECENT-ORDER-LEAVES-SESSIONS-WITHOUT-AN-AGENT, open; built, not landed); and `sotd status` ends each row with the
+state of that computer's update (up to date and when it was checked, a release found, preparing, ready and what
+applies it, not applied or off with the reason), with one line of the same in `sot-fe version`, where the one sign
+had been a notice held 10 s; the window shows nothing of it yet (UPDATE-STATE-NOT-SHOWN, open until its mark is
+built). Since 2026-11-21 the repo quotes no person (the
 maintainer's rule, in the root `CLAUDE.md`): every quotation in a tracked file was rewritten in reported form, and
 the defects check carries a net for the common forms. v0.7.2 was published 2026-11-19. It is 0.7.1 with two faults on a Mac fixed, cut from `main`
 on the maintainer's word with no candidate once the tests had passed: the whole local gate at the commit that was cut,

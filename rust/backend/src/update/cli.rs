@@ -221,7 +221,7 @@ async fn refusal_for(prefix: &Path, target: &str, wants_backend: impl FnOnce() -
 }
 
 /// What the judge read of the pointer armed for a target: the version it arms when it parses, and why it must not apply.
-/// Neither is nothing armed; a version alone is a pointer the apply takes; a refusal with no version is a pointer that
+/// Neither is nothing armed; a version alone is a pointer the verb passes; a refusal with no version is a pointer that
 /// cannot be read.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(super) struct Judged {

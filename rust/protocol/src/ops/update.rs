@@ -89,7 +89,7 @@ pub enum UpdatePhase {
     Found,
     /// The release is being downloaded, checked out and its environments built.
     Preparing,
-    /// The release is armed: the next start through its apply owner applies it.
+    /// The release is armed: the next start through its apply owner applies it, unless the start's own checks drop it.
     Ready,
     /// A found release was not made ready, or an armed one would be refused.
     NotApplied,

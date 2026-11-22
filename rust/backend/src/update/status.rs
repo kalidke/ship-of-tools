@@ -48,7 +48,7 @@ pub(crate) enum Chase {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Armed {
     Nothing,
-    /// A pointer the apply would take, and what applies it.
+    /// A pointer the verb passes (the start's own checks can still drop it), and what applies it.
     Fits { version: String, applies: String },
     /// A pointer the apply would drop, with the judge's words; no version when the pointer cannot be read.
     Refused { version: Option<String>, why: String },
