@@ -79,6 +79,17 @@ through the channel types below.
 - A daemon `bus.lost` evt is decoded into the typed `IncomingEvt::BusLost { bus, skipped }` (a missing count reads as
   0), never the generic `Event`; the window's one arm logs it and gives a lost `chat.changed` to the chat owner, which watches again; no other pane recovers from loss yet. Tests
   `reply_tests::bus_lost_evt_decodes_into_its_typed_event`.
+- The state of a daemon's update (wire guarantee 16) reaches the window as one typed event, `IncomingEvt::Update
+  { state }`, tagged with its dial host like every event: once right after that connection's `Connected` when the
+  hello's reply carried a state (`accept_hello`), and once for each `update.state` evt (`handle_response_frame`),
+  never the generic `Event`. It is its own event and no field of `Connected`. A daemon that predates the state sends
+  neither, so the window is told nothing for it; a hello whose `update` is no state still connects and gives no
+  event (the wire's lenient read); an evt whose payload is no state is a warning and no event; a phase this window
+  does not know is the event with `UpdatePhase::Other`. An older window reads past the hello's field and takes the
+  evt on the generic path, which logs it at debug (`an_unknown_evt_op_reaches_the_generic_event_path`). fe-net keeps
+  no copy of the state. Limit: `ui/events.rs` routes the event to no owner yet, so the window draws nothing of it.
+  Tests `transport::tests::a_hello_with_an_update_state_emits_it_after_connected_and_an_old_daemons_emits_none`,
+  `reply_tests::an_update_state_evt_decodes_into_its_typed_event`.
 - The project chat is typed edges on the host's one control connection, so a remote host's chat costs no login and no
   channel (M7; `a_remote_host_costs_one_login_for_control_pages_and_rows` sends a resolve, a watch and a post, and the
   others share their path): `OutgoingReq::{ChatResolve, ChatWatch, ChatUnwatch, ChatHistory, ChatPost, ChatPostFile, ChatFile, ChatConnect, ChatWorkspaces, ChatChannels, ChatPair}`

@@ -207,6 +207,15 @@ where
     }
 }
 
+/// One change of the state of this daemon's update as one `update.state` evt frame carrying the latest state. The
+/// owner's channel holds one value and has no lag, so this event never needs `bus.lost`.
+pub(super) async fn write_update_state<W>(tx: &mut W, state: sot_protocol::UpdateState) -> Result<()>
+where
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    write_frame_to(tx, &Frame::evt(op::UPDATE_STATE, serde_json::to_value(state)?), None).await
+}
+
 /// Translates one relayed agent message into an `agent.message` evt frame on
 /// the wire. Returns `Ok(true)` if a frame was written, `Ok(false)` if the
 /// receiver was closed (keep the connection alive); a lagged one writes `bus.lost`.

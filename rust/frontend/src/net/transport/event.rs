@@ -560,6 +560,11 @@ pub enum IncomingEvt {
         bus: String,
         skipped: u64,
     },
+    /// The state of this daemon's update (`ops/update.rs`): what its hello carried, emitted right after that
+    /// connection's `Connected`, and each `update.state` evt after it. A daemon that predates the state sends neither.
+    Update {
+        state: sot_protocol::UpdateState,
+    },
     /// The project chat's replies and pushed events (`ops/chat.rs`): typed, never bytes. No view reads them yet.
     Chat(ChatEvt),
     /// A `selection.set`'s reply, with the request it answers (`ops/selection.rs`). No view reads it yet.

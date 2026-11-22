@@ -5,7 +5,7 @@
 use super::dispatch::{dispatch, Shared};
 use super::events::{
     recv_or_pending, write_agent_message, write_chat_event, write_fe_command, write_monitor_tick,
-    write_preview_changed, write_repl_frame, write_topology_changed, write_workspace_changed,
+    write_preview_changed, write_repl_frame, write_topology_changed, write_update_state, write_workspace_changed,
 };
 use super::hello::{admit_hello, handle_hello, parse_first_frame, register_hello, Admitted, HelloRefusal};
 use super::reply::{finish_dispatch, write_reply, Jobs, OutTx, OFFLOOP_CONCURRENCY};
@@ -183,7 +183,7 @@ where
 {
     // A handoff connection is no window's: it names no REPL run.
     let hello = hello.into_hello();
-    let reply = handle_hello(hello_id, hello, &services.session, &services.files_mode, services.label.as_deref(), &services.clients, Vec::new()).await?;
+    let reply = handle_hello(hello_id, hello, &services.session, &services.files_mode, services.label.as_deref(), &services.clients, Vec::new(), None).await?;
     if let Some((frame, blob)) = reply.into_iter().next() {
         write_reply(&mut tx, frame, blob).await?;
     }
@@ -392,16 +392,27 @@ where
     // `done` of each run named is published after this, so this connection is written it.
     let running = shared.repl_numbers.running(&repl_frame_rx);
     let hello = hello.into_hello();
-    let hello_reply = handle_hello(hello_id, hello, &services.session, &services.files_mode, services.label.as_deref(), &services.clients, running).await;
+    // The state of the daemon's update for the hello's reply and this connection's reader of each change after it,
+    // taken in one step (`Status::reader`): the reply followed by the `update.state` evt frames is the owner's own
+    // sequence. Both read memory only: no hello and no event waits on the disk.
+    let (update, mut update_rx) = services.update.reader();
+    let update = Some(update);
+    let hello_reply = handle_hello(hello_id, hello, &services.session, &services.files_mode, services.label.as_deref(), &services.clients, running, update).await;
     for (frame, blob) in finish_dispatch(op::HELLO, hello_id, std::time::Instant::now(), hello_reply) {
         write_reply(tx, frame, blob).await?;
+    }
+    // A window's hello begins a reading of the armed update and does not wait for it: an update another program
+    // armed since the last reading reaches this window as an event. Readings run one at a time (the owner's rule).
+    if shared.window {
+        let update = services.update.clone();
+        tokio::spawn(async move { update.reconcile().await });
     }
 
     loop {
         let frame = match select_once(
             tx, &mut read_fut, &mut out_rx, &mut watcher_rx, &mut ws_events_rx, &mut topo_changed_rx,
             &mut agent_events_rx, &mut link, &mut fe_command_rx, &mut repl_frame_rx, &mut monitor_rx,
-            &mut chat_watch, &mut jobs, read_deadline, deadline_armed, monitor_subscribed, &active_workspace, &services.workspaces,
+            &mut chat_watch, &mut update_rx, &mut jobs, read_deadline, deadline_armed, monitor_subscribed, &active_workspace, &services.workspaces,
             &client_guard, &services.clients, &shared.repl_numbers, reads_color,
         )
         .await?
@@ -474,7 +485,7 @@ async fn select_once<R, W, F>(
     agent_events_rx: &mut broadcast::Receiver<AgentMessage>, link: &mut Option<crate::comm::mail::links::LinkEnd>,
     fe_command_rx: &mut broadcast::Receiver<FeCommandEvt>, repl_frame_rx: &mut broadcast::Receiver<ReplFrameMsg>,
     monitor_rx: &mut Option<broadcast::Receiver<HostLatest>>, chat_watch: &mut crate::chat::watch::Watcher,
-    jobs: &mut JoinSet<()>,
+    update_rx: &mut crate::update::Reader, jobs: &mut JoinSet<()>,
     read_deadline: tokio::time::Instant, deadline_armed: bool, monitor_subscribed: bool,
     active_workspace: &Option<String>, workspaces: &Workspaces, client_guard: &Option<crate::clients::ClientGuard>,
     clients: &Clients,
@@ -542,6 +553,10 @@ where
             write_chat_event(tx, evt, &chat_watch.conn).await?;
             Ok(Woke::Again)
         }
+        state = update_rx.changed() => {
+            write_update_state(tx, state).await?;
+            Ok(Woke::Again)
+        }
         Some(res) = jobs.join_next(), if !jobs.is_empty() => {
             if let Err(e) = res {
                 tracing::error!(error = %e, "off-loop job panicked");
@@ -582,3 +597,7 @@ pub async fn handle_ping(req_id: u64) -> Result<HandlerOutput> {
 #[cfg(test)]
 #[path = "conn_select_once_wire_tests.rs"]
 mod select_once_wire_tests;
+
+#[cfg(test)]
+#[path = "conn_update_tests.rs"]
+mod update_tests;

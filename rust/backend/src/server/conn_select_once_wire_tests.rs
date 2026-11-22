@@ -23,6 +23,8 @@ struct Wire {
     repl_frame_rx: broadcast::Receiver<ReplFrameMsg>,
     monitor_rx: Option<broadcast::Receiver<HostLatest>>,
     chat_watch: crate::chat::watch::Watcher,
+    update: crate::update::Status,
+    update_rx: crate::update::Reader,
     jobs: JoinSet<()>,
     workspaces: Workspaces,
     buf: Vec<u8>,
@@ -48,6 +50,7 @@ fn wire() -> (Wire, Senders) {
     let (repl_frame, repl_frame_rx) = broadcast::channel(1);
     let (monitor, monitor_rx) = broadcast::channel(1);
     let (out_tx, out_rx) = mpsc::channel(OFFLOOP_CONCURRENCY);
+    let update = crate::update::Status::new(crate::update::Chase::Unchecked, false, || None);
     let w = Wire {
         read_fut: Some(Box::pin(std::future::pending())),
         _out_tx: out_tx,
@@ -61,6 +64,8 @@ fn wire() -> (Wire, Senders) {
         repl_frame_rx,
         monitor_rx: Some(monitor_rx),
         chat_watch: crate::chat::watch::Hub::new().connect(),
+        update_rx: update.reader().1,
+        update,
         jobs: JoinSet::new(),
         workspaces: Workspaces::new(),
         buf: Vec::new(),
@@ -77,7 +82,7 @@ impl Wire {
             &mut self.buf, &mut self.read_fut, &mut self.out_rx, &mut self.watcher_rx,
             &mut self.ws_events_rx, &mut self.topo_changed_rx, &mut self.agent_events_rx,
             &mut self.link, &mut self.fe_command_rx, &mut self.repl_frame_rx,
-            &mut self.monitor_rx, &mut self.chat_watch, &mut self.jobs, tokio::time::Instant::now(), false, true, &None,
+            &mut self.monitor_rx, &mut self.chat_watch, &mut self.update_rx, &mut self.jobs, tokio::time::Instant::now(), false, true, &None,
             &self.workspaces, &None, &Clients::new(), &Default::default(), true,
         )
         .await
@@ -225,7 +230,7 @@ async fn an_expired_read_deadline_reaps_a_connection_whose_event_arms_are_always
             select_once(
                 &mut w.buf, &mut w.read_fut, &mut w.out_rx, &mut w.watcher_rx, &mut w.ws_events_rx, &mut w.topo_changed_rx,
                 &mut w.agent_events_rx, &mut w.link, &mut w.fe_command_rx, &mut w.repl_frame_rx, &mut w.monitor_rx,
-                &mut w.chat_watch, &mut w.jobs, past, true, true, &None, &w.workspaces, &None, &Clients::new(), &Default::default(), true,
+                &mut w.chat_watch, &mut w.update_rx, &mut w.jobs, past, true, true, &None, &w.workspaces, &None, &Clients::new(), &Default::default(), true,
             ),
         )
         .await
@@ -260,11 +265,37 @@ async fn a_bus_lost_frame_that_cannot_be_written_ends_the_connection() {
         select_once(
             &mut Broken, &mut w.read_fut, &mut w.out_rx, &mut w.watcher_rx, &mut w.ws_events_rx, &mut w.topo_changed_rx,
             &mut w.agent_events_rx, &mut w.link, &mut w.fe_command_rx, &mut w.repl_frame_rx, &mut w.monitor_rx,
-            &mut w.chat_watch, &mut w.jobs, tokio::time::Instant::now(), false, true, &None, &w.workspaces, &None, &Clients::new(),
+            &mut w.chat_watch, &mut w.update_rx, &mut w.jobs, tokio::time::Instant::now(), false, true, &None, &w.workspaces, &None, &Clients::new(),
             &Default::default(), true,
         ),
     )
     .await
     .expect("select_once returned");
     assert!(ended.is_err(), "a failed status write must end the connection");
+}
+
+/// A change of the state of the daemon's update is one evt frame carrying the latest state: two changes before the
+/// connection's next pass are one frame, the later one's; a write that changes nothing a reader is told wakes no pass,
+/// the same state again and the end of a reading that found what memory held.
+#[tokio::test]
+async fn one_update_change_is_one_evt_frame_with_the_latest_state() {
+    use crate::update::Chase;
+    let (mut w, _s) = wire();
+    let (hello, reader) = w.update.reader();
+    w.update_rx = reader;
+    assert_eq!(serde_json::to_value(hello).unwrap(), json!({"phase": "unchecked"}), "what the hello carries");
+
+    w.update.set_chase(Chase::Found { version: "0.7.4".into(), detail: String::new() });
+    w.update.set_chase(Chase::Preparing { version: "0.7.4".into() });
+    assert!(matches!(w.once_on("update").await, Woke::Again));
+    assert_eq!(w.the_evt().await, (op::UPDATE_STATE.to_string(), json!({"phase": "preparing", "version": "0.7.4"})));
+
+    w.buf.clear();
+    w.update.set_chase(Chase::Preparing { version: "0.7.4".into() });
+    let quiet = tokio::time::timeout(std::time::Duration::from_millis(200), w.once()).await;
+    assert!(quiet.is_err() && w.buf.is_empty(), "the same state written again was told again");
+
+    assert!(w.update.reconcile().await, "a reading of a disk that answers");
+    let quiet = tokio::time::timeout(std::time::Duration::from_millis(200), w.once()).await;
+    assert!(quiet.is_err() && w.buf.is_empty(), "the end of a reading that changed nothing was told");
 }

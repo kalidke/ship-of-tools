@@ -151,7 +151,8 @@ pub(super) async fn read_hello<R: tokio::io::AsyncBufRead + Unpin, Wn: Redraw>(
     Ok(frame)
 }
 
-/// Record the accepted hello: session id and the Connected event. Returns the window's REPL runs the daemon names still
+/// Record the accepted hello: session id, the Connected event and, when the daemon said it, the state of its update as
+/// the event after. Returns the window's REPL runs the daemon names still
 /// running (`HelloRes::repl_running`), which this connection then waits on as on any run.
 pub(super) fn accept_hello<Wn: Redraw>(
     frame: Frame,
@@ -194,6 +195,10 @@ pub(super) fn accept_hello<Wn: Redraw>(
         repl_running: hello_res.repl_running.clone(),
         posts_as_person: hello_res.posts_as_person,
     });
+    // After `Connected`, so the view knows the connection the state belongs to before it is told the state.
+    if let Some(state) = hello_res.update.clone() {
+        emit(IncomingEvt::Update { state });
+    }
     window.request_redraw();
     // (round 2, finding 14): the declaration, not only the
     // dial label — this is the exact instant the declared host becomes

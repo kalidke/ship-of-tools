@@ -327,6 +327,31 @@ async fn a_hello_says_whether_the_daemon_posts_as_the_person_and_an_old_daemon_d
     assert_eq!(seen, [("posts-as-person", true), ("old-daemon-chat", false)]);
 }
 
+/// A hello that carries the state of the daemon's update gives it to the window as the one typed event, right after
+/// that connection's `Connected`. A daemon that predates the field gives none, and neither does a hello whose field is
+/// no state: both still connect.
+#[tokio::test]
+async fn a_hello_with_an_update_state_emits_it_after_connected_and_an_old_daemons_emits_none() {
+    let _env = crate::net::state::test_env::set_test_env();
+    let mut says = hello_ok();
+    says["update"] = serde_json::json!({"phase": "ready", "version": "0.7.4", "detail": "applies at the next start"});
+    let mut garbled = hello_ok();
+    garbled["update"] = serde_json::json!({"phase": 7});
+    let mut seen = Vec::new();
+    for (host, reply) in [("update-state", says), ("update-old-daemon", hello_ok()), ("update-garbled", garbled)] {
+        let events = events_until_the_daemon_closes(host, reply, Vec::new()).await;
+        let connected = events.iter().position(|e| e.starts_with("Connected")).expect("the hello was accepted");
+        let updates: Vec<(usize, bool)> = events
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| e.starts_with("Update"))
+            .map(|(at, e)| (at - connected, e.contains("phase: Ready") && e.contains("version: \"0.7.4\"")))
+            .collect();
+        seen.push((host, updates));
+    }
+    assert_eq!(seen, [("update-state", vec![(1, true)]), ("update-old-daemon", vec![]), ("update-garbled", vec![])]);
+}
+
 /// The accepted hello sets the connection's `takes_drawing` and `posts_plain_text` each from what the daemon said; a hello
 /// without a field leaves it false. An earlier release's hello (a drawing taken, no word on plain text) tells the two
 /// apart: the window may send it a drawing and must not post to it.

@@ -564,3 +564,79 @@ async fn the_automatic_update_waits_while_a_window_is_attached() {
     assert_eq!(fx.saved("capsule_alive"), Some("true"));
     assert_eq!(describe(closed), "exit 0", "{said}");
 }
+
+/// A connection to the daemon at `socket` and its hello reply's payload.
+async fn hello_payload(socket: &Path, client: &str) -> (crate::support::Conn, serde_json::Value) {
+    let stream = crate::support::poll_until(
+        || async { crate::support::try_connect(socket).await },
+        crate::support::BOUND,
+        "the daemon's socket to accept a connection",
+    )
+    .await;
+    let mut conn = tokio::io::BufReader::new(stream);
+    let hello = sot_protocol::HelloReq::this_process(client, "", Some("host-a".to_string())).expect("this process's account");
+    let reply = call(&mut conn, 1, op::HELLO, serde_json::to_value(&hello).unwrap()).await;
+    assert!(reply.payload.get("error").is_none(), "hello refused: {:?}", reply.payload);
+    (conn, reply.payload)
+}
+
+/// The `update.state` events `conn` is sent, in order, through the one that says ready.
+async fn told_through_ready(conn: &mut crate::support::Conn, bound: Duration) -> Vec<serde_json::Value> {
+    let read = async {
+        let mut told = Vec::new();
+        loop {
+            let (frame, _) = sot_protocol::codec::read_frame(conn).await.expect("a frame from the daemon");
+            if frame.kind == sot_protocol::Kind::Evt && frame.op == op::UPDATE_STATE {
+                let ready = frame.payload["phase"] == "ready";
+                told.push(frame.payload);
+                if ready {
+                    return told;
+                }
+            }
+        }
+    };
+    tokio::time::timeout(bound, read).await.expect("the daemon told no ready update within the bound")
+}
+
+/// The state of the daemon's update reaches a window: two connections attached before the check read `unchecked` in
+/// their hellos and are each told the states of the real stage, prepare and arm as events, in order, none twice, ending
+/// on the same ready state; a connection made after the arm reads that state in its hello and is told nothing more.
+#[tokio::test]
+async fn a_window_attached_before_the_check_is_told_each_state_and_a_later_one_reads_ready_in_its_hello() {
+    let _serial = SERIAL.lock().await;
+    let mut fx = Fixture::new("update_state_told");
+    let case = tempfile::tempdir().unwrap();
+    let release = update_fixture::build(&case.path().join("release-fixture"));
+    let mut v = vars(case.path(), "notify", true);
+    v.push(("SOT_UPDATE_FETCHER".to_string(), release.fetcher.clone()));
+    let mut run = Run::boot_at(Env::new("updtold"), &release.daemon, &refs(&v)).await;
+    let (mut first, before) = hello_payload(&run.env.socket_path, "update-state-first").await;
+    let (mut second, _) = hello_payload(&run.env.socket_path, "update-state-second").await;
+    open(case.path(), "update-check-go");
+    let told = told_through_ready(&mut first, Duration::from_secs(120)).await;
+    let told_second = told_through_ready(&mut second, Duration::from_secs(30)).await;
+    let (mut late, after) = hello_payload(&run.env.socket_path, "update-state-late").await;
+    // Nothing follows the hello of a connection that read the latest state in it.
+    let quiet = tokio::time::timeout(Duration::from_secs(1), told_through_ready(&mut late, Duration::from_secs(5))).await.is_err();
+    fx.save("told", serde_json::Value::Array(told.clone()));
+    drop((first, second, late));
+    let closed = run.end_capsules().await;
+    let said = run.said();
+    let cleanup = fx.cleanup();
+    assert!(cleanup.complete(), "{cleanup:?}");
+
+    assert_eq!(before["update"]["phase"], "unchecked", "the hello before the check: {before}\n{said}");
+    let rank = |state: &serde_json::Value| ["found", "preparing", "ready"].iter().position(|p| state["phase"] == *p);
+    for states in [&told, &told_second] {
+        let steps: Vec<_> = states.iter().filter(|s| s["phase"] != "unchecked").collect();
+        assert!(steps.iter().all(|s| rank(s).is_some() && s["version"] == update_fixture::VERSION), "{states:?}\n{said}");
+        assert!(steps.windows(2).all(|pair| rank(pair[0]) < rank(pair[1])), "a state told out of order or twice: {states:?}");
+    }
+    let about = |state: &serde_json::Value| (state["phase"].clone(), state["version"].clone(), state["detail"].clone());
+    let ready = told.last().expect("a last state");
+    assert_eq!(ready["phase"], "ready", "{told:?}");
+    assert_eq!(told_second.last().map(about), Some(about(ready)), "two windows told two different latest states");
+    assert_eq!(about(&after["update"]), about(ready), "the later hello: {after}");
+    assert!(quiet, "a connection that read the state in its hello was told it again");
+    assert_eq!(describe(closed), "exit 0", "{said}");
+}

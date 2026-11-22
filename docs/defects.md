@@ -244,6 +244,7 @@ owned by `docs/CLAUDE.md`.
 
 ## server
 
+- **EVENT-TO-A-CLOSED-PEER-IS-AN-ERROR-END** [note] Met as a race in a test, 2026-11-22, never seen in use: an event written to a peer that has just closed fails its write, and the connection's handler then ends with an error where a peer's close alone ends it cleanly (`rust/backend/src/server/conn.rs`, `select_once`; in the product one warning line from `server/listen.rs`). It is true of every event. It was met when the end of a disk reading was always told as an `update.state` event: a window's hello begins a reading, the reading's end wrote an event to a client the test had just dropped, and `server::context::tests::only_a_named_frontends_connection_may_share_a_selection`, which requires a clean end, failed about one looped run in twelve. A reading's end is now told only when it changes the state, which happens only in a fixture that waits for the event, so no test meets it; the product still can, whenever a reading changes the state while a client closes. Not fixed.
 - **ADMISSION-OP-SCAN** [note] `rust/backend/tests/admission.rs` `op_names` lists the ops by scanning `ops/mod.rs`'s
   source, against the rule that no test proves code by scanning its text; read the op table through code (an exported
   list of op names).
@@ -1192,8 +1193,11 @@ owned by `docs/CLAUDE.md`.
   pointer on disk through the judgment `sotd update pointer` answers with, and carried by every `version.query`
   answer; and the first thing a person can read: `sotd status` ends each row with an `UPDATE` column, each daemon's
   own word of its update (`not reported` for a daemon built before it), `--json` carries the same, and `sot-fe
-  version` prints the one daemon's on an `update` line (the manual's updating page says how to read them). Left: the
-  hello's field and the evt sent to a window; the mark on the window's bottom border, on a computer with a daemon and
+  version` prints the one daemon's on an `update` line (the manual's updating page says how to read them); and the
+  daemon tells a window: a control connection's hello carries the state the daemon holds in memory, each change after
+  it is one `update.state` evt (the server's contract, guarantee 16), a window's hello begins a reading of the armed
+  update that nothing waits for, and the window's network side hands both to the window as one typed event (fe-net's
+  contract), which no view reads yet. Left: the mark on the window's bottom border, on a computer with a daemon and
   on a window-only computer, which is what was asked for the window. Not used by a person yet.
 
 ## chat

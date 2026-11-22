@@ -125,3 +125,57 @@ async fn a_state_written_again_unchanged_wakes_no_reader() {
     assert!(!woken(&mut reader), "a disk that holds what it held");
     assert_eq!(status.state().phase, UpdatePhase::None);
 }
+
+/// A reading asked for while another hangs is begun when that one ends, though its caller stopped waiting: a pointer
+/// armed after the hung reading began is in memory once the readings end, with nothing asking again. Before this a
+/// caller behind a reading in flight left with no reading of its own, and memory kept the fact from before the arm.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reading_asked_for_behind_one_that_hangs_is_begun_when_it_ends() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let dir = tempfile::tempdir().unwrap();
+    let updates = dir.path().join("updates");
+    std::fs::create_dir(&updates).unwrap();
+    let target = "linux-x86_64";
+    // The first reading sees a disk with nothing armed and then hangs; every later one reads the folder.
+    let (release, held) = std::sync::mpsc::channel::<()>();
+    let (held, begun) = (std::sync::Mutex::new(held), Arc::new(AtomicUsize::new(0)));
+    let status = Status::new(Chase::Unchecked, false, {
+        let (updates, begun) = (updates.clone(), begun.clone());
+        move || {
+            if begun.fetch_add(1, Ordering::SeqCst) == 0 {
+                let _ = held.lock().unwrap().recv();
+                return None;
+            }
+            Some(Disk { updates: updates.clone(), target: target.into(), unit: false })
+        }
+    });
+    let first = tokio::spawn({
+        let status = status.clone();
+        async move { status.reconcile().await }
+    });
+    while begun.load(Ordering::SeqCst) == 0 {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+
+    std::fs::write(
+        updates.join(format!("pending-{target}.json")),
+        format!(
+            r#"{{"schema":1,"repo":"kalidke/ship-of-tools","tag":"v9.9.9","version":"9.9.9","target":"{target}",
+                "asset":"sot-9.9.9-{target}.tar.gz","asset_sha256":"{}","checkout":"/x","commit":"cc","armed_at":1}}"#,
+            "ab".repeat(32)
+        ),
+    )
+    .unwrap();
+    assert!(!status.reconcile().await, "the arm's reading waited behind the hung one and its caller left");
+    assert!(!first.await.unwrap());
+    assert_eq!(begun.load(Ordering::SeqCst), 1, "a second reading was begun beside the one that hangs");
+
+    drop(release);
+    let began = Instant::now();
+    while status.state().phase != UpdatePhase::Ready {
+        assert!(began.elapsed() < Duration::from_secs(5), "memory kept the fact from before the arm: {:?}", status.state());
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(status.state().version, "9.9.9");
+    assert_eq!(begun.load(Ordering::SeqCst), 2, "one reading for the call that left, and no more");
+}

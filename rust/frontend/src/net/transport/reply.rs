@@ -441,6 +441,13 @@ pub(super) fn handle_response_frame(
         }
         return;
     }
+    if frame.kind == sot_protocol::Kind::Evt && frame.op == op::UPDATE_STATE {
+        match serde_json::from_value::<sot_protocol::UpdateState>(frame.payload) {
+            Ok(state) => emit(IncomingEvt::Update { state }),
+            Err(e) => tracing::warn!(error = %e, "update.state evt parse failed"),
+        }
+        return;
+    }
     if frame.kind == sot_protocol::Kind::Evt && (frame.op == op::CHAT_CHANGED || frame.op == op::CHAT_STATUS) {
         on_chat_event(frame, &emit);
         return;

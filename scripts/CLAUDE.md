@@ -398,38 +398,54 @@ Update (`rust/updater`, `rust/backend/src/update*`, `rust/frontend/src/selfupdat
   topology gives neither key says off when its pipeline is turned away, not a release it will never stage. A failed
   stage is the block `update.check` reports as `update blocked: <cause>`, for its own release only, until the chase is
   written again (the next attempt's start, or a later check's result).
-  **The disk's readings are bounded for every caller.** The owner reads the disk again (`reconcile`) at four points:
+  **The disk's readings are bounded for every caller.** The owner reads the disk again (`reconcile`) at five points:
   the daemon's start, begun by `boot_status` in a task of its own; a pipeline's end; the start of each daily check;
-  and each `version.query`, so its answer says what the disk holds, and so do the two commands that print it: `sotd
+  each `version.query`, so its answer says what the disk holds, and so do the two commands that print it: `sotd
   status` in its last column, `UPDATE` (topology's contract, guarantee 10), and `sot-fe version` on its `update` line
-  (the agents' contract). Every read of a reading (the install record and `hosts.toml`, read through std, as well as
-  the pointer and the prepare's record) runs on a thread of the blocking pool, one reading at a time. A caller waits
+  (the agents' contract); and a window's hello, which begins a reading in a task of its own and waits for nothing
+  (the server's contract, guarantee 16), so an update another program armed reaches a window that connects. Every
+  read of a reading (the install record and `hosts.toml`, read through std, as well as the pointer and the prepare's
+  record, read through tokio) runs on the blocking pool, one reading at a time. A caller waits
   for a reading begun after its call for at most `RECONCILE_BOUND`, 1 s, which is shorter than the shortest wait of a
   caller of `version.query` (3 s: `sotd status`, the installer's restart step, `sotd topology status`; 5 s: the comm
   book); past it the caller goes on with the fact last read, `reconcile` answers false and logs one warning, and the
   reading goes on alone and writes its fact when it ends. `version.query` then answers at once with the state marked
   `unread`, which its words say (`; as last read, the disk did not answer in time`), so a slow or hung disk reads as an
   old state and never as a daemon that does not answer. A reading its caller stopped waiting for stays the one in
-  flight: no second reading is begun beside it, so a read that hangs holds one thread of the blocking pool and
-  nothing else, and callers at once are each answered within the one bound. A write that changes nothing a reader is
-  told wakes no reader.
+  flight: no second reading is begun beside it, so a read that hangs holds at most two threads of the blocking pool
+  (the reading's own, and for a hang in the pointer's or the prepare record's read the thread tokio runs that read on
+  beneath it) and nothing else, and callers at once are each answered within the one bound. A call that left behind a
+  reading in flight is still owed a reading of its own time: each call marks one owed before it waits (`owed`), the
+  reading that begins after it takes the mark, and a reading that ends with the mark set reads once more, so memory
+  never keeps, past the end of the readings, a fact older than the last call (before this an arm whose reading left
+  behind a slow one stayed unread, and memory said the armed update was gone, until something asked again). A write
+  that changes nothing a reader is told wakes no reader.
+  **A hello and an event read memory alone.** A connection asks the owner once (`Status::reader`) and is given the
+  state the owner holds, for the hello's reply, with a `Reader` whose `changed` waits for the next change of what a
+  reader is told and answers the latest, for the `update.state` event. The state and the reader are taken in one
+  step, so the hello's state followed by the events is the owner's sequence with no change lost and none told twice,
+  and several changes while nobody waited are one answer. Neither reads the disk or waits on a reading, and neither
+  says anything of the disk: the `unread` mark is `version.query`'s alone, of the reading that answer waited for, and
+  a reading's end is told only when it changes the state.
   Limits: ready is the verb's ok, not the apply: the apply scripts check more after the verb (the stage's manifest,
   binaries and digests, the checkout and its commit, a pointer for the tag already installed, the staging lock) and
   drop a pointer that fails, after which the next check prepares it again; those checks are the scripts' own, in
   shell and PowerShell, and the owner does not repeat them. Nothing watches the folder, so a pointer written, dropped
   or applied by another process (the installer, an operator's `sotd update stage`, another host's daemon on a shared
-  home) reaches the state at the next of the four points, at most a day late when nothing asks. The state is told by
-  `version.query` alone, and no hello and no event carries it yet. While a second attempt stages, `update.check` says
+  home) reaches the state at the next of the five points, at most a day late when nothing asks and no window
+  connects. The state is told by `version.query`, by a control connection's hello and by the `update.state` event;
+  no window draws it yet. While a second attempt stages, `update.check` says
   ok and the state says preparing. `auto` mode's words are said of every armed update while the mode is on. A check
   that finds a release while a pipeline `update.check` started is running writes found over preparing until that
   pipeline ends (nothing in the product sends `update.check`). A daemon with no install record beside its binary
   reads the updates folder its updater resolves, which for a source build on a computer with the product installed is
-  the product's. A reading that never ends holds its blocking thread until the process ends, and each `version.query`
+  the product's. A reading that never ends holds its blocking threads until the process ends, and each `version.query`
   meanwhile logs the warning. Each reading resolves the updates folder and reads the install record again, so an
   install that warns there (an ignored `SOT_UPDATE_ROOT`, a record whose prefix is not the binary's) warns at each.
   Tests `rust/backend/src/update/status_tests.rs`: `the_state_is_what_the_chase_and_the_armed_pointer_say`,
-  `the_ready_words_read_right_in_a_row_about_another_computer`, `a_state_written_again_unchanged_wakes_no_reader`;
-  `update/cli_tests.rs`: `ready_is_exactly_what_the_pointer_verb_answers_ok_for`,
+  `the_ready_words_read_right_in_a_row_about_another_computer`, `a_state_written_again_unchanged_wakes_no_reader`,
+  `a_reading_asked_for_behind_one_that_hangs_is_begun_when_it_ends`; the reader through a served connection,
+  `rust/backend/src/server/conn_update_tests.rs` (the server's guarantee 16 names them); `update/cli_tests.rs`: `ready_is_exactly_what_the_pointer_verb_answers_ok_for`,
   `a_release_armed_here_is_found_again_when_its_pointer_goes`; `update_tests.rs`:
   `each_step_of_the_pipeline_is_the_state_a_reader_sees`, `the_chase_a_run_leaves_claims_no_more_than_the_run_did`,
   `a_runs_end_and_a_checks_start_read_the_disk_again`, `the_daemons_own_install_decides_what_its_state_reads` (the

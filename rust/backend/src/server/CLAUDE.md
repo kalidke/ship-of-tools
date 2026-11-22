@@ -173,7 +173,8 @@ of each.
     `Session` (the revision ring's handle) as an argument, and no longer take the roster: pages is given the window's key
     and the away windows as a closure, and `PageVerbs` with the states, handle and window lookups and fe-command bus;
     the updater the count of attached windows and the owner of the update's state (`update::Status`, distribution's,
-    made in `run` and kept in `Services`; `version.query` and `update.check` are handed the same one),
+    made in `run` and kept in `Services`; `version.query` and `update.check` are handed the same one, and each
+    control connection takes a reader of it, guarantee 16),
     `selection.set`'s handler `Shared.window` (the hello's role `fe` with a
     non-empty name, `clients::window_name`; test `context_tests.rs`: `only_a_named_frontends_connection_may_share_a_selection`).
     That no service reaches the roster or
@@ -191,6 +192,23 @@ of each.
     closed bus writes nothing. Limit: the signal is all there is. Nothing resends a dropped event and only the window's chat
     recovers from `bus.lost`, no other pane: a window refetches on its next change or reconnect (guarantee
     4's replay covers only the revision ring's events). A monitor lag while unsubscribed is consumed unreported.
+    One event is not a bus item and cannot be lost: `update.state`, the state of this daemon's update (wire guarantee
+    16, owned by distribution's `update::Status`). A control connection asks that owner once, on the
+    line that builds its hello's reply, for the state it holds and a reader of every change after it
+    (`Status::reader`, one step, so there is no moment between the two for a change to fall into): the reply carries
+    that state (`HelloRes.update`; a handoff's hello carries none, since it is sent no event), and each change of what
+    a reader is told after it is one `update.state` frame carrying the latest state (`write_update_state`), so several
+    changes between two passes of the loop are one frame, nothing is told twice and the event needs no `bus.lost`.
+    Both read memory alone: no hello and no event reads the disk or waits on a reading, and neither says anything of
+    the disk (the wire's `unread` mark is `version.query`'s alone, of the reading that answer waited for; a reading's
+    end is told only when it changes the state). A window's hello (`Shared.window`) begins one reading of the armed
+    update in a task of its own after its reply is written, and no other client's hello does; the readings run one at
+    a time (distribution's rule). Limits: the state goes to every control connection, a shell client's included, and
+    costs its hello 26 to 190 bytes in the states a daemon tells (measured as the field with its comma: 31 not checked,
+    44 up to date after a check, 172 ready under a unit and 190 with a check's age) and 530 at the wire's bounds; the
+    age of the last check (`checked_s`) is counted when a frame is written and no event follows its growing; an event
+    written to a peer that has just closed ends that connection's handler with an error, as for every event (a
+    reading's end that changes the state while a client closes; `docs/defects.md` item EVENT-TO-A-CLOSED-PEER-IS-AN-ERROR-END).
 
 ## Owns
 - `Services` (`context.rs`), the one value of the daemon's buses and handles that `run` builds and every connection is given.
@@ -257,5 +275,5 @@ tests need the built `sotd` and run in test containers.
 | 12 | the hello names running REPL runs | `tests/repl_windows.rs` (Linux) |
 | 13 | a command with no window named; a page's own window | `events_tests.rs`: `a_page_for_every_frontend_opens_in_the_window_in_use`; `src/clients_show_tests.rs`: `a_preview_goes_to_every_window_and_every_other_command_to_one`, `the_window_in_use_is_the_one_with_the_latest_input_the_one_marked_active`, `a_window_used_last_that_is_away_sends_nothing_to_another_window`, `ties_a_windows_other_connection_and_non_windows_rank_as_the_rule_says`; `src/clients_tests.rs`: `a_browser_open_while_the_window_used_last_is_away_publishes_nothing`; `tests/active_frontend.rs`: `a_preview_reaches_every_window`, `a_browser_open_reaches_only_the_window_in_use`, `an_announced_page_opens_in_one_window_the_one_in_use`; `tests/page_channel.rs`: `a_go_to_reaches_only_the_window_that_opened_the_page`, `a_page_whose_window_is_away_is_answered_503`; `src/clients_window_tests.rs`: `a_page_owner_resolves_only_to_its_newest_named_frontend` |
 | 14 | a handler is given its arguments | the private submodules (compiler); `context_tests.rs`: `each_accepted_connection_is_served_the_services_it_was_given`; the rest by convention |
-| 16 | an event is one frame, or a loss is told | `conn_select_once_wire_tests.rs`: `one_item_is_one_evt_frame`, `a_lagged_bus_writes_one_bus_lost_frame`, `a_closed_bus_writes_nothing` (per bus), `a_bus_lost_frame_that_cannot_be_written_ends_the_connection`; `chat_watch_tests.rs`: `a_lagging_connection_is_told_it_lost_chat_events` |
+| 16 | an event is one frame, or a loss is told | `conn_select_once_wire_tests.rs`: `one_item_is_one_evt_frame`, `a_lagged_bus_writes_one_bus_lost_frame`, `a_closed_bus_writes_nothing` (per bus), `a_bus_lost_frame_that_cannot_be_written_ends_the_connection`; `chat_watch_tests.rs`: `a_lagging_connection_is_told_it_lost_chat_events`; the update's state: `conn_select_once_wire_tests.rs`: `one_update_change_is_one_evt_frame_with_the_latest_state`; `conn_update_tests.rs` (a served connection over a disk whose readings hang): `a_hello_and_an_event_tell_the_state_in_memory_while_the_disk_hangs`, `a_windows_hello_begins_a_reading_and_no_other_hello_does`; `tests/daemon_lifetime/updates.rs` (a real daemon through the real stage, prepare and arm, under `daemon-lifetime-faults`): `a_window_attached_before_the_check_is_told_each_state_and_a_later_one_reads_ready_in_its_hello` |
 | 15 | the log | `src/daemon_log/log_tests.rs`: `daemon_log_masks_slack_and_page_secrets`, `no_log_level_lets_a_network_library_into_the_log`, `a_log_over_the_cap_rolls_after_the_first_write_and_a_held_writer_keeps_the_base`, `a_log_over_the_cap_rolls_within_a_run_and_every_writer_keeps_the_base`, `a_failing_roll_prints_once_and_is_not_retried_before_the_log_grows_by_the_cap`; `tests/daemon_stdout.rs`: `a_daemon_whose_stdout_is_a_file_writes_its_log_once` |

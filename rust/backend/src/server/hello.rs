@@ -131,7 +131,9 @@ pub(super) fn admit_hello(req: HelloReq, clients: &Clients) -> Result<Admitted, 
 }
 
 /// The reply to an admitted hello: the session, its revision, the window's REPL runs still running (`repl_running`,
-/// read by the caller after the connection subscribed to the REPL frame bus) and any replay the client missed.
+/// read by the caller after the connection subscribed to the REPL frame bus), the state of this daemon's update as
+/// its owner holds it in memory (`update`, taken by the caller with the connection's reader of the changes after it;
+/// none for a handoff, which is sent no event) and any replay the client missed.
 pub async fn handle_hello(
     req_id: u64,
     req: HelloReq,
@@ -140,6 +142,7 @@ pub async fn handle_hello(
     label: Option<&str>,
     clients: &crate::clients::Clients,
     repl_running: Vec<u64>,
+    update: Option<sot_protocol::UpdateState>,
 ) -> Result<HandlerOutput> {
     let (session_id, revision) = session.snapshot().await;
 
@@ -202,8 +205,9 @@ pub async fn handle_hello(
         posts_plain_text: true,
         // A person's chat post and file share go out under their own user token (chat guarantees 12 and 32).
         posts_as_person: true,
-        // The update's state is not told in a hello yet (wire guarantee 16).
-        update: None,
+        // The state of this daemon's update, from memory (wire guarantee 16); each change after it is an
+        // `update.state` event on this connection.
+        update,
     };
 
     let mut out: HandlerOutput = Vec::with_capacity(1 + replay_entries.len());

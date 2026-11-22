@@ -665,3 +665,28 @@ fn an_unknown_evt_op_reaches_the_generic_event_path() {
     let events: Vec<(HostKey, IncomingEvt)> = evt_rx.try_iter().collect();
     assert!(matches!(events.as_slice(), [(_, IncomingEvt::Event { .. })]), "{events:?}");
 }
+
+/// An `update.state` evt is the one typed event with the daemon's state: a phase this window does not know reads as
+/// `other`, and a payload that is no state is a warning and no event (never the generic one).
+#[test]
+fn an_update_state_evt_decodes_into_its_typed_event() {
+    use sot_protocol::UpdatePhase;
+    let told = |payload: serde_json::Value| {
+        let (evt_tx, evt_rx) = std::sync::mpsc::channel();
+        let mut pending: HashMap<u64, PendingKind> = HashMap::new();
+        handle_response_frame(Frame::evt(op::UPDATE_STATE, payload), None, &mut pending, &evt_tx, &"test-host".to_string());
+        evt_rx.try_iter().map(|(_, e)| e).collect::<Vec<IncomingEvt>>()
+    };
+    let ready = told(serde_json::json!({"phase": "ready", "version": "0.7.4", "detail": "applies at the next start"}));
+    match ready.as_slice() {
+        [IncomingEvt::Update { state }] => {
+            assert_eq!((state.phase, state.version.as_str(), state.detail.as_str()), (UpdatePhase::Ready, "0.7.4", "applies at the next start"));
+        }
+        other => panic!("{other:?}"),
+    }
+    let later = told(serde_json::json!({"phase": "a_phase_of_a_later_release", "version": "0.9.0"}));
+    assert!(matches!(later.as_slice(), [IncomingEvt::Update { state }] if state.phase == UpdatePhase::Other), "{later:?}");
+    for no_state in [serde_json::json!({"phase": 7}), serde_json::json!("ready"), serde_json::json!({})] {
+        assert!(told(no_state.clone()).is_empty(), "{no_state}");
+    }
+}

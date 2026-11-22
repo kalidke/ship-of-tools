@@ -8,9 +8,11 @@
 //! the tag already installed) and are the apply scripts' alone, so a ready update can still be dropped at its start,
 //! after which the next check prepares it again. The state told is a pure function of the two facts ([`told`]). Nothing
 //! watches the folder: the armed fact is read again at [`Status::reconcile`], which the daemon's start, a pipeline's
-//! end, each daily check and each `version.query` call.
+//! end, each daily check and each `version.query` call, and which a window's hello begins and does not wait for. A
+//! hello and an `update.state` event read memory alone ([`Status::reader`]).
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -110,6 +112,13 @@ struct Facts {
     checked: Option<Instant>,
 }
 
+impl Facts {
+    /// The state these facts are told as, now.
+    fn told(&self) -> UpdateState {
+        told(&self.chase, &self.armed, self.checked.map(|at| at.elapsed().as_secs()))
+    }
+}
+
 struct Inner {
     facts: watch::Sender<Facts>,
     /// Update mode `auto`: an armed update applies at a check with no client attached.
@@ -119,6 +128,9 @@ struct Inner {
     /// The reading of the disk in flight. One at a time: a reading its caller stopped waiting for stays here until it
     /// ends, and no other is begun beside it.
     reading: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// A reading was asked for and none has begun since. Set by each call before it waits and taken by the reading that
+    /// begins after it, so a call whose caller stopped waiting is still followed by a reading of its own time.
+    owed: AtomicBool,
 }
 
 /// The owner: one per daemon, cloned to whoever writes or reads it.
@@ -128,13 +140,21 @@ pub(crate) struct Status(Arc<Inner>);
 impl Status {
     pub(crate) fn new(start: Chase, auto: bool, disk: impl Fn() -> Option<Disk> + Send + Sync + 'static) -> Self {
         let (facts, _) = watch::channel(Facts { chase: start, armed: Armed::Nothing, checked: None });
-        Self(Arc::new(Inner { facts, auto, disk: Box::new(disk), reading: tokio::sync::Mutex::new(None) }))
+        Self(Arc::new(Inner { facts, auto, disk: Box::new(disk), reading: tokio::sync::Mutex::new(None), owed: AtomicBool::new(false) }))
+    }
+
+    /// The state as memory holds it now, for one connection's hello, and that connection's reader of every change
+    /// after it. The two are taken in one step, so the state followed by the reader's answers is the owner's own
+    /// sequence: no change is lost between them and none is told twice.
+    pub(crate) fn reader(&self) -> (UpdateState, Reader) {
+        let mut facts = self.0.facts.subscribe();
+        let now = facts.borrow_and_update().told();
+        (now, Reader { facts })
     }
 
     /// The state as told now, read from memory.
     pub(crate) fn state(&self) -> UpdateState {
-        let facts = self.0.facts.borrow();
-        told(&facts.chase, &facts.armed, facts.checked.map(|at| at.elapsed().as_secs()))
+        self.0.facts.borrow().told()
     }
 
     /// The cause of a stage of `version` that failed and has not been tried again, for `update.check`'s status. A
@@ -167,25 +187,36 @@ impl Status {
         read
     }
 
-    /// One reading, after any still in flight. Every read of it (the install record and `hosts.toml` through std, the
-    /// pointer and the prepare's record through tokio) runs on a thread of the blocking pool, so a read that hangs
-    /// holds that thread and the turn, never a runtime worker or a caller past its bound.
+    /// One reading that begins after this call, after any still in flight. Every read of it (the install record and
+    /// `hosts.toml` through std, the pointer and the prepare's record through tokio) runs on threads of the blocking
+    /// pool, so a read that hangs holds those threads and the turn, never a runtime worker or a caller past its bound.
+    /// A call whose caller stops waiting behind a reading in flight leaves `owed` set, and that reading reads once
+    /// more when it ends: memory never keeps, past the end of the readings, a fact older than the last call.
     async fn read_disk(&self) {
+        self.0.owed.store(true, Ordering::SeqCst);
         let mut reading = self.0.reading.lock().await;
         if let Some(earlier) = reading.as_mut() {
             let _ = earlier.await;
+            *reading = None;
         }
-        let (inner, runtime) = (self.0.clone(), tokio::runtime::Handle::current());
-        let mine = reading.insert(tokio::task::spawn_blocking(move || {
-            let armed = (inner.disk)().map_or(Armed::Nothing, |disk| {
+        // A reading that began after this call took the mark: it is this call's reading, and it has ended.
+        if !self.0.owed.swap(false, Ordering::SeqCst) {
+            return;
+        }
+        let (status, runtime) = (self.clone(), tokio::runtime::Handle::current());
+        let mine = reading.insert(tokio::task::spawn_blocking(move || loop {
+            let armed = (status.0.disk)().map_or(Armed::Nothing, |disk| {
                 let judged = runtime.block_on(super::cli::judge(&disk.updates, &disk.target));
                 match (judged.version, judged.refusal) {
                     (None, None) => Armed::Nothing,
-                    (Some(version), None) => Armed::Fits { version, applies: applies(inner.auto, disk.unit).into() },
+                    (Some(version), None) => Armed::Fits { version, applies: applies(status.0.auto, disk.unit).into() },
                     (version, Some(why)) => Armed::Refused { version, why },
                 }
             });
-            Status(inner).write(|facts| facts.armed = armed);
+            status.write(|facts| facts.armed = armed);
+            if !status.0.owed.swap(false, Ordering::SeqCst) {
+                break;
+            }
         }));
         let _ = mine.await;
         *reading = None;
@@ -201,15 +232,31 @@ impl Status {
     }
 }
 
+/// One connection's reader of the changes of the state as memory holds it ([`Status::reader`]): what each
+/// `update.state` event says. It never reads the disk and never waits on a reading, and it says nothing of the disk:
+/// the `unread` mark is `version.query`'s alone, of the reading that answer waited for.
+pub(crate) struct Reader {
+    facts: watch::Receiver<Facts>,
+}
+
+impl Reader {
+    /// Waits for the next change of what a reader is told and answers the latest state: several changes while nobody
+    /// waited are one answer.
+    pub(crate) async fn changed(&mut self) -> UpdateState {
+        if self.facts.changed().await.is_err() {
+            std::future::pending::<()>().await;
+        }
+        self.facts.borrow_and_update().told()
+    }
+}
+
 #[cfg(test)]
 impl Status {
     /// For a test: each state a reader woken at a change is told, in order.
     pub(crate) fn told_at_each_change(&self) -> tokio::sync::mpsc::UnboundedReceiver<UpdateState> {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        let (status, mut facts) = (self.clone(), self.0.facts.subscribe());
-        tokio::spawn(async move {
-            while facts.changed().await.is_ok() && tx.send(status.state()).is_ok() {}
-        });
+        let (_, mut reader) = self.reader();
+        tokio::spawn(async move { while tx.send(reader.changed().await).is_ok() {} });
         rx
     }
 }

@@ -34,7 +34,7 @@ mod cli;
 mod refusal;
 mod status;
 pub(crate) use cli::{run, USAGE};
-pub(crate) use status::{Chase, Disk, Status};
+pub(crate) use status::{Chase, Disk, Reader, Status};
 use refusal::{apply_refusal, arm_refusal, host_runs_no_sotd};
 
 use sot_protocol::reply::HandlerOutput;

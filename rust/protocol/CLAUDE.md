@@ -307,8 +307,10 @@ name is in this crate's one op table.
     What a newer reader does with an older daemon: the fields are absent and read as none. Limits: the daemon
     fills `DaemonVersion.update` and `update_line` in every `version.query` answer (distribution's owner,
     `scripts/CLAUDE.md` under Update): `sotd status` prints the state through `UpdateState::line`, and `sot-fe version`
-    prints `update_line` as the daemon sent it, with control bytes turned to spaces; no daemon fills the hello's field or
-    emits the evt, and no window reads either; the words carry no
+    prints `update_line` as the daemon sent it, with control bytes turned to spaces; the daemon fills a control
+    connection's hello with the state it holds in memory and emits the evt at each change (the server's contract,
+    guarantee 16), and the window's network side gives both to the window as one typed event (fe-net's contract), which
+    no view reads yet; the words carry no
     age but the last check's, in whole minutes, hours or days; a cause in `detail` can hold a local path, and it goes
     only to the person's own window, `sotd status` and `sot-fe version`; a reader in another language that prints
     `update_line` cleans it itself, since only this crate's readers clean what they read; cleaning removes control
