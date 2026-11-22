@@ -123,14 +123,32 @@ fn a_kill_signals_only_a_process_that_still_names_the_capsule() {
     assert!(child.wait().expect("wait").code().is_none(), "the matching process must end by signal");
 }
 
-/// A process that holds a command line as a daemon's, as a test's stand-in: it names `--project-root <root>` and ends
-/// at the first TERM, in at most a second (its sleep is a child that ends alone).
-fn stand_in_daemon(root: &std::ffi::OsStr) -> std::process::Child {
-    std::process::Command::new("sh")
-        .args(["-c", "while :; do sleep 1; done", "sotd", "--project-root"])
-        .arg(root)
+/// `sh` looping until its first TERM, which ends it in at most a second (its sleep is a child that ends alone), with
+/// `args` after its script, returned once it has written its first line. `spawn` returns while the child's exec is
+/// still under way, and until the exec is over `/proc` shows the child's command line empty or as this process's own;
+/// the shell writes only once its exec is over, so its command line is then the one given here.
+fn looping_sh(args: &[&std::ffi::OsStr]) -> std::process::Child {
+    use std::io::Read;
+    let mut child = std::process::Command::new("sh")
+        .args(["-c", "echo ready; while :; do sleep 1; done"])
+        .args(args)
+        .stdout(std::process::Stdio::piped())
         .spawn()
-        .expect("spawn the stand-in daemon")
+        .expect("spawn sh");
+    let mut line = [0u8; 6];
+    // Bounded by the shell: its first command writes the line, and its end closes the pipe.
+    let read = child.stdout.take().expect("the shell's stdout").read_exact(&mut line);
+    if read.is_err() || line != *b"ready\n" {
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("the shell did not write its first line: {read:?}, {:?}", String::from_utf8_lossy(&line));
+    }
+    child
+}
+
+/// A process that holds a command line as a daemon's, as a test's stand-in: it names `--project-root <root>`.
+fn stand_in_daemon(root: &std::ffi::OsStr) -> std::process::Child {
+    looping_sh(&[std::ffi::OsStr::new("sotd"), std::ffi::OsStr::new("--project-root"), root])
 }
 
 /// The reaper ends a daemon only while its command line, read after its pidfd opened, names exactly this `Env`'s
@@ -145,7 +163,8 @@ fn the_reaper_ends_only_a_process_that_names_this_envs_project_root() {
     let mut ours = stand_in_daemon(root.as_os_str());
 
     let ended = [unrelated.id(), other.id(), longer.id(), ours.id()].map(|pid| support::end_daemon_of(pid, root));
-    let ours_status = ours.wait().expect("wait for the matching process");
+    // Bounded: a matching process the reaper leaves alive fails the test with the reaper's answers, never hangs it.
+    let ours_status = sot_platform::test_isolated::wait_until(&mut ours, std::time::Instant::now() + support::BOUND);
     let survived = [&mut unrelated, &mut other, &mut longer].map(|child| child.try_wait().expect("try_wait").is_none());
     for child in [&mut unrelated, &mut other, &mut longer] {
         let _ = child.kill();
@@ -153,6 +172,8 @@ fn the_reaper_ends_only_a_process_that_names_this_envs_project_root() {
     }
     assert_eq!(ended, [Ok(()), Ok(()), Ok(()), Ok(())]);
     assert_eq!(survived, [true; 3], "a process that is not this env's daemon was signaled");
+    let ours_status = ours_status
+        .unwrap_or_else(|error| panic!("the reaper answered {ended:?} and left the matching process alive: {error}"));
     assert!(ours_status.code().is_none(), "the matching process must end by signal: {ours_status}");
 }
 
@@ -164,11 +185,7 @@ fn the_reaper_keeps_the_folders_while_a_process_names_one() {
     let (kept, gone) = (dir.path().join("kept"), dir.path().join("gone"));
     std::fs::create_dir_all(&kept).expect("mkdir");
     std::fs::create_dir_all(&gone).expect("mkdir");
-    let mut holder = std::process::Command::new("sh")
-        .args(["-c", "while :; do sleep 1; done", "holder"])
-        .arg(&kept)
-        .spawn()
-        .expect("spawn the process that names the folder");
+    let mut holder = looping_sh(&[std::ffi::OsStr::new("holder"), kept.as_os_str()]);
 
     support::finish(&support::Told::of_folders(vec![kept.clone(), gone.clone()]));
     let account = std::fs::read_to_string(kept.join("sot-test-reaper.txt")).unwrap_or_default();
