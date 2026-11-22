@@ -362,6 +362,14 @@ impl RowRun {
         if !inner.requests.is_empty() {
             inner.arm_wake();
         }
+        // Input with bytes is someone typing: the management is told once a pass, outside the row's lock, however many
+        // inputs the pass took. An empty input (a client taking the pen) and a resize are not typing.
+        let typed = taken.iter().any(|r| matches!(r, RowRequest::Input { bytes, .. } if !bytes.is_empty()));
+        let management = if typed { inner.management.clone() } else { None };
+        drop(inner);
+        if let Some(management) = management {
+            management.typed();
+        }
         taken
     }
 

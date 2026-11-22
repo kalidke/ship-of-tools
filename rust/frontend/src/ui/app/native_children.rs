@@ -119,7 +119,7 @@ impl ApplicationHandler for FixturesDriver {
 }
 
 fn run_state_fixtures(state: &mut State) -> Result<()> {
-    let fixtures: [(&str, fn(&mut State) -> Result<()>); 38] = [
+    let fixtures: [(&str, fn(&mut State) -> Result<()>); 39] = [
         // First: the window's start-up picture is still the preview's.
         (
             "primary_u_over_the_start_picture_says_the_preview_shows_no_file",
@@ -157,6 +157,10 @@ fn run_state_fixtures(state: &mut State) -> Result<()> {
         (
             "a_destroyed_session_moves_the_view_to_a_neighbor",
             State::a_destroyed_session_moves_the_view_to_a_neighbor,
+        ),
+        (
+            "a_session_started_from_this_window_is_first_after_its_reply",
+            State::a_session_started_from_this_window_is_first_after_its_reply,
         ),
         (
             "a_destroy_in_flight_and_a_dropped_row_are_handled_by_the_window",

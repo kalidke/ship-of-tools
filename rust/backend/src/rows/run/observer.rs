@@ -34,6 +34,14 @@ fn supervisor_of(peer: (u32, u64)) -> SupervisorIdentity {
     SupervisorIdentity { pid: peer.0, created: peer.1 }
 }
 
+/// A report's input time, when its supervisor sends one, goes to the row: the observer is the one writer of the daemon's
+/// copy, which is the last one reported ([`Workspace::note_input`]).
+fn note_input_of(ws: &Workspace, report: &StatusReport) {
+    if let Some(at) = report.input_at {
+        ws.note_input(at);
+    }
+}
+
 fn observation_of(report: &StatusReport, supervisor: SupervisorIdentity) -> Observation {
     Observation::Phase {
         phase: local_phase(report.phase),
@@ -53,6 +61,7 @@ fn feed_first(ws: &Workspace, generation: u64, supervisor: SupervisorIdentity, r
     if ws.current_supervisor() != Some(supervisor) {
         ws.begin_supervisor_epoch(supervisor);
     }
+    note_input_of(ws, report);
     observe(ws, observation_of(report, supervisor));
     true
 }
@@ -63,11 +72,12 @@ fn exit_is_unhandled(ws: &Workspace, generation: u64) -> bool {
     ws.spawn_generation() == generation && ws.watchdog_owner().is_none()
 }
 
-/// A `row.phase` of the watched supervisor.
+/// A `row.phase` of the watched supervisor: a change of its phase, its run or its input time.
 fn feed_event(ws: &Workspace, supervisor: SupervisorIdentity, report: &StatusReport) {
     if local_phase(report.phase) == Phase::Ready {
         ws.note_watch_ready(supervisor);
     }
+    note_input_of(ws, report);
     observe(ws, observation_of(report, supervisor));
 }
 

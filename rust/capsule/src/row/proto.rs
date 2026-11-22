@@ -116,12 +116,16 @@ pub struct InputRes {
 }
 
 /// `row.status`: what the supervisor is now. `run` is absent while there is none. `row.watch` answers it, and each
-/// `row.phase` event carries one.
+/// `row.phase` event carries one. `input_at` is the unix second the terminal last took typed input, as the supervisor
+/// records it (at most once a pace, so it can be that much behind); absent before any, and from a supervisor older than
+/// the field. Both sides read the payload without it, so it grows the payload and not the row number.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StatusRes {
     pub phase: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_at: Option<u64>,
 }
 
 /// `row.exiting`: the last frame of a watch before the supervisor's controlled exit, with the exit code it leaves by.

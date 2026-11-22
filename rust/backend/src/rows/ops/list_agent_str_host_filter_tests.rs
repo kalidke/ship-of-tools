@@ -101,7 +101,8 @@ async fn agent_str_never_reads_another_hosts_same_named_row() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Rows' activity rule at the list: a row's `active_at` is the newest of its creation and its shown work-state stamp.
+/// Rows' activity rule at the list, for rows nothing typed into: a row's `active_at` is the newest of its creation and
+/// its shown work-state stamp (the input time's part is the observer's test).
 /// A stamp that is not well formed, and the stamp of another host's same-named entry, do not count; a row with no
 /// session, which has no stamp, is placed by its creation.
 #[tokio::test]

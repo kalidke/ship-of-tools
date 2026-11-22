@@ -71,12 +71,34 @@ Delivery in a real Codex session still needs checking. See
 
 `Ctrl+Shift+o` cycles the order of the session strip along the bottom edge:
 by state, alphabetical, or by recent activity. A session's recent activity
-is the later of when it was created and when its agent last reported: at a
-turn's start and end, at each state it declares, and about once a minute
-while it works. So a new session starts first, unless another session
-reported in the same second or later, or the session you are on holds the
-first place, which it keeps. A session with no agent keeps the place its
-creation gives it.
+is the latest of when it was created, when something was last typed into it
+(by you in any window, or by another session), and when its agent last
+reported: at a turn's start and end, at each state it declares, about once
+a minute while it works, and when a prompt that waits for you (a permission
+prompt, say) appears in it or goes away. So a session you start from this
+window is first, unless other sessions reported or were typed into in the
+same second or later: it is then behind them. A session that someone else
+starts (an agent, another window) while you are on the first one appears
+behind it, since the session you are on keeps its place. Typing in a session
+with no agent moves it up as an agent's work moves an agent session. What a
+program prints does not count, and neither does a message sent to a session
+by itself: it counts when it is typed into the session, as it is for a
+Claude Code session waiting at its prompt. A Codex session at rest is asked
+to read its messages without anything being typed into it; the turn that
+follows reports as any turn does, which should move it, and that has not yet
+been checked in a real Codex session. A message to a session that is busy,
+or one that cannot be woken just then, moves nothing. The session you are looking
+at keeps its place while you type and takes its new place when you leave
+it; a time can be up to ten seconds behind the last key, counted while the
+computer is awake: after it has slept, the first key typed in a session
+within those ten seconds may not count, and the next one after them does.
+Typing times are not kept on disk: they
+are forgotten when the computer restarts and when closing the last window
+ends the sessions, and the order then follows creation and the agents'
+reports until something is typed again. A session that was already running
+when Ship of Tools was updated counts typing only once the session itself
+has ended and started again, as it does at a restart of the computer; a new
+agent started inside a session that kept running is not enough.
 
 ### More on agents
 

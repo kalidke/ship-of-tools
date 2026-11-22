@@ -135,15 +135,15 @@ fn a_closed_connection_stays_reachable_until_its_threads_have_ended() {
     assert!(closed.load(Ordering::SeqCst), "close_all did not reach a connection whose writer has yet to end");
 }
 
-/// A management whose status the test sets.
-struct Scripted(Mutex<StatusRes>);
+/// A management whose status the test sets, counting the times it is told input was typed.
+struct Scripted(Mutex<StatusRes>, AtomicUsize);
 
 impl Scripted {
     fn new(phase: &str, run: Option<&str>) -> Arc<Self> {
-        Arc::new(Scripted(Mutex::new(StatusRes { phase: phase.into(), run: run.map(str::to_string) })))
+        Arc::new(Scripted(Mutex::new(StatusRes { phase: phase.into(), run: run.map(str::to_string), input_at: None }), AtomicUsize::new(0)))
     }
     fn set(&self, phase: &str, run: Option<&str>) {
-        *self.0.lock().unwrap() = StatusRes { phase: phase.into(), run: run.map(str::to_string) };
+        *self.0.lock().unwrap() = StatusRes { phase: phase.into(), run: run.map(str::to_string), input_at: None };
     }
 }
 
@@ -159,6 +159,9 @@ impl Management for Arc<Scripted> {
     }
     fn stop(&self, _: ConnId) -> super::super::proto::StopRes {
         unreachable!()
+    }
+    fn typed(&self) {
+        self.1.fetch_add(1, Ordering::SeqCst);
     }
     fn conn_gone(&self, _: ConnId) {}
 }
@@ -180,7 +183,7 @@ fn a_watch_is_told_each_change_once_and_in_order() {
     let run = RowRun::new("r", "starting");
     let status = Scripted::new("starting", None);
     run.set_management(Box::new(Arc::clone(&status)));
-    let report = |phase: &str, run: Option<&str>| StatusRes { phase: phase.into(), run: run.map(str::to_string) };
+    let report = |phase: &str, run: Option<&str>| StatusRes { phase: phase.into(), run: run.map(str::to_string), input_at: None };
     run.publish(report("starting", None));
     let (id, queue, slot) = run.open(Arc::new(|| {})).expect("a slot");
     run.watch(id, 7, &Arc::clone(&status));
@@ -216,6 +219,9 @@ fn a_tick_asks_nothing_when_nothing_watches() {
         }
         fn stop(&self, _: ConnId) -> super::super::proto::StopRes {
             unreachable!()
+        }
+        fn typed(&self) {
+            panic!("input was told typed with none taken")
         }
         fn conn_gone(&self, _: ConnId) {}
     }
@@ -294,4 +300,41 @@ fn a_watch_admitted_during_the_exit_is_told_the_code() {
     assert_eq!(frames[1].1["code"], 76);
     exiting.join().unwrap();
     std::mem::forget((first_slot, late_slot));
+}
+
+/// Only input with bytes that the loop takes is typed, and a pass tells its management once however many inputs it
+/// took: a held key or a paste costs one call a pass, nothing per input. An empty input (a client taking the pen), a
+/// resize and input answered `run ended` are not typed.
+#[test]
+fn only_non_empty_input_the_loop_takes_is_typed() {
+    let run = RowRun::new("run-one", "ready");
+    // No loop answers here: a request stays queued while its caller gives up at once.
+    run.set_bounds_for_test(Duration::from_secs(5), Duration::from_millis(1));
+    let status = Scripted::new("ready", Some("run-one"));
+    run.set_management(Box::new(Arc::clone(&status)));
+    let id = driver(&run);
+    let typed = || status.1.load(Ordering::SeqCst);
+
+    assert!(run.take_requests(16).is_empty());
+    assert_eq!(typed(), 0, "a pass that took nothing");
+    let _ = run.input(id, Vec::new(), None);
+    let _ = run.resize(id, 100, 30);
+    assert_eq!(run.take_requests(16).len(), 2);
+    assert_eq!(typed(), 0, "an empty input and a resize are not typed");
+
+    for _ in 0..5 {
+        let _ = run.input(id, vec![b'x'], None);
+    }
+    assert_eq!(run.take_requests(16).len(), 5);
+    assert_eq!(typed(), 1, "five inputs in one pass are told once");
+
+    let _ = run.input(id, vec![b'y'], Some("run-one"));
+    run.set_run("run-two");
+    assert!(run.take_requests(16).is_empty(), "input queued for the run that ended was answered, never taken");
+    assert_eq!(typed(), 1, "input answered `run ended` is not typed");
+
+    let _ = run.input(id, Vec::new(), None);
+    let _ = run.input(id, vec![b'z'], None);
+    assert_eq!(run.take_requests(16).len(), 2);
+    assert_eq!(typed(), 2, "the next pass that takes input with bytes tells again");
 }

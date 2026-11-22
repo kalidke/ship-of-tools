@@ -43,6 +43,9 @@ pub struct StatusReport {
     pub phase: SupervisorPhase,
     /// The live run's id, or, while the supervisor rests, the run whose end it rests on; absent before any run.
     pub run: Option<String>,
+    /// The unix second the row's terminal last took typed input, as its supervisor recorded it; absent before any, and
+    /// from a supervisor older than the field.
+    pub input_at: Option<u64>,
 }
 
 /// What [`end_run`] settled on.
@@ -106,6 +109,7 @@ fn report(status: StatusRes, process_identity: (u32, u64)) -> crate::Result<Stat
         created: process_identity.1,
         phase: phase_of(&status.phase)?,
         run: status.run,
+        input_at: status.input_at,
     })
 }
 

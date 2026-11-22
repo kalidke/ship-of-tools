@@ -96,7 +96,7 @@ fn a_peer_that_never_reads_its_stop_reply_cannot_hold_the_shutdown() {
     struct Stopper;
     impl sot_capsule::row::Management for Stopper {
         fn status(&self) -> sot_capsule::row::StatusRes {
-            sot_capsule::row::StatusRes { phase: "ready".into(), run: None }
+            sot_capsule::row::StatusRes { phase: "ready".into(), run: None, input_at: None }
         }
         fn end_run(&self, _: &str, _: &str) -> sot_capsule::row::EndRunRes {
             unreachable!()
@@ -107,6 +107,7 @@ fn a_peer_that_never_reads_its_stop_reply_cannot_hold_the_shutdown() {
         fn stop(&self, _: sot_capsule::row::ConnId) -> sot_capsule::row::StopRes {
             sot_capsule::row::StopRes { outcome: sot_capsule::row::StopOutcome::Stopping }
         }
+        fn typed(&self) {}
         fn conn_gone(&self, _: sot_capsule::row::ConnId) {}
     }
     let h = format!("stop{}", std::process::id());

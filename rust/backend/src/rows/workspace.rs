@@ -178,6 +178,7 @@ impl Workspace {
             agent_handle: crate::rows::handle::Declared::default(),
             phase_cell: Mutex::new(PhaseCell::default()),
             watched: Mutex::new(WatchState::default()),
+            input_at: std::sync::atomic::AtomicU64::new(0),
             watchdog_owner: Mutex::new(None),
             activation_error: Mutex::new(None),
             start_queued: std::sync::atomic::AtomicBool::new(false),
@@ -204,11 +205,25 @@ impl Workspace {
         self.agent_name.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
-    /// The row's last activity, the one statement of the rule (rows' contract, Activity): the newest of its creation
-    /// and `status_at`, its shown work-state stamp, which counts only when it reads as a stamp. In the stamp's form.
+    /// The row's last activity, the one statement of the rule (rows' contract, Activity): the newest of its creation,
+    /// the time its terminal last took typed input, and `status_at`, its shown work-state stamp, which counts only
+    /// when it reads as a stamp. In the stamp's form.
     pub(crate) fn active_at(&self, status_at: &str) -> String {
         let created = u64::try_from(self.created).unwrap_or(0);
-        iso8601_utc_from_secs(created.max(epoch_of(status_at).unwrap_or(0)))
+        iso8601_utc_from_secs(created.max(self.input_at()).max(epoch_of(status_at).unwrap_or(0)))
+    }
+
+    /// The observer's report of the second the row's terminal last took typed input: the row holds what its
+    /// supervisor last reported. One watch's reports arrive in order, and a supervisor with no input time sends none,
+    /// so nothing older can replace it; a second recorded while the supervisor's clock was wrong is replaced by the
+    /// next report.
+    pub(crate) fn note_input(&self, at: u64) {
+        self.input_at.store(at, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The unix second the row's terminal last took typed input, 0 when none was reported.
+    pub(crate) fn input_at(&self) -> u64 {
+        self.input_at.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Mutates in place, on the SAME `Arc`, rather than replacing it through `insert`.

@@ -605,3 +605,53 @@ fn recent_order_sorts_by_last_activity_and_an_older_daemons_rows_by_their_status
     p.set_order(StripOrder::State, HashSet::new());
     assert_eq!(slugs(&p), state_order);
 }
+
+/// A session the person starts from this window is first in the recent order whichever arrives first, a listing that
+/// already holds it or the create's reply. A listing during the create pins the session the person is still on ahead
+/// of the new one; the reply then sorts once with no pin, before the new session is selected and pinned. With the
+/// reply first nothing is sorted: the new row is in no listing yet, and the pinned selection keeps its slot until then.
+#[test]
+fn a_session_started_from_this_window_is_first_whether_its_listing_or_its_reply_comes_first() {
+    let listed = |with_new: bool| {
+        let mut rows = vec![
+            active("s", "idle", "2026-09-08T09:01:00Z", "2026-09-08T09:01:00Z"),
+            active("a2", "idle", "2026-09-08T09:03:00Z", "2026-09-08T09:03:00Z"),
+            active("a3", "idle", "2026-09-08T09:02:00Z", "2026-09-08T09:02:00Z"),
+        ];
+        if with_new {
+            rows.push(active("n", "", "", "2026-09-08T09:10:00Z"));
+        }
+        rows
+    };
+    let new: WsKey = ("a".into(), "n".into());
+    // The person is on `s`, which holds the first slot although two sessions are newer: the pin.
+    let on_s_in_the_first_slot = || {
+        let mut d = RowDirectory::default();
+        replace(&mut d, "a", vec![active("s", "idle", "2026-09-08T09:01:00Z", "2026-09-08T09:09:00Z")]);
+        let mut p = RowPresentation::default();
+        p.set_order(StripOrder::Recent, HashSet::new());
+        refresh_selected(&mut p, &d, "s");
+        replace(&mut d, "a", listed(false));
+        refresh_selected(&mut p, &d, "s");
+        assert_eq!(slugs(&p), ["a/s", "a/a2", "a/a3"]);
+        (d, p)
+    };
+
+    // The listing first: it shows the new session behind the selection; the reply puts it first, and it stays there.
+    let (mut d, mut p) = on_s_in_the_first_slot();
+    replace(&mut d, "a", listed(true));
+    refresh_selected(&mut p, &d, "s");
+    assert_eq!(slugs(&p), ["a/s", "a/n", "a/a2", "a/a3"], "the listing during the create");
+    p.place_created(&new, HashSet::new());
+    assert_eq!(slugs(&p), ["a/n", "a/a2", "a/a3", "a/s"], "the create's reply");
+    refresh_selected(&mut p, &d, "n");
+    assert_eq!(slugs(&p), ["a/n", "a/a2", "a/a3", "a/s"], "the listing after the switch");
+
+    // The reply first: nothing moves at the reply, and the first listing puts the new session first.
+    let (mut d, mut p) = on_s_in_the_first_slot();
+    p.place_created(&new, HashSet::new());
+    assert_eq!(slugs(&p), ["a/s", "a/a2", "a/a3"], "the reply sorts nothing while no listing holds the new session");
+    replace(&mut d, "a", listed(true));
+    refresh_selected(&mut p, &d, "n");
+    assert_eq!(slugs(&p), ["a/n", "a/a2", "a/a3", "a/s"], "the first listing with the new session");
+}

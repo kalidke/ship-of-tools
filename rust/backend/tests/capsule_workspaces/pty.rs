@@ -389,3 +389,98 @@ async fn capsule_pty_input_enter_not_sent_on_a_pen_steal_between_text_and_enter(
     drop(stealer);
     env.kill_daemon_bounded().await;
 }
+
+/// A `YYYY-MM-DDTHH:MM:SSZ` stamp in seconds since the epoch (the days-from-civil rule).
+#[cfg(target_os = "linux")]
+fn secs_of(stamp: &str) -> u64 {
+    let n = |r: std::ops::Range<usize>| stamp[r].parse::<i64>().unwrap_or_else(|_| panic!("not a stamp: {stamp:?}"));
+    assert!(stamp.len() == 20 && stamp.ends_with('Z'), "not a stamp: {stamp:?}");
+    let (y, m, d) = (n(0..4), n(5..7), n(8..10));
+    let y = if m <= 2 { y - 1 } else { y };
+    let (era, yoe) = (y.div_euclid(400), y.rem_euclid(400));
+    let doy = (153 * ((m + 9) % 12) + 2) / 5 + d - 1;
+    let days = era * 146_097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719_468;
+    u64::try_from(days * 86_400 + n(11..13) * 3600 + n(14..16) * 60 + n(17..19)).expect("a stamp after the epoch")
+}
+
+/// Rows' activity through a real daemon and a real capsule: a session with no agent is placed by its creation until
+/// something types into it; input typed through `pty.input` then moves its `active_at` in the list to the second it
+/// was typed, and the daemon tells a window of it with a `workspace.changed`. Linux, as the capsule's own test of the
+/// watch is; neither path has an arm of its own on another system.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn typed_input_moves_a_terminal_rows_last_activity_in_the_list() {
+    let _serial = SERIAL.lock().await;
+    assert!(sot_capsule_exe().is_file(), "{CAPSULE_EXE_NAME} not found next to sotd; build it first");
+    let now = || std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    let env = Env::new("tia");
+    env.spawn_sotd();
+    let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
+    let started = now();
+    let create = serde_json::json!({
+        "label": "tia-row",
+        "project_root": env.workspace_project_root.to_string_lossy(),
+        "runtime": "capsule",
+        "agent": "none",
+    });
+    let res = call(&mut conn, next_id, op::WORKSPACE_CREATE, create).await;
+    next_id += 1;
+    assert!(res.payload.get("error").is_none(), "workspace.create failed: {:?}", res.payload);
+    let ws = res.payload["workspace_id"].as_str().expect("workspace_id").to_string();
+    poll_for_phase(&mut conn, &mut next_id, &ws, "ready", BOUND.max(Duration::from_secs(90))).await;
+
+    let payload = call(&mut conn, next_id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
+    next_id += 1;
+    let row = find_row(&payload, &ws).expect("the row is listed");
+    let created = secs_of(row["active_at"].as_str().expect("the list says the row's last activity"));
+    assert!((started..=now()).contains(&created), "a row nothing typed into is placed by its creation: {row:?}");
+    assert_eq!(row["agent_status_at"], "", "a session with no agent has no work-state stamp");
+    // Until the clock's second is past the creation's, so the input's second is a later one.
+    let deadline = Instant::now() + BOUND;
+    while now() <= created {
+        assert!(Instant::now() < deadline, "the clock did not pass the row's creation");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    // A window that connects now is sent only what the daemon publishes from here on. A reader task owns its
+    // connection: `read_frame` is not cancel-safe.
+    let (mut window, _) = connect_and_hello(&env.socket_path).await;
+    let (evt_tx, mut evt_rx) = tokio::sync::mpsc::unbounded_channel();
+    let reader = tokio::spawn(async move {
+        while let Ok((frame, _blob)) = sot_protocol::codec::read_frame(&mut window).await {
+            if evt_tx.send(frame).is_err() {
+                break;
+            }
+        }
+    });
+
+    use base64::engine::general_purpose::STANDARD;
+    use base64::Engine as _;
+    let sent_from = now();
+    let input = serde_json::json!({ "workspace_id": ws, "data_b64": STANDARD.encode(b"echo tia-typed"), "enter": true, "origin": "tia-test" });
+    let res = call(&mut conn, next_id, op::PTY_INPUT, input).await;
+    next_id += 1;
+    assert_eq!(res.payload["ok"], true, "pty.input failed: {:?}", res.payload);
+    let sent_by = now();
+
+    let deadline = Instant::now() + BOUND;
+    loop {
+        let frame = tokio::time::timeout_at(deadline.into(), evt_rx.recv())
+            .await
+            .expect("the daemon told its window of no change after the input")
+            .expect("the window's connection stays up");
+        if frame.kind != sot_protocol::Kind::Evt || frame.op != op::WORKSPACE_CHANGED {
+            continue;
+        }
+        let payload = call(&mut conn, next_id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
+        next_id += 1;
+        let row = find_row(&payload, &ws).expect("the row is listed");
+        let at = secs_of(row["active_at"].as_str().expect("the list says the row's last activity"));
+        if at > created {
+            assert!((sent_from..=sent_by).contains(&at), "typed between {sent_from} and {sent_by}; the list says {at}");
+            break;
+        }
+    }
+    reader.abort();
+    env.kill_daemon_bounded().await;
+}

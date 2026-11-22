@@ -318,6 +318,10 @@ impl State {
                 // L2a) — `event_host` IS the new workspace's host.
                 // Auto-switch after create, not a person
                 // arriving at an existing row: leave blue as-is.
+                // First the strip: a listing that arrived while the create ran placed the new session behind the
+                // selection of that moment, so it is sorted once with no pin before the switch pins it.
+                let badged = self.badged_keys();
+                self.row_presentation.place_created(&(event_host.clone(), info.slug.clone()), badged);
                 self.switch_to_workspace(
                     event_host.clone(),
                     Some(info.slug.clone()),

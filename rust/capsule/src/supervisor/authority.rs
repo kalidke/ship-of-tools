@@ -12,6 +12,9 @@ use crate::row::{
 const END_RUN_BOUND: Duration = Duration::from_secs(25);
 /// A `reset` that has not published by now is answered `failed`.
 const RESET_BOUND: Duration = Duration::from_secs(25);
+/// The pace of the status's input time: typed input changes it, and so tells the watchers, at most once in this long,
+/// counted on the monotonic clock.
+pub(super) const INPUT_PACE: Duration = Duration::from_secs(10);
 
 /// The agent's run in progress: the channel that ends it, and what it tells its owner.
 struct LiveRun {
@@ -34,6 +37,12 @@ struct Inner {
     run_over: bool,
     /// The last run that began: a resting supervisor reports it, so the daemon can tell the run a rest follows from a newer one.
     last_run: Option<String>,
+    /// The unix second the terminal last took typed input, recorded at most once an [`INPUT_PACE`]; kept across
+    /// runs, in memory only.
+    input_at: Option<u64>,
+    /// When that second was recorded, on the monotonic clock: the pace is counted from here, so a wall clock that
+    /// steps changes the second recorded and never the pace.
+    input_noted: Option<Instant>,
     /// An admitted `end_run` waits for its run to end; the answer `run_ended` or `terminal` leaves is kept under the
     /// admission's number, so another run's admission never clears it. `ending` is the admission waiting now.
     ending: Option<u64>,
@@ -87,6 +96,8 @@ impl Shared {
                 run: None,
                 run_over: false,
                 last_run: None,
+                input_at: None,
+                input_noted: None,
                 ending: None,
                 end_answers: HashMap::new(),
                 reset: false,
@@ -132,7 +143,23 @@ impl Shared {
     }
 
     fn status_of(inner: &Inner) -> StatusRes {
-        StatusRes { phase: Self::phase_name(Self::wire_phase(inner)).to_string(), run: inner.last_run.clone() }
+        StatusRes { phase: Self::phase_name(Self::wire_phase(inner)).to_string(), run: inner.last_run.clone(), input_at: inner.input_at }
+    }
+
+    /// Typed input was taken at `now`, the wall clock's unix second `wall_secs`: that second is recorded, and noted as a
+    /// change of the status, unless one was recorded less than [`INPUT_PACE`] before `now`. The leading edge only: the
+    /// recorded second is never more than a pace of awake time behind the last input, and typing changes the status at
+    /// most once a pace, whatever is typed. The pace is monotonic time, so a wall clock that was wrong for one input is
+    /// corrected by the next one recorded, a pace or more later; and it does not count a computer's sleep, so an input
+    /// within what was left of the pace when the computer slept is not recorded, and the next one after it is.
+    pub(super) fn typed_at(&self, now: Instant, wall_secs: u64) {
+        let mut inner = self.lock();
+        if inner.input_noted.is_some_and(|noted| now.saturating_duration_since(noted) < INPUT_PACE) {
+            return;
+        }
+        inner.input_noted = Some(now);
+        inner.input_at = Some(wall_secs);
+        Self::note(&mut inner);
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
@@ -418,6 +445,12 @@ impl Management for Shared {
     /// `ready` is a clock: the loop asks, each tick, whether the clock has changed the status.
     fn poll(&self) {
         Self::note(&mut self.lock());
+    }
+
+    fn typed(&self) {
+        if let Ok(wall) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+            self.typed_at(Instant::now(), wall.as_secs());
+        }
     }
 
     /// Admits an `end_run` for the live run `run` names, then waits for the run to end. The run fences it: another

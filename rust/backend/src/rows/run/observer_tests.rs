@@ -309,3 +309,46 @@ fn a_supervisor_that_is_gone_reads_unreachable_over_a_rest_but_not_over_terminal
     observe(&ws, Observation::Gone);
     assert_eq!(ws.phase(), Phase::Terminal, "a terminal mark outlives its supervisor");
 }
+
+/// Each report's input time reaches its row, through a watch's first reply (which is how a restarted daemon learns it)
+/// and through an event, and the row holds what its supervisor last reported: a later report with an earlier second
+/// replaces a later one (a wall clock that was ahead for one input), and a report with none, from a supervisor older
+/// than the field or one that has taken no input yet, changes nothing. The list's `active_at` counts it. A report that
+/// repeats the phase and the run, which is all a daemon older than the field reads of an input report, leaves the phase
+/// cell as it was.
+#[test]
+fn a_row_holds_the_input_time_its_supervisor_last_reported() {
+    use sot_capsule::attach_client::supervisor_client::StatusReport;
+    let stamp = crate::comm::registry::registry::iso8601_utc_from_secs;
+    let a = identity(1, 100);
+    let ws = unclaimed_capsule_row();
+    let created = u64::try_from(ws.created).unwrap();
+    let report = |input_at| StatusReport { pid: a.pid, created: a.created, phase: sot_capsule::SupervisorPhase::Ready, run: None, input_at };
+    let generation = ws.spawn_generation();
+
+    assert!(super::feed_first(&ws, generation, a, &report(None)), "an older supervisor's first reply");
+    assert_eq!((ws.input_at(), ws.active_at("")), (0, stamp(created)), "no input time: the row's creation, as before");
+    assert_eq!(ws.phase(), Phase::Ready);
+
+    assert!(super::feed_first(&ws, generation, a, &report(Some(created + 100))), "a first reply that carries one");
+    assert_eq!((ws.input_at(), ws.active_at("")), (created + 100, stamp(created + 100)));
+    super::feed_event(&ws, a, &report(Some(created + 200)));
+    assert_eq!((ws.input_at(), ws.active_at("")), (created + 200, stamp(created + 200)));
+    assert_eq!(ws.phase(), Phase::Ready, "the same phase and run, told again");
+
+    super::feed_event(&ws, a, &report(None));
+    assert!(super::feed_first(&ws, generation, a, &report(None)), "a reconnect to a supervisor with none");
+    assert_eq!(ws.input_at(), created + 200, "a report with no input time changes nothing");
+    assert_eq!(ws.active_at(&stamp(created + 300)), stamp(created + 300), "a newer work-state stamp is still the newest");
+    assert_eq!(ws.active_at(&stamp(created + 150)), stamp(created + 200));
+
+    // The supervisor's clock was three hours ahead for one input; its next report, with the clock right, is the row's.
+    super::feed_event(&ws, a, &report(Some(created + 3 * 3600)));
+    super::feed_event(&ws, a, &report(Some(created + 230)));
+    assert_eq!((ws.input_at(), ws.active_at("")), (created + 230, stamp(created + 230)), "the last report is the row's time");
+
+    // A first reply from a round that began before a spawn is refused, and feeds nothing.
+    ws.begin_spawn();
+    assert!(!super::feed_first(&ws, generation, a, &report(Some(created + 900))));
+    assert_eq!(ws.input_at(), created + 230);
+}

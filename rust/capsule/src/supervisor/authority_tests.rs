@@ -141,3 +141,47 @@ fn polling_an_unchanged_status_records_nothing() {
     crate::row::Management::poll(&shared);
     assert!(record.try_recv().is_err(), "nothing changed, nothing recorded");
 }
+
+/// Typed input changes the status at most once a pace, to the wall clock's second when it was taken, and each change is
+/// sent down the record once: a held key, a paste or a flood inside a pace costs one report and nothing per input. The
+/// pace is counted on the monotonic clock, so two reports are never less than a pace apart, the first input at the pace
+/// is recorded, and a wall clock that steps changes the second recorded and never the pace: a second recorded while the
+/// clock was ahead is replaced at the next input a pace later. The time stays with the supervisor across runs, and every
+/// later report carries it.
+#[test]
+fn typed_input_changes_the_status_at_most_once_a_pace() {
+    let shared = Shared::new();
+    let (notes, record) = mpsc::channel();
+    assert_eq!(shared.set_announcer(notes).input_at, None, "nothing typed yet");
+    let start = Instant::now();
+    let at = |millis: u64| start + Duration::from_millis(millis);
+    let pace = u64::try_from(INPUT_PACE.as_millis()).unwrap();
+    let t = 1_767_225_600;
+    let told = || record.try_iter().map(|s| s.input_at).collect::<Vec<_>>();
+    // Ten thousand inputs inside one pace, across ten of the wall clock's seconds.
+    for i in 0..10_000u64 {
+        let millis = i * (pace - 1) / 9_999;
+        shared.typed_at(at(millis), t + millis / 1000);
+    }
+    assert_eq!(told(), [Some(t)], "one change for the whole pace, at its first second");
+    assert_eq!(crate::row::Management::status(&shared).input_at, Some(t));
+
+    // A pace is ten whole seconds, not ten of the wall clock's seconds: 9.05 s after the last report is too soon.
+    shared.typed_at(at(9_050), t + 10);
+    assert_eq!(told(), [], "a report less than a pace after the one before");
+    shared.typed_at(at(pace), t + 10);
+    shared.typed_at(at(pace + 3_000), t + 13);
+    assert_eq!(told(), [Some(t + 10)], "the first input at the pace, and no other");
+
+    // The wall clock is three hours ahead for one input. The next input a pace later, the clock right again, replaces
+    // that second, and typing counts throughout.
+    shared.typed_at(at(2 * pace), t + 3 * 3600);
+    shared.typed_at(at(2 * pace + 5_000), t + 25);
+    shared.typed_at(at(3 * pace), t + 30);
+    assert_eq!(told(), [Some(t + 3 * 3600), Some(t + 30)], "a clock that was ahead for one input");
+
+    let (kill, _commands) = mpsc::channel();
+    assert!(shared.run_begins("run-one".into(), kill, Arc::new(RunSignals::default())));
+    let told: Vec<_> = record.try_iter().map(|s| (s.run, s.input_at)).collect();
+    assert_eq!(told, [(Some("run-one".to_string()), Some(t + 30))], "a new run's report carries the time");
+}

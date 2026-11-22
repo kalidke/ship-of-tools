@@ -1,7 +1,7 @@
 use super::*;
 
 fn report(phase: sot_capsule::SupervisorPhase) -> sot_capsule::attach_client::supervisor_client::StatusReport {
-    sot_capsule::attach_client::supervisor_client::StatusReport { pid: 1, created: 1, phase, run: None }
+    sot_capsule::attach_client::supervisor_client::StatusReport { pid: 1, created: 1, phase, run: None, input_at: None }
 }
 
 /// An authority that reports `Starting` (a held row is one) is waited out

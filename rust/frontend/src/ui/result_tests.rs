@@ -1487,6 +1487,66 @@ impl State {
 }
 
 impl State {
+    /// Drives the real State through the window's own create while a listing arrives first: the listing holds the new
+    /// session and places it behind the session the person is on, which is pinned in the first slot; the create's reply
+    /// (`on_workspace_created`, with its real switch) puts the new session first, and the next listing keeps it there.
+    /// The one call of `place_created` in the handler is what this holds.
+    pub(in crate::ui) fn a_session_started_from_this_window_is_first_after_its_reply(&mut self) -> Result<()> {
+        let a = "<host-new-a>".to_string();
+        let (a_tx, _a_rx) = tokio::sync::mpsc::unbounded_channel();
+        self.conns = vec![(a.clone(), a_tx)];
+        let was = self.row_presentation.order();
+        let badged = self.badged_keys();
+        self.row_presentation.set_order(crate::ui::session::StripOrder::Recent, badged);
+        let list = |rows: &[(&str, &str)]| {
+            let mut default = ws_info("default", "attach-default");
+            default.is_default = true;
+            default.agent = "none".into();
+            std::iter::once(default)
+                .chain(rows.iter().map(|(slug, active_at)| {
+                    let mut row = probe_row(slug, &format!("id-{slug}"), false);
+                    row.active_at = (*active_at).into();
+                    row
+                }))
+                .collect::<Vec<_>>()
+        };
+        let keys = |state: &Self| state.row_presentation.keys().iter().map(|(_, slug)| slug.clone()).collect::<Vec<_>>();
+        // The person is on `s`, which holds the first slot by its time; two newer sessions then leave it there, pinned.
+        self.on_workspaces(a.clone(), list(&[("s", "2026-09-08T09:09:00Z")]));
+        self.switch_to_workspace(a.clone(), Some("s".into()), None, false);
+        let others = [("s", "2026-09-08T09:01:00Z"), ("a2", "2026-09-08T09:03:00Z"), ("a3", "2026-09-08T09:02:00Z")];
+        self.on_workspaces(a.clone(), list(&others));
+        anyhow::ensure!(keys(self) == ["s", "a2", "a3"], "setup: the session the person is on is not pinned first: {:?}", keys(self));
+        // The listing that arrives while the create runs.
+        let with_new = [others[0], others[1], others[2], ("n", "2026-09-08T09:10:00Z")];
+        self.on_workspaces(a.clone(), list(&with_new));
+        anyhow::ensure!(keys(self) == ["s", "n", "a2", "a3"], "setup: the listing during the create: {:?}", keys(self));
+        // The create's reply.
+        self.on_workspace_created(
+            a.clone(),
+            Ok(crate::net::transport::WorkspaceCreatedInfo {
+                workspace_id: "id-n".into(),
+                slug: "n".into(),
+                label: "n".into(),
+                project_root: "/projects/n".into(),
+                session_name: "n-session".into(),
+            }),
+        );
+        let at_reply = keys(self);
+        self.on_workspaces(a.clone(), list(&with_new));
+        let after = keys(self);
+        let on_new = *self.selected.host() == a && self.selected.workspace_id().as_deref() == Some("n");
+        // The strip's order is the State's own: leave it as it was for the fixtures that follow.
+        let badged = self.badged_keys();
+        self.row_presentation.set_order(was, badged);
+        anyhow::ensure!(on_new, "the create's reply did not move the view to the new session");
+        anyhow::ensure!(at_reply == ["n", "a2", "a3", "s"], "a session started from this window is not first at its create reply: {at_reply:?}");
+        anyhow::ensure!(after == ["n", "a2", "a3", "s"], "the new session did not stay first at the next listing: {after:?}");
+        Ok(())
+    }
+}
+
+impl State {
     /// The window's own calls around a destroy, on a real State: the request notes its row (two destroys in flight
     /// never move the view onto each other), a refusal and a lost link end the notes (the rows are alive), and a row
     /// a listing drops loses its parked view under its own computer's key, never another computer's default nor its own computer's.

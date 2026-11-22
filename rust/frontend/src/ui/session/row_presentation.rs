@@ -190,6 +190,16 @@ impl RowPresentation {
         );
     }
 
+    /// The window's own create was answered for `created`. When a listing has already placed it (one that arrived
+    /// while the create ran, with the selection of that moment pinned ahead of it), sort once with no pin, so the new
+    /// session takes the place its time gives it before it becomes the pinned selection. A row no listing has shown
+    /// yet is left to its first listing, where it is not pinned either.
+    pub(in crate::ui) fn place_created(&mut self, created: &WsKey, badged: HashSet<WsKey>) {
+        if self.workspace_slugs.contains(created) {
+            self.set_order(self.order, badged);
+        }
+    }
+
     pub(in crate::ui) fn select_host_default(&mut self, directory: &RowDirectory, host: &str) {
         self.default_workspace_slug = directory
             .rows(host)

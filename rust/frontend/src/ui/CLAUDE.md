@@ -244,11 +244,21 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   Stable host blocks, in `ordered_hosts` order, are sorted by a `StripOrder`, default `State`: rank blocked, badge,
   done, working, waiting, rest, then newest stamp, pinning the selection's previous slot. `Alphabetical` sorts a block
   by shown label without case, then slug, with no pin. `Recent` sorts by each row's newest last activity, the
-  listing's `active_at` (rows' rule: the newest of the row's creation and its work-state stamp; the window computes
+  listing's `active_at` (rows' rule: the newest of the row's creation, its last typed input and its work-state stamp; the window computes
   nothing), and a row whose daemon sent none, one older than the field, by its `agent_status_at`; an unreadable time
   sorts last, and it pins like `State`. So a session new to a listing, whose time is its creation, sorts first unless
   another row's time is in the same second or later (equal times keep their previous order, and a row new to the
   listing has no previous place, so it loses the tie) or the pinned selection holds the first slot, which it keeps. The
+  pin does not hold a session this window starts behind the session the person was on: the daemon lists a row
+  before its create is answered, so a listing during the create can place the new row behind the pinned selection,
+  and at the window's own create reply `place_created` sorts once with no pin when a listing already holds the new
+  row, before `on_workspace_created` switches to it and it becomes the pinned selection; with the reply first nothing
+  is sorted, and the first listing places the new row unpinned. What remains of that limit is a session someone else
+  starts (another window, an agent). The glue is one call in `on_workspace_created`, held by the native State fixture
+  `a_session_started_from_this_window_is_first_after_its_reply` (the listing first, then the real handler with its
+  switch: the new session is first at the reply and at the next listing; red with the call removed). No unit test can
+  hold it, since the handler needs a real `State`: the fixture runs with the others of the `window_minimized` target,
+  in the hosted run on Linux and in the release gate, and not in the local gate. The
   recent time is kept per row in a map of its own beside the state/stamp pairs, filled by `refresh` (and by
   `seed_capture` for the capture harness) and read by `refresh`, `resort` and `set_order`; the `State` order and the
   wilt keep the stamp. `set_order` re-sorts at once without the pin; the key action `strip.cycle_order`
@@ -263,6 +273,7 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   `recent_order_puts_the_newest_status_first_and_keeps_the_selection_in_its_slot` (the older daemon's rows),
   `recent_order_sorts_by_last_activity_and_an_older_daemons_rows_by_their_status_time` (both, an older daemon's rows
   where the state order and the status time disagree),
+  `a_session_started_from_this_window_is_first_whether_its_listing_or_its_reply_comes_first`,
   `changing_the_order_resorts_at_once_and_does_not_pin`, `the_order_cycles_state_alphabetical_recent`,
   `next_row_follows_the_chosen_order`), and the resume round trip in `persist::resume_tests`.
 - `ResultLedger` privately owns canonical owed results, the listed badge index, both checked serials and the

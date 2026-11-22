@@ -79,7 +79,7 @@ impl RestartEffects for FakeSupervisor {
             .unwrap()
             .pop_front()
             .expect("the fake was asked for more status reads than it was scripted");
-        Ok(sot_capsule::attach_client::supervisor_client::StatusReport { pid, created, phase, run: None })
+        Ok(sot_capsule::attach_client::supervisor_client::StatusReport { pid, created, phase, run: None, input_at: None })
     }
     fn end_run(
         &self,

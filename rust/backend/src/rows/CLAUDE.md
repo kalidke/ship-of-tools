@@ -341,7 +341,7 @@ its name:
 - Two reader paths. `workspace.list` carries each row's `agent_state`, `agent_summary` and `agent_status_at`, read fresh
   from the registry through the row's bound handle and only from an entry of this host (`work_state::shown_of`); the
   work-state poll compares the same answer every 1.5 s and publishes `workspace.changed` (action `agent_state`) when what
-  any row shows changed (`work_state::poll`).
+  any row shows changed (`work_state::poll`), or a row's input time did (Activity, below).
   `work_state::states` supplies pages with this host's registry sessions, sorted by handle, including sessions
   outside any row. It exposes `handle`, `host`, `repo`, `row`, `state`, `summary`, `question`, `options`, `recommend`,
   `page`, `waiting`, `status_at` and `last_seen`; absent strings are empty. `page` is the page the latest stamp line
@@ -386,29 +386,69 @@ its name:
 - Limits: a dialog that closes between the tick's read and its write reads red for one more tick; a turn that ends with
   no Stop (Esc, a bare No, a reauth, an API error) leaves the row `working` until its next turn.
 
-Activity. A row's last activity is the newest of two facts: its creation (`created`, kept in its toml, so it survives
+Activity. A row's last activity is the newest of three facts: its creation (`created`, kept in its toml, so it survives
 restarts; the default row's too, whose re-seed at each daemon start carries it over,
-`store::tests::boot_keeps_the_default_rows_creation`; a create over the same slug takes the new row's) and its
-work-state stamp, the `status_at` that `shown_of` reads, so only through the row's bound handle and from an entry of
-this host. The stamp is when the row's session last stamped its work state, which is more often than its state
-changes: every prompt, stop and declaration restamps it, and a busy turn's heartbeat at most once a minute. The stamp
-counts only when it reads as one (`epoch_of`, messaging's parser of the registry's `YYYY-MM-DDTHH:MM:SSZ`: it checks
-the length, the final `Z` and the six numbers, not the separators or a number's range). Rows owns the rule and states
-it once, in `Workspace::active_at`. `workspace.list` computes it at each listing and carries it as `active_at`, in the
-stamp's form and never empty, and the window's recent order sorts by it (fe-ui's contract). A new session has the
-newest time at its first listing, so it sorts first, with two limits: a session stamped in the new session's creation
-second, or after it and before that listing, is as recent or more and sorts ahead of it (the window gives a tie to the
-row that had a place before); and the session selected in a window keeps its slot there, so when it holds the first
-slot as the listing with the new session arrives, the new session is second, and stays second once it is selected. A
-session with no agent, which never has a stamp, is placed by its creation (the maintainer asked on 2026-11-22 that the
-recent order place a session with no agent as fairly as one with an agent, and a new session first).
-`agent_status_at` keeps its meaning, the time the work state was last stamped: the wilt and the window's state order
-read it, never the new time. Limits: input typed into a row's terminal is not counted, so after its creation a session with no
-agent never moves (docs/defects.md: RECENT-ORDER-LEAVES-SESSIONS-WITHOUT-AN-AGENT); a row toml with no `created` key,
-which only a hand-written one lacks, takes the load's time at every daemon start, so that row reads as new after each;
-a creation before the epoch counts as the epoch. Tests:
-`rows::ops::list::agent_str_host_filter_tests::the_list_says_each_rows_last_activity`,
-`rows::store::tests::boot_keeps_the_default_rows_creation`.
+`store::tests::boot_keeps_the_default_rows_creation`; a create over the same slug takes the new row's); the time its
+terminal last took typed input; and its work-state stamp, the `status_at` that `shown_of` reads, so only through the
+row's bound handle and from an entry of this host. The stamp is when the row's work state was last stamped, by its
+session or by the daemon, which is more often than its state changes: every prompt, stop and declaration restamps it,
+a busy turn's heartbeat at most once a minute, and a dialog that waits on a person as it shows and as it goes (the
+`dialog` and `resumed` events: a Codex row's hook, and the daemon's own dialog tick on a Claude row, so a row at rest
+whose background agent raises a permission prompt takes the time the prompt was seen). The stamp counts only when it
+reads as one (`epoch_of`, messaging's parser of the
+registry's `YYYY-MM-DDTHH:MM:SSZ`: it checks the length, the final `Z` and the six numbers, not the separators or a
+number's range). Rows owns the rule and states it once, in `Workspace::active_at`. `workspace.list` computes it at
+each listing and carries it as `active_at`, in the stamp's form and never empty, and the window's recent order sorts
+by it (fe-ui's contract). A new session has the newest time at its first listing, so it sorts first, with two limits:
+a session stamped or typed into in the new session's creation second, or after it and before that listing, is as
+recent or more and sorts ahead of it (the window gives a tie to the row that had a place before); and, for a session
+someone else starts (another window, an agent), the session selected in a window keeps its slot there, so when it
+holds the first slot as the listing with the new session arrives, the new session is behind it. A session the window
+itself starts is not held behind its selection: a listing can show it there while the create still runs (the row is
+inserted before its supervisor has started, and the poll's event makes the window list), and the window sorts once
+with no pin at its create reply, before it selects the new session (fe-ui's `place_created`). Each session ahead by
+either limit moves the new one a place back: behind two stamped in or after its creation second it is third. A
+session with no agent, which never has a stamp, is placed by its creation until something types into it, and typing into any session gives it the newest time
+(the maintainer asked on 2026-11-22 that the recent order place a session with no agent as fairly as one with an
+agent, and a new session first). `agent_status_at` keeps its meaning, the time the work state was last stamped: the
+wilt and the window's state order read it, never the new time.
+- The input time is the capsule's measurement (its guarantee 10): the second its run's loop last took input with bytes
+  from any driver, a person's window, `pty.input` (so `sot-fe type` and a new child's first line), the wake's typed
+  line or a page reply, recorded at most once in 10 s, so it can be 10 s behind the last input, counted in the
+  computer's awake time (the capsule's limit on a sleep). What a program prints,
+  an attach, a resize, a screen read, the terminal's own reply to a program's query and a client's empty write that
+  takes the pen are not input. Mail filed to a session is not input either: the wake's line is, so mail moves an idle
+  Claude row. A Ready Codex row is asked through Codex's own queue (messaging's wake), nothing is typed into its
+  terminal, and its input time does not move; by the code the turn that follows stamps its work state at its start,
+  as any turn's does, which moves it, and that has not been seen in a live row (docs/defects.md:
+  CODEX-WAKE-QUEUE-LIVE). Mail moves no row where nothing follows it: a busy row, a Codex row that is not Ready or
+  has named no conversation, and a row whose wake is refused (a dialog on its screen, a person's draft in its box)
+  (docs/defects.md: MAIL-ALONE-MOVES-NO-SESSION).
+- One writer: the row's observer takes the time from each report of its watch, the first reply and every `row.phase`
+  (`observer::note_input_of`, `Workspace::note_input`), into the row's memory, which holds what its supervisor last
+  reported: one watch's reports arrive in order, and a report with no input time (a replacement supervisor that has
+  taken none yet, one older than the field) changes nothing. Nothing is written to disk for it. A restarted
+  daemon learns it again from each watch's first reply, since the capsule outlives the daemon; a list before the
+  observer has dialed shows creation and stamp only.
+- The work-state poll compares every row's input time each tick, from memory, beside what each row shows
+  (`work_state::poll::changed`), and publishes the same `workspace.changed` (action `agent_state`) when either changed:
+  at most one event every 1.5 s from all causes, and from typing at most one a row every 10 s. The input times are
+  compared on a tick whose registry cannot be read too, so a computer with no registry still tells its windows.
+- Limits: a row whose supervisor was started by an install older than the capsule's field reports no input time and is
+  placed by its creation and stamp until its supervisor next starts (a reset of its agent keeps the supervisor, so
+  it does not count); a reboot, and the last window's `Close` (lifecycle's guarantee 3), end the capsules, so every
+  input time is lost and the rows fall back to creation and stamp; two rows typed into within 10 s of each other can
+  show in either order, until one is typed into again a pace later; a second recorded while the wall clock was wrong
+  stands, and if it was ahead holds that row first, until the row's next recorded input, 10 s or more after it, or
+  until real time passes it (the pace is monotonic, so typing goes on counting); after the computer sleeps, the first
+  input typed within what was left of the pace when it slept is not recorded, so the row keeps the time from before
+  the sleep until the next input after that; a row toml with no `created` key, which only a hand-written one lacks, takes the load's time at
+  every daemon start, so that row reads as new after each; a creation before the epoch counts as the epoch.
+- Tests: `rows::ops::list::agent_str_host_filter_tests::the_list_says_each_rows_last_activity`,
+  `rows::store::tests::boot_keeps_the_default_rows_creation`,
+  `rows::run::observer::observer_tests::a_row_holds_the_input_time_its_supervisor_last_reported`,
+  `rows::work_state::poll::tests::a_rows_input_time_alone_publishes_a_change_even_with_no_registry`, and through a real
+  daemon and capsule on Linux `capsule_workspaces::pty::typed_input_moves_a_terminal_rows_last_activity_in_the_list`.
 
 Owns: the registry (`Workspaces`) and the row (`Workspace`) with its phase cell, guards, run gate and the default row's
 rule; on disk `<config>/workspaces-<host>/<slug>.toml`, `<state>/workspaces/<id>/` with its tombstones, and

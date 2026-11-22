@@ -268,6 +268,9 @@ impl crate::row::Management for SharedHandle {
     fn poll(&self) {
         self.0.poll();
     }
+    fn typed(&self) {
+        self.0.typed();
+    }
     fn conn_gone(&self, conn: crate::row::ConnId) {
         self.0.conn_gone(conn);
     }

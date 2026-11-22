@@ -185,10 +185,10 @@ pub struct WorkspaceListEntry {
     /// Empty string when absent.
     #[serde(default)]
     pub agent_status_at: String,
-    /// The row's last activity, `YYYY-MM-DDTHH:MM:SSZ` UTC: the newest of its creation and its work-state stamp (rows'
-    /// contract, Activity), the time the window's recent order sorts by. A row always has one, so a daemon that has
-    /// the field never sends it empty; the empty string is a daemon that predates it (`#[serde(default)]`), and the
-    /// window then sorts that daemon's rows by `agent_status_at`.
+    /// The row's last activity, `YYYY-MM-DDTHH:MM:SSZ` UTC: the newest of its creation, the time its terminal last took
+    /// typed input and its work-state stamp (rows' contract, Activity), the time the window's recent order sorts by. A
+    /// row always has one, so a daemon that has the field never sends it empty; the empty string is a daemon that
+    /// predates it (`#[serde(default)]`), and the window then sorts that daemon's rows by `agent_status_at`.
     #[serde(default)]
     pub active_at: String,
     /// Lifecycle of the workspace's persistent REPL child (mirrors the

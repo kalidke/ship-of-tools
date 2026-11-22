@@ -10,7 +10,7 @@ use sot_capsule::row::{socket_path_in, RowClient, RowEvent, ROW_PROTOCOL};
 use sot_platform::host::state_dir::state_dir_hash;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const BOUND: Duration = Duration::from_secs(5);
 
@@ -453,7 +453,7 @@ fn a_peer_that_never_reads_its_stop_reply_cannot_hold_the_shutdown() {
     struct Stopper;
     impl sot_capsule::row::Management for Stopper {
         fn status(&self) -> sot_capsule::row::StatusRes {
-            sot_capsule::row::StatusRes { phase: "ready".into(), run: None }
+            sot_capsule::row::StatusRes { phase: "ready".into(), run: None, input_at: None }
         }
         fn end_run(&self, _: &str, _: &str) -> sot_capsule::row::EndRunRes {
             unreachable!()
@@ -464,6 +464,7 @@ fn a_peer_that_never_reads_its_stop_reply_cannot_hold_the_shutdown() {
         fn stop(&self, _: sot_capsule::row::ConnId) -> sot_capsule::row::StopRes {
             sot_capsule::row::StopRes { outcome: sot_capsule::row::StopOutcome::Stopping }
         }
+        fn typed(&self) {}
         fn conn_gone(&self, _: sot_capsule::row::ConnId) {}
     }
     let run = sot_capsule::row::RowRun::new("r", "ready");
@@ -773,4 +774,68 @@ fn a_dropped_watch_gives_its_slot_back() {
         drop(watch);
     }
     let _viewer = dial(&path);
+}
+
+/// Typed input is told to a watch: one `row.phase` whose `input_at` lies between the seconds before and after a driver
+/// typed, with the phase and the run as they were. A watch begun after the input is answered with it, which is how a
+/// restarted daemon learns it, and a later change of phase carries it. Over a real supervisor, so its management hands
+/// `typed` on to the one authority. The pace is the authority's unit test.
+#[test]
+fn a_watch_is_told_when_input_was_typed() {
+    let _serial = serial();
+    let runtime = private_runtime_dir();
+    std::env::set_var("SOT_RUNTIME_DIR", runtime.path());
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = dir.path().join("state");
+    let (_supervisor, path) = supervisor(runtime.path(), &state_dir, &[]);
+    let mut driver = dial(&path);
+    let run = driver.attach(80, 24, true).expect("attach as the driver");
+    read_until(&mut driver, "agent-was-here", Duration::from_secs(20));
+    let (mut watch, ready) = ready_watch(&state_dir);
+    assert_eq!(ready.input_at, None, "nothing was typed yet: what the agent wrote is not input");
+
+    let now = || SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    let before = now();
+    driver.send_input_in(b"typed-once\r", Some(&run)).expect("the row takes the input");
+    let seen = watch_until(&mut watch, Duration::from_secs(20), |s| matches!(s, WatchStep::Phase(r) if r.input_at.is_some()));
+    let after = now();
+    assert_eq!(seen.len(), 1, "one report for the input: {seen:?}");
+    let Some(WatchStep::Phase(told)) = seen.last().cloned() else { unreachable!() };
+    let at = told.input_at.unwrap();
+    assert!((before..=after).contains(&at), "the input was typed between {before} and {after}; told {at}");
+    assert_eq!((told.phase, told.run.as_deref()), (SupervisorPhase::Ready, Some(run.as_str())), "the phase and the run as they were");
+
+    let later = supervisor_client::watch(&state_dir, &CancelHandle::new()).expect("a second watch is served");
+    assert_eq!(later.first().input_at, Some(at), "a watch begun after the input is answered with it: {:?}", later.first());
+    drop(later);
+
+    let mut manager = dial(&path);
+    let ended = manager.call("row.end_run", json!({"run": run, "reason": "test"}), Duration::from_secs(30)).expect("end_run answers");
+    assert_eq!(ended.payload["outcome"], "ended", "{ended:?}");
+    let seen = watch_until(&mut watch, Duration::from_secs(20), |s| matches!(s, WatchStep::Phase(r) if r.phase == SupervisorPhase::Ending));
+    let Some(WatchStep::Phase(ending)) = seen.last() else { unreachable!() };
+    assert_eq!(ending.input_at, Some(at), "a change of phase carries the input time: {ending:?}");
+}
+
+/// The terminal's own reply to a query is not typed input. An agent asks the terminal what it is (`ESC [ c`); the
+/// capsule answers, the agent reads the answer, and the status holds no input time: the reply is written to the
+/// terminal directly and never passes the request queue that typed input passes.
+#[test]
+fn the_terminals_own_reply_to_a_query_is_not_typed_input() {
+    let _serial = serial();
+    let runtime = private_runtime_dir();
+    std::env::set_var("SOT_RUNTIME_DIR", runtime.path());
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = dir.path().join("state");
+    // The agent reads the seven bytes of the reply itself and says so; with no reply it waits and the test ends here.
+    let script = "stty -icanon -echo; printf '\\033[c'; r=$(dd bs=1 count=7 2>/dev/null); stty sane; \
+                  case \"$r\" in *'?1;0c') echo terminal-answered ;; *) echo another-answer ;; esac; exec cat";
+    let (_supervisor, path) = supervisor_running(runtime.path(), &state_dir, &[], script);
+    let mut viewer = dial(&path);
+    viewer.attach(80, 24, true).expect("attach as the driver");
+    read_until(&mut viewer, "terminal-answered", Duration::from_secs(20));
+    let (_watch, ready) = ready_watch(&state_dir);
+    assert_eq!(ready.input_at, None, "the terminal's reply was counted as typed input: {ready:?}");
+    let mut manager = dial(&path);
+    assert!(status(&mut manager).get("input_at").is_none(), "the status holds an input time with nothing typed");
 }

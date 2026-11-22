@@ -131,3 +131,16 @@ fn a_build_cut_at_the_bound_keeps_whole_characters() {
     assert_eq!(req.build.len(), MAX_BUILD_BYTES - 1, "cut back to the boundary, never past the bound");
     assert!(req.build.chars().skip(1).all(|c| c == 'é'));
 }
+
+/// The status payload grows by one optional field and the row number stays: a status from a supervisor older than the
+/// field reads as no input time and is written back without the key, and one that carries an input time keeps it.
+#[test]
+fn a_status_without_an_input_time_reads_as_none() {
+    let old = serde_json::json!({"phase": "ready", "run": "run-one"});
+    let status: StatusRes = serde_json::from_value(old.clone()).unwrap();
+    assert_eq!(serde_json::to_value(&status).unwrap(), old, "no input time, no key");
+    let new = serde_json::json!({"phase": "ready", "run": "run-one", "input_at": 1_767_225_600u64});
+    let status: StatusRes = serde_json::from_value(new.clone()).unwrap();
+    assert_eq!(serde_json::to_value(&status).unwrap(), new, "an input time is kept");
+    assert_eq!(ROW_PROTOCOL, 1, "an optional field is no new row number");
+}

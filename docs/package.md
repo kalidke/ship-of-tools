@@ -196,8 +196,12 @@ seconds until every row is shaped, PREVIEW-TABLES-FIRST-VIEW-SHAPES-ALL and PREV
 return renders the session's whole parked document again before its
 first frame, PREVIEW-DOCUMENT-RESHAPED-AT-EVERY-ARRIVAL). Also on `main` past the release, asked by the maintainer on
 2026-11-22 and used by no person yet: a new session starts first in the session strip's recent order, and a session
-with no agent is placed by its creation where it sorted last; typing into a session does not move it yet
-(RECENT-ORDER-LEAVES-SESSIONS-WITHOUT-AN-AGENT, open; built, not landed); and `sotd status` ends each row with the
+with no agent is placed by its creation where it sorted last; typing into any session's terminal, by a person or by
+another session, moves it, at most 10 s behind, where what a program prints does not
+(RECENT-ORDER-LEAVES-SESSIONS-WITHOUT-AN-AGENT, Closed; mail moves a session only through what follows it, the
+wake's typed line for an idle Claude session or the turn a Codex session's queue request starts, the second by the
+code and not seen in a live row, so mail to a busy session or with a refused wake moves none,
+MAIL-ALONE-MOVES-NO-SESSION, open); and `sotd status` ends each row with the
 state of that computer's update (up to date and when it was checked, a release found, preparing, ready and what
 applies it, not applied or off with the reason), with one line of the same in `sot-fe version`, where the one sign
 had been a notice held 10 s; the window shows nothing of it yet (UPDATE-STATE-NOT-SHOWN, open until its mark is
