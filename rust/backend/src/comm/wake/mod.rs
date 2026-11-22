@@ -99,6 +99,8 @@ use crate::rows::run::headless::HeadlessError;
 use crate::rows::Workspaces;
 
 mod attempt;
+#[allow(dead_code, reason = "the tick does not call it yet: a Codex row is still skipped")]
+mod codex;
 pub(crate) mod screen;
 mod unread;
 

@@ -38,6 +38,14 @@ mkdir -p "$STUB_DIR"
 CODEX_LOG="$WORK/codex.log"; JOIN_LOG="$WORK/join.log"
 cat > "$STUB_DIR/codex" <<'STUB'
 #!/bin/sh
+if [ "$*" = 'queue --help' ]; then
+    case "${QUEUE_HELP:-both}" in
+        both) echo 'Usage: codex queue [OPTIONS] --thread <THREAD> --message <TEXT>' ;;
+        *) echo "Usage: codex queue [OPTIONS] --$QUEUE_HELP <VALUE>" ;;
+    esac
+    exit 0
+fi
+[ "$1" != queue ] || echo "Queued message item for thread $3."
 if [ "$*" = --help ] || [ "$*" = '--no-daemon --help' ]; then
     echo "$# $*" >> "$CODEX_LOG_PATH.help"
     echo 'probe stdout'
@@ -225,6 +233,49 @@ case_native_cannot_run() (
         [ "$(grep -Fc "$STUB_DIR/codex" "$WORK/err")" = "$(grep -Fc "$STUB_DIR/codex" "$WORK/native-err")" ]
 )
 check "an unrunnable native binary reports the launch failure once and leaves no marker" case_native_cannot_run
+
+# run_queue [ENV=VALUE...] : ccx --queue as the daemon runs it, in a project dir with an empty Codex home; stdout to
+# $WORK/out, stderr to $WORK/err
+QUEUE_ID=aaaaaaaa-1111-4222-8333-444444444444
+QUEUE_LINE='[sot-comm] you have mail: run comm-poll.sh'
+run_queue() {
+    local proj="$WORK/projects/q"
+    rm -rf "${CODEX_LOG:?}" "${JOIN_LOG:?}" "$WORK/queue-home"
+    mkdir -p "$proj" "$WORK/queue-home"
+    (
+        cd "$proj" || exit 1
+        env CODEX_LOG_PATH="$CODEX_LOG" JOIN_LOG_PATH="$JOIN_LOG" CONTEXT_NAME=proj-box1 \
+            PATH="$STUB_DIR:$PATH" CODEX_HOME="$WORK/queue-home" "$@" \
+            bash "$CCX" --queue "$QUEUE_ID" "$QUEUE_LINE" >"$WORK/out" 2>"$WORK/err" </dev/null
+    )
+}
+
+case_queue_runs_the_native_queue_and_nothing_else() {
+    run_queue || { cat "$WORK/err"; return 1; }
+    [ "$(cat "$WORK/out")" = "Queued message item for thread $QUEUE_ID." ] &&
+        [ "$(cat "$CODEX_LOG")" = "$(printf '%s\n' queue --thread "$QUEUE_ID" --message "$QUEUE_LINE")" ] &&
+        [ ! -e "$JOIN_LOG" ] && [ -z "$(ls -A "$WORK/queue-home")" ] && [ ! -s "$WORK/err" ]
+}
+check "ccx --queue runs Codex's queue for the conversation and joins, trusts and starts nothing" case_queue_runs_the_native_queue_and_nothing_else
+
+case_queue_refuses_a_binary_without_the_command() {
+    local only
+    for only in thread message; do
+        run_queue QUEUE_HELP="$only"
+        [ "$?" = 69 ] && [ ! -s "$WORK/out" ] && grep -q '^ccx: no queue: ' "$WORK/err" && [ ! -e "$CODEX_LOG" ] ||
+            { echo "  help names only --$only: $(cat "$WORK/err")"; return 1; }
+    done
+}
+check "ccx --queue refuses with status 69 before running a binary whose help lacks either option" case_queue_refuses_a_binary_without_the_command
+
+case_queue_without_codex_refuses_and_opens_no_shell() {
+    local bin="$WORK/shell-only" runner
+    runner=$(command -v bash) || return 1
+    [ -x "$bin/bash" ] || return 1
+    HOME="$WORK/empty-home" PATH="$bin" "$runner" "$CCX" --queue "$QUEUE_ID" "$QUEUE_LINE" >"$WORK/out" 2>"$WORK/err"
+    [ "$?" = 69 ] && [ ! -s "$WORK/out" ] && [ "$(cat "$WORK/err")" = 'ccx: no queue: codex not found' ]
+}
+check "ccx --queue with no Codex refuses with status 69 and opens no shell" case_queue_without_codex_refuses_and_opens_no_shell
 
 echo "---"
 echo "PASS=$PASS FAIL=$FAIL"

@@ -19,9 +19,10 @@
 # which may carry another agent's nesting markers.
 unset CLAUDE_CODE_FORK_SUBAGENT CLAUDE_CODE_CHILD_SESSION CLAUDE_CODE_TEAMMATE_MODE CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS CLAUDECODE AI_AGENT CLAUDE_CODE_SESSION_ID
 
-RESUME_ID=""; FRESH=0; CONTINUE=0; CAPSULE=0; MARKER=""
+RESUME_ID=""; FRESH=0; CONTINUE=0; CAPSULE=0; MARKER=""; QUEUE=0; QUEUE_THREAD=""; QUEUE_LINE=""
 while [ $# -gt 0 ]; do
     case "$1" in
+        --queue) QUEUE=1; QUEUE_THREAD="$2"; QUEUE_LINE="$3"; shift 2 ;;
         --fresh) FRESH=1 ;;
         --resume) RESUME_ID="$2"; shift ;;
         --continue) CONTINUE=1 ;;
@@ -46,6 +47,7 @@ if [ -z "$CODEX_BIN" ]; then
     done
 fi
 if [ -z "$CODEX_BIN" ]; then
+    [ "$QUEUE" = 0 ] || { echo "ccx: no queue: codex not found" >&2; exit 69; }
     echo "ccx: codex not found (install codex-cli and run 'codex login')" >&2
     exec bash   # leave a usable shell in the pane rather than dying silently
 fi
@@ -54,6 +56,19 @@ fi
 # session vanish silently (the 2026-07-05 boot_failed class). node lives
 # next to codex in the nvm bin dir; put that dir on PATH.
 export PATH="$(dirname "$CODEX_BIN"):$PATH"
+
+# --queue <conversation id> <line>: the daemon's mail wake for a Codex row (messaging's contract, Waking). The binary
+# and its home are the ones resolved above, as for the row's leg; nothing is joined, trusted, written or started.
+# Codex's own queue command runs only when its help names both options. A refusal before that is the launcher's own:
+# status 69 and a line that starts `ccx: no queue:`, and nothing was stored. Anything after it is Codex's.
+if [ "$QUEUE" = 1 ]; then
+    help="$("$CODEX_BIN" queue --help </dev/null 2>/dev/null)" || help=
+    case "$help" in *--thread*) case "$help" in *--message*)
+        exec "$CODEX_BIN" queue --thread "$QUEUE_THREAD" --message "$QUEUE_LINE" </dev/null ;;
+    esac ;; esac
+    echo "ccx: no queue: $CODEX_BIN has no queue command that takes --thread and --message" >&2
+    exit 69
+fi
 
 COMM="${SOT_COMM_HOME:-$HOME/.sot-comm}/bin"
 

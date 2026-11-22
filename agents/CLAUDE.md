@@ -249,11 +249,21 @@ of each.
     (docs/defects.md: CODEX-ROW-NO-SCROLLBACK). `ccx` chooses no handle
     (decision 0031): it joins with no name and names, in Codex's first prompt, the handle `comm-context.sh` reads back; a
     join that gives none still starts Codex, with a prompt that names none and one stderr line saying so; it starts a
-    fresh conversation unless `--continue` or `--resume` is given (`--fresh` wins over `--continue`). Limits: `ccx` runs
+    fresh conversation unless `--continue` or `--resume` is given (`--fresh` wins over `--continue`).
+    `ccx --queue <conversation id> <line>` is the launcher's other mode, a request to a conversation instead of a
+    launch: with the binary resolved as for a launch it joins nothing, trusts no folder, writes nothing and starts no
+    session. It asks `codex queue --help`, and when that help names both `--thread` and `--message` it execs `codex
+    queue --thread <id> --message <line>`, whose output and status are then Codex's own. With no binary, or one whose
+    help lacks either option, it exits 69 with one stderr line that starts `ccx: no queue:`, before Codex's queue
+    command has run. Its caller is messaging's queue runner (`rust/backend/src/comm/wake/codex.rs`), which the
+    wake's tick does not call yet; that runner never runs an installed `ccx` whose text lacks the mode, since an older
+    one would read the flag as nothing and start a session. That test is of the file's text (`--queue)`): a `ccx` of
+    a person's own that wraps the installed one lacks it and is refused, and any file at that name whose text holds it
+    anywhere is run with the three arguments. Limits: `ccx` runs
     Codex with its approvals and its sandbox bypassed, and is bash: it has no Windows form. Test:
     `tests/test-ccb-agent-exec.sh` (the ladder and the order), `tests/test-ccx-launch.sh` (one quiet parser
-    probe, including misleading help text, rejection, a signal and a binary that cannot run),
-    `tests/test-ccx-resume-default.sh` (the resume parser for explicit resume and continue).
+    probe, including misleading help text, rejection, a signal and a binary that cannot run; the three `ccx --queue`
+    cases), `tests/test-ccx-resume-default.sh` (the resume parser for explicit resume and continue).
 11. **The tools run under macOS's bash 3.2 and Git Bash.** They use no bash 4 feature, as messaging's scripts do
     (`comm/CLAUDE.md`). Limit: the proof is the hosted run of `scripts/tests/under-bash.sh` on macOS and on a built bash
     3.2.57 on Linux (a new suite joins by its name); it runs a suite's own body in the newer shell and puts bash 3.2
