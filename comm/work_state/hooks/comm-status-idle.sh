@@ -240,7 +240,9 @@ fi
 # results are `user` records too). One jq pass over that slice feeds two
 # things: the effort counter (tool calls + wall seconds) and the closing text
 # the marker check below searches. A full tail without its prompt gives
-# lower bounds. A short tail without a prompt contributes only marker text.
+# lower bounds only if it contains Claude records. A Codex rollout from a
+# Stop without a turn ID cannot establish Claude effort from its span.
+# A short tail without a prompt contributes only marker text.
 #
 # The text is EVERY assistant text block in the slice, joined in order, not
 # just the last assistant record's (2026-09-14, live incident: a long reply
@@ -280,16 +282,19 @@ if [ -z "$turn_id" ] && [ -n "$tp" ] && [ -r "$tp" ]; then
         | [.[] | select(.stop_feedback? == null)]
         | ([to_entries[] | select(.value | is_prompt and (is_own_feedback($fb) | not)) | .key] | last) as $h
         | (if $h == null then . else .[$h+1:] end) as $turn
-        | ([$turn[] | select(.type=="assistant") | .message.content[]? | select(.type?=="text") | .text] | join("\n")) as $text
+        | ([$turn[] | select(.type=="assistant") | .message.content? | .[]? | select(.type?=="text") | .text] | join("\n")) as $text
         | if $h == null and (length < $limit or all(.[]; .type!="assistant" and .type!="user" and .type!="progress" and .type!="system"))
           then {text: $text, prompt: ""}
           else
-            (try ([$turn[] | select(.type=="assistant") | .message.content[] | select(.type=="tool_use")] | length) catch null) as $n
+            [$turn[] | select(.type=="assistant") | (.message.content? // null)
+             | if type=="array" then .[] | ((.type? | strings) // null) else null end] as $kinds
+            | any($kinds[]; .==null) as $partial
             | (if $h==null then [$turn[] | .timestamp | secs(true)]
                else [.[$h].timestamp, ([$turn[] | select(.type=="assistant") | .timestamp // empty] | last)]
-                    | map(secs(false) // null) end) as $times
+                    | map(secs($partial) // null) end) as $times
             | ($times[0]) as $t0 | ($times[-1]) as $t1
-            | {tools:$n, secs:(if ($times|length)>=2 and $t0!=null and $t1 >= $t0 then ($t1 - $t0 | floor) else null end), lower:($h==null),
+            | {tools:([$kinds[] | select(.=="tool_use")] | length), lower:($h==null or $partial),
+               secs:(if ($times|length)>=2 and $t0!=null and $t1 >= $t0 then ($t1 - $t0 | floor) else null end),
                text:$text, prompt:(if $h==null then "" else .[$h] | prompt_of end)}
           end' 2>/dev/null)"
     counts="$(printf '%s' "$turn_json" | jq -j '[.lower,.tools,.secs] | join("|")' 2>/dev/null)"
@@ -613,15 +618,12 @@ if [ "$origin" = user ] && [ -n "$turn_id" ] && [ -f "$tp" ] && [ -r "$tp" ]; th
         | if $start==null then select(length==$limit and any(.[]; .type=="response_item" or .type=="event_msg" or .type=="turn_context")
                                     and all(.[] | .payload.turn_id? // empty; .==$id))
           else select(.[$start].payload.turn_id==$id) | .[$start:] end
-        | (first(to_entries[] | select(.value | event("task_complete") and .payload.turn_id==$id) | .key)
-           // (length-1)) as $finish
-        | select($finish > 0) | .[:$finish+1]
         | (if $start==null then [.[] | .timestamp | try seconds catch empty]
            else [first.timestamp,last.timestamp] | map(try (seconds // null) catch null) end) as $times
         | ((select(($times|length)>=2) | ($times[-1]|numbers) - ($times[0]|numbers) | floor | select(. >= 0)) // null) as $secs
-        | ([.[] | select(.type=="response_item") | .payload.type]
-           | if all(.[]; type=="string") then map(select(endswith("_call"))) | length else null end) as $n
-        | [($start==null),$n,$secs] | join("|")' 2>/dev/null)" || counts=""
+        | [.[] | select(.type=="response_item") | ((.payload.type? | strings) // null)] as $kinds
+        | [($start==null or any($kinds[]; .==null)), ([$kinds[] | strings | select(endswith("_call"))] | length), $secs]
+        | join("|")' 2>/dev/null)" || counts=""
 fi
 IFS='|' read -r lower turn_tools turn_secs <<< "$counts"
 if [ "$origin" = user ] &&

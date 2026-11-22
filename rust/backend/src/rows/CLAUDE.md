@@ -319,15 +319,20 @@ its name:
 - The Stop hook checks directed mail first. On an unmarked human turn, eight calls or five minutes qualify for
   an effort reminder. For Codex the hook matches the payload's `turn_id` to the rollout's `task_started`, counts
   tool-call response items once, and measures elapsed time from the turn's start to its last recorded activity.
-  Either measurement can trigger a reminder on its own. A missing measurement stays out of the message.
-  Limits: the hook reads the last 3,000 transcript lines. When a full tail lacks the turn start, its visible
-  calls and the interval between its first and last usable timestamps are lower bounds. The reminder labels
-  them as such. A shorter tail without a start or a Codex tail with a conflicting turn ID establishes neither.
+  Either measurement can trigger a reminder on its own. When a call record is unreadable, the hook counts
+  the calls it can identify and labels both available measurements as lower bounds. It omits an unknown duration.
+  Limits: the hook reads the last 3,000 transcript lines. Without a turn start it uses a tail only when full,
+  with a record kind from the expected agent, and, for Codex, when every visible turn ID agrees with the Stop.
+  It reports the visible calls and the interval between the first and last usable timestamps as lower bounds.
+  A full Codex rollout therefore supplies neither measure to a Stop without a usable string `turn_id`, which
+  follows the Claude path.
   The Codex Stop fields come from the installed schema and the rollout shapes from session files. No live Stop
   payload was captured. Codex can declare a closing marker in `last_assistant_message`. The turn auditor reads
   Claude assistant records and returns unavailable for a Codex rollout, so a final question mark on an otherwise
   unmarked turn can trigger the legacy reminder once. The hooks target jq 1.6. Gate hosts use newer jq versions,
-  so `comm/tests/test-status-floor.sh` checks shipped jq variable names against 1.6 keywords in source.
+  so `comm/tests/test-status-floor.sh` checks variable names against 1.6 keywords in source. That scan leaves
+  other syntax, built-in functions and their behavior, and indirectly supplied programs unchecked
+  (docs/defects.md: JQ-16-FLOOR-CHECKED-BY-NAMES-ONLY).
 - Two reader paths. `workspace.list` carries each row's `agent_state`, `agent_summary` and `agent_status_at`, read fresh
   from the registry through the row's bound handle and only from an entry of this host (`work_state::shown_of`); the
   work-state poll compares the same answer every 1.5 s and publishes `workspace.changed` (action `agent_state`) when what

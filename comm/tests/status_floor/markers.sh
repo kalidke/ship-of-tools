@@ -497,12 +497,41 @@ case_unknown_effort() {  # TRANSCRIPT CONDITION
     out="$(codex_stop "$tr" "SITREP: Complete" true)" || return 1
     [ -z "$out" ] && expect done/-/-/-/d marked && [ "$(summ)" = Complete ]
 }
-case_claude_without_turn_boundary() {
+case_codex_tail_without_boundary() {  # conflicting-id or missing-id
+    local tr="$WORK/codex.jsonl" out
+    seed idle; W "$GENUINE"; codex_rollout 1000 361 || return 1
+    if [ "$1" = conflicting-id ]; then
+        printf '%s\n' '{"type":"event_msg","payload":{"type":"item_completed","turn_id":"older"}}' >> "$tr"
+        out="$(codex_stop "$tr" "Finished.")" || return 1
+    else
+        out="$(jq -nc --arg p "$tr" '{transcript_path:$p,last_assistant_message:"Finished."}' | bash "$HOOKS_DIR/comm-status-idle.sh")" || return 1
+    fi
+    [ -z "$out" ] && expect done/-/-/-/d end || { echo "    unexpected hold: $out"; return 1; }
+}
+case_claude_without_turn_boundary() {  # RECORDS [codex]
     local tr="$WORK/claude-tail.jsonl" out
     seed idle; W "$GENUINE"
-    jq -nc 'range(10) | {type:"assistant", message:{content:[{type:"tool_use"}]}}' > "$tr"
-    out="$(printf '%s' "$tr" | jq -Rsc '{transcript_path:.,stop_hook_active:false}' | bash "$HOOKS_DIR/comm-status-idle.sh")"
+    jq -nc --argjson n "$1" 'range($n) | {type:"assistant",timestamp:((1760000000+.)|todate),
+        message:{content:[{type:"tool_use"}]}}' > "$tr" || return 1
+    if [ "${2:-}" = codex ]; then out="$(codex_stop "$tr" "Finished.")" || return 1
+    else out="$(jq -nc --arg p "$tr" '{transcript_path:$p}' | bash "$HOOKS_DIR/comm-status-idle.sh")" || return 1; fi
     [ -z "$out" ] && expect done/-/-/-/d end || { echo "    missing prompt produced a hold: $out"; return 1; }
+}
+case_partial_call_count() {  # codex, claude-block, or claude-message
+    local tr="$WORK/partial.jsonl" out
+    seed idle; W "$GENUINE"
+    if [ "$1" = codex ]; then
+        codex_rollout 9 61 || return 1
+        jq -c 'if .payload.type=="message" then .payload.type=42 else . end' "$WORK/codex.jsonl" > "$tr" || return 1
+        out="$(codex_stop "$tr" "Finished.")" || return 1
+    else
+        jq -nc --arg shape "$1" '{type:"user",timestamp:"2026-01-01T00:00:00Z",message:{content:"go"}},
+            (([range(9)|{type:"tool_use"}]) as $calls
+             | (if $shape=="claude-block" then {content:($calls+[42])} else {content:$calls}, 42 end)
+             | {type:"assistant",timestamp:"2026-01-01T00:01:01Z",message:.})' > "$tr" || return 1
+        out="$(jq -nc --arg p "$tr" '{transcript_path:$p}' | bash "$HOOKS_DIR/comm-status-idle.sh")" || return 1
+    fi
+    effort_message "$out" "at least 9 tool calls over at least 1 min"
 }
 case_claude_measurement() {  # NUMBER-OF-CALLS START-TIMESTAMP END-TIMESTAMP EXPECTED-MEASURE
     local tr="$WORK/claude-measured.jsonl" out

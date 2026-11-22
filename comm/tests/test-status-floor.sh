@@ -296,13 +296,20 @@ done
 for condition in empty other stale; do
     check "unknown Codex effort ($condition) still honors mail before the final marker" case_unknown_effort "$condition"
 done
-check "a Claude tail without a prompt has unknown effort" case_claude_without_turn_boundary
+check "a 2999-record Claude tail without a prompt has unknown effort" case_claude_without_turn_boundary 2999
+check "a Codex Stop cannot use a full tail of Claude records" case_claude_without_turn_boundary 3000 codex
+check "a full Codex tail with a conflicting turn ID establishes no effort" case_codex_tail_without_boundary conflicting-id
+check "a Stop with no turn ID cannot use a full tail of Codex records" case_codex_tail_without_boundary missing-id
 check "Claude holds a long turn on the measured lower bounds in its tail" case_full_tail claude
 check "Codex holds a long turn on the measured lower bounds in its tail" case_full_tail codex
 check "Claude holds a full tail of progress records on elapsed time alone" case_quiet_full_tail claude
 check "Codex holds a full tail of turn events on elapsed time alone" case_quiet_full_tail codex
 check "Claude holds on eight calls with no known duration" case_claude_measurement 8 "" "" "8 tool calls"
-check "Claude holds on the duration even when the call blocks are unreadable" case_claude_measurement null "2026-01-01T00:00:00Z" "2026-01-01T00:06:00Z" "6 min"
+check "Claude holds on the duration even when the call blocks are unreadable" case_claude_measurement null "2026-01-01T00:00:00Z" "2026-01-01T00:06:00Z" "at least 0 tool calls over at least 6 min"
+check "a partial Claude count just below five minutes floors without rounding up" case_claude_measurement null "2026-01-01T00:00:00.875Z" "2026-01-01T00:05:00.125Z" ""
+check "Claude counts the observed calls alongside unreadable call records" case_partial_call_count claude-block
+check "an unreadable assistant message preserves Claude's observed calls" case_partial_call_count claude-message
+check "Codex counts the observed calls alongside unreadable response items" case_partial_call_count codex
 check "Claude reports zero elapsed minutes for equal timestamps" case_claude_measurement 8 "2026-01-01T00:00:00Z" "2026-01-01T00:00:00Z" "8 tool calls over 0 min"
 check "a short turn with unknown duration ends without a numeric comparison error" case_claude_measurement 1 "" "" ""
 check "Codex counts eight calls even when the clock runs backwards" case_codex_effort 8 -60 "This turn ran 8 tool calls and ends"
