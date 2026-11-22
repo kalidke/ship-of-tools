@@ -127,8 +127,7 @@ if [ -n "$RESUME_ID" ]; then
     PROMPT="Your pane was restarted; this is the same conversation resumed. $PROMPT Then continue exactly where you left off."
 fi
 # Probe the command being launched. Older Codex versions can still start with their usual arguments.
-if native_help=$("$CODEX_BIN" "${help_command[@]}" --help) &&
-   grep -Eq '^[[:space:]]*--no-daemon([[:space:]]|$)' <<< "$native_help"; then
+if { "$CODEX_BIN" "${help_command[@]}" --no-daemon --help; } </dev/null >/dev/null 2>&1; then
     set -- "$@" --no-daemon
 fi
 stamped=

@@ -36,9 +36,10 @@ ARGV_LOG="$WORK/argv.log"
 cat > "$STUB_DIR/codex" <<'EOF'
 #!/bin/sh
 case "$*" in
-    --help|'resume --help')
-        echo "$*" >> "$ARGV_LOG_PATH.help"
-        if [ "$*" = --help ] || [ "${RESUME_FLAG:-listed}" = listed ]; then echo '  --no-daemon'; fi
+    '--no-daemon --help'|'resume --no-daemon --help'|--help|'resume --help')
+        echo "$# $*" >> "$ARGV_LOG_PATH.help"
+        echo '  --no-daemon'
+        if [ "$*" = 'resume --no-daemon --help' ] && [ "${RESUME_FLAG:-accepted}" = rejected ]; then exit 2; fi
         exit 0 ;;
 esac
 : > "$ARGV_LOG_PATH"
@@ -199,17 +200,17 @@ case_resumed_marker() {
         cp "$SCRIPT_DIR/../sot-selection-hook.sh" "$EMPTY_COMM_HOME/bin/" || return 1
     rm -f "$marker" "$ARGV_LOG" "$ARGV_LOG.help"
     RESUME_FLAG="$support" SOT_SELECTION_FILE="$WORK/selection.json" run_ccx --capsule --selection-marker "$marker" "$@" || return 1
-    [ "$(cat "$ARGV_LOG.help")" = 'resume --help' ] && [ "$(sed -n 1p "$ARGV_LOG")" = resume ] || return 1
-    if [ "$support" = listed ]; then
+    [ "$(cat "$ARGV_LOG.help")" = '3 resume --no-daemon --help' ] && [ "$(sed -n 1p "$ARGV_LOG")" = resume ] || return 1
+    if [ "$support" = accepted ]; then
         [ "$(grep -Fxc -- --no-daemon "$ARGV_LOG")" = 1 ] && [ -f "$marker" ] && [ ! -s "$marker" ]
     else
         ! grep -Fxq -- --no-daemon "$ARGV_LOG" && [ ! -e "$marker" ]
     fi
 }
-check "an explicit resume marks the capsule leg" case_resumed_marker listed --resume "$ROLLOUT_ID"
-check "a continue marks the resumed capsule leg" case_resumed_marker listed --continue
-check "an explicit resume without flag support starts with text held" case_resumed_marker absent --resume "$ROLLOUT_ID"
-check "a continue without flag support starts with text held" case_resumed_marker absent --continue
+check "an explicit resume marks the capsule leg" case_resumed_marker accepted --resume "$ROLLOUT_ID"
+check "a continue marks the resumed capsule leg" case_resumed_marker accepted --continue
+check "an explicit resume without flag support starts with text held" case_resumed_marker rejected --resume "$ROLLOUT_ID"
+check "a continue without flag support starts with text held" case_resumed_marker rejected --continue
 
 echo "---"
 echo "PASS=$PASS FAIL=$FAIL"

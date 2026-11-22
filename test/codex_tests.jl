@@ -213,7 +213,7 @@ end
                 marker = joinpath(home, "selection-hook")
                 native = joinpath(tools, "codex")
                 write(native, raw"""#!/bin/sh
-                    if [ "$*" = --help ]; then echo '  --no-daemon'; exit 0; fi
+                    if [ "$*" = '--no-daemon --help' ]; then exit 0; fi
                     for arg do
                         if [ "$arg" = --no-daemon ] && [ -f "$TEST_MARKER" ] && [ ! -s "$TEST_MARKER" ]; then
                             echo marked

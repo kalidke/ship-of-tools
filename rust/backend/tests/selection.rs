@@ -22,7 +22,7 @@ use support::{
 fn write_recording_agent(dir: &Path, name: &str, record: &Path) {
     std::fs::create_dir_all(dir).expect("mkdir stub bin");
     let script = format!(r#"#!/bin/sh
-if [ "$*" = --help ]; then echo '  --no-daemon'; exit 0; fi
+if [ "$*" = '--no-daemon --help' ]; then exit 0; fi
 env > '{r}.part' && mv '{r}.part' '{r}'
 exec sleep 120
 "#, r = record.display());

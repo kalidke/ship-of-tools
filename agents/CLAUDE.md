@@ -215,9 +215,10 @@ of each.
     claude` with the caller's flags in order (guarantee 1), or says `ccb: sotd not found` and exits 1. `ccx` has no
     daemon recipe behind it: it builds the Codex argv itself (`codex [resume <id>]
     --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust --no-alt-screen -c 'plugins.sot-row@sot-local.enabled=true' [--no-daemon] <prompt>`), requesting
-    inline rendering on fresh and resumed launches. Once per launch, `ccx` reads `codex --help` for a fresh
-    conversation or `codex resume --help` for a resolved resume, including a continue. It adds `--no-daemon`
-    only when that help succeeds and lists the option. Codex 0.171.0's help describes inline mode as preserving terminal
+    inline rendering on fresh and resumed launches. Once per launch, `ccx` runs `codex --no-daemon --help` for a
+    fresh conversation or `codex resume --no-daemon --help` for a resolved resume, including a continue. It adds
+    `--no-daemon` only on exit 0. The probe has no terminal input or output and waits for the native parser to exit.
+    Codex 0.171.0's help describes inline mode as preserving terminal
     scrollback. The stub tests verify only the arguments. The capsule keeps up to 200 rows of scrollback, as it does
     for Claude. A person's check in a real Codex row is still needed to see whether inline history reaches that buffer,
     whether the view survives reattachment and resizing, and how the composer and menus appear in the window
@@ -226,8 +227,9 @@ of each.
     join that gives none still starts Codex, with a prompt that names none and one stderr line saying so; it starts a
     fresh conversation unless `--continue` or `--resume` is given (`--fresh` wins over `--continue`). Limits: `ccx` runs
     Codex with its approvals and its sandbox bypassed, and is bash: it has no Windows form. Test:
-    `tests/test-ccb-agent-exec.sh` (the ladder and the order), `tests/test-ccx-launch.sh`,
-    `tests/test-ccx-resume-default.sh`.
+    `tests/test-ccb-agent-exec.sh` (the ladder and the order), `tests/test-ccx-launch.sh` (one quiet parser
+    probe, including misleading help text, rejection, a signal and a binary that cannot run),
+    `tests/test-ccx-resume-default.sh` (the resume parser for explicit resume and continue).
 11. **The tools run under macOS's bash 3.2 and Git Bash.** They use no bash 4 feature, as messaging's scripts do
     (`comm/CLAUDE.md`). Limit: the proof is the hosted run of `scripts/tests/under-bash.sh` on macOS and on a built bash
     3.2.57 on Linux (a new suite joins by its name); it runs a suite's own body in the newer shell and puts bash 3.2

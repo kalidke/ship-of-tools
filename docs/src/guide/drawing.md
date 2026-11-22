@@ -169,7 +169,7 @@ a Codex session started before this release answers `held` until you restart the
 End the session (`Shift+d` twice on it in Sessions mode) and start a new one in the same folder, then select or draw
 again. Use `/resume` in the new session to return to an earlier conversation. If a new session still says `held`,
 run the installer on the computer running the session, then restart the session and select the text again.
-Codex also needs a version that lists `--no-daemon` in its help for that launch. See [Updating](updating.md).
+Codex also needs a version that accepts `--no-daemon` for that launch. See [Updating](updating.md).
 
 ## Other things the window says
 

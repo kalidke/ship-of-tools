@@ -38,15 +38,21 @@ mkdir -p "$STUB_DIR"
 CODEX_LOG="$WORK/codex.log"; JOIN_LOG="$WORK/join.log"
 cat > "$STUB_DIR/codex" <<'STUB'
 #!/bin/sh
-if [ "$*" = --help ]; then
-    echo "$*" >> "$CODEX_LOG_PATH.help"
-    case "${FLAG_HELP:-listed}" in
-        absent) echo '  --no-daemon-extra' ;;
-        *) echo '  --no-daemon' ;;
+if [ "$*" = --help ] || [ "$*" = '--no-daemon --help' ]; then
+    echo "$# $*" >> "$CODEX_LOG_PATH.help"
+    echo 'probe stdout'
+    echo 'probe stderr' >&2
+    if [ "$*" = --help ]; then
+        printf '%s\n' '  --other-option  Use this when' '                  --no-daemon is unavailable.'
+        exit 0
+    fi
+    case "${PROBE_RESULT:-accept}" in
+        reject) exit 2 ;;
+        failed) exit 1 ;;
+        signal) kill -TERM "$$" ;;
     esac
     [ -z "${REPLACE_AFTER_HELP:-}" ] || mv "$REPLACE_AFTER_HELP" "$0" || exit 1
-    [ "${FLAG_HELP:-}" != failed ]
-    exit $?
+    exit 0
 fi
 for a in "$@"; do printf '%s\n' "$a"; done > "$CODEX_LOG_PATH"
 printf '%s\n' "${SOT_SELECTION_FILE-<unset>}" > "$CODEX_LOG_PATH.sel"
@@ -69,13 +75,13 @@ chmod +x "$STAGE/comm-context.sh"
 run_ccx() {
     local name="$1" proj="$WORK/projects/p"
     shift
-    mkdir -p "$proj"
+    mkdir -p "$proj" "$WORK/codex-home"
     rm -f "${CODEX_LOG:?}" "$CODEX_LOG.help" "$CODEX_LOG.marked" "${JOIN_LOG:?}"
     (
         cd "$proj" || exit 1
         env CODEX_LOG_PATH="$CODEX_LOG" JOIN_LOG_PATH="$JOIN_LOG" CONTEXT_NAME="$name" \
             PATH="$STUB_DIR:$PATH" CODEX_HOME="$WORK/codex-home" "$@" \
-            bash "$CCX" --fresh ${CCX_FLAG-} --selection-marker "$MARKER" >/dev/null 2>"$WORK/err"
+            bash "$CCX" --fresh ${CCX_FLAG-} --selection-marker "$MARKER" >"$WORK/out" 2>"$WORK/err"
     )
 }
 
@@ -137,7 +143,7 @@ check "a ccx started without --capsule drops the selection file it inherited" ca
 
 case_marker_condition() (
     local change="$1" cache="$WORK/codex-home/plugins/cache/sot-local/sot-row/0.1.0"
-    local later="$cache/../0.2.0" help=listed replacement= flag_count=1
+    local later="$cache/../0.2.0" probe=accept replacement= flag_count=1
     local src="$SCRIPT_DIR/../codex/row-hooks.json" script="$STAGE/sot-selection-hook.sh" path="$WORK/row selection"
     mkdir -p "$cache/hooks" "$cache/.codex-plugin" || exit 1
     cp "$src" "$cache/hooks/hooks.json" || exit 1
@@ -157,19 +163,20 @@ case_marker_condition() (
         malformed) printf '{' > "$cache/hooks/hooks.json" ;;
         hand) CCX_FLAG= ;;
         unwritable) MARKER="$WORK/missing-parent/marker" ;;
-        old-codex) help=absent; flag_count=0 ;;
-        failed-help) help=failed; flag_count=0 ;;
+        old-codex) probe=reject; flag_count=0 ;;
+        failed-help) probe=failed; flag_count=0 ;;
+        signaled-probe) probe=signal; flag_count=0 ;;
         argv-no-flag) sed 's/^    set -- "\$@" --no-daemon$/    :/' "$CCX" > "$WORK/ccx-no-flag" || exit 1
             CCX="$WORK/ccx-no-flag"; flag_count=0 ;;
         failed-exec) cp "$STUB_DIR/codex" "$WORK/good-codex" || exit 1
             replacement="$WORK/broken-codex"
             printf '#!/no/such/interpreter\n' > "$replacement" && chmod +x "$replacement" || exit 1 ;;
     esac
-    run_ccx proj-box1 SOT_SELECTION_FILE="$path" OBSERVE_MARKER="$MARKER" FLAG_HELP="$help" REPLACE_AFTER_HELP="$replacement"
+    run_ccx proj-box1 SOT_SELECTION_FILE="$path" OBSERVE_MARKER="$MARKER" PROBE_RESULT="$probe" REPLACE_AFTER_HELP="$replacement"
     local status=$?
     chmod +x "$script"
     [ "$change" != extra-version ] || rm -rf -- "$later" || exit 1
-    [ "$(cat "$CODEX_LOG.help")" = --help ] || exit 1
+    [ "$(cat "$CODEX_LOG.help")" = '2 --no-daemon --help' ] || exit 1
     if [ "$change" != failed-exec ]; then
         [ -f "$CODEX_LOG" ] && [ "$(grep -Fxc -- --no-daemon "$CODEX_LOG")" = "$flag_count" ] || exit 1
     fi
@@ -182,9 +189,33 @@ case_marker_condition() (
         [ "$status" = 0 ] && [ -f "$CODEX_LOG" ] && [ ! -e "$MARKER" ] && [ ! -e "$CODEX_LOG.marked" ]
     fi
 )
-for condition in fresh path override script command undeclared extra-version missing-hook malformed hand unwritable old-codex failed-help argv-no-flag failed-exec; do
+for condition in fresh path override script command undeclared extra-version missing-hook malformed hand unwritable old-codex failed-help signaled-probe argv-no-flag failed-exec; do
     check "selection marker at native exec ($condition)" case_marker_condition "$condition"
 done
+
+case_probe_is_quiet() {
+    local result
+    for result in accept reject signal; do
+        run_ccx proj-box1 PROBE_RESULT="$result" && [ -f "$CODEX_LOG" ] &&
+            [ ! -s "$WORK/out" ] && [ ! -s "$WORK/err" ] || { cat "$WORK/out" "$WORK/err"; return 1; }
+    done
+}
+check "a successful, rejected or signaled probe prints nothing to the terminal" case_probe_is_quiet
+
+case_native_cannot_run() (
+    mv "$STUB_DIR/codex" "$WORK/good-codex" || exit 1
+    trap 'mv "$WORK/good-codex" "$STUB_DIR/codex"' EXIT
+    printf '#!/no/such/interpreter\n' > "$STUB_DIR/codex" && chmod +x "$STUB_DIR/codex" || exit 1
+    rm -f "$MARKER"
+    # The native exec should give its ordinary diagnostic, once. The probe can also fail to exec.
+    bash -c 'exec "$1"' _ "$STUB_DIR/codex" 2>"$WORK/native-err"
+    local status=$?
+    [ "$status" -ne 0 ] || exit 1
+    CCX_FLAG=--capsule run_ccx proj-box1 SOT_SELECTION_FILE="$WORK/selection"
+    [ "$?" = "$status" ] && [ ! -e "$MARKER" ] && [ -s "$WORK/err" ] &&
+        [ "$(grep -Fc "$STUB_DIR/codex" "$WORK/err")" = "$(grep -Fc "$STUB_DIR/codex" "$WORK/native-err")" ]
+)
+check "an unrunnable native binary reports the launch failure once and leaves no marker" case_native_cannot_run
 
 echo "---"
 echo "PASS=$PASS FAIL=$FAIL"
