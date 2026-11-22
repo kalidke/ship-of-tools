@@ -3214,3 +3214,31 @@ the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the sa
   suite's work folder. The fix is two lines in each of the six suites and two source scans; the same harness had
   silenced the suite's own stderr for the rest of a run, which is why the failed run showed so little. One builder,
   about 11 minutes; the maintaining session's reading as the review; one gate run.
+- Landings of 2026-11-22, to early afternoon. Times are by the clock, from a brief's writing to `main`.
+  - A page of large tables shapes only the rows in view (PREVIEW-TABLES-FIRST-VIEW-SHAPES-ALL, which stays open on
+    what is left; PREVIEW-WIDE-TABLE-ROW-WRAPS closed). About 4 hours 50 minutes, three review rounds, five builder
+    commits landed as one. The builder's first commit alone would have landed a scroll regression and was held
+    until the rows beyond the view were shaped in later frames. Round 1 found the fill took twice the stated time
+    at two rows a frame. Round 2 found that the builder's answer, a budget of 130 words a frame, does not bound a
+    frame: padding and CJK text are shaped but not counted, and fill frames were 20 to 44 ms on ordinary padded
+    tables. Round 3 passed a budget of 3 ms of shaping a frame, which the reviewer had recommended in round 1 as
+    a should-fix; taking it then would have saved a round. Each round's blocker was found on pages the reviewer
+    built, not on the builder's.
+  - A new session starts first in the recent order (the first half of
+    RECENT-ORDER-LEAVES-SESSIONS-WITHOUT-AN-AGENT, asked by the maintainer that morning). A plan first, then one
+    builder: about 2 hours 40 minutes from the build brief to `main`, two review rounds. Round 1 found that the
+    default row's creation was rewritten at every daemon start, so it would have sorted first after each restart.
+  - Codex parity, four landings built by the Codex row from briefs and read by the maintaining session: two
+    leftovers of the day before, the conversation a Codex session is in (the first half of waking it by mail, 26
+    minutes from brief to `main`), its handle told again after a clear (about 16 minutes), and a person's drawing
+    (about 13 minutes, two product lines). The Codex row's weekly allowance went from all of it to a fifth in that
+    morning's work, plans and measurements included; it declined to build the daemon's half of the wake, which a
+    Claude builder built.
+  - Two test faults found by hosted runs, each a state the test did not own: the chat's pace test read gaps
+    between arrivals where the product paces sends (CHAT-PACE-TEST-READS-ARRIVAL-GAPS), and the reaper's check read
+    a stand-in's command line before its exec was over and then waited without bound
+    (REAPER-CHECK-READ-BEFORE-EXEC; a diagnosis of about 45 minutes reproduced it in 44 of 300 runs on a second
+    computer, and its diff was applied as written).
+  - The maintaining session's faults: a chained rebuild that went on to push and delete after a conflict stopped
+    its first step (nothing lost; a rebuild is now its own command, read before any push), and two gate runs lost
+    to the gate's own suite, whose list of tests that read outside their crate the wake's new tests were not on.

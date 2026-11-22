@@ -182,14 +182,22 @@ every job green. What it carries is listed below, where this page speaks of the 
 person saw on the third candidate is in it, measured to be older than the candidate and not fixed in it: a session whose
 preview holds a markdown file with large tables arrives late at every switch to it (`docs/defects.md`,
 PREVIEW-TABLES-REBUILT-AT-EVERY-ARRIVAL, Closed). It was installed by plain installs the same day on the hub (the
-daemon restarted, on the maintainer's word, ending two open REPLs) and by its own session on one window computer;
-two more computers' sessions were asked and had not answered, and four computers had no session to ask. `main`
+daemon restarted, on the maintainer's word, ending two open REPLs) and by their own sessions on two window computers,
+the second the next morning on the maintainer's word; one more computer's session was asked and had not answered, and
+four computers had no session to ask. `main`
 carries 0.7.4-dev, and past the release it holds that fault's fix, which no person has used: built table sets are
 kept within a budget so a return to such a session draws them at once, no table is built in the frame that first
 draws an arriving session or uncovers the preview, and a covered preview builds nothing and keeps what it holds;
-what is left of it is open (the first view of such a page, and each zoom step, still shape every table in one
-frame, PREVIEW-TABLES-FIRST-VIEW-SHAPES-ALL; a return renders the session's whole parked document again before its
-first frame, PREVIEW-DOCUMENT-RESHAPED-AT-EVERY-ARRIVAL). Since the same day the repo quotes no person (the
+and, since 2026-11-22, a frame shapes only the table rows in view and the rows beyond it in the frames that follow,
+3 ms of shaping a frame, so the first view of such a page no longer shapes every table in one frame (on synthetic
+pages a first view of 39 to 83 ms where it took 175 to 563 ms);
+what is left of it is open (a pane full of wide rows, a row that alone costs more than a frame's budget, and the
+seconds until every row is shaped, PREVIEW-TABLES-FIRST-VIEW-SHAPES-ALL and PREVIEW-TABLE-PADDING-AMPLIFIES; a
+return renders the session's whole parked document again before its
+first frame, PREVIEW-DOCUMENT-RESHAPED-AT-EVERY-ARRIVAL). Also on `main` past the release, asked by the maintainer on
+2026-11-22 and used by no person yet: a new session starts first in the session strip's recent order, and a session
+with no agent is placed by its creation where it sorted last; typing into a session does not move it yet
+(RECENT-ORDER-LEAVES-SESSIONS-WITHOUT-AN-AGENT, open; built, not landed). Since 2026-11-21 the repo quotes no person (the
 maintainer's rule, in the root `CLAUDE.md`): every quotation in a tracked file was rewritten in reported form, and
 the defects check carries a net for the common forms. v0.7.2 was published 2026-11-19. It is 0.7.1 with two faults on a Mac fixed, cut from `main`
 on the maintainer's word with no candidate once the tests had passed: the whole local gate at the commit that was cut,
@@ -381,7 +389,7 @@ sees what the user selects"); its wire op, the daemon's pure check and the handl
 cleared when it goes, sent again after a reconnect, each reply on the status line), and the manual says how a selection
 or a drawing reaches the agent. Text selection is built for Claude Code and for Codex on Unix. The done test through a
 window is not run for either agent, and delivery in a real
-Codex window still needs checking (CODEX-SELECTION-WINDOW). Drawings reach Claude Code only. Figures, on the maintainer's word
+Codex window still needs checking (CODEX-SELECTION-WINDOW). Drawings reach Claude Code, and since 2026-11-22 Codex on Unix. Figures, on the maintainer's word
 (2026-11-16), are built by the plan `docs/history/chat-figures-plan.md` in place of B4: a row's agent posts a file, the drawer
 shows a message's pictures and opens one in the preview, and a person posts the previewed file, all in memory, nothing
 on disk; all of it has landed: the chat's share of a file (Slack's three upload steps, only the share a mutation), and the share's read-back (an own file share takes its origin and name from its label), wire's two ops, and a row's post of a file of its folder (`sot-fe chat post --file`, through the daemon's `chat.post_file`), which closes the first goal, and a picture's bytes from the channel to the window's network side (the daemon's `chat.file`, its bytes the reply's blob, and fe-net's request for it, bounded by its variant), and the window's pictures owner, which asks for the thumbnails of the pictures the drawer places, one at a time per hub, and holds them decoded within bounds and draws them in tiles, and a person's post of the previewed file (`Primary+u`, under their own user token), and the opening of a picture in the preview (a click on a tile, or `Primary+o` on the marked message; its original decoded only in the window's bounded drawing child, never in the window's own process), which completes the plan. Mail (B3) has landed: the filing that names its expected row
@@ -407,14 +415,14 @@ until a person maps a delivering channel on the hub, which no hub does yet;
 SlackClaw's pause switch (its PR 18) merges on his word when the
 first channel moves. Also in progress: the agent sees what the user draws (`requirements.md`); the wire's drawing has
 landed, and so has the daemon's picture (the figure with the person's ink, inside the project), written through
-platform's write beneath a root (its guarantee 17, on Linux, macOS and Windows); the daemon makes a drawing the row's selection (one at a time, withdrawn as text is, Claude rows only), and the window's drawing has its pure owner (points mapped onto the base,
+platform's write beneath a root (its guarantee 17, on Linux, macOS and Windows); the daemon makes a drawing the row's selection (one at a time, withdrawn as text is; Claude rows, and Codex rows on Unix), and the window's drawing has its pure owner (points mapped onto the base,
 strokes, undo, clear and the right-button erase), its raster, drawn over the figure it belongs to and no other, and its
 mouse, keys and status lines, each row keeps its own drawing across a row switch, and a blank canvas (Shift+D) takes the
 pane over the preview without touching it; the daemon's hello says it takes a drawing, and the window's network side
 sends one only on a connection whose hello did; and the window shares the drawing with the row's agent and withdraws it,
 each reply on the status line, which builds the drawing for Claude rows; a person has used it through a window (on a
-picture, a blank canvas and a markdown file, 2026-11-11, on a release candidate), and Codex rows and PDF pages are
-unbuilt. Also in
+picture, a blank canvas and a markdown file, 2026-11-11, on a release candidate); a Codex row on Unix takes a drawing
+since 2026-11-22, used by no person yet, and PDF pages are unbuilt. Also in
 progress: the daemon test run toward the maintainer's four minutes, and one shared test tool.
 The gate runs bash 3.2 per changed suite and its longest jobs first (a whole run about 4 minutes at 20 jobs), and
 platform's hold tool (its guarantee 16) works in one process and across processes; the chat watch's, the wake's and the
@@ -433,9 +441,13 @@ turn it cannot read is unknown, never large (CODEX-STOP-HOLDS-SHORT-TURNS, Close
 install uses, through a plugin published only in Codex's own cache on Unix and enabled only by a launch through `ccx`,
 with nothing written into the person's Codex configuration (CODEX-ROW-SKILL-DISCOVERY, open); and a person's text
 selection reaches a Codex session on Unix, `ccx` passing `--no-daemon` where the installed Codex knows the flag so a
-row's session and its hooks run in the row's own process (CODEX-SELECTION-WINDOW, open). Not built for Codex: the
-handle and handoff restored after a clear or a compaction, the wake of an idle row by mail (a session operating a Codex
-row on 2026-11-21 was never woken by mail), drawings, a structured question to the person shown red, the move of a row
+row's session and its hooks run in the row's own process (CODEX-SELECTION-WINDOW, open); a person's drawing reaches a
+Codex session on Unix by the same hook, as text that names the picture file (that a live session opens the file by
+itself is not seen, the same entry); a Codex session is told its handle, its handoff and its open question again after
+a clear, a compaction or a resume; and a Codex session records which conversation it is in, in a file of the row's
+state folder, which is the first half of waking it by mail (CODEX-ROOT-THREAD-HOOKS, open). Not built for Codex: the
+wake of an idle row by mail (a session operating a Codex
+row on 2026-11-21 was never woken by mail; the daemon's half is built, not landed), a structured question to the person shown red, the move of a row
 to another account, a Windows launch, and the three messaging skills and the work-state hooks kept to a row's session
 (CODEX-GLOBAL-SKILLS). Queued, not started: the
 installer-observation pass (`pass/install-observe`), 26.04 runner support, mods (ADR 0051, accepted for 0.7.Z, unbuilt),

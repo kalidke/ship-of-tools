@@ -809,14 +809,15 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   drawn in the frame it arrives, and a page step or a jump past many tables shapes only the rows where it lands. A
   frame not deferred that shapes no row in view shapes rows of the shown set beyond the view, those nearest the pane
   first (then by table and row, so a table with no place goes last; `MarkdownMedia::shape_beyond`), until
-  `BACKGROUND_SHAPING`, 3 ms, has passed since it began, so at least one row. The budget is the time itself, since no
+  `BACKGROUND_SHAPING`, 3 ms, has passed since that shaping began, so at least one row. The budget is the time itself, since no
   count of a row's text follows its cost: cosmic-text shapes a word for each break opportunity and one for each
   space, so padding and CJK text cost what their words do not say. A row that alone takes longer than the budget is
   still the unit, and one row can be any length (a row padded to a 3,000-character cell takes about 14 ms, one of
-  2,000 one-letter words about 18): that floor bounds a fill frame and a first view alike. Every frame that builds
+  2,000 one-letter words about 18): that floor bounds a fill frame and a first view alike. No test pins the budget's
+  value (a frame given a budget of zero passes every test); the value is measured. Every frame that builds
   tables (not one under a cover or with no markdown shown) marks the pacer dirty while the set holds a row not shaped
   (`has_unshaped`), so the frames go on until the set is whole and stop there: each such frame shapes at least one
-  row and each but the last shapes for at least the budget, and nothing makes a row unshaped again, so a set is whole
+  row and each fill frame but the last shapes for at least the budget, and nothing makes a row unshaped again, so a set is whole
   within as many frames not deferred as it has rows left, and within one more than its rows' shaping time over the
   budget. A fill frame is 3 to 4.5 ms longer than the same page's frame with nothing to shape, or longer by its one
   row where a row takes more than the budget, and the next frame comes the pacer's 8.3 ms after its end, so the time
