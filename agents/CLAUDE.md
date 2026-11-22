@@ -216,7 +216,14 @@ of each.
    `VERSION` file; `ccx` reads and appends to Codex's own `config.toml`, which is Codex's and not the daemon's; the
    tools' hello is checked by the server (messaging's and the server's contracts), not here. `sot-fe version` prints
    the daemon's product version, wire protocol, declared host and supplied uptime, without the retired lane fields;
-   older replies may omit host and uptime. A `link` row explains that it is the computer's daemon's mail link and
+   older replies may omit host and uptime. Under the daemon's row it prints one line, `update`, with the state of
+   that daemon's update in the daemon's own words (`DaemonVersion.update_line`, wire guarantee 16: the wire's one text
+   of a state, sent by the daemon because a shell cannot word one), so it reads as the `UPDATE` cell of `sotd status`
+   does (`0.7.4 ready: applies when ...`, `up to date (checked 3 h ago)`, `off: dev build`) and the state is never
+   worded a second time in shell. Every control byte of the line (C0 and DEL) is a space before it is printed, since
+   the daemon may be another computer's. A daemon built before the field, or a value that is no string, prints no
+   line, and the state's fields alone are never worded here. It is the one command that reads the state on a computer
+   with no `hosts.toml`, where `sotd status` answers nothing. A `link` row explains that it is the computer's daemon's mail link and
    points to its window for sessions; a window (`fe`) with no session declaration keeps the "declares no sessions"
    line, and other roles keep their existing output (`tests/test-sot-fe-version.sh`). **Shipped tools outside this
    folder's ownership still open daemon-owned paths, and this guarantee does not cover them:** the work-state hooks

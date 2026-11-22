@@ -398,7 +398,9 @@ Update (`rust/updater`, `rust/backend/src/update*`, `rust/frontend/src/selfupdat
   written again (the next attempt's start, or a later check's result).
   **The disk's readings are bounded for every caller.** The owner reads the disk again (`reconcile`) at four points:
   the daemon's start, begun by `boot_status` in a task of its own; a pipeline's end; the start of each daily check;
-  and each `version.query`. Every read of a reading (the install record and `hosts.toml`, read through std, as well as
+  and each `version.query`, so its answer says what the disk holds, and so do the two commands that print it: `sotd
+  status` in its last column, `UPDATE` (topology's contract, guarantee 10), and `sot-fe version` on its `update` line
+  (the agents' contract). Every read of a reading (the install record and `hosts.toml`, read through std, as well as
   the pointer and the prepare's record) runs on a thread of the blocking pool, one reading at a time. A caller waits
   for a reading begun after its call for at most `RECONCILE_BOUND`, 1 s, which is shorter than the shortest wait of a
   caller of `version.query` (3 s: `sotd status`, the installer's restart step, `sotd topology status`; 5 s: the comm

@@ -175,6 +175,15 @@ send_version() {
     # every other line, no new column.
     printf '%-20s %-28s %s\n' "$ENDPOINT" "$daemon_version" "$daemon_build"
 
+    # The state of this daemon's update in the daemon's own words (wire guarantee 16: `update_line`, the wire's one
+    # text of a state, which the daemon sends because a shell cannot word one), never worded again here. The daemon
+    # sends it clean; a daemon is another computer's program, so every control byte it holds is a space before it
+    # reaches the terminal. A daemon built before it sent one, or one that predates version.query, prints no line.
+    local daemon_update
+    daemon_update="$(printf '%s' "$vresp" | jq -r '.payload.daemon.update_line? | strings' | LC_ALL=C tr '\000-\037\177' ' ')"
+    daemon_update="${daemon_update% }"
+    [ -z "$daemon_update" ] || printf '%-20s %s\n' "update" "$daemon_update"
+
     # workspace.list -- capsule rows only, phase printed VERBATIM, no
     # derived verdict (Codex review, blocker: this script never challenged
     # the lane itself, so "matches" claimed proof it never had for an old

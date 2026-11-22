@@ -27,7 +27,7 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use sot_protocol::ops::{ClientVersion, WorkspaceListEntry};
+use sot_protocol::ops::{ClientVersion, UpdateState, WorkspaceListEntry};
 use sot_topology::{self as topology, HostDecl, Topology};
 
 /// Hard per-host bound (item 4): one dead host must never hang the whole
@@ -43,9 +43,13 @@ Usage: sotd status [--json]
   fused with what's actually alive right now. For every host this box can
   reach (its own socket; every other DIALABLE host — daemon, not frontend,
   D8 — via the same endpoint `sotd topology plan` resolves) it asks
-  version.query (build, host, attached clients) and workspace.list (rows).
-  A declared host this box cannot ask is still printed, with the reason —
-  never silently omitted. `--json` prints the same facts as one object.
+  version.query (build, host, attached clients, the state of its update)
+  and workspace.list (rows). A declared host this box cannot ask is still
+  printed, with the reason — never silently omitted. The last column,
+  UPDATE, is what each daemon says of its own update: up to date and when
+  it was checked, a release found, preparing, ready and what applies it,
+  not applied or off with the reason; `not reported` for a daemon built
+  before it told one. `--json` prints the same facts as one object.
 
   `sotd topology status` stays the pure, offline, declared-only view.";
 
@@ -62,8 +66,9 @@ pub enum Probe {
     /// Dialled and it did not answer in time, refused, or answered
     /// something this box couldn't parse.
     Unreachable(String),
-    /// Answered both `version.query` and `workspace.list`.
-    Up { build: String, reported_host: String, clients: Vec<ClientVersion>, rows: Vec<WorkspaceListEntry> },
+    /// Answered both `version.query` and `workspace.list`. `update` is the state of its update as it told it, `None`
+    /// from a daemon built before it told one.
+    Up { build: String, reported_host: String, clients: Vec<ClientVersion>, rows: Vec<WorkspaceListEntry>, update: Option<UpdateState> },
 }
 
 /// One attached client, grouped by (role, host) with a count — the CLIENTS
@@ -107,6 +112,9 @@ pub struct Row {
     /// own doc).
     pub rows: Option<(usize, Vec<(String, usize)>, Vec<(String, usize)>)>,
     pub clients: Vec<ClientGroup>,
+    /// UPDATE column: `None` where no daemon answered; `Some(None)` a daemon that answered without the state of its
+    /// update (one built before it told one); else the state as it told it.
+    pub update: Option<Option<UpdateState>>,
 }
 
 /// The whole answer: every declared row (hosts, then monitor-only labels,
@@ -155,6 +163,7 @@ pub fn report(topo: &Topology, probes: &BTreeMap<String, Probe>) -> Report {
                 daemon: DaemonCell::NotDeclared,
                 rows: None,
                 clients: Vec::new(),
+                update: None,
             });
         }
     }
@@ -163,14 +172,17 @@ pub fn report(topo: &Topology, probes: &BTreeMap<String, Probe>) -> Report {
 
 fn host_row(topo: &Topology, h: &HostDecl, probe: Option<&Probe>, hub_clients: Option<&[ClientVersion]>) -> Row {
     let declared = topology::declared_words(topo, h).join(",");
-    let (daemon, rows, own_clients) = match (h.daemon, probe) {
-        (false, _) if h.frontend => (DaemonCell::OwnNotDialed, None, None),
-        (false, _) => (DaemonCell::NotDeclared, None, None),
-        (true, None) => (DaemonCell::NotDialable, None, None),
-        (true, Some(Probe::Unreachable(reason))) => (DaemonCell::Unreachable(reason.clone()), None, None),
-        (true, Some(Probe::Up { build, reported_host, clients, rows })) => {
-            (DaemonCell::Up { build: build.clone(), reported_host: reported_host.clone() }, Some(phase_counts(rows)), Some(clients.as_slice()))
-        }
+    let (daemon, rows, own_clients, update) = match (h.daemon, probe) {
+        (false, _) if h.frontend => (DaemonCell::OwnNotDialed, None, None, None),
+        (false, _) => (DaemonCell::NotDeclared, None, None, None),
+        (true, None) => (DaemonCell::NotDialable, None, None, None),
+        (true, Some(Probe::Unreachable(reason))) => (DaemonCell::Unreachable(reason.clone()), None, None, None),
+        (true, Some(Probe::Up { build, reported_host, clients, rows, update })) => (
+            DaemonCell::Up { build: build.clone(), reported_host: reported_host.clone() },
+            Some(phase_counts(rows)),
+            Some(clients.as_slice()),
+            Some(update.clone()),
+        ),
     };
     // A directly-probed daemon shows its OWN roster; anything else borrows
     // the hub's, filtered to clients that declared THIS host — the only
@@ -182,7 +194,7 @@ fn host_row(topo: &Topology, h: &HostDecl, probe: Option<&Probe>, hub_clients: O
             None => Vec::new(),
         },
     };
-    Row { host: h.name.clone(), declared, daemon, rows, clients }
+    Row { host: h.name.clone(), declared, daemon, rows, clients, update }
 }
 
 fn group_clients<'a>(clients: impl Iterator<Item = &'a ClientVersion>) -> Vec<ClientGroup> {
@@ -218,12 +230,13 @@ fn phase_counts(rows: &[WorkspaceListEntry]) -> (usize, Vec<(String, usize)>, Ve
     (rows.len(), by_phase.into_iter().collect(), by_account.into_iter().collect())
 }
 
-/// Pure: [`Report`] -> the printed table (item 2's columns) plus the final
+/// Pure: [`Report`] -> the printed table (item 2's columns, then UPDATE, each daemon's own word of its update in the
+/// wire's one text, last so a long reason only lengthens the row's tail) plus the final
 /// active-frontend-of-hub line. No I/O, no knowledge of how the `Report`
 /// was gathered — this is what the fixture-driven unit tests exercise
 /// directly, no daemon involved.
 pub fn render_text(r: &Report) -> String {
-    let mut out = String::from("HOST DECLARED DAEMON ROWS CLIENTS\n");
+    let mut out = String::from("HOST DECLARED DAEMON ROWS CLIENTS UPDATE\n");
     for row in &r.rows {
         let daemon = match &row.daemon {
             DaemonCell::NotDeclared => "-".to_string(),
@@ -264,7 +277,12 @@ pub fn render_text(r: &Report) -> String {
                 .collect::<Vec<_>>()
                 .join(", ")
         };
-        out.push_str(&format!("{} {} {} {} {}\n", row.host, row.declared, daemon, rows, clients));
+        let update = match &row.update {
+            None => "-".to_string(),
+            Some(None) => "not reported".to_string(),
+            Some(Some(state)) => state.line(),
+        };
+        out.push_str(&format!("{} {} {} {} {} {}\n", row.host, row.declared, daemon, rows, clients, update));
     }
     let active = match (&r.active_frontend_of_hub, r.hub_reachable) {
         (Some(fe), _) => fe.clone(),
@@ -286,6 +304,10 @@ pub fn render_json(r: &Report) -> String {
         daemon_build: Option<&'a str>,
         daemon_host: Option<&'a str>,
         daemon_unreachable_reason: Option<&'a str>,
+        /// The state of the daemon's update as this sotd read it (parsed, bounded and written again, so a later
+        /// daemon's phase reads `other` and keys this build does not know are gone); null where none answered or it
+        /// told none.
+        daemon_update: Option<&'a UpdateState>,
         rows_total: Option<usize>,
         rows_by_phase: &'a [(String, usize)],
         rows_by_account: &'a [(String, usize)],
@@ -312,6 +334,7 @@ pub fn render_json(r: &Report) -> String {
                 daemon_build: build,
                 daemon_host: host,
                 daemon_unreachable_reason: reason,
+                daemon_update: row.update.as_ref().and_then(Option::as_ref),
                 rows_total: total,
                 rows_by_phase: by_phase,
                 rows_by_account: by_account,
@@ -366,7 +389,7 @@ fn probe_blocking(endpoint: &str, self_host: &str) -> Probe {
         .and_then(|v| serde_json::from_value::<sot_protocol::ops::WorkspaceListRes>(v).ok())
         .map(|r| r.workspaces)
         .unwrap_or_default();
-    Probe::Up { build: res.daemon.app_version, reported_host: res.daemon.host, clients: res.clients, rows }
+    Probe::Up { build: res.daemon.app_version, reported_host: res.daemon.host, clients: res.clients, rows, update: res.daemon.update }
 }
 
 /// Every [`topology::dialable_hosts`] entry, probed concurrently (item 4:

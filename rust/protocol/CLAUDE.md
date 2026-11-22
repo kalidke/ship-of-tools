@@ -306,8 +306,9 @@ name is in this crate's one op table.
     release's frozen shapes parse the grown ones) and reads `update.state` as any evt it does not know (guarantee 10).
     What a newer reader does with an older daemon: the fields are absent and read as none. Limits: the daemon
     fills `DaemonVersion.update` and `update_line` in every `version.query` answer (distribution's owner,
-    `scripts/CLAUDE.md` under Update) and nothing reads them yet; no daemon fills the hello's field or emits the evt,
-    and no window reads either; the words carry no
+    `scripts/CLAUDE.md` under Update): `sotd status` prints the state through `UpdateState::line`, and `sot-fe version`
+    prints `update_line` as the daemon sent it, with control bytes turned to spaces; no daemon fills the hello's field or
+    emits the evt, and no window reads either; the words carry no
     age but the last check's, in whole minutes, hours or days; a cause in `detail` can hold a local path, and it goes
     only to the person's own window, `sotd status` and `sot-fe version`; a reader in another language that prints
     `update_line` cleans it itself, since only this crate's readers clean what they read; cleaning removes control

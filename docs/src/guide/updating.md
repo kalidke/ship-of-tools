@@ -147,6 +147,34 @@ disables it, and `auto` additionally restarts the backend to apply, if no fronte
 an update (otherwise it applies at the next launch or restart). That restarts REPLs and kernels, so their in-memory state
 is lost, which is why it is opt-in; agent sessions survive it between 0.7 releases.
 
+To see where a computer's update stands, run `sotd status`. Its last column, `UPDATE`, is what each computer's daemon
+says of its own update:
+
+| `UPDATE` reads | What it means |
+|----------------|---------------|
+| `not checked yet` | The daemon started less than about two minutes ago and has not run its first check. |
+| `up to date (checked 3 h ago)` | The last check found nothing newer than what is installed. |
+| `0.7.4 found` | A newer release was found. A reason after it says why nothing is being prepared; `it was armed here and the armed update is no longer on disk` means that computer had prepared it and another program has since removed or applied the prepared update, and the next check looks again. |
+| `0.7.4 preparing (can take many minutes)` | The release is being downloaded and its checkout and Julia environments built. |
+| `0.7.4 ready: ...` | The release is prepared. The words after it say what applies it, on the computer of that row: `applies when that computer's sotd.service next starts (a start of Ship of Tools there, or a restart of the service)`, or `applies when Ship of Tools is next started on that computer`. Starting Ship of Tools on another computer applies nothing there. The start checks the prepared files once more; if it finds them damaged, or finds that version already installed, it applies nothing and removes the prepared update, and the next check prepares it again. |
+| `0.7.5 preparing; 0.7.4 is ready meanwhile` | A newer release is being prepared while an earlier one is already ready. |
+| `0.7.4 not applied: ...` | The reason follows. Either the release was found and could not be made ready, and the next daily check tries again; or a prepared update no longer fits what is installed and would be refused, and it stays so until the next start on that computer removes it. |
+| `an armed update cannot be read; the next start drops it` | The file that names a prepared update is damaged; the next start removes it and the next check prepares the update again. |
+| `off: ...` | Automatic updates are off on that computer, with the reason: a source build, update mode off, a pinned install, an install record that cannot be read (the reason names the installer run that repairs it), or a computer that `hosts.toml` gives neither `daemon` nor `frontend`. |
+| `check could not run 2 h ago: ...` | The last check could not reach or read the release; the next one tries again. |
+| `not reported` | That computer's daemon is older than 0.7.4 and does not say. |
+| `-` | No daemon was asked there, or it did not answer. |
+
+A cell that ends `; as last read, the disk did not answer in time` is what that daemon last read: its disk was too slow
+to be read again for this answer. A long reason keeps its beginning and its end, with ` … ` where the middle was left
+out.
+
+Applying a ready update restarts that computer's daemon, which ends its REPLs and its Pluto server; sessions keep
+running between 0.7 releases. `sotd status` needs the computer's `hosts.toml`; on a computer without one,
+`sot-fe version` prints the same words for the one daemon it asks, on a line that begins `update` (`update  0.7.4
+ready: ...`, `update  off: dev build`). A daemon reads the prepared update from disk again each time it is asked, so
+both commands say what is on disk at that moment. Nothing in the window shows this state yet beyond the notice.
+
 The daemon of a machine runs the check; a window runs it itself only where the daemon does not own updates (a host the
 topology declares `daemon = false`, a `frontend` entry or a `--backend` frontend-only install whose install runs no
 daemon, on any OS). A pre-release install follows

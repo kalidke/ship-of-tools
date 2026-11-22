@@ -146,6 +146,7 @@ async fn sotd_status_reaches_a_real_daemon_and_lists_its_own_row_and_client() {
         "sotd status reached a daemon that is not this test's: {row:#}"
     );
     assert!(row["rows_total"].as_u64().unwrap_or(0) >= 1, "the default row should be counted: {row:#}");
+    assert!(row["daemon_update"]["phase"].is_string(), "the daemon should say the state of its update: {row:#}");
     let clients = row["clients"].as_array().expect("clients array");
     assert!(
         clients.iter().any(|c| c["role"] == "fe" && c["host"] == TEST_STATE_HOST),

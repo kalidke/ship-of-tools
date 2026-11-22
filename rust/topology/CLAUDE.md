@@ -114,6 +114,22 @@ of each.
     `sotd status` names a host declared only `frontend` as `own, not dialed` in its daemon column
     (`own_not_dialed` in JSON): its own daemon is part of the role, while the status probes still follow
     `dial_endpoints`. This describes the declaration, without claiming a liveness probe of that daemon.
+    `sotd status` ends each row with one more column, `UPDATE`: what that row's daemon says of its own update in its
+    `version.query` answer (`DaemonVersion.update`, wire guarantee 16; the state is distribution's, `scripts/CLAUDE.md`
+    under Update), printed in the wire's one text, `UpdateState::line`. A daemon that answered without the field, one
+    built before it, reads `not reported`; a row whose daemon was not asked or did not answer reads `-`. It is the last
+    column, so a long reason only lengthens the row's tail, and the five columns before it and the last line are where
+    they were; `--json` carries the state as this sotd read it in `daemon_update` (parsed, bounded and written again,
+    so a later daemon's phase reads `other` and keys this build does not know are gone), null for every other row. The
+    words of a ready update name that row's computer, never the reader's. A reason comes from files and from a child's
+    output on another computer: the wire's reader turns every control character of it into a space, so it adds no row
+    and moves no cursor (the test below reads a newline and an escape sequence from the wire). Limits: the column says
+    what each daemon answered at this probe and nothing of a host that runs no daemon of its own or is not dialed from
+    here (a window-only computer's update is not in the table); a cause can hold a path of that computer; the columns
+    are joined by single spaces and this one holds spaces, as CLIENTS does, so the seam before it is not marked.
+    Test `rust/backend/src/topology/status_tests.rs`:
+    `each_row_ends_with_its_update_state_and_an_older_daemon_reads_not_reported`; against a real daemon,
+    `rust/backend/tests/status_integration.rs` reads a phase in `daemon_update`.
 11. **Every `systemctl` call topology makes is given a wait budget, and a stuck manager is a named failure.** Each call
     runs through `sot_containment::process().output` with `SYSTEMCTL_BOUND` (30 s) and fails `did not exit within`
     that bound; `apply` collects each unit's failure and runs the rest, `refresh` collects all but a failed reload and

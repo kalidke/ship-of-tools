@@ -467,6 +467,56 @@ case_daemon_predating_uptime_field_prints_no_up_suffix() {
     return 0
 }
 
+case_the_update_line_prints_what_the_daemon_tells_and_nothing_for_an_older_daemon() {
+    # Wire guarantee 16: `DaemonVersion.update_line`, the daemon's own line of the state of its update. One line under
+    # the daemon's row prints it as sent: the words are the wire's, never worded again in shell.
+    local empty='{"v":1,"id":3,"kind":"res","op":"workspace.list","payload":{"workspaces":[]}}'
+    local daemon line
+    update_line_of() {
+        stage_reply "version.query" '{"v":1,"id":2,"kind":"res","op":"version.query","payload":{"daemon":'"$1"',"clients":[]}}'
+        stage_reply "workspace.list" "$empty"
+        start_stub_daemon
+        run_version
+        stop_stub_daemon
+        line="$(printf '%s\n' "$VER_OUT" | grep '^update')"
+    }
+
+    update_line_of '{"app_version":"0.7.3","protocol":4,"lane_build":"","host":"host-a","update":{"phase":"ready","version":"0.7.4"},"update_line":"0.7.4 ready: applies when Ship of Tools is next started on that computer"}'
+    [ "$VER_RC" -eq 0 ] || { echo "  expected exit 0, got $VER_RC. Output:\n$VER_OUT"; return 1; }
+    [ "$line" = "update               0.7.4 ready: applies when Ship of Tools is next started on that computer" ] \
+        || { echo "  the update line is not the daemon's own words: '$line' in: $VER_OUT"; return 1; }
+    printf '%s\n' "$VER_OUT" | grep -A1 "^unix:$SOCK " | tail -n 1 | grep -q '^update ' \
+        || { echo "  the update line must sit under the daemon's row: $VER_OUT"; return 1; }
+
+    # The words are the daemon's for every phase: an up-to-date computer reads so, with the check's age, and never
+    # the wire's phase name.
+    update_line_of '{"app_version":"0.7.3","protocol":4,"lane_build":"","update":{"phase":"none","checked_s":10800},"update_line":"up to date (checked 3 h ago)"}'
+    [ "$line" = "update               up to date (checked 3 h ago)" ] || { echo "  expected the daemon's line: $VER_OUT"; return 1; }
+
+    # A daemon is another computer's program: a newline or an escape sequence in what it sends adds no row and
+    # reaches the terminal as spaces.
+    update_line_of '{"app_version":"0.7.3","protocol":4,"lane_build":"","update_line":"9.9.9 not applied: armed over 9.9.7\nforged-row 9.9.9 up \u001b[2K\u001b[31mRED\r; it no longer fits"}'
+    [ "$line" = "update               9.9.9 not applied: armed over 9.9.7 forged-row 9.9.9 up  [2K [31mRED ; it no longer fits" ] \
+        || { echo "  a control byte or a second row reached the output: $(printf '%s' "$VER_OUT" | od -c | head -20)"; return 1; }
+    [ "$(printf '%s' "$VER_OUT" | LC_ALL=C tr -d -c '\033\015' | wc -c | tr -d ' ')" = 0 ] \
+        || { echo "  an escape or a carriage return reached the terminal: $(printf '%s' "$VER_OUT" | od -c | head -20)"; return 1; }
+    printf '%s\n' "$VER_OUT" | grep -q '^forged-row' && { echo "  a reason forged a row: $VER_OUT"; return 1; }
+
+    # An older daemon sends no line, and a value that is no line is not printed as one: no update line, exit 0. The
+    # state's fields alone are never worded here.
+    for daemon in '{"app_version":"0.7.3","protocol":4,"lane_build":""}' \
+                  '{"app_version":"0.7.3","protocol":4,"lane_build":"","update":{"phase":"ready","version":"0.7.4"}}' \
+                  '{"app_version":"0.7.3","protocol":4,"lane_build":"","update_line":7}' \
+                  '{"app_version":"0.7.3","protocol":4,"lane_build":"","update_line":{"phase":"ready"}}' \
+                  '{"app_version":"0.7.3","protocol":4,"lane_build":"","update_line":""}'; do
+        update_line_of "$daemon"
+        [ "$VER_RC" -eq 0 ] || { echo "  expected exit 0 for $daemon, got $VER_RC. Output:\n$VER_OUT"; return 1; }
+        [ -z "$line" ] || { echo "  no update line expected for $daemon: $VER_OUT"; return 1; }
+        contains "$VER_OUT" "comm scripts" || { echo "  the report must still run to its end for $daemon: $VER_OUT"; return 1; }
+    done
+    return 0
+}
+
 case_a_disconnected_box_prints_its_own_fe_line_with_no_sessions_beneath_it() {
     # Session-listing brief, amendment 2's final form: the box's SESSIONS
     # left with its connection, but the box itself is retained as one
@@ -541,6 +591,7 @@ check "an absent sessions key prints the never-declared placeholder line"       
 check "a mail link points to its window while the window keeps its missing-sessions line" case_a_mail_link_does_not_claim_its_computer_declares_no_sessions
 check "the daemon's uptime prints in the build column"                                     case_daemon_uptime_prints_in_the_build_column
 check "a daemon predating the uptime field prints no 'up' suffix"                          case_daemon_predating_uptime_field_prints_no_up_suffix
+check "the update line prints what the daemon tells, and nothing for an older daemon"      case_the_update_line_prints_what_the_daemon_tells_and_nothing_for_an_older_daemon
 check "a disconnected box prints its own fe line with no sessions beneath it"               case_a_disconnected_box_prints_its_own_fe_line_with_no_sessions_beneath_it
 check "a declared empty state prints 'no state recorded', never degraded to [idle]"        case_a_declared_empty_state_prints_no_state_recorded_not_idle
 check "a declared-empty sessions list prints '(no sessions)', not nothing"                 case_declared_empty_sessions_prints_no_sessions_not_nothing

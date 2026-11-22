@@ -14,8 +14,11 @@ reachable daemon right now): HOST, DECLARED (hub/daemon/frontend/shell/
 sampled/monitor-only), DAEMON (build + up, or unreachable WITH the reason —
 a declared host is never just missing from the table), ROWS (count by
 phase), CLIENTS (each attached client as `role@host`, the active frontend
-marked `ACTIVE`), then a final line naming the hub's own active frontend.
-`--json` for a script.
+marked `ACTIVE`), UPDATE (what that daemon says of its own update: up to
+date and when it was checked, a release found, preparing, ready and what
+applies it, not applied or off with the reason; `not reported` for a daemon
+older than 0.7.4, `-` where no daemon answered), then a final line naming
+the hub's own active frontend. `--json` for a script.
 
 **Read the table — never a log, never a systemd unit state.** A session
 being "live on the relay" is derived from the hub's own client roster

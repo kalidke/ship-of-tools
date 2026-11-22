@@ -1175,9 +1175,11 @@ owned by `docs/CLAUDE.md`.
   `update.state` (wire guarantee 16); and the daemon's owner of the state (`rust/backend/src/update/status.rs`,
   distribution's contract under Update), written by the check and the update pipeline, agreeing with the pending
   pointer on disk through the judgment `sotd update pointer` answers with, and carried by every `version.query`
-  answer. No command prints it yet, so a person sees nothing new. Left: the
-  `UPDATE` column of `sotd status` and the line of `sot-fe version`; the hello's field and the evt sent to a window;
-  the mark on the window's bottom border, on a computer with a daemon and on a window-only computer.
+  answer; and the first thing a person can read: `sotd status` ends each row with an `UPDATE` column, each daemon's
+  own word of its update (`not reported` for a daemon built before it), `--json` carries the same, and `sot-fe
+  version` prints the one daemon's on an `update` line (the manual's updating page says how to read them). Left: the
+  hello's field and the evt sent to a window; the mark on the window's bottom border, on a computer with a daemon and
+  on a window-only computer, which is what was asked for the window. Not used by a person yet.
 
 ## chat
 
