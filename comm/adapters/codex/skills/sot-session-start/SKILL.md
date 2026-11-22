@@ -34,8 +34,10 @@ once, when a session first starts — not again on every resume.
 
 This is ADR 0049's design of record, landing in stages: a send's verdict now is
 `filed -> @h` or `FAILED -> @h: <reason>`, and nothing else. The daemon wakes an idle Claude row by typing
-`[sot-comm] you have mail: run comm-poll.sh`; a Codex row is one the daemon
-cannot type into, so its end-of-turn check reads the mail. Every session a row
+`[sot-comm] you have mail: run comm-poll.sh`; a Codex row is never typed into:
+the daemon puts the same line in Codex's own queue for the row's conversation,
+once per batch of unread mail, and the end-of-turn check reads mail that comes
+during a turn. Every session a row
 starts runs this bootstrap first (`ccx` does it before Codex starts), so its
 handle is declared again. The call above ends with `BOOTSTRAP-ARM … WAKE: daemon`:
 there is nothing to arm, own or re-arm. Mail is read with `comm-poll.sh`.

@@ -35,6 +35,10 @@ pub const NESTING_ENV_VARS_TO_SCRUB: &[&str] = &[
     "SOT_CODEX_THREAD_FILE",
 ];
 
+/// A Codex row's binding file in its state folder: the conversation id its session last named (guarantee 7), which
+/// messaging's wake reads.
+pub const CODEX_THREAD_FILE: &str = "codex-thread";
+
 /// The `SOT_COMM_HOME` value (forward-slash string form — a git-bash/MSYS
 /// shell, not this native Windows process, is what reads it; MSYS accepts
 /// either slash spelling for a drive-letter-absolute path) to hand a
@@ -186,7 +190,7 @@ pub fn capsule_supervisor_env(
     env.push(sotd_bin_pair(own_sotd_bin()));
     env.push(("SOT_SELECTION_FILE".to_string(), row_file_value(state_dir, crate::agents::selection::FILE_NAME, cfg!(windows))));
     if agent_kind == "codex" {
-        env.push(("SOT_CODEX_THREAD_FILE".to_string(), row_file_value(state_dir, "codex-thread", cfg!(windows))));
+        env.push(("SOT_CODEX_THREAD_FILE".to_string(), row_file_value(state_dir, CODEX_THREAD_FILE, cfg!(windows))));
     }
     // Claude Code's feedback survey is a modal panel that holds a row's
     // session until someone answers it, so no row's agent shows it, on

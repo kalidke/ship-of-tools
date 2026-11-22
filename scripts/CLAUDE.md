@@ -69,7 +69,7 @@ Guarantees, each with the mechanism it rests on:
   selected anyway runs once. Measured on one computer, run one test after another: the rows of one `tree` piece take 0 to 12 s
   (`comm_file` 12, `comm_send` 9, `shell_dial` 7, `selection` 6, `comm_cli` 6, the scans 2, the rest under 2) except
   `julia-repl`, whose 80 `sidecars::repl::` tests take 196 s, and `ccx`, whose rows since the Codex wake include the
-  queue runner's unit tests (not timed alone).
+  queue runner's unit tests and the five Codex tests of `comm_wake`, each of which starts a daemon (not timed alone).
   A reader that only a Windows run executes (the layout
   script's test in the updater) is covered by the hosted Windows run alone. `tests/test-rc-gate-scope.sh` searches the
   Rust sources for four forms of reader (a walk of the workspace; an `include_str!` or `include_bytes!` that resolves

@@ -316,8 +316,9 @@ Mail is off until `mail_after`, the time from which posts count as mail (a Slack
 is set in `chat.toml`, the chat's settings file; [the chat configuration](../ref/config.md#chat.toml-and-chat-secrets.toml)
 says how. Then each new post a channel member makes in a mapped channel (one picked for a project), yours from the
 panel included, reaches that project's session as a message to its agent. An idle Claude Code agent starts on it at
-once, a busy one reads it when it finishes what it is doing, and a Codex agent reads it the next time it checks its
-messages. An agent's own reply is not mail and does not come
+once, and a busy one reads it when it finishes what it is doing. A Codex agent is asked to read it through Codex's
+own queue and takes the request when it is free; [messaging](messaging.md#A-message-wakes-the-recipient) says when
+that request cannot be made. An agent's own reply is not mail and does not come
 back to it. A post missed while the computer was down is filed later, once; the configuration page says how.
 
 ## What the top line says

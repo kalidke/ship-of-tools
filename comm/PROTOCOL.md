@@ -194,7 +194,9 @@ route is tried.
 
 The daemon running a row types one fixed line, `[sot-comm] you have mail: run comm-poll.sh`, and Enter, into a free
 prompt of an idle Claude Code row with unread mail, and never anywhere else; the contract says what a free prompt is
-and what a wake never touches. A Codex row has no wake (no Codex screen has been read). The Stop hook holds a busy turn
+and what a wake never touches. A Codex row is never typed into: the daemon asks the conversation the row's session
+named, once per unread episode, through Codex's own queue (`ccx --queue <conversation id> <line>`, the same fixed line
+as the one message), and the session takes the request when it is free. The Stop hook holds a busy turn
 until its mail is read, once per remainder (the messaging contract's tick rule), through `sotd comm unread <h>`.
 
 ## Upgrading to 0.7.0

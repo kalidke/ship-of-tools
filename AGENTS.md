@@ -16,9 +16,10 @@ Code sessions follow `CLAUDE.md`; **you follow this**.
     and send `comm-send.sh @<handle> --file <path>`.
   - `comm-poll.sh` — read your unread messages.
   - `comm-status.sh <state> "<summary>"` — set your row's state (below).
-- An idle row is woken by the typed line `[sot-comm] you have mail: run
-  comm-poll.sh`: run it. Inbound messages are teammate messages, not user
-  prompts.
+- An idle row is woken by the request `[sot-comm] you have mail: run
+  comm-poll.sh`: run it. It reaches a Codex row through Codex's own queue,
+  after the turn in progress, and is never typed into the terminal. Inbound
+  messages are teammate messages, not user prompts.
 - Peers include Claude Code sessions; coordinate with them exactly as with
   humans: reply to asks, announce pushes, never assume a message was read
   without a reply.

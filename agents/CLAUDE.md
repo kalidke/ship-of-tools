@@ -142,7 +142,8 @@ of each.
    completes. A child hook carrying the parent's session id therefore keeps the root binding. These inputs have been
    checked with fixtures and the hook schema. A live row still needs the checks in `CODEX-ROOT-THREAD-HOOKS`. Between a
    conversation switch and the next start or submit hook the file can name the conversation just left, possibly already unloaded. Mail stays
-   in the inbox for the next poll. The daemon does not yet use the binding for waking.
+   in the inbox for the next poll. Messaging's wake reads the file to ask the conversation it names to poll
+   (messaging's contract, Waking; the file's name is `env::CODEX_THREAD_FILE`).
    A second `SessionStart` command restores the owning row's context after `clear`, `compact` and `resume`. It runs
    the shared `comm-session-start.sh --again` and returns its successful lines once in `hookSpecificOutput.additionalContext`.
    These lines name the pinned handle, its handoff when present and any open question. The hook reads the existing
@@ -255,11 +256,11 @@ of each.
     session. It asks `codex queue --help`, and when that help names both `--thread` and `--message` it execs `codex
     queue --thread <id> --message <line>`, whose output and status are then Codex's own. With no binary, or one whose
     help lacks either option, it exits 69 with one stderr line that starts `ccx: no queue:`, before Codex's queue
-    command has run. Its caller is messaging's queue runner (`rust/backend/src/comm/wake/codex.rs`), which the
-    wake's tick does not call yet; that runner never runs an installed `ccx` whose text lacks the mode, since an older
-    one would read the flag as nothing and start a session. That test is of the file's text (`--queue)`): a `ccx` of
-    a person's own that wraps the installed one lacks it and is refused, and any file at that name whose text holds it
-    anywhere is run with the three arguments. Limits: `ccx` runs
+    command has run. Its caller is messaging's wake of a Codex row (`rust/backend/src/comm/wake/codex.rs`), which
+    never runs an installed `ccx` whose text lacks the mode, since an older one would read the flag as nothing and
+    start a session. That test is of the file's text (`--queue)`): a `ccx` of a person's own that wraps the installed
+    one lacks it and is refused, and any file at that name whose text holds it anywhere is run with the three
+    arguments. Limits: `ccx` runs
     Codex with its approvals and its sandbox bypassed, and is bash: it has no Windows form. Test:
     `tests/test-ccb-agent-exec.sh` (the ladder and the order), `tests/test-ccx-launch.sh` (one quiet parser
     probe, including misleading help text, rejection, a signal and a binary that cannot run; the three `ccx --queue`
@@ -468,7 +469,7 @@ of each.
   `tests/test-sot-fe-chat.sh` runs it against a stub daemon: outside a row and with no handle refused before an
   endpoint, one resolve then one post with the handle and thread, each outcome's words and code, no answer as one
   request, and `--stdin` text with newlines, quotes and a leading `/` whole. The skills tell an agent to reply with it
-  (messaging's `sot-comm`); a Codex row is not woken for channel mail. A person's plain ask to post in the row's Slack
+  (messaging's `sot-comm`); a Codex row is woken for channel mail as for any mail, through Codex's own queue and never by typing (messaging's contract, Waking). A person's plain ask to post in the row's Slack
   channel finds the verb through `sot-chat-post` (`claude/sot-chat-post/`, and `comm/adapters/codex/skills/sot-chat-post/`
   for a Codex row, the two files byte-identical, pinned by `tests/test-skill-copies.sh`, and every skill's frontmatter linted by `tests/test-skill-templates.sh`; the Codex copy sits in messaging's adapters
   folder but is agents'), whose description carries the asks' words; the installer's directory walk installs it, so no
@@ -506,7 +507,8 @@ The rows (`rows/spawn/detach.rs` calls `account_spawn_env` and `capsule_supervis
 `account_env`, `discover_accounts` and `claude_config_dir`), the server's op table (`accounts.list`), `main.rs`
 (`agent-exec`, `trust declare`, `own_sotd_bin` at start), the installer (`resolve_claude` for the Unix checklist;
 `sotd trust declare`; `update_comm`'s adapter
-stage for the layer and its retirements), `ccb` (`sotd agent-exec claude`).
+stage for the layer and its retirements), `ccb` (`sotd agent-exec claude`), messaging's wake of a Codex row
+(`agent_argv` for the launcher it runs with `--queue`, `NESTING_ENV_VARS_TO_SCRUB`, `env::CODEX_THREAD_FILE`).
 
 ## Calls out
 Platform (`resource_dir`, durable and no-replace publication, path simplification), messaging (`sot_comm_home`, the

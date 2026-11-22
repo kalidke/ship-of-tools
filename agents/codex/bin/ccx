@@ -4,8 +4,9 @@
 # Codex counterpart of ccb. Unlike ccb (whose claude session bootstraps its
 # own receive path via the /sot-session-start skill — ADR 0049 is the design
 # of record there too, daemon-woken with nothing to arm),
-# codex has NO background-wake primitive — so ccx does the comm bootstrap
-# DETERMINISTICALLY in the launcher before exec'ing codex:
+# ccx does the comm bootstrap
+# DETERMINISTICALLY in the launcher before exec'ing codex (a Codex row is
+# daemon-woken too, through Codex's own queue: the --queue mode below):
 #   1. join sot-comm as this session's handle: the one its self file names
 #      (a row keeps the handle it was created with), else derived; no
 #      launcher chooses one (decision 0031).
@@ -132,7 +133,7 @@ fi
 # The handoff line from the comm library's one rule (a subshell: the library sets umask 077, which codex must not inherit).
 HANDOFF_LINE="$( . "$COMM/comm-lib.sh" 2>/dev/null && sot_comm handoff-line "$HANDLE" )" ||
     echo "ccx: the comm library did not load from $COMM; the first prompt names no handoff" >&2
-PROMPT="You are the comm-aware agent${HANDLE:+ @$HANDLE} on the sot-comm network. House conventions are in your GLOBAL $CODEX_HOME_DIR/AGENTS.md (plus the project's own AGENTS.md when it has one, and \$SOT_MANUAL/docs/USING.md for product help). Then run: $COMM/comm-poll.sh — and handle what it prints. An idle row is woken by the typed line '[sot-comm] you have mail: run comm-poll.sh'; run it and handle what it prints.${HANDOFF_LINE:+ $HANDOFF_LINE}"
+PROMPT="You are the comm-aware agent${HANDLE:+ @$HANDLE} on the sot-comm network. House conventions are in your GLOBAL $CODEX_HOME_DIR/AGENTS.md (plus the project's own AGENTS.md when it has one, and \$SOT_MANUAL/docs/USING.md for product help). Then run: $COMM/comm-poll.sh — and handle what it prints. An idle row is woken by the request '[sot-comm] you have mail: run comm-poll.sh'; run it and handle what it prints.${HANDOFF_LINE:+ $HANDOFF_LINE}"
 # Request the inline renderer so conversation history can enter the terminal's scrollback.
 set -- --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust --no-alt-screen -c 'plugins.sot-row@sot-local.enabled=true'
 help_command=()

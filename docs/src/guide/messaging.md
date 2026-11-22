@@ -40,19 +40,34 @@ session that was busy or away reads it with `comm-poll.sh` when it gets to it.
 
 ## A message wakes the recipient
 
-An idle session does not have to be polling. When a message lands for a
-session at its prompt, it is typed into that session's row. A Claude Code
-session gets one short wake line and reads the messages itself with
-`comm-poll.sh`, so a burst of messages costs one wake (and one poll for each 16,000 bytes of it). A Codex session is not
-typed into (no Codex screen has been captured yet), so it reads its mail when it
-next runs `comm-poll.sh`. A post from a mapped Slack channel
-(a line from `#chat`, filed by the hub's daemon, see
-[the project chat](chat.md#Mail-to-the-session)) wakes a Claude row in the same way,
-with the same one fixed line: none of the post's words is typed into the row.
-The wake is refused while the row shows a
-permission dialog or a menu, so it can never answer one by accident, and while
-the prompt holds anything you have typed and not sent, so it never touches your
-line.
+An idle session does not have to be polling. A message that lands for a session
+wakes it with one short fixed line, and the session reads its messages itself
+with `comm-poll.sh`, so a burst of messages costs one wake (and one poll for each
+16,000 bytes of it). A post from a mapped Slack channel (a line from `#chat`,
+filed by the hub's daemon, see [the project chat](chat.md#Mail-to-the-session))
+wakes a session in the same way, with the same one fixed line: none of the
+post's words is typed into a row or put in a queue.
+
+A Claude Code session at its prompt has the line typed into its row. That
+typing is refused while the row shows a permission dialog or a menu, so it can
+never answer one by accident, and while the prompt holds anything you have
+typed and not sent, so it never touches your line.
+
+A Codex session is never typed into. Its computer's daemon puts the same line
+in Codex's own queue for the session's conversation, once for each batch of
+unread mail, whatever the session's screen shows, and Codex hands it to the
+session as a new request when the session is free. What is known of that comes
+from trials on Codex 0.171.0, not yet from a session woken in use: a request
+queued during a turn was taken after that turn, and a draft in the input stayed
+there unsent. A request made while an approval question is open has not been
+tried. A session at work is asked too, so mail that arrives during a turn can
+cost one more turn: the session reads the mail as its turn ends, then takes the
+queued line and polls again for nothing. The mail waits for the session's next
+`comm-poll.sh` when the session has not yet said which conversation it is in
+(it is asked once it has), when Codex's queue command is not there (it is tried
+again no sooner than ten minutes later), or when the command fails or runs past
+10 seconds (no second request is made for that batch). A request made to a
+conversation you have just left waits in that conversation.
 
 ## What travels with it
 

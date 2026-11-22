@@ -106,8 +106,8 @@ Reading:
   block, and neither does one whose poll moved only over lines `unread` does not count (the Unread rule below: lines
   addressed to another handle, broadcast copies, own lines), so a directed line those lines push past the budget, about
   16,000 bytes, can let one Stop pass with it unread. Nothing is lost: the cursor stands behind it and the poll's last
-  line says more remain. Only a Claude Code row in a Ship of Tools row is woken again, after 600 s; a server session
-  and a Codex row are not woken. One line over 30,000 characters is
+  line says more remain. Only a Claude Code row in a Ship of Tools row is woken again, after 600 s; a Codex row is asked
+  once for the same mail and never again (Waking), and a server session is not woken. One line over 30,000 characters is
   still printed whole and cut by the harness. Tests: `poll_tests.rs`, and the hook's in
   `comm/tests/test-status-floor.sh`.
 - A reader on a box that appends itself reads under a shared lock on `inbox/<h>.lock`, bounded at 3 s: a held lock is
@@ -210,8 +210,68 @@ Waking:
   every exit. A boot look refused by contention stays pending until it can read the box. `attempt_tests.rs::a_typing_attempt_owns_the_row_until_it_ends` and
   `tests/comm_wake.rs::a_page_reply_and_a_wake_never_type_at_once` prove the guard; the latter suite also observes two
   concurrent replies and an unsent reply left untouched by later wakes. Unreadable Stop-mark bytes refuse a reply.
+- A Codex row is never typed into for mail (`wake/codex.rs`): a composer that reads empty on the served screen can
+  hold a person's paste (measured on Codex 0.171.0), so no screen test is safe there. A Ready capsule row running Codex,
+  with unread mail by the same rule as any row, is asked through Codex's own queue instead, with no window open: the
+  daemon runs `ccx --queue <id> '[sot-comm] you have mail: run comm-poll.sh'` once. `ccx` is the launcher the row's
+  leg runs, found by agents' one rule (`agents::argv::agent_argv`), and the mode is agents' guarantee 10: the launcher
+  resolves the binary and its home as it does for the leg and execs `codex queue --thread <id> --message <line>`. The
+  folder is the row's. The environment is the daemon's without the nesting variables, which is what a leg inherits
+  before its row's pairs: the same login (a Codex row has no named account) and no mail identity or selection of the
+  row's. `<id>` is the conversation the row's session last named in its binding file (`<state>/codex-thread`, agents'
+  guarantee 7). That file is removed as each leg starts and a row reads Ready only once its leg has lived 2 s, so an
+  id read from a Ready row's file is that run's own. The file is read only for unread mail (to see whether mail
+  already asked for now has another conversation, and once after the Ready check before a request), only as a regular
+  file of at most 64 bytes and never waiting (platform's `read_regular` after a check that the name is no link): a
+  fifo, a device, a directory, a link or a longer file at that name is no binding and costs the look nothing. The
+  link check and the open are two steps, so a name replaced by a link between them is read through it (about one
+  read in a hundred while the name flips, measured in review); what is read is still a regular file of at most 64
+  bytes, and the row's own session can write any id there itself, so nothing is gained by it. A file
+  that is absent, is one of those, or holds anything but one conversation id runs nothing: the mail stays unread for
+  the row's next poll, and the daemon says so in its log once per unread episode, never per look. A row that is not
+  Ready is asked nothing and nothing is logged.
+  One request per unread episode. What was asked is in the tick task's memory (the handle, the conversation, the
+  inbox's line count then). After a request Codex acknowledged, and after one whose outcome is unclear, nothing more is
+  queued until every unread line is newer than that count (the mail it announced was read and more came) or the binding
+  names another conversation. There is no reminder: two requests to one conversation were two turns in the
+  measurement. Accepted is Codex's own line `Queued message <id> for thread <id>.` on stdout with status 0, naming the
+  conversation asked for. A definite refusal is one that happened before Codex's queue command ran, so it stored
+  nothing: no launcher, an installed launcher whose text lacks the mode (never run: it would read the flag as nothing
+  and start a session; the test is of the file's text, `--queue)`, so a `ccx` of a person's own that wraps the
+  installed one is refused at every interval with only the daemon's warning, and any file at that name holding the
+  text anywhere, a comment included, is run with the three arguments), or the launcher's own status 69 with its `ccx: no queue:` line (no binary, or one whose help
+  names no queue command with both options). It is tried again no sooner than 600 s, whatever mail comes. Everything
+  else is unclear: the bound, a signal, a start that failed, any other status, a status 0 without that
+  acknowledgment. Codex's own refusals have not been measured, so none is read as definite.
+  The command is a contained child (containment's `Signal::output`) with a bound of 10 s for the launcher and the
+  command together; at the bound its whole tree is asked to end and the outcome is unclear. Each row's look runs on a
+  blocking thread the tick never waits for, so a command that hangs holds no other row's wake; once the daemon's child
+  signal has fired none starts and one in flight is ended.
+  Limits: an acknowledgment says the request is stored, not that it ran (measured: an open session took one 3 to 10 s
+  later, left a visible draft unsent, and took one queued during a turn after that turn). The memory dies with the
+  daemon, so a restarted daemon asks once more for mail still unread, and a request that runs after its mail was read
+  by hand costs one poll that finds nothing. A working row is asked too: the look reads no screen, no work-state and
+  no Stop mark, so mail that arrives during a turn is asked for at once, the end-of-turn check then makes the session
+  read it, and Codex then hands over the queued request as one more turn, a poll that finds nothing, with the whole
+  conversation as its input; that is one extra turn for each unread episode that begins during a turn, and it does
+  not repeat (the extra turn files no mail, and a further request needs further mail). A request to a conversation the person has left waits there: between a
+  switch of conversation and the session's next hook the binding names the one just left. A row whose plugin hooks did
+  not run names no conversation and is not woken. A request while an approval question is open, and one to a
+  conversation later resumed by its id, are unmeasured, and no live row has been woken this way yet
+  (docs/defects.md: CODEX-WAKE-QUEUE-LIVE). No Windows form: `ccx` is bash. Tests: `wake/codex_tests.rs` (the
+  command's arguments, folder and home; the definite refusals; the unclear outcomes; the bound and the tree; the fired
+  signal; the decision, and that it reads the binding only for mail already asked for; the binding, with a fifo, a
+  link, a directory and a long file each answered at once) and `tests/comm_wake.rs`:
+  `mail_asks_a_ready_codex_rows_conversation_once_and_types_nothing` (the stand-in session records every byte it is
+  sent and draws a free prompt, so a wake that typed would fail it),
+  `a_codex_row_that_names_no_conversation_is_asked_nothing_until_it_does`,
+  `mail_to_a_codex_row_that_is_not_ready_asks_nothing` (a row never started whose folder holds an id),
+  `a_codex_queue_refused_before_it_ran_is_not_tried_again_for_newer_mail` and
+  `a_codex_queue_that_hangs_holds_no_other_row_and_ends_with_its_tree_at_the_bound` (over the hold point
+  `comm.wake.codex.queue`).
 - A busy session needs no typing: its end-of-turn check (the Stop hook, through `sotd comm unread`) does not let a turn
-  end while unread mail waits, once per remainder (Reading's tick rule).
+  end while unread mail waits, once per remainder (Reading's tick rule). A busy Codex row is still asked through its
+  queue (the limit above).
 - A session outside any row, every server session included, has a handle and an inbox and is never woken; it sees mail
   at its next turn, and after ten idle minutes a send to it fails as "no live session". No per-session watcher,
   listener, bridge or Monitor exists.
@@ -293,13 +353,13 @@ sotd, stays beside them for the spawn; rows (`edit_entry`, `read_comm_agents`,
 `remove_comm_agents_for_workspace`, `stamp_last_seen`, `last_joiner`, `dialog_of`); the server (`handle_comm_file`,
 `handle_agent_send`, `Links`, `record_at_boot`, the wake's `run`, the hub link's `run`), the chat's filing (`chat/mail.rs`: `file_comm` with the expected row, and `admit_entry` for the recipient's liveness), the chat's start read of which channel posts were filed (`lines_from`, called from `chat/mail.rs`), the registry lock's `POLL` (a const assertion holds the chat's `FILE_GAP` at four of them or more); the chat's owner calls them for live posts, and the chat's lock folder (`home::chat_dir`, which makes the comm folder whole and then `chat/` private, so chat never creates the comm folder itself).
 
-Calls out: rows, from the wake and the shared typing attempt (`bound_handle` and the headless attach client); the package page's target puts the
+Calls out: rows, from the wake and the shared typing attempt (`bound_handle` and the headless attach client); agents, from the wake of a Codex row (`argv::agent_argv` for the launcher, the nesting scrub list and the binding file's name); the package page's target puts the
 wake in the `sotd` binary beside the op table, so messaging's own crate calls no rows code, and until the crates exist
 the wake lives in `wake/` here. From the rest: rows over the wire and through its script (`agent.join`, and
 `comm-status.sh join` after a join); topology (the relay endpoint, `dial_and_call`, the ssh recipe);
 platform (the declared host, the machine id, the kernel locks, `connect_own`); containment (`Signal` for every child).
 
-Does not: decide a row's work-state (rows'); type anything of its own but the wake line and its Enter (rows supplies a confirmed page line to the shared attempt); carry anything but mail on
+Does not: decide a row's work-state (rows'); type anything of its own but the wake line and its Enter (rows supplies a confirmed page line to the shared attempt), and nothing at all into a Codex row; resolve the Codex binary or its home (the launcher's); carry anything but mail on
 `comm.file` (the window's notifications ride `agent.send`); queue or retry a send; read a subagent's mail.
 
 Platforms: one implementation on all three. Linux reads the mount table for the lock manager (`nfs4 <export>` with
@@ -323,7 +383,7 @@ The environment: comm's identity and commands read variables only from an `Env` 
 one snapshot taken at `sotd comm`'s entry and at each daemon-side entry (`handle_comm_file`, the hub link, the boot
 record); nothing in comm writes the process environment. The daemon-side wrappers that rows and the server call
 (`read_comm_agents`, `try_read_comm_agents`, `remove_comm_agents_for_workspace`, `edit_entry`, `stamp_last_seen`) snapshot the process at their
-call and pass it to their `_in` form. The wake's test points (`comm.wake.hold`, `final_ok`, `done`, and `looked`, which counts a tick's decision for a row so a test proves an absence over two of them) go through platform's hold tool.
+call and pass it to their `_in` form. The wake's test points (`comm.wake.hold`, `final_ok`, `done`, `codex.queue`, where a Codex row's look is about to run its command, and `looked`, which counts a tick's decision for a row so a test proves an absence over two of them) go through platform's hold tool.
 
 Tests: every comm unit test builds its own `Env` (`test_home::TestHome::env`) and passes it, so none writes the
 process environment and none needs a lock for one; a test that starts a child sets the child's environment on its
@@ -332,7 +392,7 @@ process-wide, so another test's hold of it counts inside a test's bound, and eve
 included, holds it for its life: for write when what it asserts rests on a take or a refusal within a bound under
 10 s (`TestHome::exclusive`), for read otherwise (`TestHome::new`, whose commands wait the default 10 s). Under test `sot_comm_home_in` refuses a comm folder not beneath the temporary folder: it names the path and the test on stderr and aborts the run, which no caller can swallow, so a test that forgets its `SOT_COMM_HOME` stops the run with its name (the unit tests were run one by one under both settings: `SOT_COMM_HOME` set outside the temporary folder, and unset with `HOME` outside it) (`sot_comm_home_tests::a_test_resolving_a_comm_folder_it_did_not_make_aborts_by_name`, in a child process). The guard covers the `sotd` unit tests, not the integration suites. Limit: a test that reads the process environment without `paths::ENV_TEST_LOCK` is stopped only when no guarded test holds `SOT_COMM_HOME` at that moment; otherwise it reads that test's temporary folder, so it never reaches a folder outside the temporary folder either way (`docs/defects.md`, COMM-GUARD-RACES-ENV). One unit test per guarantee, `cargo test -p sot-backend comm::` (each named in the pass's result); the
 integration suites `comm_wake` (a real daemon and capsule row: a free prompt is woken, a draft, a dialog and a working
-row are not), `comm_file`, `comm_send`, `hub_link` and `comm_cli` (the wrappers and `sotd comm` on a scratch home);
+row are not, and a Codex row is asked through its queue and never typed into), `comm_file`, `comm_send`, `hub_link` and `comm_cli` (the wrappers and `sotd comm` on a scratch home);
 `comm/tests/interop-066.sh`, run by hand on a build host, for the 0.6.6 scripts and a 0.6.6 daemon beside this build,
 and on two hosts at once for concurrent sends into one network folder; `comm/tests/shapes.sh`, run by hand on two build
 hosts sharing a folder, for the three shapes in use (a row, a worktree session, a server session with no daemon), each

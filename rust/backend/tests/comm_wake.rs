@@ -143,9 +143,13 @@ fn append_mail_to(env: &Env, handle: &str, n: usize) {
 
 /// Marks `HANDLE`'s first `n` inbox lines read, as `comm-poll.sh` or the Stop hook does: the cursor's count form.
 fn read_mail(env: &Env, n: usize) {
+    read_mail_of(env, HANDLE, n);
+}
+
+fn read_mail_of(env: &Env, handle: &str, n: usize) {
     let dir = env.comm_root.join("read");
     std::fs::create_dir_all(&dir).expect("mkdir read");
-    std::fs::write(dir.join(format!("{HANDLE}.cursor")), format!("{n}\n")).expect("write cursor");
+    std::fs::write(dir.join(format!("{handle}.cursor")), format!("{n}\n")).expect("write cursor");
 }
 
 async fn wait_pings(log: &Path, want: usize, within: Duration) -> bool {
@@ -296,24 +300,247 @@ async fn an_idle_row_is_woken_once() {
     row.env.kill_daemon_bounded().await;
 }
 
-/// A bound Codex row with directed unread mail is still skipped before a wake decision.
+const CODEX: &str = "codexh";
+const THREAD: &str = "aaaaaaaa-1111-4222-8333-444444444444";
+const WAKE_LINE: &str = "[sot-comm] you have mail: run comm-poll.sh";
+
+/// A stand-in `codex`, `<d>` its folder of records and controls. Asked for its queue command's help it logs the
+/// question in `<d>/helped` and names the command's two options, or neither with `<d>/no-queue`. A queue run is
+/// recorded in `<d>/queued` (its folder, its home, `NO_COLOR`, its arguments) and then acknowledged, or with
+/// `hang` in `<d>/mode` it hangs with a child of its own, whose pid goes to `<d>/child`. Anything else is a session, the
+/// row's leg: it names its conversation as the row plugin's hook does, moving `<d>/bind` to the row's binding file
+/// whenever a test writes one, draws a free prompt as Claude Code's is drawn (so a wake that typed would type here) and
+/// records every byte it is sent, Enter included, in `<d>/typed`.
+const STAND_IN_CODEX: &str = r#"#!/bin/sh
+d='<d>'
+case "$*" in
+    'queue --help')
+        echo asked >> "$d/helped"
+        if [ -f "$d/no-queue" ]; then echo 'Usage: codex [OPTIONS] [PROMPT]'; else echo 'Usage: codex queue [OPTIONS] --thread <THREAD> --message <TEXT>'; fi
+        exit 0 ;;
+    *--help) exit 0 ;;
+esac
+if [ "$1" = queue ]; then
+    { printf 'cwd=%s\nhome=%s\nno_color=%s\n' "$PWD" "$HOME" "${NO_COLOR-unset}"; for a in "$@"; do printf 'arg=%s\n' "$a"; done; } >> "$d/queued"
+    if [ "$(cat "$d/mode" 2>/dev/null)" = hang ]; then sleep 300 & echo $! > "$d/child"; wait; fi
+    echo "Queued message cccccccc-1111-4222-8333-444444444444 for thread $3."
+    exit 0
+fi
+( while :; do [ ! -f "$d/bind" ] || mv "$d/bind" "$SOT_CODEX_THREAD_FILE"; sleep 0.1; done ) &
+rule=''; i=0; while [ $i -lt 60 ]; do rule="$rule$(printf '\342\224\200')"; i=$((i+1)); done
+printf '%s\033[K\n\342\235\257\302\240\033[K\n%s\033[K\n footer 0\033[K\033[2A\033[3G' "$rule" "$rule"
+: > "$d/session"
+stty raw -echo
+exec cat >> "$d/typed"
+"#;
+
+/// A Ready Codex row declaring [`CODEX`]: its leg is the repo's real `ccx` and [`STAND_IN_CODEX`], both in the daemon's
+/// stub folder, so the wake resolves the launcher and the launcher the binary as an installed row's do.
+struct Codex {
+    dir: PathBuf,
+    ws: String,
+}
+
+impl Codex {
+    fn read(&self, name: &str) -> String {
+        std::fs::read_to_string(self.dir.join(name)).unwrap_or_default()
+    }
+
+    /// How many times the queue command ran.
+    fn runs(&self) -> usize {
+        self.read("queued").matches("arg=queue\n").count()
+    }
+
+    /// Writes the row's binding file through its session, as the hook would, and waits until it is there.
+    async fn bind(&self, text: &str) {
+        std::fs::write(self.dir.join("bind.new"), text).unwrap();
+        std::fs::rename(self.dir.join("bind.new"), self.dir.join("bind")).unwrap();
+        wait_for("the session's binding write", || !self.dir.join("bind").exists()).await;
+    }
+}
+
+/// Where the daemon reads a row's binding: `codex-thread` in the row's state folder.
+fn binding_file(env: &Env, ws: &str) -> PathBuf {
+    env.state_root.join("sot").join("workspaces").join(ws).join("codex-thread")
+}
+
+/// `ctl`: the stand-in's control files (`name` or `name=content`) there before the row starts.
+async fn add_codex_row(row: &mut Row, ctl: &[&str]) -> Codex {
+    let dir = codex_stand_in(row, ctl);
+    let ws = add_row(row, "codex-row", CODEX, "codex-root", "codex").await;
+    wait_for("the Codex row's session", || dir.join("session").exists()).await;
+    Codex { dir, ws }
+}
+
+/// Puts [`STAND_IN_CODEX`] and the repo's `ccx` in the daemon's stub folder; returns the stand-in's folder.
+fn codex_stand_in(row: &Row, ctl: &[&str]) -> PathBuf {
+    let dir = row.env._tmp.path().join("cx");
+    std::fs::create_dir_all(&dir).unwrap();
+    for entry in ctl {
+        let (name, content) = entry.split_once('=').unwrap_or((entry, ""));
+        std::fs::write(dir.join(name), content).unwrap();
+    }
+    sot_platform::test_exec::write_executable(&row.stub_dir.join("codex"), STAND_IN_CODEX.replace("<d>", &dir.to_string_lossy()));
+    let ccx = concat!(env!("CARGO_MANIFEST_DIR"), "/../../agents/codex/bin/ccx");
+    sot_platform::test_exec::write_executable(&row.stub_dir.join("ccx"), std::fs::read(ccx).unwrap());
+    dir
+}
+
+/// Appends one complete inbox line per `(from, to)` pair to `handle`'s inbox, in one write.
+fn append_lines(env: &Env, handle: &str, lines: &[(&str, &str)]) {
+    let dir = env.comm_root.join("inbox");
+    std::fs::create_dir_all(&dir).expect("mkdir inbox");
+    let text: String = lines.iter().map(|(from, to)| format!("{{\"from\":\"{from}\",\"to\":\"{to}\",\"repo\":\"r\",\"msg\":\"hi\",\"ts\":\"2026-01-01T00:00:00Z\"}}\n")).collect();
+    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(dir.join(format!("{handle}.jsonl"))).expect("open inbox");
+    std::io::Write::write_all(&mut f, text.as_bytes()).expect("append inbox");
+}
+
+/// Rules 1, 3, 6 and 7. Directed unread mail to a Ready Codex row runs the row's own queue command once: the
+/// launcher's binary, in the row's folder, under the daemon's home and without its nesting variables, for the
+/// conversation the row's binding names, the fixed line its one message. Lines the unread rule does not count ask
+/// nothing. While that mail is unread nothing more is asked, with more mail on top too; once it is read newer mail is
+/// asked for, and so is a conversation the binding newly names. Not one byte reaches the Codex row's terminal and no
+/// wake attempt attaches to it: the only attempt that ends in this daemon before the Claude row's own mail is that
+/// row's boot look, and no pen is taken. Beside it a page reply to the Codex row is refused as before and the Claude
+/// row is woken by typing as before. Red before the change: the daemon skipped a Codex row and ran nothing. With a
+/// keyboard path enabled for a Codex row this fails on the typed bytes and on the attempt counts.
 #[tokio::test]
-async fn the_wake_skips_a_bound_codex_row() {
+async fn mail_asks_a_ready_codex_rows_conversation_once_and_types_nothing() {
+    const OTHER: &str = "dddddddd-1111-4222-8333-444444444444";
     let _serial = SERIAL.lock().await;
-    let mut row = start_full("cw-bound-codex", None, false, &[], &[], (0, 0), "codexh").await;
-    let bound = row.env._tmp.path().join("bound");
-    sot_platform::test_exec::write_executable(&row.stub_dir.join("ccx"), format!(
-        "#!/bin/sh\nprintf '%s\\n' 12345678-1234-4567-8123-123456789abc > \"$SOT_CODEX_THREAD_FILE\"; echo $? > '{}'\nexec sleep 120\n", bound.display()));
-    add_row(&mut row, "codex-row", "codexh", "codex-root", "codex").await;
-    let result = poll_until(|| async { std::fs::read_to_string(&bound).ok().filter(|s| !s.is_empty()) }, BOUND, "binding probe").await;
-    assert_eq!(result.trim(), "0", "the leg could not publish its binding");
-    append_mail_to(&row.env, "codexh", 1);
+    let mut row = start_full("cw-codex", None, false, &[], &[("NO_COLOR", "1")], (0, 0), CODEX).await;
+    pass_boot_look(&row).await;
+    let cx = add_codex_row(&mut row, &[]).await;
+    cx.bind(&format!("{THREAD}\n")).await;
+    assert_eq!(std::fs::read_to_string(binding_file(&row.env, &cx.ws)).unwrap(), format!("{THREAD}\n"), "the binding file is not where this suite looks");
+    append_lines(&row.env, CODEX, &[("other", ""), (CODEX, CODEX), ("other", "someone-else")]);
+    two_looks(&row).await;
+    assert_eq!(cx.runs(), 0, "a broadcast copy, an own line or another handle's line asked the row");
+    append_mail_to(&row.env, CODEX, 1);
+    wait_for("the queue command", || cx.runs() == 1).await;
+    let root = row.env._tmp.path().join("codex-root").canonicalize().unwrap();
+    let asked = |thread: &str| format!("cwd={}\nhome={}\nno_color=unset\narg=queue\narg=--thread\narg={thread}\narg=--message\narg={WAKE_LINE}\n", root.display(), row.env.home_root.display());
+    assert_eq!(cx.read("queued"), asked(THREAD));
+    append_mail_to(&row.env, CODEX, 1);
+    two_looks(&row).await;
+    assert_eq!(cx.runs(), 1, "a second request for mail already asked for");
+    read_mail_of(&row.env, CODEX, 5);
+    two_looks(&row).await;
+    assert_eq!(cx.runs(), 1, "a read inbox asked the row");
+    append_mail_to(&row.env, CODEX, 1);
+    wait_for("the request for newer mail", || cx.runs() == 2).await;
+    cx.bind(&format!("{OTHER}\n")).await;
+    wait_for("the request to the newly named conversation", || cx.runs() == 3).await;
+    two_looks(&row).await;
+    assert_eq!(cx.read("queued"), asked(THREAD).repeat(2) + &asked(OTHER));
+    let reply = call(&mut row.conn, row.next_id, "page.reply", serde_json::json!({ "workspace_id": cx.ws, "handle": CODEX, "line": "[sot-page] approve" })).await.payload;
+    row.next_id += 1;
+    assert_eq!((reply["outcome"].as_str(), reply["detail"].as_str()), (Some("refused"), Some("not_typeable")));
+    assert_eq!(cx.read("typed"), "", "bytes reached the Codex row's terminal");
+    assert_eq!((row.hold.arrivals(), row.done.arrivals()), (0, 1), "a wake attempt took a pen, or attached beyond the Claude row's boot look");
     append_mail(&row.env, 1);
-    assert!(wait_pings(&row.log, 1, WAKE_WITHIN).await, "the control row must receive mail");
-    add_row(&mut row, "control", "controlh", "control-root", "claude").await;
-    append_mail_to(&row.env, "controlh", 1);
-    assert!(wait_pings(&row.log, 2, WAKE_WITHIN).await, "a later tick must wake the second control");
-    assert_eq!(row.looked.arrivals(), 0, "the wake inspected the Codex row");
+    assert!(wait_pings(&row.log, 1, WAKE_WITHIN).await, "the Claude row was not woken beside the Codex row");
+    assert_eq!(cx.read("typed"), "", "bytes reached the Codex row's terminal");
+    row.env.kill_daemon_bounded().await;
+}
+
+/// Rule 2. A Codex row whose session has named no conversation, or whose binding file holds something that is no
+/// conversation id, is asked nothing: neither the launcher nor the binary runs, the mail stays unread, and the daemon
+/// says so once for the episode, not once a look. When the session names one, that mail is asked for.
+#[tokio::test]
+async fn a_codex_row_that_names_no_conversation_is_asked_nothing_until_it_does() {
+    let _serial = SERIAL.lock().await;
+    let mut row = start_full("cw-codex-unbound", None, false, &[], &[], (0, 0), CODEX).await;
+    let cx = add_codex_row(&mut row, &[]).await;
+    append_mail_to(&row.env, CODEX, 1);
+    two_looks(&row).await;
+    cx.bind("not a conversation id\n").await;
+    two_looks(&row).await;
+    assert_eq!((cx.runs(), cx.read("helped").as_str()), (0, ""), "something ran for a row with no conversation to ask");
+    assert_eq!(daemon_log(&row.env).matches("no conversation to ask").count(), 1, "said per look, or never");
+    cx.bind(&format!("{THREAD}\n")).await;
+    wait_for("the queue command", || cx.runs() == 1).await;
+    assert_eq!(cx.read("typed"), "", "bytes reached the Codex row's terminal");
+    row.env.kill_daemon_bounded().await;
+}
+
+/// Rule 7. Mail to a Codex row that is not Ready asks nothing: neither the launcher nor the binary runs. The row was
+/// never started; its state folder holds a conversation id, as an ended run's would, so only the Ready rule keeps the
+/// request back (with the Ready check removed from the look this test is red on the launcher's question).
+#[tokio::test]
+async fn mail_to_a_codex_row_that_is_not_ready_asks_nothing() {
+    const REST: &str = "codex-rest";
+    let _serial = SERIAL.lock().await;
+    let mut row = start_full("cw-codex-rest", None, false, &[], &[], (0, 0), CODEX).await;
+    let dir = codex_stand_in(&row, &[]);
+    let root = row.env._tmp.path().join("codex-root");
+    std::fs::create_dir_all(&root).unwrap();
+    row.env.seed_capsule_toml(REST, REST, &root, "codex");
+    row.env.kill_daemon_bounded().await;
+    row.env.spawn_sotd_with_prepended_path(&row.stub_dir);
+    (row.conn, row.next_id) = connect_and_hello(&row.env.socket_path).await;
+    let join = call(&mut row.conn, row.next_id, op::AGENT_JOIN, serde_json::json!({ "workspace_id": REST, "handle": CODEX })).await;
+    row.next_id += 1;
+    assert_eq!(join.payload["ok"], true, "agent.join failed: {:?}", join.payload);
+    let binding = binding_file(&row.env, REST);
+    std::fs::create_dir_all(binding.parent().unwrap()).unwrap();
+    std::fs::write(&binding, format!("{THREAD}\n")).unwrap();
+    append_mail_to(&row.env, CODEX, 1);
+    two_looks(&row).await;
+    assert_ne!(phase_of_row(&mut row, REST).await, "ready");
+    let read = |name: &str| std::fs::read_to_string(dir.join(name)).unwrap_or_default();
+    assert_eq!((read("helped"), read("queued"), read("session")), Default::default(), "something ran for a row that is not Ready");
+    row.env.kill_daemon_bounded().await;
+}
+
+/// Rule 4. A refusal that stored nothing (here the launcher's: the binary's help names no queue command) is not tried
+/// again for more mail, for a read inbox or for newer mail after it; the interval itself is
+/// `comm::wake::codex`'s `a_new_request_goes_only_for_mail_not_yet_asked_for`. Codex's queue command never ran.
+#[tokio::test]
+async fn a_codex_queue_refused_before_it_ran_is_not_tried_again_for_newer_mail() {
+    let _serial = SERIAL.lock().await;
+    let mut row = start_full("cw-codex-refused", None, false, &[], &[], (0, 0), CODEX).await;
+    let cx = add_codex_row(&mut row, &["no-queue"]).await;
+    cx.bind(&format!("{THREAD}\n")).await;
+    append_mail_to(&row.env, CODEX, 1);
+    wait_for("the launcher's question", || cx.read("helped") == "asked\n").await;
+    wait_for("the refusal", || daemon_log(&row.env).contains("refused before it stored anything")).await;
+    append_mail_to(&row.env, CODEX, 1);
+    two_looks(&row).await;
+    read_mail_of(&row.env, CODEX, 2);
+    two_looks(&row).await;
+    append_mail_to(&row.env, CODEX, 1);
+    two_looks(&row).await;
+    assert_eq!((cx.read("helped").as_str(), cx.runs()), ("asked\n", 0), "a refused queue was tried again, or the command ran");
+    assert_eq!(cx.read("typed"), "", "bytes reached the Codex row's terminal");
+    row.env.kill_daemon_bounded().await;
+}
+
+/// Rules 5, 3 and 6. A Codex look in flight holds no other row: with the look held just before its command, the
+/// Claude row's mail is typed and sent. Released, the command hangs with a child; at the bound the daemon ends the
+/// whole tree and the outcome is unclear, so nothing more is asked for that mail or for more on top of it, and nothing
+/// is typed. (A retiring daemon is `comm::wake::codex`'s `a_fired_signal_ends_a_run_in_flight_and_starts_none`.)
+#[tokio::test]
+async fn a_codex_queue_that_hangs_holds_no_other_row_and_ends_with_its_tree_at_the_bound() {
+    let _serial = SERIAL.lock().await;
+    let mut row = start_full("cw-codex-hang", None, false, &[], &[], (0, 0), CODEX).await;
+    let about_to_run = row.env.holds.arm("comm.wake.codex.queue").key(CODEX).hold(1);
+    let cx = add_codex_row(&mut row, &["mode=hang"]).await;
+    cx.bind(&format!("{THREAD}\n")).await;
+    append_mail_to(&row.env, CODEX, 1);
+    about_to_run.reached_async(0).await;
+    append_mail(&row.env, 1);
+    assert!(wait_pings(&row.log, 1, WAKE_WITHIN).await, "a Codex look in flight held the tick for the Claude row");
+    about_to_run.release(0);
+    wait_for("the stand-in's child", || !cx.read("child").is_empty()).await;
+    let child: u32 = cx.read("child").trim().parse().unwrap();
+    wait_for("the bound", || daemon_log(&row.env).contains("outcome is unclear")).await;
+    let ended = || std::fs::read_to_string(format!("/proc/{child}/stat")).map_or(true, |stat| stat.rsplit_once(") ").map_or(true, |(_, rest)| rest.starts_with('Z')));
+    wait_for("the end of the stand-in's child", ended).await;
+    append_mail_to(&row.env, CODEX, 1);
+    two_looks(&row).await;
+    assert_eq!(cx.runs(), 1, "a request after an unclear one");
+    assert_eq!(cx.read("typed"), "", "bytes reached the Codex row's terminal");
     row.env.kill_daemon_bounded().await;
 }
 

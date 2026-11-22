@@ -8,9 +8,10 @@ const RULE: char = '\u{2500}';
 
 /// The prompt glyphs of an agent the daemon can read, none for one it cannot.
 /// Claude Code draws `❯`, or a bare `>` when its unicode check fails, which on
-/// Windows depends on the environment. Codex ships OFF: no Codex screen has
-/// been captured, and a glyph is never guessed, so a Codex row counts as a row
-/// the daemon cannot type into.
+/// Windows depends on the environment. Codex ships OFF, and a glyph is never
+/// guessed: a Codex composer that reads empty on the served screen can hold a
+/// paste, so a Codex row counts as a row the daemon cannot type into. Its wake
+/// is a request through Codex's own queue (`super::codex`).
 pub(super) fn prompt_glyphs(agent: &str, windows: bool) -> &'static [char] {
     match agent {
         "claude" if windows => &['\u{276f}', '>'],

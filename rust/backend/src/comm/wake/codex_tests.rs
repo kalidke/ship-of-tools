@@ -172,6 +172,78 @@ fn a_fired_signal_ends_a_run_in_flight_and_starts_none() {
     assert_eq!(s.read("queued"), "", "a run started after the fire");
 }
 
+/// Rules 3 and 4, the decision alone: one request per unread episode, no reminder after an accepted or an unclear
+/// one, and nothing sooner than the reminder interval after a refusal.
+#[test]
+fn a_new_request_goes_only_for_mail_not_yet_asked_for() {
+    const OTHER: &str = "dddddddd-1111-4222-8333-444444444444";
+    let t0 = Instant::now();
+    let asked = Asked { thread: THREAD.into(), line: 3, at: t0, refused: false };
+    let mail = |unread, fresh| Scan { total: 3 + fresh, unread, fresh };
+    let v = |s: &Scan, prior: Option<&Asked>, thread: Option<&str>, now| verdict(s, prior, &|| thread.map(str::to_string), now);
+    assert_eq!(v(&mail(3, 3), None, Some(THREAD), t0), Verdict::Ask);
+    assert_eq!(v(&mail(0, 0), None, Some(THREAD), t0), Verdict::Clear);
+    for later in [t0, t0 + REPEAT_AFTER * 30] {
+        // The mail announced is still unread: no second request at any age, with more mail on top or with no binding.
+        assert_eq!(v(&mail(3, 0), Some(&asked), Some(THREAD), later), Verdict::Hold);
+        assert_eq!(v(&mail(4, 1), Some(&asked), Some(THREAD), later), Verdict::Hold);
+        assert_eq!(v(&mail(3, 0), Some(&asked), None, later), Verdict::Hold);
+    }
+    // That mail was read and newer mail came, or the binding names another conversation.
+    assert_eq!(v(&mail(1, 1), Some(&asked), Some(THREAD), t0), Verdict::Ask);
+    assert_eq!(v(&mail(3, 0), Some(&asked), Some(OTHER), t0), Verdict::Ask);
+    assert_eq!(v(&mail(0, 0), Some(&asked), Some(THREAD), t0), Verdict::Clear);
+    // A refusal holds for the reminder interval whatever comes, a read inbox included; then the mail is asked for again.
+    let refused = Asked { refused: true, ..asked.clone() };
+    let before = t0 + REPEAT_AFTER - Duration::from_secs(1);
+    for s in [mail(3, 0), mail(4, 1), mail(1, 1), mail(0, 0)] {
+        for thread in [Some(THREAD), Some(OTHER), None] {
+            assert_eq!(v(&s, Some(&refused), thread, before), Verdict::Hold, "{s:?} {thread:?}");
+        }
+    }
+    assert_eq!(v(&mail(3, 0), Some(&refused), Some(THREAD), t0 + REPEAT_AFTER), Verdict::Ask);
+    assert_eq!(v(&mail(0, 0), Some(&refused), Some(THREAD), t0 + REPEAT_AFTER), Verdict::Clear);
+    // The binding is read only for unread mail already asked for: not with nothing unread, never asked or refused.
+    let unread_binding = || -> Option<String> { panic!("the binding was read") };
+    for (s, prior, now) in [(mail(0, 0), None, t0), (mail(3, 3), None, t0), (mail(0, 0), Some(&asked), t0), (mail(3, 0), Some(&refused), before), (mail(3, 0), Some(&refused), t0 + REPEAT_AFTER)] {
+        verdict(&s, prior, &unread_binding, now);
+    }
+}
+
+/// Rule 2: a binding is the one line of a small regular file, a conversation id; an absent file and any other content
+/// are no binding. A fifo, a link (to a file that holds an id), a directory and a file longer than a line at that name
+/// are none either, and none of them is opened to wait or read whole: each answer comes at once, where a plain read
+/// of a fifo would wait for a writer for good.
+#[test]
+fn only_a_small_regular_file_holding_one_conversation_id_is_a_binding() {
+    let tmp = tempfile::tempdir().unwrap();
+    let file = tmp.path().join("codex-thread");
+    let asked = |what: &str| {
+        let (sent, got) = std::sync::mpsc::channel();
+        let dir = tmp.path().to_path_buf();
+        std::thread::spawn(move || sent.send(binding(&dir)));
+        got.recv_timeout(Duration::from_secs(10)).unwrap_or_else(|_| panic!("the read of {what} did not return"))
+    };
+    assert_eq!(asked("an absent file"), Err("its session has named no conversation in this run"));
+    for (text, bound) in [(format!("{THREAD}\n"), true), (THREAD.to_string(), true), (String::new(), false), (format!("{THREAD}\n{THREAD}\n"), false), ("not an id\n".to_string(), false)] {
+        std::fs::write(&file, &text).unwrap();
+        assert_eq!(asked("a file").ok().as_deref(), bound.then_some(THREAD), "{text:?}");
+    }
+    std::fs::write(&file, format!("{THREAD}\n{}", " ".repeat(1 << 20))).unwrap();
+    assert_eq!(asked("a long file"), Err("its binding file is not a small regular file"));
+    std::fs::remove_file(&file).unwrap();
+    std::fs::create_dir(&file).unwrap();
+    assert_eq!(asked("a directory"), Err("its binding file is not a small regular file"));
+    std::fs::remove_dir(&file).unwrap();
+    let name = std::ffi::CString::new(file.as_os_str().as_encoded_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0, "mkfifo");
+    assert_eq!(asked("a fifo"), Err("its binding file is not a small regular file"));
+    std::fs::remove_file(&file).unwrap();
+    std::fs::write(tmp.path().join("elsewhere"), format!("{THREAD}\n")).unwrap();
+    std::os::unix::fs::symlink(tmp.path().join("elsewhere"), &file).unwrap();
+    assert_eq!(asked("a link"), Err("its binding file is a link"));
+}
+
 #[test]
 fn a_conversation_id_is_a_uuids_36_characters() {
     assert!(is_id(THREAD) && is_id("AAAAAAAA-1111-4222-8333-44444444444F"));

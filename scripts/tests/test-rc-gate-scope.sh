@@ -494,10 +494,12 @@ check "the first run on a target, with no times file, writes this run's jobs" '(
     merge_times
     grep -qP "^bin:bin_fail\t[2-9]$" "$RCG_TIMES")'
 
-# a split binary's per-test jobs key on the target and the test, each its own
+# a split binary's per-test jobs key on the target and the test, each its own. comm_wake is also a target of the
+# tree-reading list, and a target has one row: this stand-in takes the place of that list's own and lists its tests too
 fixture o7
 x=$work/tools/comm_wake-0123456789abcdef
-printf '#!/bin/sh\ncase "$*" in *--ignored*) ;; *--list*) echo "a_test: test"; echo "b_test: test" ;; esac\nexit 0\n' > "$x"; chmod +x "$x"
+printf '#!/bin/sh\ncase "$*" in *--ignored*) ;; *--list*) echo "a_test: test"; echo "b_test: test"; cat "%s" ;; esac\nexit 0\n' "$work/tools/bin-comm_wake.list" > "$x"; chmod +x "$x"
+grep -v $'^comm_wake\t' "$work/L-o7/tests.tsv" > "$work/L-o7/tests.tsv.one"; mv "$work/L-o7/tests.tsv.one" "$work/L-o7/tests.tsv"
 printf 'comm_wake\t%s\t%s\n' "$x" "$work/o7/rust/platform" >> "$work/L-o7/tests.tsv"
 CAP=1 pipeline o7 -
 check "keys: a split binary's jobs are keyed by target and test, distinct, with no hash" '[ "$(cut -f1 "$work"/L-o7/times/* | grep -c "^one:comm_wake:[ab]_test$")" -eq 2 ] && [ -z "$(cut -f1 "$work"/L-o7/times/* | sort | uniq -d)" ] && ! cut -f1 "$work"/L-o7/times/* | grep -q "^one:.*[0-9a-f]\{16\}"'

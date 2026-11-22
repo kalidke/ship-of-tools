@@ -449,9 +449,10 @@ row's session and its hooks run in the row's own process (CODEX-SELECTION-WINDOW
 Codex session on Unix by the same hook, as text that names the picture file (that a live session opens the file by
 itself is not seen, the same entry); a Codex session is told its handle, its handoff and its open question again after
 a clear, a compaction or a resume; and a Codex session records which conversation it is in, in a file of the row's
-state folder, which is the first half of waking it by mail (CODEX-ROOT-THREAD-HOOKS, open). Not built for Codex: the
-wake of an idle row by mail (a session operating a Codex
-row on 2026-11-21 was never woken by mail; the daemon's half is built, not landed), a structured question to the person shown red, the move of a row
+state folder (CODEX-ROOT-THREAD-HOOKS, open), and mail filed to a Ready Codex row asks that conversation to poll
+through Codex's own queue, once for each batch of unread mail, with nothing typed into its terminal (sessions operating
+Codex rows had seen them never woken by mail, CODEX-IDLE-ROW-NOT-WOKEN, Closed; proved against a stand-in Codex only,
+no live row has been woken, CODEX-WAKE-QUEUE-LIVE, open). Not built for Codex: a structured question to the person shown red, the move of a row
 to another account, a Windows launch, and the three messaging skills and the work-state hooks kept to a row's session
 (CODEX-GLOBAL-SKILLS). Queued, not started: the
 installer-observation pass (`pass/install-observe`), 26.04 runner support, mods (ADR 0051, accepted for 0.7.Z, unbuilt),

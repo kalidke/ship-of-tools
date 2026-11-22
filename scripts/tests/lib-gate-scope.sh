@@ -76,6 +76,7 @@ gate_tree_tests() {
     echo "selection-hook rust/backend/tests/selection.rs selection"
     echo "ccx rust/backend/src/agents/env_tests.rs sotd agents::env::tests::ccx_unsets_the_nesting_markers"
     echo "ccx rust/backend/src/comm/wake/codex_tests.rs sotd comm::wake::codex::tests::"
+    echo "ccx rust/backend/tests/comm_wake.rs comm_wake codex"
     echo "julia-repl rust/backend/src/sidecars/contract_tests.rs sotd sidecars::repl::"
     echo "julia-repl rust/protocol/src/escapes_tests.rs sot_protocol escapes::tests::"
     echo "local-daemon rust/topology/src/endpoint_tests.rs sot_topology endpoint::tests::"

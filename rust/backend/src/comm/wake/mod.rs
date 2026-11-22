@@ -6,7 +6,9 @@
 //! [`WAKE_LINE`] and Enter. A row the daemon cannot type into (not a capsule,
 //! not Ready, attach fails, no wake predicate for its agent) counts as no row:
 //! it is skipped and tried again next tick; its end-of-turn check still reads
-//! the mail. This module only READS the inbox and cursor.
+//! the mail. This module only READS the inbox and cursor. A Codex row is never
+//! typed into: its wake is a request through Codex's own queue ([`codex`]),
+//! and everything below this paragraph is about a row that is typed into.
 //!
 //! A working row keeps its input box live with the cursor at the prompt, so
 //! one frame cannot tell it from a row at rest. The screen is told apart by
@@ -99,7 +101,6 @@ use crate::rows::run::headless::HeadlessError;
 use crate::rows::Workspaces;
 
 mod attempt;
-#[allow(dead_code, reason = "the tick does not call it yet: a Codex row is still skipped")]
 mod codex;
 pub(crate) mod screen;
 mod unread;
@@ -198,6 +199,7 @@ pub async fn run(comm_home: PathBuf, state_root: PathBuf, workspaces: Workspaces
     // Handles already given their one boot look ([`check_row`]), and those whose look is waiting on the row (logged once).
     let mut looked: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut waiting: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut codex = codex::Rows::default();
     let mut tick = tokio::time::interval(period);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
@@ -210,10 +212,15 @@ pub async fn run(comm_home: PathBuf, state_root: PathBuf, workspaces: Workspaces
                 continue;
             }
             let agent = ws.agent();
+            let state_dir = crate::rows::spawn::state_root::state_dir_for(&state_root, &ws.workspace_id);
+            if agent == "codex" {
+                // Never typed into: its wake is a request through Codex's own queue, off the tick ([`codex`]).
+                codex.tick(&comm_home, &handle, state_dir, ws.project_root.clone()).await;
+                continue;
+            }
             if prompt_glyphs(&agent, cfg!(windows)).is_empty() {
                 continue;
             }
-            let state_dir = crate::rows::spawn::state_root::state_dir_for(&state_root, &ws.workspace_id);
             let home = comm_home.clone();
             let prior = woken.get(&handle).cloned();
             let h = handle.clone();
