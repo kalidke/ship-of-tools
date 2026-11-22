@@ -314,6 +314,10 @@ for unreadable in false true; do
     check "Claude holds a 300.25-second turn at five minutes (unreadable record: $unreadable)" case_claude_measurement \
         2 "2026-01-01T00:00:00.875Z" "2026-01-01T00:05:01.125Z" "${prefix}2 tool calls over ${prefix}5 min" "$unreadable"
 done
+check "Claude holds at exactly five minutes when .500 and .5 spell the same fraction" case_claude_measurement \
+    2 "2026-01-01T00:00:00.500Z" "2026-01-01T00:05:00.5Z" "2 tool calls over 5 min"
+check "Claude reports zero minutes when .500 and .5 spell the same instant" case_claude_measurement \
+    8 "2026-01-01T00:00:00.500Z" "2026-01-01T00:00:00.5Z" "8 tool calls over 0 min"
 check "Claude prints four minutes for an eight-call turn just under five" case_claude_measurement \
     8 "2026-01-01T00:00:00.000000001Z" "2026-01-01T00:05:00Z" "8 tool calls over 4 min"
 check "Claude counts the observed calls alongside unreadable call records" case_partial_call_count claude-block
