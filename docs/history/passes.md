@@ -3155,3 +3155,62 @@ the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the sa
     what neither had: rewording a shipped skill changes its hash, and the list of shipped skill versions had to
     be regenerated (it also lacked one earlier version of another skill). One quotation remains, in a workflow
     file's comment, which changes only on the maintainer's word.
+
+- Codex parity, 2026-11-21, on the maintainer's ask that day that every function work with Codex. A read-only Codex
+  audit listed what a Codex row lacks against a Claude row (31 candidate landings). From mid-afternoon one Codex
+  session in a row of its own built the items, each from a written brief with a done test; it committed on its own
+  branch and never pushed; the maintaining session read each commit, swept and gated it, had a Claude reviewer probe
+  it, and landed it. Seven landings in about seven hours, six of them built by that session. Its building was the
+  small part of every one (5 to 20 minutes a round); review rounds and the maintaining session's turns were the rest.
+  - The inline renderer: `ccx` passes `--no-alt-screen`, so a Codex row's conversation reaches the terminal's
+    scrollback. Two rounds, 22 minutes, the build 5. Open until a person checks it in a row: CODEX-ROW-NO-SCROLLBACK.
+  - The spawned handle by kind: `sotd comm derive` takes the child's agent kind, and `comm-spawn.sh` passes it only
+    for a Codex child. Built by a Claude builder before the Codex row existed; one review with no blocker and three
+    smaller items, a second commit; its minutes were not kept.
+  - The shared commands: an install that selects only Codex puts `sot-fe`, `show-result` and `sot-gh-auth` on the
+    path. One review, no blocker (about 147 collision probes held; the list of earlier shipped versions matched the
+    whole history), five smaller items; the follow-up, 8 minutes, checks every shared path before the comm install
+    writes anything, so a file of the person's at one of those names leaves the install untouched and named. Filed
+    open: COMM-REFUSAL-ENDS-INSTALL-MIDWAY.
+  - The end-of-turn hook's counts for a Codex turn (CODEX-STOP-HOLDS-SHORT-TURNS, seen by the Codex session itself:
+    two short turns held with a fallback count of 9,999 tools and 166 minutes). Three rounds, about 2 hours 30
+    minutes, the builds 28 of them. Round one found the new filter bound a variable name that jq 1.6 reserves, so on
+    a computer with jq 1.6 it never counted, while the gate's computers have a newer jq; and a Claude turn longer
+    than the 3,000 lines the hook reads was no longer held. Round two compared the old and new hooks on about 36,000
+    real Claude turn ends (no verdict or message differed) and found two rules with no failing test. Round three
+    found none. A fourth small landing, one round: a turn's duration is floored one way whether or not every record
+    is readable (no real verdict changed; 76 real messages print one minute less, each equal to the true floor).
+    Filed open: JQ-16-FLOOR-CHECKED-BY-NAMES-ONLY, CODEX-STOP-LOSES-EARLIER-MARKER.
+  - The row skills. The first attempt installed six skills into the Codex skills folder and was refused in review
+    with five blockers; the deciding one was that Codex reads that folder in every session on the computer, where
+    the row skills' texts are false. The maintaining session had taken the item ahead of the audit's earlier items
+    that scope Codex's material to a row. The Codex session then measured, with the real binary in temporary homes
+    and no model call, that a plugin can carry skills and that one launch can enable a plugin no other launch gets;
+    the rebuild is a second plugin enabled only by `ccx`. A second measurement, asked for before review, showed that
+    a cached plugin with no entry in the person's configuration is already not loaded, which deleted the code that
+    wrote that configuration. Four review rounds on the rebuild: a killed install left lock files that made every
+    later launch wait 30 seconds; a review note showed the plugin loads from Codex's cache alone, which deleted the
+    marketplace entry, the second tree and one lock; the Windows lock path, never run, was deleted with the
+    decision that no row plugin is published on Windows until a Codex leg starts there. About 4 hours from the
+    first brief to `main`, the builds about 70 minutes. Open: CODEX-ROW-SKILL-DISCOVERY, CODEX-GLOBAL-SKILLS,
+    CODEX-INSTALL-REENABLES-HOOKS.
+  - Text selection for a Codex session on Unix. A plan came first, with no code: its first version was about 133
+    product lines (a run id, a receipt file, a status probe); sent back for the smallest form of the marker a
+    Claude leg already has, it came to about 42, with the dropped guards recorded as limits. Two review rounds; the
+    first found that `ccx` did not keep a row's session off Codex's shared background server, where the prompt
+    hook would not run in the row's own process, so `ccx` now passes `--no-daemon` where the installed Codex lists
+    the flag and the marker requires it. About 3 hours 15 minutes from the plan's brief to `main`, half of it
+    waiting behind the row skills. Open: CODEX-SELECTION-WINDOW.
+  - What the day showed. Review, not building, set the pace: the builder answered each round in minutes. A
+    reviewer who measured on real records (the hook) or with the real binary (the plugin) found what reading did
+    not, and twice a measurement asked for before review deleted code. Two faults were the maintaining session's:
+    an item taken out of the audit's order, which cost a refused landing, and a brief that asked for a smaller
+    diff as a bare number, which the builder met by deleting comments of `main` that record measured facts (caught
+    on reading the commit, restored before review).
+- A test harness fault, 2026-11-21 (STUB-STEP-RUNS-SUITE-CLEANUP): one local gate run failed in the `sot-fe` chat
+  suite and passed on a rerun. A diagnosis, about 95 minutes, reproduced it on the server by holding a just-forked
+  step for a second: six suites forked their stand-in daemon's steps with the suite's EXIT trap set, and a stop
+  that reached a step before bash had reset the traps it copied ran the suite's cleanup in the step, removing the
+  suite's work folder. The fix is two lines in each of the six suites and two source scans; the same harness had
+  silenced the suite's own stderr for the rest of a run, which is why the failed run showed so little. One builder,
+  about 11 minutes; the maintaining session's reading as the review; one gate run.

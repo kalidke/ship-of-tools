@@ -379,7 +379,8 @@ downloaded at install, and no copy is loaded into the kernel). Also in progress,
 built alongside the chat: the agent sees the person's selection (`requirements.md`, "The agent
 sees what the user selects"); its wire op, the daemon's pure check and the handler, with its replies (`shared`, `held`, `no_agent`, `not_a_window`; the file published or removed per row) and the withdrawal (the file removed at its setting connection's end and by the start-up walk) have landed; the variable naming the row's selection file in each leg's environment is built, and so are the prompt hook that prints it, the marker that says which legs carry the hook and the test of the path from a connection standing in for the window to the hook, the window's network side of the request, and the window's share of a released text selection (in rendered markdown the source lines it was rendered from; sent when it changes,
 cleared when it goes, sent again after a reconnect, each reply on the status line), and the manual says how a selection
-or a drawing reaches the agent. Text selection is built for Claude Code and for Codex on Unix. Delivery in a real
+or a drawing reaches the agent. Text selection is built for Claude Code and for Codex on Unix. The done test through a
+window is not run for either agent, and delivery in a real
 Codex window still needs checking (CODEX-SELECTION-WINDOW). Drawings reach Claude Code only. Figures, on the maintainer's word
 (2026-11-16), are built by the plan `docs/history/chat-figures-plan.md` in place of B4: a row's agent posts a file, the drawer
 shows a message's pictures and opens one in the preview, and a person posts the previewed file, all in memory, nothing
@@ -419,6 +420,23 @@ The gate runs bash 3.2 per changed suite and its longest jobs first (a whole run
 platform's hold tool (its guarantee 16) works in one process and across processes; the chat watch's, the wake's and the
 rows' activation test seams and the wake's absence waits are on it; the spawn suite's fixed wait is gone (about 225
 seconds to 29). A Claude row stopped at Claude Code's folder-trust dialog under the declared prefix is restarted once
-(REAUTH-TRUST-LOST, which stays open until a real loss is seen recovered). Queued, not started: the
+(REAUTH-TRUST-LOST, which stays open until a real loss is seen recovered). Also in progress, since the maintainer
+asked on 2026-11-21 that every function work with Codex: Codex parity, built item by item by a Codex session in a row
+of its own from written briefs, each item reviewed by a Claude reviewer before it lands. On `main` past 0.7.3, none of
+it used by a person yet: a Codex row starts in Codex's inline renderer, so its conversation reaches the window's
+scrollback (CODEX-ROW-NO-SCROLLBACK, open until a person checks it in a row); a spawned child given no name takes the
+handle of its own agent kind; an install that selects only Codex puts the shared commands (`sot-fe`, `show-result`,
+`sot-gh-auth`) on the path, and no install replaces a file of the person's at one of those names (it stops before it
+writes anything and names the file); the end-of-turn hook measures a Codex turn from that turn's own records, and a
+turn it cannot read is unknown, never large (CODEX-STOP-HOLDS-SHORT-TURNS, Closed); six row skills (`julia-repl`,
+`project-log`, `show-result`, `sitrep`, `sot-status`, `worktree`) reach a Codex session from the sources the Claude
+install uses, through a plugin published only in Codex's own cache on Unix and enabled only by a launch through `ccx`,
+with nothing written into the person's Codex configuration (CODEX-ROW-SKILL-DISCOVERY, open); and a person's text
+selection reaches a Codex session on Unix, `ccx` passing `--no-daemon` where the installed Codex knows the flag so a
+row's session and its hooks run in the row's own process (CODEX-SELECTION-WINDOW, open). Not built for Codex: the
+handle and handoff restored after a clear or a compaction, the wake of an idle row by mail (a session operating a Codex
+row on 2026-11-21 was never woken by mail), drawings, a structured question to the person shown red, the move of a row
+to another account, a Windows launch, and the three messaging skills and the work-state hooks kept to a row's session
+(CODEX-GLOBAL-SKILLS). Queued, not started: the
 installer-observation pass (`pass/install-observe`), 26.04 runner support, mods (ADR 0051, accepted for 0.7.Z, unbuilt),
 and each subsystem's findings in `docs/defects.md`, handled at its pass.
