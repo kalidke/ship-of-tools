@@ -3,6 +3,35 @@
 0.7.1 was released on 2026-11-18; 0.7.0 came before it. This page lists what 0.7.1 adds to 0.7.0, and one feature
 that 0.7.0 already had, marked so. On a Mac, press Cmd where this page says Ctrl.
 
+## 0.7.3
+
+0.7.3 was released on 2026-11-21. It adds these to 0.7.2:
+
+- A drawer's own key now cycles it. From closed, `Ctrl+k` opens the Chat drawer, a second press makes it full
+  height, and a third closes it; the REPL, Terminal and Monitor drawers do the same with their keys. At full height the status
+  line shows on the drawer's top border, and each session keeps its own drawer and its height. See
+  [the interface guide](guide/interface.md).
+- When you step back to a session, its Chat drawer shows its channel's last messages at once while it reads the
+  channel again, and you can type straight away.
+- A name after `@` in a chat post [mentions that person in Slack](guide/chat.md#Mentioning-someone), and the status
+  line tells you who was mentioned. A first name is enough when only one member of the Slack workspace has it.
+- A session's agent can be asked to [post to its project's channel](guide/chat.md#The-agent-in-the-channel) and now
+  knows how without being told the command.
+- In the preview's edit mode, Up and Down move by the line you see on screen, also inside a long wrapped paragraph.
+  Typing in a large file is immediate, and a selection is a dim band with the text readable on it.
+- The [REPL drawer](guide/repl.md) uses the colors of Julia's own REPL, wraps long lines, and shows the colors a program
+  prints. A progress meter that repaints its line updates in place. The same page lists what the drawer does not do
+  with a program's output.
+
+Fixed:
+
+- On Windows, the launcher did not start for a user whose name has a space in it.
+- When a workspace's chat stopped by itself, the Chat drawer could show `reading…` for a few seconds where the
+  Connect step belongs.
+- Escape on an edited file now shows its discard question, and a discard shows the file as last saved.
+
+A computer gets 0.7.3 by [running the installer](guide/updating.md#updating) once.
+
 ## 0.7.2
 
 0.7.2 was released on 2026-11-19. It is 0.7.1 with two faults fixed, both on a Mac; Linux and Windows behave as in
