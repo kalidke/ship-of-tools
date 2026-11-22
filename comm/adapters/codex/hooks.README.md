@@ -41,6 +41,13 @@ silent no-ops.
 `$CODEX_HOME` (`codex plugin add` re-copies it on every run, so a repo edit does
 propagate — verified).
 
+## Hooks in the row plugin
+
+The separate `sot-row` plugin uses `agents/codex/row-hooks.json`. On `SessionStart` and `UserPromptSubmit` it
+saves the root conversation UUID from the event's `session_id` in the file named by the Codex leg.
+The binding command writes silently. The prompt event also runs the selection command, which prints the
+window's selection. The launcher checks both event definitions before marking selection available.
+
 ## The two rules this file must obey
 
 Measured against codex-cli **0.146.0** using codex's own `/hooks` TUI panel,

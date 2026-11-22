@@ -131,10 +131,20 @@ of each.
    and a quote (`tests/test-hook-commands.sh`, under whatever bash runs it: macOS's 3.2 and Linux's 3.2.57 on the hosted runs;
    `agent-exec` is Unix only, so Git Bash, whose quoting is the same POSIX form, is not run).
    Codex loads the three messaging skills and the work-state plugin globally. The row plugin
-   `sot-row@sot-local` carries the Claude sources named in `codex/shared-skills.txt` and one unfiltered
-   `UserPromptSubmit` command. The command reads the whole prompt and runs the installed selection script through
-   the runtime comm home when a row selection path and the script are present. The installer publishes it
-   in the versioned Codex cache on Unix, replacing the product's whole folder. Windows skips this publish until it
+   `sot-row@sot-local` carries the Claude sources named in `codex/shared-skills.txt` and unfiltered
+   `SessionStart` and `UserPromptSubmit` hooks. The selection command on prompt submit reads the whole prompt and runs the installed selection script through
+   the runtime comm home when a row selection path and the script are present.
+   Both events also run the binding hook. The winning supervisor clears the row's `codex-thread` before every Codex
+   leg. Only the owning leg gets `SOT_CODEX_THREAD_FILE`. The hook checks the process ancestry and atomically replaces
+   the file with the input's UUID `session_id`. A missing or malformed id leaves the previous file intact. If creating,
+   writing or renaming the temporary file fails, the hook cleans up and exits silently with status zero. A TERM before
+   rename does the same. SIGKILL can leave a temporary file. The previous id stays at the binding path until a rename
+   completes. A child hook carrying the parent's session id therefore keeps the root binding. These inputs have been
+   checked with fixtures and the hook schema. A live row still needs the checks in `CODEX-ROOT-THREAD-HOOKS`. Between a
+   conversation switch and the next start or submit hook the file can name the conversation just left, possibly already unloaded. Mail stays
+   in the inbox for the next poll. The daemon does not yet use the binding for waking.
+   The installer publishes the plugin in the versioned Codex cache on Unix, replacing the product's whole folder.
+   Windows skips this publish until it
    has a Codex row launcher. With no cached plugin, Codex 0.171.0 rendered the prompt with the ccx override,
    zero row skills and no warning. A retry restores a displaced tree.
    Only this publish takes a nonblocking lock. A dead holder releases it. A live holder makes a competing install
@@ -325,8 +335,8 @@ of each.
   watchdog stops restarting the supervisor when its budget runs out. The producer passes the marker path as
   `--selection-marker`. At native exec, ccx writes it when the row selection path is set, the outgoing argv enables the
   row plugin and includes `--no-daemon`, the installed script is executable and the sole cached version declares
-  the matching hook file with exactly the selection command. If ccx cannot write the marker, Codex still starts and
-  text answers `held`. A failed exec removes a marker ccx wrote. The daemon leaves this write to ccx.
+  the matching hook file with exactly the selection and binding commands at their expected events. If ccx cannot
+  write the marker, Codex still starts and text answers `held`. A failed exec removes a marker ccx wrote. The daemon leaves this write to ccx.
   **Run UUID.** The producer clears the previous leg's marker. Adoption after a downgrade can retain one.
   **Hook receipt.** The marker records the launch checks. It cannot confirm a callback or a later settings change.
   **Status probe.** Until the next leg starts, a selection can read the last leg's marker after that leg exits.

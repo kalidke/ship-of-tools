@@ -56,6 +56,7 @@ if [ "$*" = --help ] || [ "$*" = '--no-daemon --help' ]; then
 fi
 for a in "$@"; do printf '%s\n' "$a"; done > "$CODEX_LOG_PATH"
 printf '%s\n' "${SOT_SELECTION_FILE-<unset>}" > "$CODEX_LOG_PATH.sel"
+printf '%s\n' "${SOT_CODEX_THREAD_FILE-<unset>}" > "$CODEX_LOG_PATH.binding"
 [ ! -f "${OBSERVE_MARKER:-}" ] || printf 'marked\n' > "$CODEX_LOG_PATH.marked"
 STUB
 chmod +x "$STUB_DIR/codex"
@@ -141,6 +142,12 @@ check "a missing Codex reports the cause and opens a shell with no arguments" ca
 check "ccx --capsule keeps its row's selection file" case_a_capsule_leg_keeps_its_rows_selection_file
 check "a ccx started without --capsule drops the selection file it inherited" case_a_ccx_started_inside_a_row_drops_the_rows_selection_file
 
+case_nested_drops_binding() {
+    run_ccx proj-box1 SOT_CODEX_THREAD_FILE="$WORK/outer binding" &&
+        [ "$(cat "$CODEX_LOG.binding")" = '<unset>' ]
+}
+check "a hand-run ccx drops an inherited Codex binding" case_nested_drops_binding
+
 case_marker_condition() (
     local change="$1" cache="$WORK/codex-home/plugins/cache/sot-local/sot-row/0.1.0"
     local later="$cache/../0.2.0" probe=accept replacement= flag_count=1
@@ -156,6 +163,7 @@ case_marker_condition() (
         override) sed "s/ -c 'plugins.sot-row@sot-local.enabled=true'\$//" "$CCX" > "$WORK/ccx-no-override"; CCX="$WORK/ccx-no-override" ;;
         script) chmod -x "$script" ;;
         command) jq '.hooks.UserPromptSubmit[0].hooks[0].command += " || true"' "$src" > "$cache/hooks/hooks.json" ;;
+        binding-command) jq '.hooks.SessionStart[0].hooks[0].command += " || true"' "$src" > "$cache/hooks/hooks.json" ;;
         undeclared) printf '{}' > "$cache/.codex-plugin/plugin.json" ;;
         extra-version) cp -R "$cache" "$later" &&
             jq '.version = "0.2.0"' "$cache/.codex-plugin/plugin.json" > "$later/.codex-plugin/plugin.json" || exit 1 ;;
@@ -189,7 +197,7 @@ case_marker_condition() (
         [ "$status" = 0 ] && [ -f "$CODEX_LOG" ] && [ ! -e "$MARKER" ] && [ ! -e "$CODEX_LOG.marked" ]
     fi
 )
-for condition in fresh path override script command undeclared extra-version missing-hook malformed hand unwritable old-codex failed-help signaled-probe argv-no-flag failed-exec; do
+for condition in fresh path override script command binding-command undeclared extra-version missing-hook malformed hand unwritable old-codex failed-help signaled-probe argv-no-flag failed-exec; do
     check "selection marker at native exec ($condition)" case_marker_condition "$condition"
 done
 

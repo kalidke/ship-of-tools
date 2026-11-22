@@ -31,9 +31,9 @@ while [ $# -gt 0 ]; do
     shift
 done
 
-# --capsule is the daemon's own leg for a row, which keeps its row's selection file; a ccx started by hand inside a
-# row has the outer row's file inherited and drops it, as the nesting markers above are.
-[ "$CAPSULE" = 1 ] || unset SOT_SELECTION_FILE
+# --capsule is the daemon's own leg for a row, which keeps its row's selection and binding files; a ccx started by hand inside a
+# row has the outer row's files inherited and drops them, as the nesting markers above are.
+[ "$CAPSULE" = 1 ] || unset SOT_SELECTION_FILE SOT_CODEX_THREAD_FILE
 
 # Daemon-spawned rows lack a login PATH (ADR 0023 gotcha): put ~/.local/bin
 # on it, and resolve codex by full path — it typically lives in an nvm bin
@@ -137,6 +137,7 @@ if [ "$CAPSULE" = 1 ] && [ -n "$MARKER" ] && [ -n "${SOT_SELECTION_FILE:-}" ] &&
     manifest="$root/.codex-plugin/plugin.json"
     hooks="$root/hooks/hooks.json"
     command='hook="${SOT_COMM_HOME:-$HOME/.sot-comm}/bin/sot-selection-hook.sh"; if [ -n "${SOT_SELECTION_FILE:-}" ] && [ -f "$hook" ] && [ -x "$hook" ]; then exec "$hook"; fi; cat >/dev/null 2>&1; exit 0'
+    binding='hook="${SOT_COMM_HOME:-$HOME/.sot-comm}/bin/sot-codex-binding-hook.sh"; if [ -n "${SOT_CODEX_THREAD_FILE:-}" ] && [ -f "$hook" ] && [ -x "$hook" ]; then exec "$hook"; fi; cat >/dev/null 2>&1; exit 0'
     previous= isolated=0 enabled=0
     for arg in "$@"; do
         [ "$arg" != --no-daemon ] || isolated=1
@@ -147,7 +148,9 @@ if [ "$CAPSULE" = 1 ] && [ -n "$MARKER" ] && [ -n "${SOT_SELECTION_FILE:-}" ] &&
        [ "${#versions[@]}" = 1 ] && [ -f "$manifest" ] && [ -f "$hooks" ] &&
        jq -se --arg version "${root##*/}" 'length == 1 and
          (.[0] | .name == "sot-row" and .version == $version and .hooks == "./hooks/hooks.json")' "$manifest" >/dev/null &&
-       jq -se --arg cmd "$command" '. == [{hooks:{UserPromptSubmit:[{hooks:[{type:"command",command:$cmd}]}]}}]' "$hooks" >/dev/null &&
+       jq -se --arg cmd "$command" --arg bind "$binding" '
+         def hook($c): {type:"command",command:$c};
+         . == [{hooks:{SessionStart:[{hooks:[hook($bind)]}],UserPromptSubmit:[{hooks:[hook($cmd),hook($bind)]}]}}]' "$hooks" >/dev/null &&
        : > "$MARKER"; then
         stamped=$MARKER
         shopt -s execfail

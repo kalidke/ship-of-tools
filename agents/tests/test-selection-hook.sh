@@ -26,8 +26,8 @@ HOOK="$BIN/sot-selection-hook.sh"
 PASS=0
 FAIL=0
 check() {
-    local desc="$1" fn="$2"
-    if "$fn"; then echo "PASS: $desc"; PASS=$((PASS + 1)); else echo "FAIL: $desc"; FAIL=$((FAIL + 1)); fi
+    local desc="$1"; shift
+    if "$@"; then echo "PASS: $desc"; PASS=$((PASS + 1)); else echo "FAIL: $desc"; FAIL=$((FAIL + 1)); fi
 }
 
 # Runs the hook with SOT_SELECTION_FILE set to $1 (not set at all when the argument is absent); out in $WORK/out, errors
@@ -113,6 +113,99 @@ case_codex_reads_the_prompt_and_prints_the_selection() {
     cmp "$WORK/selection.json" "$WORK/out" && [ ! -s "$WORK/err" ]
 }
 check "the serialized Codex command drains a large prompt and delivers the selection through the runtime comm home" case_codex_reads_the_prompt_and_prints_the_selection
+
+# The installed hook calls the local identity check. Model its three outcomes without consulting any live row.
+hooks_json="$(dirname "${BASH_SOURCE[0]}")/../codex/row-hooks.json"
+binding_comm="$WORK/binding comm"
+mkdir -p "$binding_comm" && cp -R "$BIN" "$binding_comm/bin" || exit 2
+cat > "$WORK/gate" <<'SH'
+#!/bin/sh
+[ "$*" = 'comm require-agent' ] || exit 3
+exit "${GATE_STATUS:-0}"
+SH
+chmod +x "$WORK/gate"
+first=12345678-1234-4567-8123-123456789abc
+second=98765432-1234-4567-8123-123456789abc
+binding_event() {
+    local cmd
+    cmd=$(jq -er ".hooks.$1[0].hooks[$2].command" "$hooks_json") || return 1
+    printf '%s' "$3" | SOTD_BIN="$WORK/gate" SOT_COMM_HOME="$binding_comm" bash -c "$cmd" > "$WORK/out" 2> "$WORK/err"
+    RC=$?
+    silent
+}
+case_binding_events() (
+    export SOT_AGENT_KIND=codex SOT_WORKSPACE_ID=own SOT_COMM_HOOKS=on SOT_CODEX_THREAD_FILE="$WORK/current thread"
+    binding_event SessionStart 0 "{\"session_id\":\"$first\"}" && [ "$(cat "$SOT_CODEX_THREAD_FILE")" = "$first" ] || exit 1
+    ln "$SOT_CODEX_THREAD_FILE" "$WORK/previous inode" || exit 1
+    binding_event UserPromptSubmit 1 "{\"session_id\":\"$second\",\"agent_id\":\"$first\"}" &&
+        [ "$(cat "$WORK/previous inode")" = "$first" ] && [ "$(cat "$SOT_CODEX_THREAD_FILE")" = "$second" ]
+)
+check "both Codex events publish the root id silently and replace the whole file" case_binding_events
+case_binding_invalid() (
+    export SOT_AGENT_KIND=codex SOT_WORKSPACE_ID=own SOT_COMM_HOOKS=on SOT_CODEX_THREAD_FILE="$WORK/valid binding"
+    printf '%s\n' "$first" > "$SOT_CODEX_THREAD_FILE"
+    for input in '' '{' '{}' 'null' '{"session_id":123}' '{"session_id":"anything"}' "{\"session_id\":\"$second\"} {}"; do
+        binding_event SessionStart 0 "$input" && [ "$(cat "$SOT_CODEX_THREAD_FILE")" = "$first" ] || exit 1
+    done
+    unset SOT_CODEX_THREAD_FILE
+    binding_event UserPromptSubmit 1 "{\"session_id\":\"$second\"}"
+)
+check "malformed inputs preserve the previous binding and an unnamed file is skipped silently" case_binding_invalid
+case_binding_owner() (
+    export SOT_AGENT_KIND=codex SOT_WORKSPACE_ID=own SOT_COMM_HOOKS=on SOT_CODEX_THREAD_FILE="$WORK/owner only"
+    for GATE_STATUS in 1 2; do
+        export GATE_STATUS
+        binding_event UserPromptSubmit 1 "{\"session_id\":\"$first\"}" && [ ! -e "$SOT_CODEX_THREAD_FILE" ] || exit 1
+    done
+    unset GATE_STATUS SOT_WORKSPACE_ID
+    binding_event SessionStart 0 "{\"session_id\":\"$first\"}" && [ ! -e "$SOT_CODEX_THREAD_FILE" ]
+)
+check "a nested agent, a different row and a process outside a row cannot publish a binding" case_binding_owner
+
+case_unwritable_binding_folder() (
+    local dir="$WORK/read-only state"
+    mkdir "$dir" && chmod 555 "$dir" || exit 1
+    export SOT_AGENT_KIND=codex SOT_WORKSPACE_ID=own SOT_COMM_HOOKS=on SOT_CODEX_THREAD_FILE="$dir/thread"
+    # Root and some filesystems can still create files there. A missing parent also refuses temporary-file creation.
+    [ ! -w "$dir" ] || SOT_CODEX_THREAD_FILE="$dir/missing/thread"
+    binding_event SessionStart 0 "{\"session_id\":\"$second\"}" && [ -z "$(ls -A "$dir")" ]
+)
+check "an unwritable binding folder leaves no file and the hook silently succeeds" case_unwritable_binding_folder
+
+# Inject faults in the hook's own shell. At entry to mv the write has finished and the real rename has yet to run.
+cat > "$WORK/binding-fault" <<'SH'
+if [ "$fault" = write ]; then
+    printf() {
+        if [ "${2:-}" != "$new_id" ]; then builtin printf "$@"; return; fi
+        builtin printf 'partial'
+        builtin printf 'write failed\n' >&2
+        : > "$hit"
+        return 1
+    }
+else
+    mv() {
+        cat -- "${@: -2:1}" > "$hit" || return 1
+        if [ "$fault" = rename ]; then echo 'rename failed' >&2; return 1; fi
+        kill -TERM "$$"
+        command mv "$@"
+    }
+fi
+SH
+case_binding_publish_failure() (
+    local dir="$WORK/state-$1"
+    mkdir "$dir" || exit 1
+    export fault="$1" hit="$WORK/hit-$1" new_id="$second" BASH_ENV="$WORK/binding-fault"
+    export SOT_AGENT_KIND=codex SOT_WORKSPACE_ID=own SOT_COMM_HOOKS=on SOT_CODEX_THREAD_FILE="$dir/thread"
+    printf '%s\n' "$first" > "$dir/thread"
+    binding_event UserPromptSubmit 1 "{\"session_id\":\"$second\"}" || exit 1
+    [ -f "$hit" ] || { echo "  the hook never reached the $fault fault"; exit 1; }
+    [ "$fault" = write ] || [ "$(cat "$hit")" = "$second" ] || { echo "  the temporary file lacked the new id"; exit 1; }
+    [ "$(cat "$dir/thread")" = "$first" ] || { echo "  the previous binding changed"; exit 1; }
+    [ "$(ls -A "$dir")" = thread ] || { echo "  leftover files: $(ls -A "$dir")"; exit 1; }
+)
+check "a partial write silently preserves the old binding and removes the temporary file" case_binding_publish_failure write
+check "a refused rename silently preserves the old binding and removes the temporary file" case_binding_publish_failure rename
+check "TERM after the complete write and before rename silently preserves the old binding and removes the temporary file" case_binding_publish_failure terminate
 
 echo ""
 echo "$PASS passed, $FAIL failed"

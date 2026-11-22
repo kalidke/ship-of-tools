@@ -195,14 +195,14 @@ impl Row {
 }
 
 /// A second ready capsule row declaring `handle`.
-async fn add_row(row: &mut Row, label: &str, handle: &str, root: &str) -> String {
+async fn add_row(row: &mut Row, label: &str, handle: &str, root: &str, agent: &str) -> String {
     let root = row.env._tmp.path().join(root);
     std::fs::create_dir_all(&root).expect("mkdir second root");
     let create = serde_json::json!({
         "label": label,
         "project_root": root.to_string_lossy(),
         "runtime": "capsule",
-        "agent": "claude",
+        "agent": agent,
     });
     let res = call(&mut row.conn, row.next_id, op::WORKSPACE_CREATE, create).await;
     row.next_id += 1;
@@ -238,12 +238,12 @@ async fn start(tag: &str, log: Option<PathBuf>, in_dialog: bool) -> Row {
 /// env vars on the daemon. The wake's points `comm.wake.hold`, `final_ok`, `done` and `looked` (keyed by `HANDLE`) are armed on the row's holds folder
 /// before the daemon starts, counting only.
 async fn start_with(tag: &str, log: Option<PathBuf>, in_dialog: bool, ctl: &[&str], extra: &[(&str, &str)]) -> Row {
-    start_full(tag, log, in_dialog, ctl, extra, 0, 0).await
+    start_full(tag, log, in_dialog, ctl, extra, (0, 0), HANDLE).await
 }
 
 /// [`start_with`], the first `hold_holds` arrivals at `comm.wake.hold` held (as the wake's hold begins) and the first
 /// `final_holds` at `comm.wake.final_ok` held (after the wake's last check, before its typing) until the test releases them.
-async fn start_full(tag: &str, log: Option<PathBuf>, in_dialog: bool, ctl: &[&str], extra: &[(&str, &str)], hold_holds: usize, final_holds: usize) -> Row {
+async fn start_full(tag: &str, log: Option<PathBuf>, in_dialog: bool, ctl: &[&str], extra: &[(&str, &str)], (hold_holds, final_holds): (usize, usize), observed_handle: &str) -> Row {
     assert!(sot_capsule_exe().is_file(), "{CAPSULE_EXE_NAME} not found next to sotd — build it first (cargo build -p sot-capsule --bin sot-capsule)");
     let env = Env::new(tag);
     let log = log.unwrap_or_else(|| env._tmp.path().join("ping.log"));
@@ -263,7 +263,7 @@ async fn start_full(tag: &str, log: Option<PathBuf>, in_dialog: bool, ctl: &[&st
     let hold = env.holds.arm("comm.wake.hold").hold(hold_holds);
     let final_ok = env.holds.arm("comm.wake.final_ok").hold(final_holds);
     let done = env.holds.arm("comm.wake.done").hold(0);
-    let looked = env.holds.arm("comm.wake.looked").key(HANDLE).hold(0);
+    let looked = env.holds.arm("comm.wake.looked").key(observed_handle).hold(0);
     env.spawn_sotd_with_path_and_env(&stub_dir, extra);
     let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
     let create = serde_json::json!({
@@ -293,6 +293,27 @@ async fn an_idle_row_is_woken_once() {
     // The mail is still unread; the same batch is not woken again.
     two_looks(&row).await;
     assert_eq!(pings(&row.log), 1);
+    row.env.kill_daemon_bounded().await;
+}
+
+/// A bound Codex row with directed unread mail is still skipped before a wake decision.
+#[tokio::test]
+async fn the_wake_skips_a_bound_codex_row() {
+    let _serial = SERIAL.lock().await;
+    let mut row = start_full("cw-bound-codex", None, false, &[], &[], (0, 0), "codexh").await;
+    let bound = row.env._tmp.path().join("bound");
+    sot_platform::test_exec::write_executable(&row.stub_dir.join("ccx"), format!(
+        "#!/bin/sh\nprintf '%s\\n' 12345678-1234-4567-8123-123456789abc > \"$SOT_CODEX_THREAD_FILE\"; echo $? > '{}'\nexec sleep 120\n", bound.display()));
+    add_row(&mut row, "codex-row", "codexh", "codex-root", "codex").await;
+    let result = poll_until(|| async { std::fs::read_to_string(&bound).ok().filter(|s| !s.is_empty()) }, BOUND, "binding probe").await;
+    assert_eq!(result.trim(), "0", "the leg could not publish its binding");
+    append_mail_to(&row.env, "codexh", 1);
+    append_mail(&row.env, 1);
+    assert!(wait_pings(&row.log, 1, WAKE_WITHIN).await, "the control row must receive mail");
+    add_row(&mut row, "control", "controlh", "control-root", "claude").await;
+    append_mail_to(&row.env, "controlh", 1);
+    assert!(wait_pings(&row.log, 2, WAKE_WITHIN).await, "a later tick must wake the second control");
+    assert_eq!(row.looked.arrivals(), 0, "the wake inspected the Codex row");
     row.env.kill_daemon_bounded().await;
 }
 
@@ -367,7 +388,7 @@ async fn a_line_a_person_typed_and_did_not_send_is_never_typed_into() {
 #[tokio::test]
 async fn keys_typed_between_the_wakes_last_read_and_its_typing_get_nothing_appended() {
     let _serial = SERIAL.lock().await;
-    let mut row = start_full("cwrk", None, false, &[], &[], 0, 1).await;
+    let mut row = start_full("cwrk", None, false, &[], &[], (0, 1), HANDLE).await;
     append_mail(&row.env, 1);
     // The wake has read a free, still prompt and is about to type.
     row.final_ok.reached_async(0).await;
@@ -483,8 +504,8 @@ async fn an_unfinished_stop_releases_the_row_within_the_bound() {
 async fn rows_with_mail_are_held_at_once() {
     let _serial = SERIAL.lock().await;
     let mut row = start("cwh", None, false).await;
-    add_row(&mut row, "wake-row-2", "wakeh2", "second").await;
-    add_row(&mut row, "wake-row-3", "wakeh3", "third").await;
+    add_row(&mut row, "wake-row-2", "wakeh2", "second", "claude").await;
+    add_row(&mut row, "wake-row-3", "wakeh3", "third", "claude").await;
     for h in [HANDLE, "wakeh2", "wakeh3"] {
         append_mail_to(&row.env, h, 1);
     }
@@ -562,7 +583,7 @@ async fn a_newer_join_moves_the_handle_and_only_the_newer_row_is_woken() {
     let _serial = SERIAL.lock().await;
     let mut row = start("cw2", None, false).await;
     let older = row.ws.clone();
-    let newer = add_row(&mut row, "wake-row-2", HANDLE, "second").await;
+    let newer = add_row(&mut row, "wake-row-2", HANDLE, "second", "claude").await;
     let id = row.next_id;
     row.next_id += 1;
     let payload = call(&mut row.conn, id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
@@ -615,7 +636,7 @@ async fn a_newer_join_moves_the_handle_and_only_the_newer_row_is_woken() {
 async fn two_tomls_on_one_handle_keep_it_on_the_last_joiner_at_boot() {
     let _serial = SERIAL.lock().await;
     let mut row = start("cwt", None, false).await;
-    let second = add_row(&mut row, "wake-row-2", "wakeh2", "second").await;
+    let second = add_row(&mut row, "wake-row-2", "wakeh2", "second", "claude").await;
     row.env.kill_daemon_bounded().await;
     let dir = row.env.app_config_dir().join(format!("workspaces-{TEST_STATE_HOST}"));
     let mut rewritten = 0;
@@ -741,7 +762,7 @@ async fn pass_boot_look(row: &Row) {
 #[tokio::test]
 async fn panel_focus_arriving_during_the_hold_is_refused() {
     let _serial = SERIAL.lock().await;
-    let mut row = start_full("cwph", None, false, &["panel", "focus-hold"], &[], 1, 0).await;
+    let mut row = start_full("cwph", None, false, &["panel", "focus-hold"], &[], (1, 0), HANDLE).await;
     wait_for_panel(&mut row).await;
     pass_boot_look(&row).await;
     append_mail(&row.env, 1);
@@ -939,7 +960,7 @@ async fn a_new_run_drops_the_owed_enter_and_wakes_in_the_same_tick() {
 #[tokio::test]
 async fn an_attempt_never_types_into_a_run_it_did_not_check() {
     let _serial = SERIAL.lock().await;
-    let mut row = start_full("cwfr", None, false, &[], &[SHORT_BACKOFF], 0, 1).await;
+    let mut row = start_full("cwfr", None, false, &[], &[SHORT_BACKOFF], (0, 1), HANDLE).await;
     append_mail(&row.env, 1);
     row.final_ok.reached_async(0).await;
     // The new run draws the dialog, not the prompt.
@@ -1049,7 +1070,7 @@ async fn page_reply_never_types_into_a_dialog_a_draft_or_a_working_row() {
 #[tokio::test]
 async fn a_page_reply_and_a_wake_never_type_at_once() {
     let _serial = SERIAL.lock().await;
-    let mut row = start_full("pr-wake", None, false, &[], &[], 0, 1).await;
+    let mut row = start_full("pr-wake", None, false, &[], &[], (0, 1), HANDLE).await;
     prepare_page_reply(&row).await;
     append_mail(&row.env, 1);
     row.final_ok.reached_async(0).await;
@@ -1065,7 +1086,7 @@ async fn a_page_reply_and_a_wake_never_type_at_once() {
 #[tokio::test]
 async fn two_page_reply_attempts_share_one_guard_and_the_connection_stays_live() {
     let _serial = SERIAL.lock().await;
-    let mut row = start_full("pr-two", None, false, &[], &[], 0, 1).await;
+    let mut row = start_full("pr-two", None, false, &[], &[], (0, 1), HANDLE).await;
     prepare_page_reply(&row).await;
     let id = row.next_id;
     row.next_id += 1;

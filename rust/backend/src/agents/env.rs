@@ -32,6 +32,7 @@ pub const NESTING_ENV_VARS_TO_SCRUB: &[&str] = &[
     "CLAUDE_CODE_SESSION_ID",
     "NO_COLOR",
     "SOT_SELECTION_FILE",
+    "SOT_CODEX_THREAD_FILE",
 ];
 
 /// The `SOT_COMM_HOME` value (forward-slash string form — a git-bash/MSYS
@@ -49,13 +50,13 @@ fn capsule_comm_home_str() -> Option<String> {
     Some(crate::comm::sot_comm_home()?.to_string_lossy().replace('\\', "/"))
 }
 
-/// The `SOT_SELECTION_FILE` value: the row's `selection.json` in its state folder, in the forward-slash form a Git Bash
+/// A file in the row's state folder, in the forward-slash form a Git Bash
 /// shell reads when `forward_slashes` (Windows), as `SOT_COMM_HOME` is, and without a verbatim prefix.
-fn selection_file_value(state_dir: &Path, forward_slashes: bool) -> String {
+fn row_file_value(state_dir: &Path, name: &str, forward_slashes: bool) -> String {
     // A created row's first leg gets the canonical folder, a verbatim `\\?\C:\...` path on Windows, which no Git Bash
     // shell reads; the plain drive path is what this leaves, whether or not the folder came in verbatim.
     let state_dir = sot_platform::host::paths::simplify_verbatim(state_dir.to_path_buf());
-    let file = state_dir.join(crate::agents::selection::FILE_NAME).to_string_lossy().into_owned();
+    let file = state_dir.join(name).to_string_lossy().into_owned();
     if forward_slashes { file.replace('\\', "/") } else { file }
 }
 
@@ -167,7 +168,7 @@ pub fn row_self_file(workspace_id: &str) -> Option<(String, String)> {
 /// reads the self-file back.
 /// `SOTD_BIN` is this daemon's own start path ([`own_sotd_bin`]), so the session's comm shell bridges with the daemon's
 /// own binary; empty when that path is not a runnable file ([`sotd_bin_pair`]). `SOT_SELECTION_FILE` is the row's
-/// selection file in `state_dir`, for every agent kind ([`selection_file_value`]). A `claude` row alone gets
+/// selection file in `state_dir`, for every agent kind ([`row_file_value`]). A Codex leg also names its root conversation binding. A `claude` row alone gets
 /// `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1`. Every row launch (create, attach, boot resume, reauth, the trust restart,
 /// the watchdog's restart) builds its leg's pairs here, through `rows::spawn::detach::spawn_detached_supervisor`.
 pub fn capsule_supervisor_env(
@@ -183,7 +184,10 @@ pub fn capsule_supervisor_env(
     // The comm shell in the session bridges with SOTD_BIN first, so it is this daemon's own binary, over any value the
     // daemon inherited (detach.rs applies these pairs with `Command::env`).
     env.push(sotd_bin_pair(own_sotd_bin()));
-    env.push(("SOT_SELECTION_FILE".to_string(), selection_file_value(state_dir, cfg!(windows))));
+    env.push(("SOT_SELECTION_FILE".to_string(), row_file_value(state_dir, crate::agents::selection::FILE_NAME, cfg!(windows))));
+    if agent_kind == "codex" {
+        env.push(("SOT_CODEX_THREAD_FILE".to_string(), row_file_value(state_dir, "codex-thread", cfg!(windows))));
+    }
     // Claude Code's feedback survey is a modal panel that holds a row's
     // session until someone answers it, so no row's agent shows it, on
     // any OS. Only this switch: telemetry and nonessential traffic stay

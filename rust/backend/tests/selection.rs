@@ -177,6 +177,8 @@ async fn codex_selection_follows_the_launcher_across_resets() {
         .find_map(|s| s.strip_prefix("SOT_SELECTION_FILE="))
         .unwrap();
     let folder = Path::new(selection).parent().unwrap();
+    let binding = folder.join("codex-thread");
+    assert!(recorded.lines().any(|l| l.strip_prefix("SOT_CODEX_THREAD_FILE=").map(Path::new) == Some(binding.as_path())));
     let hash = sot_platform::host::state_dir::state_dir_hash(folder);
     let socket = socket_path_in(env._runtime_tmp.path(), &hash).unwrap();
     let mut lane = RowClient::connect(&socket, "selection-test", BOUND).unwrap();
@@ -296,10 +298,11 @@ async fn codex_selection_follows_the_launcher_across_resets() {
     assert_eq!(set(&mut window, id + 4, &ws, None).await["state"], "shared");
     assert!(run_hook(&recorded).is_empty());
 
+    fs::write(&binding, "12345678-1234-4567-8123-123456789abc\n").unwrap();
     // An older launcher ignores the marker argument. Inspect the row the instant it starts.
     fs::remove_file(&record).unwrap();
     sot_platform::test_exec::write_executable(&stub.join("ccx"), format!(
-        "#!/bin/sh\nif [ -e \"${{SOT_SELECTION_FILE%/*}}/selection-hook\" ]; then echo stale; else echo clear; fi > '{}'\nexec sleep 120\n", record.display()));
+        "#!/bin/sh\nif [ -e \"${{SOT_SELECTION_FILE%/*}}/selection-hook\" ] || [ -e \"$SOT_CODEX_THREAD_FILE\" ]; then echo stale; else echo clear; fi > '{}'\nexec sleep 120\n", record.display()));
     reset();
     let entry = poll_until(
         || async { fs::read_to_string(&record).ok().filter(|s| !s.is_empty()) },

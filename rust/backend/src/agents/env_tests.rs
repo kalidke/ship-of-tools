@@ -21,6 +21,7 @@ fn nesting_env_scrub_list_is_pinned() {
             "CLAUDE_CODE_SESSION_ID",
             "NO_COLOR",
             "SOT_SELECTION_FILE",
+            "SOT_CODEX_THREAD_FILE",
         ]
     );
 }
@@ -30,14 +31,16 @@ fn every_row_leg_names_its_selection_file() {
     let _guard = self_file_env_guarded();
     for kind in ["claude", "codex"] {
         let env = capsule_supervisor_env("ws-1", "slug", Path::new("/tmp"), kind, Path::new("/state/ws-1"));
+        let binding = env.iter().find(|(k, _)| k == "SOT_CODEX_THREAD_FILE");
+        assert_eq!(binding.map(|(_, path)| Path::new(path)), (kind == "codex").then_some(Path::new("/state/ws-1/codex-thread")));
         let named: Vec<_> = env.iter().filter(|(k, _)| k == "SOT_SELECTION_FILE").collect();
         assert_eq!(named.len(), 1, "{kind}: {env:?}");
         assert!(!cfg!(windows) || !named[0].1.contains('\\'), "{kind}: a Git Bash shell reads forward slashes");
         assert_eq!(named[0].1.replace('\\', "/"), "/state/ws-1/selection.json", "{kind}");
     }
     // Exact strings: the native form, and the form a Git Bash shell reads.
-    assert_eq!(selection_file_value(Path::new("/state/ws-1"), false), format!("/state/ws-1{}selection.json", std::path::MAIN_SEPARATOR));
-    assert_eq!(selection_file_value(Path::new(r"C:\state\ws-1"), true), "C:/state/ws-1/selection.json");
+    assert_eq!(row_file_value(Path::new("/state/ws-1"), crate::agents::selection::FILE_NAME, false), format!("/state/ws-1{}selection.json", std::path::MAIN_SEPARATOR));
+    assert_eq!(row_file_value(Path::new(r"C:\state\ws-1"), crate::agents::selection::FILE_NAME, true), "C:/state/ws-1/selection.json");
 }
 
 #[test]
@@ -45,7 +48,7 @@ fn ccx_unsets_the_nesting_markers_the_scrub_list_names() {
     // The selection file is not here: `ccx` keeps it under `--capsule`, which `tests/test-ccx-launch.sh` runs.
     let ccx = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../agents/codex/bin/ccx")).unwrap();
     let unset = ccx.lines().find(|l| l.starts_with("unset ")).expect("ccx has an unset line");
-    for var in NESTING_ENV_VARS_TO_SCRUB.iter().filter(|v| !matches!(**v, "NO_COLOR" | "SOT_SELECTION_FILE")) {
+    for var in NESTING_ENV_VARS_TO_SCRUB.iter().filter(|v| !matches!(**v, "NO_COLOR" | "SOT_SELECTION_FILE" | "SOT_CODEX_THREAD_FILE")) {
         assert!(unset.split(' ').any(|w| w == *var), "ccx's unset line leaves {var} inherited");
     }
 }
@@ -319,6 +322,6 @@ fn the_leg_never_inherits_a_sotd_bin_its_own_start_path_rejected() {
 #[test]
 #[cfg(windows)]
 fn a_verbatim_state_folder_gives_the_plain_forward_slash_form() {
-    assert_eq!(selection_file_value(Path::new(r"\\?\C:\state\ws-1"), true), "C:/state/ws-1/selection.json");
-    assert_eq!(selection_file_value(Path::new(r"\\?\UNC\srv\share\ws-1"), true), "//srv/share/ws-1/selection.json");
+    assert_eq!(row_file_value(Path::new(r"\\?\C:\state\ws-1"), crate::agents::selection::FILE_NAME, true), "C:/state/ws-1/selection.json");
+    assert_eq!(row_file_value(Path::new(r"\\?\UNC\srv\share\ws-1"), crate::agents::selection::FILE_NAME, true), "//srv/share/ws-1/selection.json");
 }

@@ -1,8 +1,15 @@
 {
   "hooks": {
+    "SessionStart": [{"hooks": [{
+      "type": "command",
+      "command": "hook=\"${SOT_COMM_HOME:-$HOME/.sot-comm}/bin/sot-codex-binding-hook.sh\"; if [ -n \"${SOT_CODEX_THREAD_FILE:-}\" ] && [ -f \"$hook\" ] && [ -x \"$hook\" ]; then exec \"$hook\"; fi; cat >/dev/null 2>&1; exit 0"
+    }]}],
     "UserPromptSubmit": [{"hooks": [{
       "type": "command",
       "command": "hook=\"${SOT_COMM_HOME:-$HOME/.sot-comm}/bin/sot-selection-hook.sh\"; if [ -n \"${SOT_SELECTION_FILE:-}\" ] && [ -f \"$hook\" ] && [ -x \"$hook\" ]; then exec \"$hook\"; fi; cat >/dev/null 2>&1; exit 0"
+    }, {
+      "type": "command",
+      "command": "hook=\"${SOT_COMM_HOME:-$HOME/.sot-comm}/bin/sot-codex-binding-hook.sh\"; if [ -n \"${SOT_CODEX_THREAD_FILE:-}\" ] && [ -f \"$hook\" ] && [ -x \"$hook\" ]; then exec \"$hook\"; fi; cat >/dev/null 2>&1; exit 0"
     }]}]
   }
 }

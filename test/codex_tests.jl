@@ -188,13 +188,17 @@ end
             manifest = joinpath(root, ".codex-plugin", "plugin.json")
             @test success(pipeline(`jq -e --arg name $name '.name == $name and .skills == "./skills/" and .hooks == "./hooks/hooks.json"' $manifest`; stdout = devnull))
             hooks = joinpath(root, "hooks", "hooks.json")
-            check_hooks_payload(hooks, ["UserPromptSubmit"])
+            check_hooks_payload(hooks, ["SessionStart", "UserPromptSubmit"])
             groups = readchomp(`jq -c '.hooks.UserPromptSubmit | map(keys)' $hooks`)
             @test groups == "[[\"hooks\"]]"
-            @test readchomp(`jq -c '.hooks.UserPromptSubmit[0].hooks | map(.type)' $hooks`) == "[\"command\"]"
+            @test readchomp(`jq -c '.hooks.UserPromptSubmit[0].hooks | map(.type)' $hooks`) == "[\"command\",\"command\"]"
             command = readchomp(`jq -r '.hooks.UserPromptSubmit[0].hooks[0].command' $hooks`)
             target = only(eachmatch(r"/bin/([A-Za-z0-9._-]+)", command)).captures[1]
             @test target == "sot-selection-hook.sh" && isfile(joinpath(ShipTools.comm_home(), "bin", target))
+            binding_cmd = readchomp(`jq -r '.hooks.SessionStart[0].hooks[0].command' $hooks`)
+            @test readchomp(`jq -r '.hooks.UserPromptSubmit[0].hooks[1].command' $hooks`) == binding_cmd
+            @test occursin("sot-codex-binding-hook.sh", binding_cmd)
+            @test isfile(joinpath(ShipTools.comm_home(), "bin", "sot-codex-binding-hook.sh"))
             for n in names
                 @test plugin_tree(joinpath(root, "skills", n)) == plugin_tree(joinpath(skills, n))
             end

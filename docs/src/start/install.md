@@ -184,7 +184,7 @@ installs the agent integration:
 | `~/.codex/skills/` | the Codex skills `sot-comm`, `sot-session-start` and `sot-chat-post` |
 | `~/.codex/AGENTS.md` | the repo's `AGENTS.md`, installed when none is there and replaced only while the installed file holds "Codex sessions in Ship of Tools"; any other file there is left alone and a warning says to merge by hand |
 | `~/.agents/plugins/sot-comm/`, `~/.agents/plugins/marketplace.json` | the Codex work-state hook plugin; written whether or not Codex is installed, and registered with `codex plugin add sot-comm@sot-local` when it is |
-| `$CODEX_HOME/plugins/cache/sot-local/sot-row/<version>/` | On Unix, each `ccx` launch enables the cached `sot-row@sot-local` plugin for that session. Its skills are `julia-repl`, `project-log`, `show-result`, `sitrep`, `sot-status` and `worktree`. Its selection hook runs at each prompt in a Codex session started by Ship of Tools. |
+| `$CODEX_HOME/plugins/cache/sot-local/sot-row/<version>/` | On Unix, each `ccx` launch enables the cached `sot-row@sot-local` plugin for that session. Its skills are `julia-repl`, `project-log`, `show-result`, `sitrep`, `sot-status` and `worktree`. Its selection hook runs at each prompt in a Codex session started by Ship of Tools. Its binding hook records the root conversation ID at session start and on each prompt. |
 
 `~/.claude` and `~/.codex` follow `CLAUDE_CONFIG_DIR` and `CODEX_HOME` when
 those are set; `~/.sot-comm` follows `SOT_COMM_HOME`. The other paths do not

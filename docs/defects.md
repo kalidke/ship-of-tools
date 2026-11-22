@@ -529,6 +529,11 @@ owned by `docs/CLAUDE.md`.
 
 ## agents
 
+- **CODEX-ROOT-THREAD-HOOKS** [note] The row binding uses the root `session_id` from Codex hook inputs.
+  After release, check the live events and the bound id on a fresh start, resume, new conversation, clear,
+  compaction, fork and child agent. Record which switches emit a start hook, whether the first prompt corrects
+  the id after each switch and whether a child hook retains the parent's id.
+
 - **CODEX-SELECTION-WINDOW** [note] A Linux stub verifies the text hook and withdrawal across Codex launches.
   To close, select plain text and rendered Markdown in fresh and resumed Codex rows in a real window. At the next
   prompt verify the notice, file, inclusive source lines and the full 2,000 UTF-16 units. Switch rows, then clear

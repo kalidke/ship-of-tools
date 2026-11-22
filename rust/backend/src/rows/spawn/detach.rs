@@ -277,7 +277,7 @@ pub(crate) fn spawn_detached_supervisor(
         #[cfg(unix)]
         if agent_kind == "codex" {
             // The winning supervisor runs this before each leg, including a reset with an older ccx.
-            let clear_and_exec = r#"rm -f -- "$0" && exec "$@" --selection-marker "$0""#;
+            let clear_and_exec = r#"rm -f -- "$0" "$SOT_CODEX_THREAD_FILE" && exec "$@" --selection-marker "$0""#;
             args.extend(["/bin/sh", "-c", clear_and_exec].map(Into::into));
             args.push(state_dir.join(crate::agents::selection::MARKER_NAME).into());
         }

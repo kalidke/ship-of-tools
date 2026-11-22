@@ -100,6 +100,27 @@ case_codex_silent_without_script_or_selection() {
 }
 check "the serialized Codex command drains stdin silently without a row or an installed script" case_codex_silent_without_script_or_selection
 
+case_binding_follows_native_ancestry() (
+    local staged id=12345678-1234-4567-8123-123456789abc
+    staged=$(guard_stage_bin "$WORK") || exit 1
+    export SOTD_BIN="$GUARD_SOTD" SOT_WORKSPACE_ID=own SOT_AGENT_KIND=codex SOT_COMM_HOOKS=on
+    export SOT_CODEX_THREAD_FILE="$WORK/thread"
+    cat > "$WORK/native" <<'SH'
+#!/usr/bin/env bash
+exec -a codex bash -c '"$@"; exit $?' _ "$@"
+SH
+    chmod +x "$WORK/native"
+    printf '{"session_id":"%s"}\n' "$id" > "$WORK/event"
+    in_row own "$WORK/native" "$staged/sot-codex-binding-hook.sh" < "$WORK/event" || exit 1
+    [ "$(cat "$SOT_CODEX_THREAD_FILE")" = "$id" ] || exit 1
+    printf 'previous\n' > "$SOT_CODEX_THREAD_FILE"
+    in_row own "$WORK/native" "$WORK/native" "$staged/sot-codex-binding-hook.sh" < "$WORK/event" &&
+        in_row other "$WORK/native" "$staged/sot-codex-binding-hook.sh" < "$WORK/event" &&
+        SOT_COMM_SELF_FILE="$WORK/host__other.txt" in_row other "$WORK/native" "$staged/sot-codex-binding-hook.sh" < "$WORK/event" &&
+        [ "$(cat "$SOT_CODEX_THREAD_FILE")" = previous ]
+)
+check "the local ancestry check admits the row's Codex and rejects a nested Codex or a different capsule" case_binding_follows_native_ancestry
+
 echo ""
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
