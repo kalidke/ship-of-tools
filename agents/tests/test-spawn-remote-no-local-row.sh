@@ -74,7 +74,7 @@ STUB_WATCHER_PID=""
 cleanup() {
     end_group "$STUB_WATCHER_PID"
     end_group "$STUB_NC_PID"
-    exec 3>&- 2>/dev/null || true
+    { exec 3>&-; } 2>/dev/null || true
     rm -rf "${WORK:?}"
 }
 trap cleanup EXIT
@@ -120,7 +120,7 @@ start_stub_daemon() {
         '{v:1,id:1,kind:"res",op:"workspace.create",payload:{workspace_id:$id,slug:$slug,label:$slug,project_root:$root}}')"
 
     exec 3<>"$fifo"
-    set -m   # each step leads a process group of its own, which end_group (lib-wait.sh) ends whole
+    trap - EXIT; set -m   # each step leads a process group of its own, which end_group (lib-wait.sh) ends whole
     nc -klU "$SOCK" < "$fifo" >> "$REQLOG" &
     STUB_NC_PID=$!
 
@@ -148,7 +148,7 @@ start_stub_daemon() {
         esac
       done ) &
     STUB_WATCHER_PID=$!
-    set +m
+    set +m; trap cleanup EXIT   # the steps are forked with no EXIT trap: a stop that reaches one before bash resets the copy would run cleanup in it
 
     await test -S "$SOCK" || echo "stub daemon socket never appeared: $SOCK" >&2
 }
@@ -156,7 +156,7 @@ start_stub_daemon() {
 stop_stub_daemon() {
     end_group "$STUB_WATCHER_PID"
     end_group "$STUB_NC_PID"
-    exec 3>&- 2>/dev/null || true
+    { exec 3>&-; } 2>/dev/null || true
     STUB_NC_PID=""
     STUB_WATCHER_PID=""
 }

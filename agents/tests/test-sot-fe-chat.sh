@@ -55,7 +55,7 @@ STUB_WATCHER_PID=""
 cleanup() {
     end_group "$STUB_WATCHER_PID"
     end_group "$STUB_NC_PID"
-    exec 3>&- 2>/dev/null || true
+    { exec 3>&-; } 2>/dev/null || true
     rm -rf "${WORK:?}"
 }
 trap cleanup EXIT
@@ -115,7 +115,7 @@ start_stub_daemon() {
     # Keep a writer fd open on the fifo for nc's whole `-k` lifetime, opened
     # BEFORE nc so nc's own open-for-read never blocks on a first writer.
     exec 3<>"$fifo"
-    set -m   # each step leads a process group of its own, which end_group (lib-wait.sh) ends whole
+    trap - EXIT; set -m   # each step leads a process group of its own, which end_group (lib-wait.sh) ends whole
     nc -klU "$SOCK" < "$fifo" >> "$reqlog" &
     STUB_NC_PID=$!
 
@@ -125,7 +125,7 @@ start_stub_daemon() {
         [ -n "$op" ] && [ -f "$replyfile" ] && printf '%s\n' "$(cat "$replyfile")" >&3
     done ) &
     STUB_WATCHER_PID=$!
-    set +m
+    set +m; trap cleanup EXIT   # the steps are forked with no EXIT trap: a stop that reaches one before bash resets the copy would run cleanup in it
 
     await test -S "$SOCK" || echo "stub daemon socket never appeared: $SOCK" >&2
 }
@@ -133,7 +133,7 @@ start_stub_daemon() {
 stop_stub_daemon() {
     end_group "$STUB_WATCHER_PID"
     end_group "$STUB_NC_PID"
-    exec 3>&- 2>/dev/null || true
+    { exec 3>&-; } 2>/dev/null || true
     STUB_NC_PID=""
     STUB_WATCHER_PID=""
     STAGED_REPLY=()

@@ -50,6 +50,45 @@ printf 'pkill -P 1\nx=$(command -p pgrep -P 2)\n# pkill -f no\n' > "$T/test-synt
 printf 'sleep 1 &\nSTUB_NC_PID=$!\nset -m\nSTUB_X_PID=$!\nset +m\nSTUB_Y_PID=$!\n' > "$T/test-synthetic2.sh"
 [ "$(pg_calls "$T/test-synthetic.sh" | wc -l)" -eq 2 ] && [ "$(stub_pids_outside_m "$T/test-synthetic2.sh" | wc -l)" -eq 2 ] \
     || { echo "FAIL: the pkill and set -m scans do not tell a synthetic offender from a clean suite"; exit 1; }
+# A step forked while the suite's EXIT trap is set can run that trap inside the step: a stop that reaches the fork before
+# bash resets the traps it copied takes the trap's cleanup (about half of the subshells stopped at once did), and the
+# suite's work folder is gone. So a suite that sets an EXIT trap clears it on the `set -m` line and sets it again on the
+# `set +m` line that ends the forks; test-endpoint-gate.sh is exempt, its stubs are stopped only after `await exe_is`.
+# trap_across_m SUITE... — each `set -m` line without `trap - EXIT`, and each `set +m` line after one without `trap ... EXIT`.
+trap_across_m() {
+    local f
+    for f in "$@"; do
+        case "${f##*/}" in test-endpoint-gate.sh) continue ;; esac
+        awk '/^[[:space:]]*#/ { next }
+             /trap .*EXIT/ && !/trap +- +EXIT/ { has = 1 }
+             { line[FNR] = $0 }
+             END { if (!has) exit
+                   m = 0
+                   for (i = 1; i <= FNR; i++) {
+                       if (line[i] ~ /(^|[;[:space:]])set -m([;[:space:]]|$)/) {
+                           m = 1; if (line[i] !~ /trap +- +EXIT/) print FILENAME ":" i ": " line[i] }
+                       else if (m && line[i] ~ /(^|[;[:space:]])set \+m([;[:space:]]|$)/) {
+                           m = 0; if (line[i] !~ /trap [^-].*EXIT/) print FILENAME ":" i ": " line[i] } } }' "$f"
+    done
+}
+printf "trap 'rm -rf x' EXIT\nset -m\nx &\nset +m\n" > "$T/test-synthetic4.sh"
+printf "trap 'rm -rf x' EXIT\ntrap - EXIT; set -m\nx &\nset +m; trap cleanup EXIT\n" > "$T/test-synthetic5.sh"
+[ "$(trap_across_m "$T/test-synthetic4.sh" | wc -l)" -eq 2 ] && [ -z "$(trap_across_m "$T/test-synthetic5.sh")" ] \
+    || { echo "FAIL: the trap-across-set -m scan does not tell a synthetic offender from a clean suite"; exit 1; }
+# An `exec` with only redirections changes the shell's own descriptors for good, so `exec 3>&- 2>/dev/null` silences the
+# suite's stderr for the rest of the run and a later failure shows no message. Close a descriptor in a group instead:
+# `{ exec 3>&-; } 2>/dev/null`.
+# exec_silences_suite SUITE... — each line that is an `exec` of redirections alone, one of them to /dev/null.
+exec_silences_suite() {
+    local f
+    for f in "$@"; do
+        awk '/^[[:space:]]*#/ { next }
+             /(^|[;{[:space:]])exec( +[0-9]*[<>][&>]?[^[:space:];]*)+[[:space:]]*(\|\||$)/ && /\/dev\/null/ { print FILENAME ":" FNR ": " $0 }' "$f"
+    done
+}
+printf 'exec 3>&- 2>/dev/null || true\nexec 3<>"$f"\n{ exec 3>&-; } 2>/dev/null || true\nexec cat 2>/dev/null\n' > "$T/test-synthetic6.sh"
+[ "$(exec_silences_suite "$T/test-synthetic6.sh" | wc -l)" -eq 1 ] \
+    || { echo "FAIL: the silent exec scan does not tell a synthetic offender from a clean suite"; exit 1; }
 # A bare `sleep N` in a test is a fixed wait: it does not end when the thing it waits for happens, and it is too short
 # on a slow host. A suite waits with lib-wait.sh's `await`. Every file under comm/tests and agents/tests (.sh, .py) but
 # lib-wait.sh has the count of its non-comment lines with a `sleep` followed by a number pinned in the table below, with
@@ -97,7 +136,7 @@ else
 fi
 # this file holds the synthetic offenders as text
 scanned=(); for f in "${suites[@]}"; do [ "${f##*/}" = test-rm-guard.sh ] || scanned+=("$f"); done
-for scan in pg_calls stub_pids_outside_m; do
+for scan in pg_calls stub_pids_outside_m trap_across_m exec_silences_suite; do
     hits="$($scan "${scanned[@]}")"
     if [ -z "$hits" ]; then
         echo "PASS: $scan finds nothing in the hermetic suites"
