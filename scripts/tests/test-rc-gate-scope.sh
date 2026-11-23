@@ -337,6 +337,7 @@ rust/frontend/build.rs the window's icon at build time, and the workspace build 
 rust/frontend/src/ui/render/surface.rs compiles the logo files in, which the workspace build covers in every scope; the decoding test is surface_tests.rs, listed
 rust/frontend/src/ui/init/mod.rs compiles logo.png in at build time, as above; no test decodes it
 rust/frontend/src/ui/result_tests.rs decodes logo.png, but the module is built only with the feature test-window-progress, which the gate never sets
+rust/frontend/src/ui/preview_return_tests.rs uses logo.png for a parked picture in the same native fixtures, built only with test-window-progress
 rust/frontend/src/net/transport/golden_tests.rs reads its own crate's testdata
 rust/frontend/src/ui/preview/markdown/tests.rs reads its own crate's testdata
 rust/backend/tests/ancestors.rs its tests are Windows-only; the gate runs on Linux, and the hosted Windows run covers it

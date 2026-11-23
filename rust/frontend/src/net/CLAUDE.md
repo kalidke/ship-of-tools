@@ -76,6 +76,10 @@ through the channel types below.
   `a_reply_queued_between_connections_is_not_written_on_the_next`, `a_reply_cut_during_its_write_and_one_behind_it_are_not_written_again`,
   `an_accepted_reply_with_no_answer_is_unknown_once_and_not_written_again` (the real reconnect loop against a fixture
   daemon that counts the requests it receives) and `a_retirement_ends_the_unreplayable_and_keeps_the_rest_in_order`.
+- The window's parked-file return check uses the ordinary `preview.get` wire request. Its queue entry expires with
+  its connection. The transport publishes its preamble and its ready state through the same watch whose read guard
+  the window holds at enqueue. The transport sets it down before retiring the outbox.
+  `the_preamble_and_retirement_bound_a_return_to_one_connection` covers the handshake, loss and queued page turn.
 - A daemon `bus.lost` evt is decoded into the typed `IncomingEvt::BusLost { bus, skipped }` (a missing count reads as
   0), never the generic `Event`; the window's one arm logs it and gives a lost `chat.changed` to the chat owner, which watches again; no other pane recovers from loss yet. Tests
   `reply_tests::bus_lost_evt_decodes_into_its_typed_event`.

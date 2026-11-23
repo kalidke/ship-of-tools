@@ -215,6 +215,9 @@ pub enum OutgoingReq {
         /// generation. See `ConceptRead::generation`.
         generation: u64,
     },
+    /// The check of a parked file on a return to its session: `preview.get` on the wire, with no page, and never
+    /// replayed, so it is written on the connection current when it was enqueued or on none.
+    ReturnPreview { node_id: String, workspace_id: Option<String>, fit_w: Option<u32>, fit_h: Option<u32>, generation: u64 },
     /// Persist a user-entered physical scale for a raster and get the
     /// re-rendered preview back (ADR 0034 §4/§5 live entry).
     ///
@@ -448,7 +451,7 @@ impl OutgoingReq {
     /// `FileUpload`, `WorkspaceCreate`, `WorkspaceDestroy`, `ToggleHidden`, `AgentSend`, `ReplInterrupt`).
     pub(crate) fn replayable(&self) -> bool {
         match self {
-            OutgoingReq::PageReply { .. } | OutgoingReq::SelectionSet { .. } | OutgoingReq::ChatPost { .. } | OutgoingReq::ChatPostFile { .. } | OutgoingReq::ChatConnect { .. } | OutgoingReq::ChatPair { .. } | OutgoingReq::ChatWatch { .. } | OutgoingReq::ChatHistory { .. } | OutgoingReq::ChatFile { .. } | OutgoingReq::ReplEval { .. } | OutgoingReq::ReplRunFile { .. } => false,
+            OutgoingReq::ReturnPreview { .. } | OutgoingReq::PageReply { .. } | OutgoingReq::SelectionSet { .. } | OutgoingReq::ChatPost { .. } | OutgoingReq::ChatPostFile { .. } | OutgoingReq::ChatConnect { .. } | OutgoingReq::ChatPair { .. } | OutgoingReq::ChatWatch { .. } | OutgoingReq::ChatHistory { .. } | OutgoingReq::ChatFile { .. } | OutgoingReq::ReplEval { .. } | OutgoingReq::ReplRunFile { .. } => false,
             OutgoingReq::ResultTree { .. }
             | OutgoingReq::TreeChildren { .. }
             | OutgoingReq::TreeRoot { .. }
@@ -524,6 +527,7 @@ pub(super) async fn send_request<W: AsyncWrite + Unpin>(
         OutgoingReq::FileDelete { node_id, workspace_id } => send_file_delete(&mut tx, pending, id, node_id, workspace_id).await?,
         OutgoingReq::DirCreate { node_id, workspace_id } => send_dir_create(&mut tx, pending, id, node_id, workspace_id).await?,
         OutgoingReq::FileParse { path, workspace_id } => send_file_parse(&mut tx, pending, id, path, workspace_id).await?,
+        OutgoingReq::ReturnPreview { node_id, workspace_id, fit_w, fit_h, generation } => send_preview_get(&mut tx, pending, id, node_id, workspace_id, None, fit_w, fit_h, generation).await?,
         OutgoingReq::PreviewGet { node_id, workspace_id, page, fit_w, fit_h, generation } => send_preview_get(&mut tx, pending, id, node_id, workspace_id, page, fit_w, fit_h, generation).await?,
         OutgoingReq::PreviewSetScale { node_id, nm_per_px, workspace_id, generation } => send_preview_set_scale(&mut tx, pending, id, node_id, nm_per_px, workspace_id, generation).await?,
         OutgoingReq::FigureGet { url, node_id, workspace_id } => {

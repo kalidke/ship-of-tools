@@ -31,7 +31,12 @@ impl State {
         req: OutgoingReq,
     ) -> Result<(), tokio::sync::mpsc::error::SendError<OutgoingReq>> {
         match self.conns.iter().find(|(h, _)| h == host) {
-            Some((_, tx)) => tx.send(req),
+            Some((_, tx)) => {
+                let get = match &req { OutgoingReq::PreviewGet { workspace_id, .. } | OutgoingReq::PreviewSetScale { workspace_id, .. } => Some(workspace_id.clone()), _ => None };
+                tx.send(req)?;
+                if let Some(row) = get { self.preview_requests.sent_get(host, row); }
+                Ok(())
+            }
             None => Err(tokio::sync::mpsc::error::SendError(req)),
         }
     }

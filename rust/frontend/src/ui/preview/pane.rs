@@ -43,6 +43,9 @@ pub(in crate::ui) fn resolve_previewed_path(installed: Option<&str>, root: Optio
 /// or if the content looks binary, the pane shows a one-line summary instead.
 const PREVIEW_TEXT_CAP: usize = 512 * 1024;
 
+#[cfg(all(test, feature = "test-window-progress"))]
+thread_local! { pub(in crate::ui) static PREVIEW_RENDERS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
 /// Heuristic: does this blob look like binary (not safe to shape as text)?
 /// A NUL byte in the leading window is the classic giveaway — text files
 /// don't contain `0x00`, but HDF5 / images / archives / most binaries do
@@ -285,6 +288,8 @@ impl State {
     /// font-rescale path (which replays against the cached source).
     #[allow(clippy::too_many_lines, reason = "routes a preview blob to its renderer by mime; predates the 100-line limit")]
     pub(in crate::ui) fn render_preview_source(&mut self, mime: &str, bytes: &[u8]) {
+        #[cfg(all(test, feature = "test-window-progress"))]
+        PREVIEW_RENDERS.set(PREVIEW_RENDERS.get() + 1);
         self.shaped.clear_selection();
         let scale = self.canvas.scale() * self.canvas.text_scale_mult();
         let route = match preview_route(mime) {

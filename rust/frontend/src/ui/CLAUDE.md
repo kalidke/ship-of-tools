@@ -339,9 +339,29 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   reply costs one more fetch of the same file, bounded, never a loop (the reply that was in flight may still be
   admitted, and the follow then asks once more). The switch empties the pane's flowed text (`clear_preview_text`) before
   every restore, so a row with no installed bytes, or bytes that fail to render, never shows the row left under its
-  title. Pinned by the native fixture `a_row_left_before_its_preview_came_back_shows_its_own`: an answered row and a
-  refused row returned to several times ask nothing, an unanswered row asks once per return and stops once answered.
-  It does not reach the bounce within the reply's window.
+  title. The native fixture `a_row_left_before_its_preview_came_back_shows_its_own` exercises that cursor follow on
+  immediate restore. An unanswered selection over a chat picture follows the same rule.
+- An idle return to a row shows the parked file immediately. After 150 ms on the row and the cursor's usual settle,
+  one `preview.get` reads the shown unpaged file. Restoring the session already on screen arms nothing. A quicker switch cancels the check. An existing read
+  or a scale save takes precedence. A disconnected host owes its read on reconnect. A selection, page turn, zoom, watcher read or reconnect read during the settle
+  spends its own generation and cancels the check. A queued read stays busy across a disconnect until its reply, failure
+  or a new generation. Leaving retires a check's generation. Its wire slot stays busy until its reply, failure or
+  connection end. A lost answer on a live connection can suppress later checks. Ordinary reads still work.
+  During any connection's handshake and root preview preamble the window skips the check. It checks the selected
+  connection again at enqueue, and the return request expires with that connection.
+  Equal MIME and bytes in the return reply keep the installed source and its render unless the reply supplies a calibration. Watcher and reconnect replies
+  still run their ordinary install even for equal bytes, including its retry of failed figures. Changed content goes through the ordinary install
+  and render, with the same positioning as a watcher reply. The return keeps no extra scroll position.
+- The drawn pane rectangle covers both columns and a preview placed in the drawer. An undrawn pane drops the check,
+  as do a modal dialog, a canvas, the editor, a preview without a file node and a folder's own page. A PDF page keeps
+  its parked raster. A picture with a saved scale or a pending save also skips the check. A failed scale save keeps
+  its file ineligible until a read of that file succeeds. A skipped file can stay stale until the next eligible return
+  or cursor move. Uncovering does not retry it.
+  A file under the canvas or editor can be checked on the next return. A file whose bytes exactly match
+  its folder-page Markdown is indistinguishable from that page even if the tree now lists it as a file. A lost preview event still has no recovery.
+  A large picture costs a fresh daemon read and transfer of the served preview at every eligible return, including
+  when every byte compares equal. Only installation and rendering of the equal reply are saved. The link cost has
+  not been measured on a real connection. The fourteen return fixtures run in the native window.
 - `ParkedViews` privately owns the map of parked row views. Leaving a row parks its view (replacing an earlier one),
   coming back reads a clone, a kept default row's end forgets only the parked attachment, a destroyed row's view is
   dropped, and the default row's raw-slug key migrates to `<default>` with an existing `<default>` view winning. State
@@ -1076,7 +1096,7 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   chunks is a state line. What a re-render or a re-fetch the person did not ask for raises goes to the preview's box
   alone (`route_preview_message`'s `box_only`), as the refusal of `d` does: a failed equation always
   (`markdown::replies::say_math_failure`, every render asks for its equations again), and a preview's fetch failure and
-  an SVG it could not draw when the latest preview request was a re-fetch for a watcher's change or a reconnect and no
+  an SVG it could not draw when the latest preview request was a re-fetch for a watcher's change, a reconnect or a row return and no
   request of the person's (a selection, a page turn, a zoom) waits for its answer: `PreviewRequests::issue_refetch`
   keeps `person_waiting` through the re-fetch, which outdates that request and so answers it, and a page turn sets it;
   `latest_is_unasked`, which `replies::say_preview_failure` and `say_svg_not_drawn` read from the owner themselves. A
@@ -1147,7 +1167,7 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   draw on (a PDF page, an SVG, a video frame, no picture, the connection notice over the preview: `State::refuse_draw`),
   since it answers a key pressed over the preview and the status line above the nav pane keeps what it held, and for what a
   re-render or a re-fetch the person did not ask for raises (a failed equation always; a preview that failed and
-  `svg not drawn` when the latest request re-fetched for a watcher's change or a reconnect and none of the person's
+  `svg not drawn` when the latest request re-fetched for a watcher's change, a reconnect or a row return and none of the person's
   waits; see `StatusLine` above).
   Boxed: the drawing's lines and its share replies, the canvas, `svg not drawn`, a crop's refusal and progress, the scale
   bar's save and refusals, a preview that failed and a failed equation. Left on the status line alone, by choice: a text

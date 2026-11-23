@@ -6,8 +6,24 @@ use crate::ui::{Action, HostKey, WsKey};
 use super::concept::{change_effect, ChangeEffect};
 use super::image::view::RoiAim;
 
+/// The window's preview read slot. A wire read keeps its generation across a row switch.
+#[derive(Default)]
+pub(in crate::ui) enum PreviewRead {
+    #[default]
+    Idle,
+    Settling(std::time::Instant),
+    Reading(HostKey, Option<String>),
+    Checking,
+}
+
 #[derive(Default)]
 pub(in crate::ui) struct PreviewRequests {
+    /// The one return check on the wire: its host, row and generation, and a reader of that host's connection phase.
+    /// Freed by its reply or failure, or, at the next return, by any change of the phase since it was sent.
+    pub(in crate::ui) return_out: Option<(HostKey, Option<String>, u64, tokio::sync::watch::Receiver<crate::net::transport::PreviewLink>)>,
+    /// Files with a scale save sent or failed and no preview reply since: a return does not check them.
+    pub(in crate::ui) unconfirmed_scales: std::collections::HashSet<(HostKey, Option<String>, String)>,
+    read: std::cell::Cell<PreviewRead>,
     preview_req_gen: u64,
     concept_req_gen: u64,
     concept_target_fired: Option<String>,
@@ -74,6 +90,7 @@ impl PreviewRequests {
     }
 
     fn advance_preview_generation(&mut self) -> u64 {
+        *self.read.get_mut() = PreviewRead::Idle;
         self.preview_req_gen += 1;
         self.preview_req_gen
     }
@@ -168,7 +185,30 @@ impl PreviewRequests {
         self.driven_preview_hold_cursor = None;
     }
 
+    pub(in crate::ui) fn sent_get(&self, host: &HostKey, row: Option<String>) { self.read.set(PreviewRead::Reading(host.clone(), row)); }
+    pub(in crate::ui) fn answered_get(&mut self, host: &HostKey, row: &Option<String>, generation: u64) {
+        if self.return_out.as_ref().is_some_and(|(h, ws, g, _)| h == host && ws == row && *g == generation) { self.return_out = None; }
+        if generation == self.preview_req_gen && matches!(self.read.get_mut(), PreviewRead::Reading(h, ws) if h == host && ws == row) {
+            *self.read.get_mut() = PreviewRead::Idle;
+        }
+    }
+    pub(in crate::ui) fn arm_return(&mut self) {
+        // An unanswered check dies with its connection. Its non-replayable request cannot reach the next one.
+        if self.return_out.as_ref().is_some_and(|(_, _, _, link)| link.has_changed().unwrap_or(true)) { self.return_out = None; }
+        if matches!(self.read.get_mut(), PreviewRead::Idle) && self.scale_save.is_none() && self.return_out.is_none() {
+            *self.read.get_mut() = PreviewRead::Settling(std::time::Instant::now());
+        }
+    }
+    pub(in crate::ui) fn finish_return_reply(&mut self) -> bool {
+        if !matches!(self.read.get_mut(), PreviewRead::Checking) { return false; }
+        *self.read.get_mut() = PreviewRead::Idle;
+        true
+    }
+    pub(in crate::ui) fn read(&mut self) -> &mut PreviewRead { self.read.get_mut() }
+
     pub(in crate::ui) fn leave_row(&mut self) {
+        if self.finish_return_reply() { self.advance_preview_generation(); }
+        if matches!(self.read.get_mut(), PreviewRead::Settling(_)) { *self.read.get_mut() = PreviewRead::Idle; }
         self.driven_preview_hold_cursor = None;
         self.clear_page_requests();
     }

@@ -87,6 +87,9 @@ pub(crate) fn lane_dial(
 /// The window's per-host connection table (fe-net). State holds it as `hosts`;
 /// drain's Connected and Disconnected arms and the transport spawn write it.
 pub(crate) struct HostTable {
+    /// Each host's connection phase as its transport publishes it (`PreviewLink`), filled when the transports are
+    /// spawned. The preview's return check reads it at the send.
+    pub(crate) preview_links: HashMap<HostKey, tokio::sync::watch::Sender<crate::net::transport::PreviewLink>>,
     /// Per-host connection status, derived from each connection's own
     /// `Connected`/`Disconnected`/`HelloRefused` events (ADR 0042 L2a —
     /// no new wire signal). Absent or `false` = unreachable (never
@@ -156,9 +159,9 @@ pub(crate) fn spawn_transports(
         .collect();
     for (host, config, req_rx) in transports {
         let link = hosts.links.entry(host.clone()).or_default().clone();
-        crate::net::transport::spawn(
+        let state = crate::net::transport::spawn(
             rt,
-            host,
+            host.clone(),
             config,
             evt_tx.clone(),
             req_rx,
@@ -167,6 +170,7 @@ pub(crate) fn spawn_transports(
             link,
             leases.clone(),
         );
+        hosts.preview_links.insert(host, state);
     }
 }
 

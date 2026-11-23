@@ -171,8 +171,10 @@ impl State {
                 (target.slug(), attachment)
             }
         };
+        let previous = self.active_ws_key();
         let old_tree_key = self.retarget_workspace(host, slug, session_name, person_driven);
         let restored = self.restore_entering_workspace(person_driven);
+        if restored && previous != self.active_ws_key() && self.shown_return_file().is_some() { self.preview_requests.arm_return(); }
         self.md_media.defer_next();
         self.load_entering_tree(old_tree_key);
         // Refresh the workspace list so kernel_running / new rows stay

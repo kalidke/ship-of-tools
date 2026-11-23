@@ -139,6 +139,7 @@ fn every_request_kind(download_dest: &std::path::Path) -> Vec<OutgoingReq> {
         OutgoingReq::SelectionSet {
             req: serde_json::from_value(serde_json::json!({ "workspace_id": "sel.ws", "selection": null })).unwrap(),
         },
+        OutgoingReq::ReturnPreview { node_id: s("return.node"), workspace_id: o("return.ws"), fit_w: Some(640), fit_h: Some(480), generation: 901 },
     ]
 }
 

@@ -119,7 +119,7 @@ impl ApplicationHandler for FixturesDriver {
 }
 
 fn run_state_fixtures(state: &mut State) -> Result<()> {
-    let fixtures: [(&str, fn(&mut State) -> Result<()>); 40] = [
+    let fixtures: [(&str, fn(&mut State) -> Result<()>); 54] = [
         // First: the window's start-up picture is still the preview's.
         (
             "primary_u_over_the_start_picture_says_the_preview_shows_no_file",
@@ -236,6 +236,20 @@ fn run_state_fixtures(state: &mut State) -> Result<()> {
             "the_update_mark_is_drawn_for_this_computers_own_daemon",
             State::the_update_mark_is_drawn_for_this_computers_own_daemon,
         ),
+        ("a_return_checks_its_parked_file_once", State::a_return_checks_its_parked_file_once),
+        ("a_return_keeps_equal_bytes_and_replaces_changed_bytes", State::a_return_keeps_equal_bytes_and_replaces_changed_bytes),
+        ("a_return_checks_only_the_file_on_screen", State::a_return_checks_only_the_file_on_screen),
+        ("a_return_yields_to_existing_reads", State::a_return_yields_to_existing_reads),
+        ("a_return_checks_only_a_drawn_preview", State::a_return_checks_only_a_drawn_preview),
+        ("a_queued_read_survives_a_failed_dial", State::a_queued_read_survives_a_failed_dial),
+        ("a_return_preserves_image_calibration", State::a_return_preserves_image_calibration),
+        ("a_paged_raster_keeps_its_zoom_on_return", State::a_paged_raster_keeps_its_zoom_on_return),
+        ("restoring_the_active_session_skips_the_check", State::restoring_the_active_session_skips_the_check),
+        ("a_return_waits_for_the_departed_rows_check", State::a_return_waits_for_the_departed_rows_check),
+        ("a_preamble_on_another_host_suppresses_the_return", State::a_preamble_on_another_host_suppresses_the_return),
+        ("a_return_uses_only_the_current_connection", State::a_return_uses_only_the_current_connection),
+        ("a_replaced_folder_keeps_its_installed_page", State::a_replaced_folder_keeps_its_installed_page),
+        ("a_close_dialog_covers_the_returned_preview", State::a_close_dialog_covers_the_returned_preview),
     ];
     // Every fixture runs and reports; the child fails after the last if any failed.
     let mut failed = Vec::new();

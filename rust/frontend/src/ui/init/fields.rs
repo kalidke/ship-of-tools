@@ -86,6 +86,7 @@ impl State {
                 initial_active_workspace_id(cli, resume_matches_last_host, &persisted_geom),
             ),
             hosts: crate::net::hosts::HostTable {
+                preview_links: Default::default(),
                 host_connected: HashMap::new(),
                 last_disconnect: HashMap::new(),
                 // Filled by `resumed()` from the same `PendingTransport` list

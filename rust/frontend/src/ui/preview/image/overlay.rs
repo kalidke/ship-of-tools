@@ -432,7 +432,9 @@ impl ScalePromptContext for State {
     fn send_scale(&mut self, node_id: &str, nm_per_px: f64) -> Result<(), String> {
         let generation = self.next_preview_gen();
         self.send(OutgoingReq::PreviewSetScale { node_id: node_id.to_string(), nm_per_px,
-            workspace_id: self.selected.workspace_id().clone(), generation }).map_err(|e| e.to_string())
+            workspace_id: self.selected.workspace_id().clone(), generation }).map_err(|e| e.to_string())?;
+        self.preview_requests.unconfirmed_scales.insert((self.selected.host().clone(), self.selected.workspace_id().clone(), node_id.to_string()));
+        Ok(())
     }
     fn enable_scalebar(&mut self) { self.overlays.enable_scalebar(); }
     fn mark_scale_saved(&mut self, node_id: String, raw: String) { self.preview_requests.arm_scale_save(node_id, raw); }

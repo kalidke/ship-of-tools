@@ -289,7 +289,8 @@ impl State {
                 crate::net::transport::IncomingEvt::ImageCropFailed { node_id, message } => {
                     self.on_image_crop_failed(event_host, node_id, message)
                 }
-                crate::net::transport::IncomingEvt::ScaleSetFailed { node_id, message } => {
+                crate::net::transport::IncomingEvt::ScaleSetFailed { workspace_id, node_id, message } => {
+                    self.preview_requests.unconfirmed_scales.insert((event_host, workspace_id, node_id.clone()));
                     self.on_scale_set_failed(node_id, message)
                 }
                 crate::net::transport::IncomingEvt::PreviewGetFailed {

@@ -132,6 +132,7 @@ impl State {
         generation: u64,
     ) {
         let payload = PreviewReply { node_id, workspace_id: workspace_id.clone(), mime, bytes, extras, generation };
+        self.preview_requests.answered_get(&event_host, &workspace_id, generation);
         requests::continue_preview_reply(self, event_host, workspace_id, generation, payload);
     }
 
@@ -169,6 +170,9 @@ impl State {
         // A notice is about the file shown; another file's preview drops it before this one's own render can raise one.
         if node_id.as_deref() != self.preview_source.node_id() { self.preview_notice.clear(); }
         let scale = extras.as_ref().and_then(parse_physical_scale);
+        if let Some(node) = &node_id { self.preview_requests.unconfirmed_scales.remove(&(self.selected.host().clone(), workspace_id.clone(), node.clone())); }
+        if self.preview_requests.finish_return_reply() && scale.is_none() && node_id.as_deref() == self.preview_source.node_id()
+            && self.preview_source.mime() == Some(&mime) && self.preview_source.bytes() == Some(&bytes) { return; }
         self.ink.install_preview(&mut self.preview_source, mime.clone(), bytes.clone(), node_id.clone(), scale, workspace_id);
         // Pagination state (ADR 0021): present only when the
         // serving plugin reported page extras; anything else
@@ -523,10 +527,12 @@ impl State {
         generation: u64,
         message: String,
     ) {
+        self.preview_requests.answered_get(&event_host, &workspace_id, generation);
         requests::continue_preview_failure(self, event_host, workspace_id, generation, (node_id, message));
     }
 
     fn install_preview_failure(&mut self, node_id: Option<String>, message: String) {
+        self.preview_requests.finish_return_reply();
         // Most commonly `code: "kernel_unavailable"` — a
         // bounded-output-only file type (HDF5/video/PDF) with
         // the Julia kernel unavailable. Same status-line

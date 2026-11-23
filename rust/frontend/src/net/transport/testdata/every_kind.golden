@@ -54,6 +54,7 @@
 > {"v":4,"id":55,"kind":"req","op":"chat.channels","payload":{"workspace":"Tcch"}}
 > {"v":4,"id":56,"kind":"req","op":"chat.pair","payload":{"channel":"Ccpr","row":"cpr.row","workspace":"Tcpr"}}
 > {"v":4,"id":57,"kind":"req","op":"selection.set","payload":{"selection":null,"workspace_id":"sel.ws"}}
+> {"v":4,"id":58,"kind":"req","op":"preview.get","payload":{"fit_h":480,"fit_w":640,"node_id":"return.node","workspace_id":"return.ws"}}
 < golden Connected { session_id: "sess-1", revision: 0, host: None, project_root: None, proxy: false, resolved: Local, backend_version: "", repl_running: [], posts_as_person: false }
 < golden TreeChildrenFailed { workspace_id: Some("tc.ws"), parent_id: "tc.parent", error: "err-tree.children" }
 < golden Event { op: "nav.toggle_hidden", payload: Object {"code": String("code-nav.toggle_hidden"), "error": String("err-nav.toggle_hidden")} }
@@ -70,7 +71,7 @@
 < golden DirCreateDone { node_id: "dc.node", result: Error { code: "code-dir.create", message: "err-dir.create" } }
 < golden FileParseFailed { workspace_id: Some("fp.ws"), path: "fp.path" }
 < golden PreviewGetFailed { node_id: Some("pg.node"), workspace_id: Some("pg.ws"), generation: 111, message: "code-preview.get: err-preview.get" }
-< golden ScaleSetFailed { node_id: "pss.node", message: "code-preview.set_scale: err-preview.set_scale" }
+< golden ScaleSetFailed { workspace_id: Some("pss.ws"), node_id: "pss.node", message: "code-preview.set_scale: err-preview.set_scale" }
 < golden FigureGetFailed { url: "fg.url" }
 < golden FunctionMethodsReceived { workspace_id: Some("fm.ws"), module: "fm.module", name: "fm.name", methods: [] }
 < golden ReplEvalDone { eval_id: 113, elapsed_ms: 0, frames: [Error { message: "err-repl.eval [code-repl.eval]", stacktrace: [] }] }
@@ -102,3 +103,4 @@
 < golden Chat(Channels { workspace: Some("Tcch"), reply: Refused(Other) })
 < golden Chat(PairUnknown { row: "cpr.row", channel: Some(ChatChannel("Ccpr")) })
 < golden Selection { req: SelectionSetReq { workspace_id: "sel.ws", selection: None, drawing: None }, reply: Refused { code: Some("code-selection.set"), error: "err-selection.set" } }
+< golden PreviewGetFailed { node_id: Some("return.node"), workspace_id: Some("return.ws"), generation: 901, message: "code-preview.get: err-preview.get" }

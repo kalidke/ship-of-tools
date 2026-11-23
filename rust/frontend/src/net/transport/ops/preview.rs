@@ -368,7 +368,7 @@ pub(crate) fn on_set_scale(
             .unwrap_or("error");
         tracing::warn!(%node_id, %code, %err, "preview.set_scale rejected");
         emit(IncomingEvt::ScaleSetFailed {
-            node_id,
+            workspace_id, node_id,
             message: format!("{code}: {err}"),
         });
         return;
@@ -391,7 +391,7 @@ pub(crate) fn on_set_scale(
             // resolved-looking while nothing was served.
             tracing::warn!(error = %e, "preview.set_scale res parse failed");
             emit(IncomingEvt::ScaleSetFailed {
-                node_id,
+                workspace_id, node_id,
                 message: format!("scale set but preview unavailable: {e}"),
             });
         }

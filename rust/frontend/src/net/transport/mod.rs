@@ -154,6 +154,12 @@ pub enum ResolvedDial {
     Ssh(sot_topology::ssh_bridge::SshRecipe),
 }
 
+/// A host connection's phase, published by its transport: `Down` between connections, `Preamble` from a connection's
+/// start through its hello and the preamble's own preview read, `Ready` once the steady loop takes requests. Set `Down`
+/// before the outbox is retired, so a request enqueued under a read of `Ready` is retired with its connection.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum PreviewLink { #[default] Down, Preamble, Ready }
+
 /// Create the outgoing-request channel paired with the transport task. The
 /// sender lives on the GPU thread; the receiver gets handed to `spawn`. Both
 /// sides drop their handle on shutdown — that's how the writer half of the
@@ -190,7 +196,9 @@ pub(crate) fn spawn<Wn: Redraw + Clone + Send + Sync + 'static>(
     reconnect_now: Arc<tokio::sync::Notify>,
     link: sot_topology::link::LinkHandle,
     leases: Arc<crate::lease::Leases>,
-) {
+) -> tokio::sync::watch::Sender<PreviewLink> {
+    let mut out_rx = Outbox::new(out_rx);
+    let preview_link = out_rx.preview_link.clone();
     rt.spawn(async move {
         // Reconnect loop with exponential backoff, capped at 5s on a local
         // socket and 30s on an ssh dial (each ssh probe is a login on the
@@ -208,7 +216,6 @@ pub(crate) fn spawn<Wn: Redraw + Clone + Send + Sync + 'static>(
         // the wait doubling. The F5 `reconnect_now` notify lets the user
         // collapse the current sleep — useful when wifi flickers and
         // the user knows it's back before the wait elapses.
-        let mut out_rx = Outbox::new(out_rx);
         let mut redial = redial_for(&config.dial);
         loop {
             let began = tokio::time::Instant::now();
@@ -255,6 +262,7 @@ pub(crate) fn spawn<Wn: Redraw + Clone + Send + Sync + 'static>(
             }
         }
     });
+    preview_link
 }
 
 /// Dial whichever transport `config.dial` names. Once a connection is
@@ -424,7 +432,9 @@ where
     W: AsyncWrite + Unpin,
     Wn: Redraw,
 {
+    out_rx.preview_link.send_replace(PreviewLink::Preamble);
     let result = run_session(host.clone(), rx, tx, token, evt_tx, out_rx, window, resolved, link).await;
+    out_rx.preview_link.send_replace(PreviewLink::Down);
     if let Some((handle, _)) = link {
         handle.set_down();
     }
@@ -541,6 +551,7 @@ where
     // follow user navigation.
     let prev_id = take_id(&mut next_id);
     preamble_preview(&mut tx, &mut rx, prev_id, root_node_id, &host, &mut session, &emit, window, &mut other).await?;
+    out_rx.preview_link.send_replace(PreviewLink::Ready);
 
     steady::steady_loop(
         rx,

@@ -1948,7 +1948,7 @@ impl State {
 fn previews_asked(rx: &mut ProbeRx) -> Vec<(String, Option<String>, u64)> {
     std::iter::from_fn(|| rx.try_recv().ok())
         .filter_map(|request| match request {
-            OutgoingReq::PreviewGet { node_id, workspace_id, generation, .. } => Some((node_id, workspace_id, generation)),
+            OutgoingReq::PreviewGet { node_id, workspace_id, generation, .. } | OutgoingReq::ReturnPreview { node_id, workspace_id, generation, .. } => Some((node_id, workspace_id, generation)),
             _ => None,
         })
         .collect()
@@ -2334,3 +2334,6 @@ impl State {
         Ok(())
     }
 }
+
+#[path = "preview_return_tests.rs"]
+mod preview_return_tests;

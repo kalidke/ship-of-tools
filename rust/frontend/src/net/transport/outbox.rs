@@ -11,13 +11,15 @@ use std::collections::VecDeque;
 /// current when it is dequeued or on none: [`Outbox::retire`] ends every one still waiting when a connection ends and
 /// when the next one is about to send its hello, so none is written on a later one.
 pub(crate) struct Outbox {
+    /// The phase of this host's connection, which the window reads before it enqueues a return check.
+    pub(super) preview_link: tokio::sync::watch::Sender<PreviewLink>,
     rx: UnboundedReceiver<OutgoingReq>,
     held: VecDeque<OutgoingReq>,
 }
 
 impl Outbox {
     pub(crate) fn new(rx: UnboundedReceiver<OutgoingReq>) -> Self {
-        Self { rx, held: VecDeque::new() }
+        Self { preview_link: Default::default(), rx, held: VecDeque::new() }
     }
 
     /// The next request, in the order it was sent; `None` once the senders are gone and nothing is held. Cancel-safe.

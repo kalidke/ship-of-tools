@@ -5,7 +5,10 @@ use super::*;
 
 impl State {
     pub(in crate::ui) fn redraw(&mut self) -> Result<()> {
-        let began = std::time::Instant::now();
+        self.redraw_at(std::time::Instant::now())
+    }
+
+    pub(in crate::ui) fn redraw_at(&mut self, began: std::time::Instant) -> Result<()> {
         self.frame_upkeep();
         let (preview_cells, repl_cells, repl_scrollback_cells, repl_window, llm_selection, owed, owed_line,
             owed_drawn, leaving_drawn, presentation_candidate) = self.draw_chrome()?;
@@ -49,6 +52,8 @@ impl State {
         let (scalebar_draw, media_paint_targets) = self.prepare_preview_text(lines, media_paint_targets,
             preview_rect, image_rect, png_rect, md_rect, preview_scroll_px, show_md, show_edit, show_fatal, &caption_draw)?;
         let (help_overlay_rect, dialog_rect, overlay_lines) = self.prepare_overlays()?;
+        let covered = dialog_rect.is_some() || self.focus_prompts.prompt().is_some() || self.workspace_picker.is_some();
+        self.check_returned_file(began, if covered { Default::default() } else { preview_cells });
         let prepared = std::time::Instant::now();
         let frame = self.gpu.acquire_frame()?;
         let drawable = std::time::Instant::now();
@@ -159,7 +164,7 @@ impl State {
         // preview blob rasterisation that the AMD driver overlay fired.
         // Cascade: tunnel saturation → transport reconnect → hello-time
         // `tree.root` re-fire → cursor reset to row 0. The fires below
-        // are the *only* path that ships per-row backend traffic;
+        // ship the cursor-driven traffic, so
         // suppressing them until the cursor sits still for
         // `NAV_FIRE_DEBOUNCE` makes hold-to-scroll free.
         let cursor_now = (self.nav.mode(), self.nav.tree().selected());

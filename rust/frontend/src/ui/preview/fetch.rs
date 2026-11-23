@@ -1,6 +1,7 @@
 //! The cursor-follow preview fetch: preview.get requests and their generations.
 
 use crate::ui::*;
+use crate::net::transport::PreviewLink;
 use super::requests::{PageRequestContext, PreviewRequests};
 
 impl PageRequestContext for State {
@@ -48,6 +49,52 @@ impl State {
     /// `next_preview_gen` for a re-fetch the person did not ask for: what its reply raises goes to the preview's box alone.
     pub(in crate::ui) fn next_refetch_gen(&mut self) -> u64 {
         self.preview_requests.issue_refetch()
+    }
+
+    pub(in crate::ui) fn shown_return_file(&self) -> Option<&str> {
+        let node = self.preview_source.node_id()?;
+        let shown = self.preview_shows();
+        (node.strip_prefix("files:").is_some_and(|path| !path.is_empty()) && Some(node) == self.shown_target()
+            && self.pages.page().is_none() && self.preview_source.scale().is_none()
+            && !self.preview_requests.unconfirmed_scales.contains(&(self.selected.host().clone(), self.selected.workspace_id().clone(), node.to_owned()))
+            && !self.hosts.preview_links.values().any(|link| *link.borrow() == PreviewLink::Preamble)
+            && !shown.canvas && !shown.fatal && !self.editor.is_editing()).then_some(node)
+    }
+
+    // A directory reply carries no kind. Its installed page can outlive the directory in the tree.
+    fn is_folder_page(&self, node: &str) -> bool {
+        let Some(name) = node.strip_prefix("files:").and_then(|p| std::path::Path::new(p).file_name()).and_then(|n| n.to_str()) else { return false };
+        let suffix = b"\n\nFiles-mode root. Navigate the tree to preview individual files.\n";
+        self.preview_source.mime() == Some("text/markdown") && self.preview_source.bytes().and_then(|b| b.strip_prefix(b"# "))
+            .and_then(|b| b.strip_suffix(suffix.as_slice())) == Some(name.as_bytes())
+    }
+
+    pub(in crate::ui) fn check_returned_file(&mut self, now: std::time::Instant, pane: ratatui::layout::Rect) {
+        use super::requests::PreviewRead;
+        let PreviewRead::Settling(since) = self.preview_requests.read() else { return };
+        if self.nav_cursor.is_settling() || now.saturating_duration_since(*since) < crate::ui::app::NAV_FIRE_DEBOUNCE {
+            self.pacer.mark_dirty();
+            return;
+        }
+        *self.preview_requests.read() = PreviewRead::Idle;
+        if self.hosts.host_connected.get(self.selected.host()) == Some(&false) { return; }
+        let Some(node) = self.shown_return_file().filter(|n| !pane.is_empty() && !self.is_folder_page(n)) else { return };
+        let node_id = node.to_owned();
+        let (fit_w, fit_h) = self.preview_fit_px();
+        // Hold the transport phases through enqueue. Retirement takes its write lock before draining non-replayable requests.
+        let links = self.hosts.preview_links.clone();
+        let phases: Vec<_> = links.iter().map(|(host, link)| (host, link.borrow())).collect();
+        if phases.iter().any(|(_, p)| **p == PreviewLink::Preamble)
+            || !phases.iter().any(|(host, p)| *host == self.selected.host() && **p == PreviewLink::Ready) { return; }
+        let owner = (self.selected.host().clone(), self.selected.workspace_id().clone());
+        let generation = self.next_refetch_gen();
+        match self.send(OutgoingReq::ReturnPreview { node_id, workspace_id: owner.1.clone(), fit_w, fit_h, generation }) {
+            Ok(()) => {
+                self.preview_requests.return_out = Some((owner.0, owner.1, generation, links[self.selected.host()].subscribe()));
+                *self.preview_requests.read() = PreviewRead::Checking;
+            }
+            Err(e) => tracing::warn!(%e, "drop preview.get on return — channel closed"),
+        }
     }
 
     /// Same mechanism as `next_preview_gen`, for the concept/annotation slot.

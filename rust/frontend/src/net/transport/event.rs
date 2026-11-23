@@ -139,6 +139,7 @@ pub enum IncomingEvt {
     /// line. Without this the prompt's "saving…" would hang forever on any
     /// rejection, which reads as a silent failure.
     ScaleSetFailed {
+        workspace_id: Option<String>,
         node_id: String,
         message: String,
     },

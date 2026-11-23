@@ -987,3 +987,39 @@ async fn connect_pipe_refuses_a_pipe_another_account_serves() {
     };
     assert!(refused.contains("not connecting"), "{refused}");
 }
+
+#[tokio::test]
+async fn the_preamble_and_retirement_bound_a_return_to_one_connection() {
+    let host = "return-connection-lifetime".to_string();
+    let (events, _) = std::sync::mpsc::channel();
+    let (requests, rx) = outgoing_channel();
+    let mut outbox = Outbox::new(rx);
+    let mut phase = outbox.preview_link.subscribe();
+    let (near, far) = tokio::io::duplex(16 * 1024);
+    let (rx, tx) = tokio::io::split(near);
+    let session = run_protocol(host.clone(), codec::buffered(rx), tx, None, &events, &mut outbox, &NoWindow, ResolvedDial::Local, None);
+    let daemon = async {
+        let (rx, mut tx) = tokio::io::split(far);
+        let mut rx = codec::buffered(rx);
+        for op in [op::HELLO, op::TREE_ROOT, op::PREVIEW_GET] {
+            let (request, _) = codec::read_frame(&mut rx).await.unwrap();
+            assert_eq!(request.op, op);
+            assert_eq!(*phase.borrow(), PreviewLink::Preamble);
+            let reply = if op == op::HELLO { hello_ok() } else { serde_json::json!({"error":"refused"}) };
+            codec::write_frame(&mut tx, &Frame::res(request.id, op, reply), None).await.unwrap();
+        }
+        phase.wait_for(|p| *p == PreviewLink::Ready).await.unwrap();
+    };
+    let (_, ended) = tokio::time::timeout(std::time::Duration::from_secs(5), async { tokio::join!(daemon, session) })
+        .await.expect("the session ends when the fixture drops its live stream");
+    assert!(ended.is_err());
+    assert_eq!(*phase.borrow(), PreviewLink::Down);
+
+    // The next hello retires even a request that raced the previous connection's end.
+    requests.send(OutgoingReq::ReturnPreview { node_id: "check".into(), workspace_id: None, fit_w: None, fit_h: None, generation: 1 }).unwrap();
+    requests.send(OutgoingReq::PreviewGet { node_id: "queued".into(), workspace_id: None, page: Some(2), fit_w: None, fit_h: None, generation: 2 }).unwrap();
+    drop(requests);
+    outbox.retire(&events, &host).await;
+    assert!(matches!(outbox.recv().await, Some(OutgoingReq::PreviewGet { page: Some(2), generation: 2, .. })));
+    assert!(outbox.recv().await.is_none());
+}

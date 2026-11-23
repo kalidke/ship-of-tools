@@ -39,7 +39,7 @@ pub(in crate::ui) struct WorkspaceUiSnapshot {
     /// Restored via `attach_session_to_bl` on swap-in.
     bl_pane_target: Option<String>,
     /// The node id we most recently asked the backend to preview, so
-    /// switching back doesn't bounce-fetch the same preview again.
+    /// cursor follow can distinguish an answered target on restore.
     preview_node_id_fired: Option<String>,
     /// Whether the daemon refused that request, so the older bytes in `source` come back marked.
     preview_refused: bool,
@@ -51,7 +51,7 @@ pub(in crate::ui) struct WorkspaceUiSnapshot {
     /// their reply answered, their physical scale and the markdown origin
     /// (see `InstalledPreviewSource`). On swap-in it is restored whole and
     /// its bytes fed back through `render_preview_source` to rebuild the
-    /// preview pane without a fresh `preview.get`.
+    /// preview pane before any return check.
     source: InstalledPreviewSource,
     /// `(page, count)` of the bytes in `source` (`PageView`), `None` when unpaged: restored before the repaint, so
     /// the repaint picks the paged sampler and the page keys and title come back with the document.

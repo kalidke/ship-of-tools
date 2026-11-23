@@ -45,6 +45,8 @@ impl NavCursor {
         !debouncing
     }
 
+    pub(in crate::ui) fn is_settling(&self) -> bool { self.cursor_moved_at.is_some() }
+
     /// Whether the startup selection has been consumed (the harness one-shots wait for it).
     pub(in crate::ui) fn initial_selection_done(&self) -> bool { self.pending_initial_selection.is_none() }
     pub(in crate::ui) fn take_initial_selection(&mut self) -> Option<usize> { self.pending_initial_selection.take() }
