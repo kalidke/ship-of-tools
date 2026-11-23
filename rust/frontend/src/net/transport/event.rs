@@ -568,9 +568,10 @@ pub enum IncomingEvt {
     },
     /// The project chat's replies and pushed events (`ops/chat.rs`): typed, never bytes. No view reads them yet.
     Chat(ChatEvt),
-    /// A page's words, or why there are none, for the request that named this file, row and page (`OutgoingReq::PageWords`).
-    /// No view reads it yet.
-    PageWords { node_id: String, workspace_id: Option<String>, page: u32, reply: PageWordsReply },
+    /// A page's words, or why there are none, for the request that named this file, row and page (`OutgoingReq::PageWords`),
+    /// with the `serial` that request carried: the window's owner of the page's selection takes the reply only if it is the
+    /// serial it asked with.
+    PageWords { node_id: String, workspace_id: Option<String>, page: u32, serial: u64, reply: PageWordsReply },
     /// A `selection.set`'s reply, with the request it answers (`ops/selection.rs`). No view reads it yet.
     Selection { req: sot_protocol::ops::SelectionSetReq, reply: SelectionReply },
 }

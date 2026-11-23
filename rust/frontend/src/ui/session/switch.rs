@@ -310,6 +310,7 @@ impl State {
             self.drift.clear();
             self.editor.close();
             self.ink.restore(Default::default());
+            self.pdf_select.forget();
             self.enter_row_drawer(RowDrawer::default(), person_driven);
         }
         restored

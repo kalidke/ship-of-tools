@@ -174,10 +174,11 @@ pub(crate) async fn send_page_words<W: AsyncWrite + Unpin>(
     node_id: String,
     workspace_id: Option<String>,
     page: u32,
+    serial: u64,
 ) -> Result<()> {
-    tracing::debug!(%node_id, ?workspace_id, page, id, "→ preview.get (words)");
+    tracing::debug!(%node_id, ?workspace_id, page, serial, id, "→ preview.get (words)");
     let req = PreviewGetReq { node_id: node_id.clone(), workspace_id: workspace_id.clone(), page: Some(page), fit_w: None, fit_h: None, words: true };
-    pending.insert(id, PendingKind::PageWords { node_id, workspace_id, page });
+    pending.insert(id, PendingKind::PageWords { node_id, workspace_id, page, serial });
     codec::write_frame(tx, &Frame::req(id, op::PREVIEW_GET, serde_json::to_value(req)?), None).await?;
     Ok(())
 }
@@ -380,6 +381,7 @@ pub(crate) fn on_page_words(
     node_id: String,
     workspace_id: Option<String>,
     page: u32,
+    serial: u64,
 ) {
     let refused = |error: String| PageWordsReply::Refused { code: None, error };
     let reply = if let Some(error) = frame.payload.get("error").and_then(|v| v.as_str()) {
@@ -399,7 +401,7 @@ pub(crate) fn on_page_words(
             },
         }
     };
-    emit(IncomingEvt::PageWords { node_id, workspace_id, page, reply });
+    emit(IncomingEvt::PageWords { node_id, workspace_id, page, serial, reply });
 }
 
 pub(crate) fn on_set_scale(

@@ -553,7 +553,7 @@ async fn a_post_is_written_only_on_a_connection_whose_hello_posts_plain_text() {
 /// still goes.
 #[tokio::test]
 async fn a_words_request_is_written_only_on_a_connection_whose_hello_said_the_daemon_serves_them() {
-    let words = || OutgoingReq::PageWords { node_id: "files:a.pdf".into(), workspace_id: None, page: 2 };
+    let words = || OutgoingReq::PageWords { node_id: "files:a.pdf".into(), workspace_id: None, page: 2, serial: 7 };
     for serves in [false, true] {
         let mut rig = rig_saying(1 << 16, NEVER, 1, (false, false, true, serves));
         rig.out_tx.as_ref().unwrap().send(words()).unwrap();

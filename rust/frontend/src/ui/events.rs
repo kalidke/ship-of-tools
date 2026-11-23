@@ -192,9 +192,7 @@ impl State {
                 crate::net::transport::IncomingEvt::Selection { req, reply } => {
                     self.on_selection_reply(&event_host, &req, reply)
                 }
-                crate::net::transport::IncomingEvt::PageWords { node_id, workspace_id, page, reply } => {
-                    self.on_page_words(event_host, node_id, workspace_id, page, reply)
-                }
+                crate::net::transport::IncomingEvt::PageWords { serial, reply, .. } => self.on_page_words(event_host, serial, reply),
                 crate::net::transport::IncomingEvt::ReplFrameStreamed {
                     eval_id,
                     workspace_id,
@@ -360,6 +358,7 @@ impl State {
                 self.note_connection(&event_host, Ok(()));
                 self.on_chat_connection(&event_host, true, *posts_as_person);
                 self.selection_share.on_connection(&event_host, true);
+                self.pdf_select.connected(&event_host);
             }
             crate::net::transport::IncomingEvt::Disconnected { reason, .. } => {
                 self.note_connection(&event_host, Err(reason));

@@ -79,6 +79,26 @@ fn preview_copy_selection_wins_only_its_two_chords_in_text_context() {
     assert_eq!(resolve(&context, "y", Modifiers::default()), Some("preview.copy_code"));
 }
 
+/// On a PDF page (the preview is in the image context) the copy chords copy the selected words: with words selected both
+/// resolve to `preview.copy_selection`, ahead of the region capture that holds `Primary+c` there; with none, `Primary+c`
+/// is still the capture and `Primary+Shift+c` nothing; with the canvas over the page, in another pane or while editing, neither.
+#[test]
+fn a_pdf_page_with_words_selected_copies_them_with_the_copy_chords() {
+    use crate::ui::input::help::{Context, Pane};
+    let b = KeyBindings::defaults();
+    let page = Context { pane: Pane::Preview, file: Some("a.pdf".into()), image: true, ..Context::default() };
+    let resolve = |context: &Context, shift: bool| {
+        b.resolve(&Key::Character("c".into()), None, Modifiers { shift, ..primary() }, context.consumes_text(), |a| context.allows(a))
+            .map(|a| a.spec().name)
+    };
+    let selected = Context { pdf_text: true, ..page.clone() };
+    assert_eq!((resolve(&selected, false), resolve(&selected, true)), (Some("preview.copy_selection"), Some("preview.copy_selection")));
+    assert_eq!((resolve(&page, false), resolve(&page, true)), (Some("preview.capture"), None));
+    for other in [Context { canvas: true, ..selected.clone() }, Context { pane: Pane::Nav, ..selected.clone() }, Context { editing: true, ..selected.clone() }] {
+        assert_ne!(resolve(&other, false), Some("preview.copy_selection"), "{other:?}");
+    }
+}
+
 /// The Chat drawer takes `Primary+k` alone, like its siblings `drawer.repl` (`Primary+j`), `drawer.terminal` and
 /// `drawer.monitor`, in every context; `Primary+Shift+k` is `chat.setup`, the Chat tenant's channel picker, and resolves to
 /// nothing in any other pane, and no other action holds either chord.

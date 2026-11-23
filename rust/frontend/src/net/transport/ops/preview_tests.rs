@@ -81,7 +81,7 @@ const WORDS: &str = r#"{"page":2,"cut":false,"lines":[[[1,2,3,4,"alpha"]]]}"#;
 
 /// The events a reply frame to the pending words request for page 2 of `files:a.pdf` becomes.
 fn words_answer(payload: serde_json::Value, blob: Option<&str>) -> Vec<String> {
-    let mut pending = HashMap::from([(1, PendingKind::PageWords { node_id: "files:a.pdf".into(), workspace_id: Some("ws".into()), page: 2 })]);
+    let mut pending = HashMap::from([(1, PendingKind::PageWords { node_id: "files:a.pdf".into(), workspace_id: Some("ws".into()), page: 2, serial: 7 })]);
     let (evt_tx, evt_rx) = std::sync::mpsc::channel();
     handle_response_frame(Frame::res(1, op::PREVIEW_GET, payload), blob.map(|b| b.as_bytes().to_vec()), &mut pending, &evt_tx, &"h".to_string());
     assert!(pending.is_empty(), "the reply consumed its entry");
@@ -119,7 +119,7 @@ fn a_words_reply_becomes_one_typed_event() {
     ] {
         let shown = words_answer(payload.clone(), blob);
         assert_eq!(shown.len(), 1, "{payload} -> {shown:?}");
-        assert!(shown[0].starts_with("PageWords { node_id: \"files:a.pdf\", workspace_id: Some(\"ws\"), page: 2, ") && shown[0].contains(want), "{payload} -> {shown:?}");
+        assert!(shown[0].starts_with("PageWords { node_id: \"files:a.pdf\", workspace_id: Some(\"ws\"), page: 2, serial: 7, ") && shown[0].contains(want), "{payload} -> {shown:?}");
     }
 }
 
@@ -130,19 +130,19 @@ fn a_words_reply_becomes_one_typed_event() {
 async fn a_words_request_ends_once_when_its_connection_ends_and_is_never_replayed() {
     let (evt_tx, evt_rx) = std::sync::mpsc::channel();
     let events = |rx: &std::sync::mpsc::Receiver<(HostKey, IncomingEvt)>| -> Vec<String> { rx.try_iter().map(|(_, e)| format!("{e:?}")).collect() };
-    let request = || OutgoingReq::PageWords { node_id: "files:a.pdf".into(), workspace_id: None, page: 2 };
+    let request = || OutgoingReq::PageWords { node_id: "files:a.pdf".into(), workspace_id: None, page: 2, serial: 7 };
     let (out_tx, out_rx) = outgoing_channel();
     let mut outbox = Outbox::new(out_rx);
     out_tx.send(request()).unwrap();
     outbox.retire(&evt_tx, &"h".to_string()).await;
     drop(out_tx);
     let shown = events(&evt_rx);
-    assert!(matches!(shown.as_slice(), [e] if e.starts_with("PageWords { node_id: \"files:a.pdf\"") && e.ends_with("reply: Ended }")), "{shown:?}");
+    assert!(matches!(shown.as_slice(), [e] if e.starts_with("PageWords { node_id: \"files:a.pdf\"") && e.contains("serial: 7") && e.ends_with("reply: Ended }")), "{shown:?}");
     assert!(outbox.recv().await.is_none(), "not handed to a later connection");
 
     let mut pending = HashMap::new();
     let mut wire = Vec::new();
-    send_page_words(&mut wire, &mut pending, 7, "files:a.pdf".into(), None, 2).await.unwrap();
+    send_page_words(&mut wire, &mut pending, 7, "files:a.pdf".into(), None, 2, 7).await.unwrap();
     let frame = sot_protocol::codec::read_frame_blocking(&mut std::io::BufReader::new(&wire[..])).unwrap();
     assert_eq!((frame.op.as_str(), frame.payload), (op::PREVIEW_GET, serde_json::json!({ "node_id": "files:a.pdf", "page": 2, "words": true })));
     drop(PendingGuard { map: pending, evt_tx: &evt_tx, host: "h".into() });
@@ -151,7 +151,7 @@ async fn a_words_request_ends_once_when_its_connection_ends_and_is_never_replaye
     // A request for another row than the default names it on the wire, not only in the event it will answer.
     let mut pending = HashMap::new();
     let mut wire = Vec::new();
-    send_page_words(&mut wire, &mut pending, 8, "files:a.pdf".into(), Some("repo__box".into()), 3).await.unwrap();
+    send_page_words(&mut wire, &mut pending, 8, "files:a.pdf".into(), Some("repo__box".into()), 3, 8).await.unwrap();
     let frame = sot_protocol::codec::read_frame_blocking(&mut std::io::BufReader::new(&wire[..])).unwrap();
     assert_eq!(frame.payload, serde_json::json!({ "node_id": "files:a.pdf", "workspace_id": "repo__box", "page": 3, "words": true }));
 }

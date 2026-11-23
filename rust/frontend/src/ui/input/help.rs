@@ -40,6 +40,8 @@ pub struct Context {
     pub image: bool,
     pub drawing: bool,
     pub canvas: bool,
+    /// Words are selected on a PDF page: the copy chord copies them.
+    pub pdf_text: bool,
     pub pages: bool,
     pub picker: bool,
     pub prompt: bool,
@@ -107,6 +109,7 @@ impl Context {
             Restore => self.restore && !self.modal,
             Scroll => !self.editing && (text || repl || self.pane == Pane::Chat),
             Text => text,
+            CopyText => text || (preview && !self.canvas && self.pdf_text),
             HalfScroll => text || repl,
             Picker => self.pane == Pane::Nav && self.picker,
             Nav => nav,

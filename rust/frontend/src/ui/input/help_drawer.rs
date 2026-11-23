@@ -19,7 +19,7 @@ impl State {
         let canvas = shown == Some(sot_protocol::ops::InkBase::Canvas);
         help::Context {
             pane, mode: self.nav.mode(),
-            file, image: self.raster.is_shown(), canvas,
+            file, image: self.raster.is_shown(), canvas, pdf_text: self.pdf_select.selected(),
             drawing: shown.is_some() && (self.ink.is_on() || canvas),
             pages: self.pages.page().is_some_and(|(_, count)| count > 1),
             editable: !self.raster.is_shown() && self.previewed_files_path().is_some()

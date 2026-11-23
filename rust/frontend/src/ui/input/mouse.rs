@@ -40,7 +40,7 @@ pub(in crate::ui) fn mouse_input(state: &mut State, event_loop: &ActiveEventLoop
 }
 
 /// Only the geometry and effects needed to route a press into the two selectable text panes.
-trait SelectionContext {
+pub(in crate::ui) trait SelectionContext {
     fn agent_cell(&self) -> Option<(u16, u16)>;
     fn preview_cursor(&self) -> Option<cosmic_text::Cursor>;
     /// A left press the drawing takes: it focuses the preview itself and starts no selection.
@@ -55,7 +55,7 @@ trait SelectionContext {
     fn press_chat(&mut self, hit: Option<ChatHit>);
 }
 
-fn press_selections(context: &mut impl SelectionContext) {
+pub(in crate::ui) fn press_selections(context: &mut impl SelectionContext) {
     if context.draw_press() { context.press_agent(None); context.press_chat(None); return; }
     if context.words_press() { context.press_agent(None); context.press_chat(None); context.press_preview(None); return; }
     let cell = context.agent_cell();
@@ -80,6 +80,7 @@ impl SelectionContext for State {
         if self.agent_pane.press(cell) { self.window.request_redraw(); }
     }
     fn press_preview(&mut self, cursor: Option<cosmic_text::Cursor>) {
+        self.pdf_select.clear();
         if self.shaped.press(cursor) { self.window.request_redraw(); }
     }
     fn chat_hit(&self) -> Option<ChatHit> {
@@ -427,6 +428,10 @@ mod tests {
         assert_eq!(probe.pressed_agent, [None, Some((0, 0))], "any other press routes as before");
     }
 
+    fn selections_held(probe: &SelectionProbe) {
+        assert!(probe.shaped.selected_text().is_some() && probe.chat.selected_text().is_some(), "both selections were held before the press");
+    }
+
     /// A left press on a shown PDF page goes to its words, after the drawing: with drawing on the press is the drawing's and
     /// the words see none; with it off the words take it, focus the preview and clear the agent pane's, the chat's and the
     /// text selection, and the press starts no text selection of its own; off the page it routes as before.
@@ -445,7 +450,20 @@ mod tests {
         assert_eq!((probe.words_pressed, probe.pressed_agent.as_slice()), (0, &[None][..]), "the drawing took the press first");
         probe.drawing = false;
         probe.pressed_agent.clear();
+        // The text and chat selections held before the press are cleared by it.
+        probe.text_shown = true;
+        probe.shaped.press(probe.shaped.hit(probe.at, true));
+        probe.shaped.extend_drag((rect.x + rect.w - 1.0, rect.y + EXTRA_TOP_PAD_PX + 25.0));
+        probe.shaped.release();
+        let (rec, mut fonts) = (chat_record(), glyphon::FontSystem::new());
+        probe.chat.layout(&mut fonts, &[(&rec, false)], CHAT_BODY, 1.0, 1_700_000_100, chrono::FixedOffset::east_opt(0).unwrap());
+        let chat_at = probe.chat.point_at(&rec.ts, 2, 3).unwrap();
+        let hit = probe.chat.hit(chat_at);
+        probe.chat.press(hit);
+        probe.chat.extend_drag((CHAT_BODY.x + CHAT_BODY.w - 1.0, chat_at.1));
+        selections_held(&probe);
         press_selections(&mut probe);
+        assert!(probe.shaped.selected_text().is_none() && probe.chat.selected_text().is_none(), "the press cleared neither selection it found");
         assert_eq!((probe.words_pressed, probe.focus, probe.pressed_agent.as_slice()), (1, PaneFocus::Preview, &[None][..]));
         assert!(!probe.focused_before_press, "the words' press begins no text selection of the preview's");
         probe.on_page = false;

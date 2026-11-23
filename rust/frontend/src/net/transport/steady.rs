@@ -191,9 +191,9 @@ where
                     // not one on a page (it would read the page's file as the figure and refuse it as no image).
                     answer_locally(evt_tx, &host, window, IncomingEvt::Selection { req, reply: SelectionReply::Unsupported });
                 }
-                Some(OutgoingReq::PageWords { node_id, workspace_id, page }) if !session.serves_page_words => {
+                Some(OutgoingReq::PageWords { node_id, workspace_id, page, serial }) if !session.serves_page_words => {
                     // This daemon's hello did not say it serves words; it would answer with the page's picture.
-                    answer_locally(evt_tx, &host, window, IncomingEvt::PageWords { node_id, workspace_id, page, reply: PageWordsReply::Unsupported });
+                    answer_locally(evt_tx, &host, window, IncomingEvt::PageWords { node_id, workspace_id, page, serial, reply: PageWordsReply::Unsupported });
                 }
                 Some(OutgoingReq::ChatPost { req }) if !session.posts_plain_text => {
                     // This daemon's door sends the text as given, so `<!channel>` would ping; the post is never written.

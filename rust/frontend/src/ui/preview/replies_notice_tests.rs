@@ -66,12 +66,14 @@ impl State {
 }
 
 impl State {
-    /// A person drags over a PDF page: the press asks for the page's words and keeps the press; the words arriving put the
-    /// drag's marks on them, the copy key takes their text, and the next page's reply drops them. Through the real `State`,
-    /// the raster install, the pointer, the event the daemon's answer becomes and the clipboard path.
+    /// A person drags over a PDF page, through the real `State`: a real frame gives the page its rectangles, the press sends
+    /// the request for the page's words and keeps the press, the answer to that request marks the drag's words (the pass
+    /// hands the renderer their bands), the copy chord resolves to the copy of those words and does it, the file read
+    /// again drops them, and an answer to an older request marks nothing on the page asked again.
     #[allow(dead_code, reason = "runs only inside a native State, from the premise overlays; no libtest body can construct one")]
     pub(in crate::ui) fn a_drag_over_a_pdf_page_selects_marks_and_copies_its_words(&mut self) -> anyhow::Result<()> {
-        use crate::net::transport::PageWordsReply;
+        use crate::net::transport::{OutgoingReq, PageWordsReply};
+        use crate::ui::input::keybindings::Modifiers;
         use sot_protocol::ops::{PageWord, PageWords};
         let png = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../logo.png"));
         let page = |n: u32| PreviewReply {
@@ -79,30 +81,62 @@ impl State {
             extras: Some(serde_json::json!({ "page": n, "page_count": 4 })), generation: 0,
         };
         let word = |l: u16, r: u16, text: &str| PageWord { left: l, top: 6554, right: r, bottom: 13107, text: text.into() };
-        let words = PageWords { page: 2, cut: false, lines: vec![vec![word(6554, 19661, "alpha"), word(32768, 45875, "beta")]] };
-        let (canvas, image) = (ScreenRect { x: 100.0, y: 50.0, w: 400.0, h: 800.0 }, ScreenRect { x: 0.0, y: 0.0, w: 2000.0, h: 2000.0 });
-        let at = |x: f32, y: f32| (canvas.x + x * canvas.w, canvas.y + y * canvas.h);
+        let words = || PageWords { page: 2, cut: false, lines: vec![vec![word(6554, 19661, "alpha"), word(32768, 45875, "beta")]] };
+        let host = self.selected.host().clone();
+        let (tx, mut sent) = tokio::sync::mpsc::unbounded_channel();
+        self.conns = vec![(host.clone(), tx)];
         self.ink.set_canvas(false);
         self.install_preview_reply(page(2));
-        self.pdf_select.set_frame(canvas, image);
+        self.redraw()?;
+        let canvas = self.pdf_select.page_rect().ok_or_else(|| anyhow::anyhow!("a frame gave the page no rectangle"))?;
+        let at = |x: f32, y: f32| (canvas.x + x * canvas.w, canvas.y + y * canvas.h);
+        // The press asks for the words, once, and keeps the press; the drag runs before the answer.
         self.pointer.moved_to(at(0.15, 0.1));
         anyhow::ensure!(self.press_words(), "a press on the shown page was not the words'");
         anyhow::ensure!(self.focus_prompts.focus() == PaneFocus::Preview, "the press did not focus the preview");
+        let Ok(OutgoingReq::PageWords { page: 2, serial, .. }) = sent.try_recv() else { anyhow::bail!("the press sent no request for page 2") };
         self.pointer.moved_to(at(0.55, 0.1));
         self.words_moved();
-        let (host, ws) = (self.selected.host().clone(), self.selected.workspace_id().clone());
-        self.on_page_words(host.clone(), "files:doc.pdf".into(), ws.clone(), 2, PageWordsReply::Words(words));
+        self.on_page_words(host.clone(), serial, PageWordsReply::Words(words()));
         self.words_released();
         anyhow::ensure!(self.pdf_select.text().as_deref() == Some("alpha beta"), "the drag selected {:?}", self.pdf_select.text());
-        anyhow::ensure!(self.pdf_select.bands().len() == 1, "the marks are {} bands", self.pdf_select.bands().len());
-        let said = self.copy_words();
-        anyhow::ensure!(said.as_deref().is_some_and(|s| s == "copied PDF text" || s.starts_with("copy failed")), "the copy key said {said:?}");
-        // The words of an answer for a page no longer shown are dropped, and the next page's reply drops the held ones.
-        self.install_preview_reply(page(3));
-        self.words_sync();
-        anyhow::ensure!(self.pdf_select.text().is_none() && self.pdf_select.bands().is_empty(), "a page turn kept the selection");
-        self.on_page_words(host, "files:doc.pdf".into(), ws, 2, PageWordsReply::Words(PageWords { page: 2, cut: false, lines: vec![vec![word(0, 1, "late")]] }));
-        anyhow::ensure!(self.pdf_select.text().is_none(), "a late answer for page 2 was taken on page 3");
+        // The pass hands the renderer the bands of the selected words.
+        self.redraw()?;
+        anyhow::ensure!(self.brushes.last_selection.len() == 1, "the frame marked {} bands", self.brushes.last_selection.len());
+        // The copy chord, resolved as the window resolves a key in this context, reaches the preview's copy of the words.
+        let (context, key) = (self.help_context(), winit::keyboard::Key::Character("c".into()));
+        let primary = Modifiers { ctrl: !cfg!(target_os = "macos"), super_: cfg!(target_os = "macos"), ..Modifiers::default() };
+        let action = self.bindings.resolve(&key, Some(&key), primary, context.consumes_text(), |a| context.allows(a));
+        anyhow::ensure!(action == Some(Action::PreviewCopySelection), "the copy chord resolved to {action:?}");
+        self.status.set("before the key");
+        crate::ui::preview::keys::preview_action_key(self, action, false, 0);
+        let said = self.status.text().to_string();
+        anyhow::ensure!(said == "copied PDF text" || said.starts_with("copy failed"), "the copy key said `{said}`");
+        // A press elsewhere (off the page, in no pane that takes it) clears the selection, as a text preview's goes.
+        self.pointer.moved_to((1.0, 1.0));
+        crate::ui::input::mouse::press_selections(self);
+        self.words_released();
+        anyhow::ensure!(self.pdf_select.text().is_none(), "a press elsewhere kept the selection");
+        self.pointer.moved_to(at(0.15, 0.1));
+        anyhow::ensure!(self.press_words(), "a press on the page again was not the words'");
+        self.pointer.moved_to(at(0.55, 0.1));
+        self.words_moved();
+        self.words_released();
+        anyhow::ensure!(self.pdf_select.text().as_deref() == Some("alpha beta"), "the words held were not selected again");
+        // The file read again drops the words and the selection.
+        self.install_preview_reply(page(2));
+        anyhow::ensure!(self.pdf_select.text().is_none(), "the file read again kept the selection");
+        // The page asked again: the answer to the first request marks nothing, the answer to the second does.
+        self.redraw()?;
+        self.pointer.moved_to(at(0.15, 0.1));
+        anyhow::ensure!(self.press_words(), "a press after the install was not the words'");
+        let Ok(OutgoingReq::PageWords { serial: again, .. }) = sent.try_recv() else { anyhow::bail!("the second press sent no request") };
+        self.pointer.moved_to(at(0.55, 0.1));
+        self.words_moved();
+        self.on_page_words(host.clone(), serial, PageWordsReply::Words(words()));
+        anyhow::ensure!(self.pdf_select.text().is_none(), "the first request's answer marked the page asked again");
+        self.on_page_words(host, again, PageWordsReply::Words(words()));
+        anyhow::ensure!(self.pdf_select.text().as_deref() == Some("alpha beta"), "the second request's answer was not taken");
         Ok(())
     }
 }

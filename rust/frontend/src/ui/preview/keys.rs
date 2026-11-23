@@ -20,7 +20,7 @@ pub(in crate::ui) fn preview_key(state: &mut State, key: KeyPress<'_>, label: St
     let h = state.pane_rects.preview.height as i32;
     crate::ui::preview::image::ink_input::ink_key(state, key, label.clone())?;
     png_key(state, key, label)?;
-    preview_action_key(state, key, h);
+    preview_action_key(state, key.action, key.event.repeat, h);
     Continue(())
 }
 
@@ -33,10 +33,10 @@ fn page_turn_key(state: &mut State, key: KeyPress<'_>, label: String) -> Control
     Continue(())
 }
 
-fn preview_action_key(state: &mut State, key: KeyPress<'_>, h: i32) {
-    let KeyPress { event, action, .. } = key;
+/// What an action does in the preview pane; `repeat` says the key is a held key's repeat.
+pub(in crate::ui) fn preview_action_key(state: &mut State, action: Option<Action>, repeat: bool, h: i32) {
     match action {
-        Some(Action::ReturnNav) if !event.repeat => {
+        Some(Action::ReturnNav) if !repeat => {
             state.set_focus(PaneFocus::NavTree);
         }
         // ADR 0022: `c` captures the visible image ROI and
@@ -51,7 +51,7 @@ fn preview_action_key(state: &mut State, key: KeyPress<'_>, h: i32) {
         // to the LLM pane once the crop paste lands — the
         // focus move itself lives in the ImageCropped arm,
         // not here, because the crop is async and may fail.
-        Some(Action::CaptureRegion) if !event.repeat => {
+        Some(Action::CaptureRegion) if !repeat => {
             state.capture_roi();
         }
         // `e` enters edit mode for the cursored
@@ -65,7 +65,7 @@ fn preview_action_key(state: &mut State, key: KeyPress<'_>, h: i32) {
         // pastes cleanly into another editor. No-op
         // when the preview isn't markdown or carries no
         // code blocks.
-        Some(Action::CopyCode) if !event.repeat => {
+        Some(Action::CopyCode) if !repeat => {
             let sources = &state.shaped.md().code_block_sources;
             if !sources.is_empty() {
                 let joined = sources.join("\n");
@@ -82,7 +82,7 @@ fn preview_action_key(state: &mut State, key: KeyPress<'_>, h: i32) {
                 }
             }
         }
-        Some(Action::PreviewCopySelection) if !event.repeat => {
+        Some(Action::PreviewCopySelection) if !repeat => {
             let words = state.copy_words();
             if let Some(status) = words.or_else(|| copy_selection_status(&state.shaped, |text| {
                 crate::ui::input::write_clipboard_text(text).map_err(|e| e.to_string())
@@ -95,13 +95,13 @@ fn preview_action_key(state: &mut State, key: KeyPress<'_>, h: i32) {
         // whose preview is SHOWING — pinned/badge-consumed
         // previews can differ from the nav cursor — with
         // fallback to the cursored row.
-        Some(Action::OpenExternal) if !event.repeat => {
+        Some(Action::OpenExternal) if !repeat => {
             let shown = state
                 .previewed_files_path()
                 .or_else(|| state.cursored_files_path());
             state.open_path_external(shown);
         }
-        Some(Action::OpenDocs) if !event.repeat =>
+        Some(Action::OpenDocs) if !repeat =>
         {
             let path = state
                 .previewed_files_path()
@@ -109,17 +109,17 @@ fn preview_action_key(state: &mut State, key: KeyPress<'_>, h: i32) {
                 .unwrap_or_default();
             state.docs_open_external(&state.selected.host().clone(), path);
         }
-        Some(Action::OpenExecute) if !event.repeat =>
+        Some(Action::OpenExecute) if !repeat =>
         {
             let shown = state
                 .previewed_files_path()
                 .or_else(|| state.cursored_files_path());
             state.quarto_open_execute(shown);
         }
-        Some(Action::EditFile) if !event.repeat => {
+        Some(Action::EditFile) if !repeat => {
             enter_editor(state);
         }
-        _ => preview_scroll_key(state, key, h),
+        _ => preview_scroll_key(state, action, repeat, h),
     }
 }
 
@@ -138,8 +138,7 @@ fn copy_selection_status(
     })
 }
 
-fn preview_scroll_key(state: &mut State, key: KeyPress<'_>, h: i32) {
-    let KeyPress { event, action, .. } = key;
+fn preview_scroll_key(state: &mut State, action: Option<Action>, repeat: bool, h: i32) {
     let (now, length) = state.scroll_ask();
     match action {
         Some(Action::ScrollPageUp) => {
@@ -166,10 +165,10 @@ fn preview_scroll_key(state: &mut State, key: KeyPress<'_>, h: i32) {
         Some(Action::PreviewDown) => {
             state.shaped.scroll_by(1, now, length);
         }
-        Some(Action::PreviewStart) if !event.repeat => {
+        Some(Action::PreviewStart) if !repeat => {
             state.shaped.scroll_to_top(now, length);
         }
-        Some(Action::PreviewEnd) if !event.repeat => {
+        Some(Action::PreviewEnd) if !repeat => {
             // Redraw clamps to (total - visible).
             state.shaped.scroll_to_end(now, length);
         }

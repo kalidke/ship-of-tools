@@ -18,7 +18,7 @@ impl State {
         // legible above whatever the preview is.
         self.raster.clear_roi();
         self.ink_sync();
-        self.words_sync();
+        self.words_frame();
         let row_key = self.active_result_row_key();
         if let (true, Some(letterbox_rect)) = (self.raster.is_shown(), png_rect) {
             let aim = self.preview_requests.take_ready_roi_aim(row_key.as_ref());

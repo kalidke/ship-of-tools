@@ -163,6 +163,7 @@ impl State {
         self.editor.restore(snap.edit_state);
         self.rebuild_edit_preview();
         self.ink.restore(snap.ink);
+        self.pdf_select.forget();
         self.enter_row_drawer(snap.drawer, person_driven);
         // Clear the stale Quads then repaint from the cached source.
         // render_preview_source rebuilds the shaped text/png/svg for the

@@ -220,7 +220,9 @@ pub enum OutgoingReq {
     /// `PageWordsReply::Unsupported` and never written, since an older daemon would answer with the page's picture. A request
     /// waiting or unanswered when its connection ends yields one `PageWordsReply::Ended`. The reply surfaces as
     /// `IncomingEvt::PageWords`.
-    PageWords { node_id: String, workspace_id: Option<String>, page: u32 },
+    /// `serial` is the asker's number for this request, which the event answering it returns: a reply is taken only for the
+    /// request that was asked.
+    PageWords { node_id: String, workspace_id: Option<String>, page: u32, serial: u64 },
     /// The check of a parked file on a return to its session: `preview.get` on the wire, with no page, and never
     /// replayed, so it is written on the connection current when it was enqueued or on none.
     ReturnPreview { node_id: String, workspace_id: Option<String>, fit_w: Option<u32>, fit_h: Option<u32>, generation: u64 },
@@ -535,7 +537,7 @@ pub(super) async fn send_request<W: AsyncWrite + Unpin>(
         OutgoingReq::FileParse { path, workspace_id } => send_file_parse(&mut tx, pending, id, path, workspace_id).await?,
         OutgoingReq::ReturnPreview { node_id, workspace_id, fit_w, fit_h, generation } => send_preview_get(&mut tx, pending, id, node_id, workspace_id, None, fit_w, fit_h, generation).await?,
         OutgoingReq::PreviewGet { node_id, workspace_id, page, fit_w, fit_h, generation } => send_preview_get(&mut tx, pending, id, node_id, workspace_id, page, fit_w, fit_h, generation).await?,
-        OutgoingReq::PageWords { node_id, workspace_id, page } => send_page_words(&mut tx, pending, id, node_id, workspace_id, page).await?,
+        OutgoingReq::PageWords { node_id, workspace_id, page, serial } => send_page_words(&mut tx, pending, id, node_id, workspace_id, page, serial).await?,
         OutgoingReq::PreviewSetScale { node_id, nm_per_px, workspace_id, generation } => send_preview_set_scale(&mut tx, pending, id, node_id, nm_per_px, workspace_id, generation).await?,
         OutgoingReq::FigureGet { url, node_id, workspace_id } => {
             tracing::debug!(%url, %node_id, ?workspace_id, id, "→ figure.get (preview.get)");

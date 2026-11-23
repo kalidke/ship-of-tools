@@ -5,10 +5,8 @@
 use crate::ui::render::quad::ScreenRect;
 use sot_protocol::ops::PageWords;
 
-/// One page's words, and the file and page they belong to.
-#[allow(dead_code, reason = "its caller, the press and drag on a PDF page, lands in the next landing of the plan")]
+/// One page's words.
 pub(in crate::ui) struct PageText {
-    node_id: String,
     words: PageWords,
     /// The index of each line's first word.
     starts: Vec<usize>,
@@ -19,16 +17,10 @@ fn frac(v: u16) -> f32 {
     f32::from(v) / 65535.0
 }
 
-#[allow(dead_code, reason = "its caller, the press and drag on a PDF page, lands in the next landing of the plan")]
 impl PageText {
-    pub(in crate::ui) fn new(node_id: String, words: PageWords) -> Self {
+    pub(in crate::ui) fn new(words: PageWords) -> Self {
         let starts = words.lines.iter().scan(0, |at, line| Some(std::mem::replace(at, *at + line.len()))).collect();
-        PageText { node_id, words, starts }
-    }
-
-    /// Whether these are the words of `page` of `node_id`.
-    pub(in crate::ui) fn belongs_to(&self, node_id: &str, page: u32) -> bool {
-        self.node_id == node_id && self.words.page == page
+        PageText { words, starts }
     }
 
     /// The word at `(x, y)`, fractions of the page (a point past the page's edge is allowed): the first word whose box

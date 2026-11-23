@@ -172,6 +172,9 @@ pub(in crate::ui) struct Brushes {
     /// The cell backgrounds' palette, one texel per colour, and the colours it holds: rebuilt before a pass only
     /// when the frame's colours differ from the last frame's (`prepare_backs`).
     backs: Option<(Vec<Rgb>, Quad)>,
+    /// What the last paint of `Solid::SelectionBg` was handed: the seam a test reads to see what a frame marks.
+    #[cfg(test)]
+    pub(in crate::ui) last_selection: Vec<ScreenRect>,
 }
 
 impl Brushes {
@@ -184,6 +187,8 @@ impl Brushes {
         Self {
             pipeline, selection_bg, edit_selection_bg, edit_bar, overlay_back, code_bg, code_border, strike_line, borders: HashMap::new(),
             scalebar_bar, scalebar_back, caption_back, canvas, logo, wordmark, help_back: None, backs: None,
+            #[cfg(test)]
+            last_selection: Vec::new(),
         }
     }
 
@@ -194,6 +199,10 @@ impl Brushes {
     pub(in crate::ui) fn paint(
         &mut self, brush: Solid, gpu: &Gpu, rpass: &mut wgpu::RenderPass<'_>, rects: &[ScreenRect],
     ) -> Result<()> {
+        #[cfg(test)]
+        if matches!(brush, Solid::SelectionBg) {
+            self.last_selection = rects.to_vec();
+        }
         let quad = match brush {
             Solid::SelectionBg => &mut self.selection_bg,
             Solid::EditSelectionBg => &mut self.edit_selection_bg,

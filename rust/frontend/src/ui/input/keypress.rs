@@ -66,6 +66,7 @@ fn prepare_keyboard_input(state: &mut State, modifiers: ModifiersState, event: &
     // Escape can restore layout before reaching the preview's pane handler.
     if state.focus_prompts.focus() == PaneFocus::Preview && event.logical_key == Key::Named(NamedKey::Escape) {
         state.shaped.clear_selection();
+        state.pdf_select.clear();
     }
     // A real, non-synthetic keypress, past this point — presence
     // reporting (design point A) precedes and is independent of

@@ -13,7 +13,6 @@ fn word(l: f32, t: f32, r: f32, b: f32, text: &str) -> PageWord {
 /// Two lines of two words on the page of file `a.pdf`: "alpha beta" high and "gamma delta" lower, at index 0 to 3.
 fn page() -> PageText {
     PageText::new(
-        "files:a.pdf".into(),
         PageWords {
             page: 2,
             cut: false,
@@ -52,17 +51,17 @@ fn the_word_at_a_point_is_the_one_under_it_else_the_nearest() {
     assert_eq!(p.word_at((0.2, 0.4), 1.0), Some(2));
     // A wide page counts a sideways step as more distance: from (0.3, 0.45), "side" is 0.1 away sideways and "under" 0.13
     // away downward, so "side" is nearer on a square page and "under" on one twice as wide.
-    let two = PageText::new("n".into(), PageWords { page: 1, cut: false, lines: vec![vec![word(0.4, 0.4, 0.5, 0.5, "side")], vec![word(0.2, 0.58, 0.4, 0.7, "under")]] });
+    let two = PageText::new(PageWords { page: 1, cut: false, lines: vec![vec![word(0.4, 0.4, 0.5, 0.5, "side")], vec![word(0.2, 0.58, 0.4, 0.7, "under")]] });
     assert_eq!(two.word_at((0.3, 0.45), 1.0), Some(0));
     assert_eq!(two.word_at((0.3, 0.45), 2.0), Some(1));
     // Overlapping boxes: the first in the document's order.
-    let overlap = PageText::new("n".into(), PageWords { page: 1, cut: false, lines: vec![vec![word(0.1, 0.1, 0.5, 0.2, "a"), word(0.3, 0.1, 0.7, 0.2, "b")]] });
+    let overlap = PageText::new(PageWords { page: 1, cut: false, lines: vec![vec![word(0.1, 0.1, 0.5, 0.2, "a"), word(0.3, 0.1, 0.7, 0.2, "b")]] });
     assert_eq!(overlap.word_at((0.4, 0.15), 1.0), Some(0));
     // The box that holds the point wins over a small one nearer its middle that does not.
-    let wide = PageText::new("n".into(), PageWords { page: 1, cut: false, lines: vec![vec![word(0.5, 0.1, 0.52, 0.2, "small"), word(0.1, 0.1, 0.9, 0.2, "wide")]] });
+    let wide = PageText::new(PageWords { page: 1, cut: false, lines: vec![vec![word(0.5, 0.1, 0.52, 0.2, "small"), word(0.1, 0.1, 0.9, 0.2, "wide")]] });
     assert_eq!(wide.word_at((0.6, 0.15), 1.0), Some(1));
     // No words, and an aspect that is no number.
-    let empty = PageText::new("n".into(), PageWords { page: 1, cut: false, lines: vec![] });
+    let empty = PageText::new(PageWords { page: 1, cut: false, lines: vec![] });
     assert_eq!(empty.word_at((0.5, 0.5), 1.0), None);
     // An aspect that is no number, or no width, is read as 1: the nearest word is the one a square page gives, which a
     // comparison with a NaN distance would not find (the first word would win).
@@ -86,7 +85,7 @@ fn a_drag_selects_the_run_between_its_ends_in_the_documents_order_either_way() {
     assert_eq!(p.select((0.2, 0.15), (0.6, 0.55), 1.0), Some((0, 3)));
     assert_eq!(p.select((0.2, 0.12), (0.25, 0.18), 1.0), Some((0, 0)), "both ends in one word");
     assert_eq!(p.select((0.0, 0.0), (1.0, 1.0), 1.0), Some((0, 3)), "ends off every box");
-    let empty = PageText::new("n".into(), PageWords { page: 1, cut: false, lines: vec![] });
+    let empty = PageText::new(PageWords { page: 1, cut: false, lines: vec![] });
     assert_eq!(empty.select(a, b, 1.0), None);
 }
 
@@ -116,7 +115,7 @@ fn the_bands_are_one_a_line_clipped_to_the_image() {
     let all = p.bands((0, 3), canvas, view);
     assert!(near(&all[0], (200.0, 250.0, 600.0, 200.0)) && near(&all[1], (200.0, 1050.0, 600.0, 200.0)), "{all:?}");
     // A line's band is as high as its tallest word.
-    let tall = PageText::new("n".into(), PageWords { page: 1, cut: false, lines: vec![vec![word(0.1, 0.1, 0.2, 0.2, "a"), word(0.3, 0.05, 0.4, 0.3, "b")]] });
+    let tall = PageText::new(PageWords { page: 1, cut: false, lines: vec![vec![word(0.1, 0.1, 0.2, 0.2, "a"), word(0.3, 0.05, 0.4, 0.3, "b")]] });
     assert!(near(&tall.bands((0, 1), canvas, view)[0], (200.0, 150.0, 300.0, 500.0)));
     // The clip cuts a band to the image rectangle on every side and drops one it leaves nothing of.
     let cut = p.bands((0, 3), canvas, rect(300.0, 300.0, 200.0, 1000.0));
@@ -126,17 +125,10 @@ fn the_bands_are_one_a_line_clipped_to_the_image() {
     assert_eq!(p.bands((0, 3), canvas, rect(300.0, 500.0, 200.0, 300.0)).len(), 0, "between the lines");
     assert_eq!(p.bands((0, 1), canvas, rect(900.0, 0.0, 100.0, 5000.0)).len(), 0, "right of every word");
     // A line read right to left (its first word at the right) has its band, from its least left to its greatest right.
-    let rtl = PageText::new("n".into(), PageWords { page: 1, cut: false, lines: vec![vec![word(0.7, 0.1, 0.9, 0.2, "b"), word(0.1, 0.1, 0.3, 0.2, "a")]] });
+    let rtl = PageText::new(PageWords { page: 1, cut: false, lines: vec![vec![word(0.7, 0.1, 0.9, 0.2, "b"), word(0.1, 0.1, 0.3, 0.2, "a")]] });
     let band = rtl.bands((0, 1), canvas, view);
     assert_eq!(band.len(), 1);
     assert!(near(&band[0], (200.0, 250.0, 800.0, 200.0)), "{:?}", band[0]);
     // A range off the page marks nothing.
     assert!(p.bands((4, 5), canvas, view).is_empty());
-}
-
-#[test]
-fn words_belong_to_their_file_and_page() {
-    let p = page();
-    assert!(p.belongs_to("files:a.pdf", 2));
-    assert!(!p.belongs_to("files:a.pdf", 3) && !p.belongs_to("files:b.pdf", 2));
 }

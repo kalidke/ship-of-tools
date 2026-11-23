@@ -60,7 +60,7 @@ pub(in crate::ui) struct InkLayer {
     right_down: bool,
 }
 
-fn inside(r: &ScreenRect, p: (f32, f32)) -> bool {
+pub(in crate::ui) fn inside(r: &ScreenRect, p: (f32, f32)) -> bool {
     p.0 >= r.x && p.0 <= r.x + r.w && p.1 >= r.y && p.1 <= r.y + r.h
 }
 

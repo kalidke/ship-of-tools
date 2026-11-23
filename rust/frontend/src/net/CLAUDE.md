@@ -33,8 +33,9 @@ through the channel types below.
   blob's descriptor both say `PAGE_WORDS_MIME`, for the page asked), `Unsupported`, `Refused { code, error }` (the daemon's error with its code, or an
   answer that is another mime, another page, a document the decoder refuses or a reply that does not parse) or `Ended`. It is
   not replayable: a request waiting, or written and unanswered, when its connection ends yields one `Ended` and is never
-  written on a later connection; the window asks again for the page it shows then. `ui/events.rs` drops the event until
-  its owner exists. Tests: `a_words_request_is_written_only_on_a_connection_whose_hello_said_the_daemon_serves_them`,
+  written on a later connection; the window asks again for the page it shows then. The request carries the asker's `serial`
+  and the event returns it, so the window's owner of the page's selection (`ui/events.rs` hands it the event) takes a reply
+  only for the request it sent. Tests: `a_words_request_is_written_only_on_a_connection_whose_hello_said_the_daemon_serves_them`,
   `the_accepted_hello_sets_whether_the_connection_serves_page_words`, `a_words_reply_becomes_one_typed_event`,
   `a_words_request_ends_once_when_its_connection_ends_and_is_never_replayed` (which also pins the row the frame names).
 - A post sent only to a daemon whose door posts plain text: each connection keeps its own hello's

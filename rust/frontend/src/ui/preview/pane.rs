@@ -349,7 +349,8 @@ impl State {
                             .map(str::to_owned);
                         self.raster.reset_view(carry.as_deref());
                         // A fresh page, or the same file read again: the words and the selection were the old one's.
-                        self.pdf_select.forget();
+                        let said = self.pdf_select.forget();
+                        self.drop_notice(said);
                     }
                 }
                 Err(e) => tracing::warn!(error = %e, "preview-png decode failed"),

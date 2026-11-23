@@ -78,6 +78,7 @@ pub(super) enum PendingKind {
         node_id: String,
         workspace_id: Option<String>,
         page: u32,
+        serial: u64,
     },
     /// Reply to `preview.set_scale`. Carries the SAME `PreviewGetRes` envelope
     /// as a normal preview, so it decodes with the existing type and surfaces
@@ -289,8 +290,8 @@ impl Drop for PendingGuard<'_> {
                 // Not replayable: the window's share sets its state again after a reconnect.
                 PendingKind::SelectionSet { req } => IncomingEvt::Selection { req, reply: SelectionReply::Ended },
                 // A read: the window asks again, for the page it shows then, on the next connection.
-                PendingKind::PageWords { node_id, workspace_id, page } => {
-                    IncomingEvt::PageWords { node_id, workspace_id, page, reply: PageWordsReply::Ended }
+                PendingKind::PageWords { node_id, workspace_id, page, serial } => {
+                    IncomingEvt::PageWords { node_id, workspace_id, page, serial, reply: PageWordsReply::Ended }
                 }
                 _ => continue,
             };
@@ -406,7 +407,7 @@ pub(super) fn handle_response_frame(
             PendingKind::PageReply { handle } => on_page_reply(frame, &emit, handle),
             PendingKind::QuartoOpen => on_quarto_open(frame, blob, &emit),
             PendingKind::SelectionSet { req } => on_selection_set(frame, &emit, req),
-            PendingKind::PageWords { node_id, workspace_id, page } => on_page_words(frame, blob, &emit, node_id, workspace_id, page),
+            PendingKind::PageWords { node_id, workspace_id, page, serial } => on_page_words(frame, blob, &emit, node_id, workspace_id, page, serial),
             PendingKind::ChatResolve { row } => on_chat_resolve(frame, &emit, row),
             PendingKind::ChatWatch { target } => on_chat_watch(frame, &emit, target),
             PendingKind::ChatHistory { req } => on_chat_history(frame, &emit, req),

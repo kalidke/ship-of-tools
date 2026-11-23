@@ -174,9 +174,9 @@ Normal text entry and terminal-application controls retain their own input handl
 | `preview.ink_undo` | `u` / `Primary+z` | While drawing is on over the shown image or the canvas is shown: remove the last stroke; right after a clear, bring the cleared strokes back. |
 | `preview.ink_clear` | `Delete` | While drawing is on over the shown image or the canvas is shown: clear the drawing. |
 | `view.return_nav` | `Escape` | Move focus back to the navigation tree. |
+| `preview.copy_selection` | `Primary+c` / `Primary+Shift+c` | Copy selected preview text, or the words selected on a PDF page, to the clipboard. |
 | `preview.capture` | `c` / `Primary+c` | Crop the visible image region and attach it to the agent input. |
 | `preview.copy_code` | `y` | Copy the displayed markdown code blocks to the clipboard. |
-| `preview.copy_selection` | `Primary+c` / `Primary+Shift+c` | Copy selected preview text to the clipboard. |
 | `preview.edit` | `e` | Edit the displayed file or its concept annotation. |
 | `view.page_up` | `PageUp` | Scroll back through this pane. |
 | `view.page_down` | `PageDown` | Scroll forward through this pane. |

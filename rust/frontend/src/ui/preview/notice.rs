@@ -30,7 +30,6 @@ pub(in crate::ui) struct NoticeBox {
 impl PreviewNotice {
     pub(in crate::ui) fn show(&mut self, text: String, now: Instant) { self.shown = Some((text, now)); }
     pub(in crate::ui) fn clear(&mut self) { self.shown = None; }
-    #[cfg(test)]
     pub(in crate::ui) fn text(&self) -> Option<&str> { self.shown.as_ref().map(|(t, _)| t.as_str()) }
 
     /// Opacity at `now`: 1 while held, then to 0 over the fade; 0 when nothing is shown.

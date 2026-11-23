@@ -52,6 +52,7 @@ impl State {
         let (scalebar_draw, media_paint_targets) = self.prepare_preview_text(lines, media_paint_targets,
             preview_rect, image_rect, png_rect, md_rect, preview_scroll_px, show_md, show_edit, show_fatal, &caption_draw)?;
         let (help_overlay_rect, dialog_rect, overlay_lines) = self.prepare_overlays()?;
+        self.pdf_select.set_cover(help_overlay_rect);
         let covered = dialog_rect.is_some() || self.focus_prompts.prompt().is_some() || self.workspace_picker.is_some();
         self.check_returned_file(began, if covered { Default::default() } else { preview_cells });
         let prepared = std::time::Instant::now();

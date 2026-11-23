@@ -14,10 +14,25 @@ impl State {
             .then(|| (self.selected.host().clone(), self.selected.workspace_id().clone(), node.to_owned(), page))
     }
 
-    /// Before a frame and each pointer or key event: what was held for a page no longer shown is dropped.
+    /// What was held for a page no longer shown is dropped, and the notice it put up goes with it.
     pub(in crate::ui) fn words_sync(&mut self) {
         let key = self.pdf_page();
-        self.pdf_select.sync(key);
+        let said = self.pdf_select.sync(key);
+        self.drop_notice(said);
+    }
+
+    /// Before a frame: the same, but a page nobody pressed on costs nothing (no key is built while nothing is held).
+    pub(in crate::ui) fn words_frame(&mut self) {
+        if !self.pdf_select.idle() {
+            self.words_sync();
+        }
+    }
+
+    /// The notice that said `said` is about a page no longer shown.
+    pub(in crate::ui) fn drop_notice(&mut self, said: Option<&str>) {
+        if said.is_some() && self.preview_notice.text() == said {
+            self.preview_notice.clear();
+        }
     }
 
     /// A left press that selects on the PDF page (drawing is off, or it would have taken the press): focus moves to the
@@ -26,10 +41,10 @@ impl State {
         self.words_sync();
         let Some(ask) = self.pdf_select.press(self.pointer.at_px()) else { return false };
         self.set_focus(PaneFocus::Preview);
-        if let (true, Some((_, workspace_id, node_id, page))) = (ask, self.pdf_select.key().cloned()) {
-            if let Err(e) = self.send(OutgoingReq::PageWords { node_id: node_id.clone(), workspace_id: workspace_id.clone(), page }) {
+        if let (Some(serial), Some((host, workspace_id, node_id, page))) = (ask, self.pdf_select.key().cloned()) {
+            if let Err(e) = self.send(OutgoingReq::PageWords { node_id, workspace_id, page, serial }) {
                 tracing::warn!(%e, "drop the words request — channel closed");
-                self.pdf_select.arrived(PageWordsReply::Ended, &node_id);
+                self.pdf_select.arrived(PageWordsReply::Ended, serial, &host);
             }
         }
         self.window.request_redraw();
@@ -44,13 +59,10 @@ impl State {
 
     pub(in crate::ui) fn words_released(&mut self) { self.pdf_select.released(); }
 
-    /// The reply to a words request, for the page it was asked of: one that is no longer the page shown is dropped.
-    pub(in crate::ui) fn on_page_words(&mut self, host: HostKey, node_id: String, workspace_id: Option<String>, page: u32, reply: PageWordsReply) {
-        self.words_sync();
-        if self.pdf_select.key() != Some(&(host, workspace_id, node_id.clone(), page)) {
-            return;
-        }
-        if let Some(words) = self.pdf_select.arrived(reply, &node_id) {
+    /// The reply to the request numbered `serial`: any other is dropped (the page shown may be another, or the same page
+    /// asked again after the file changed).
+    pub(in crate::ui) fn on_page_words(&mut self, host: HostKey, serial: u64, reply: PageWordsReply) {
+        if let Some(words) = self.pdf_select.arrived(reply, serial, &host) {
             self.preview_says(words);
         }
         self.window.request_redraw();

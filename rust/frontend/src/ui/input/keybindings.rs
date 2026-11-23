@@ -15,6 +15,8 @@ pub enum Scope {
     Restore,
     Scroll,
     Text,
+    /// Selected text can be copied: the focused text preview, or a PDF page with words selected.
+    CopyText,
     Picker,
     Nav,
     /// Every pane whose input is not a program's: not the agent pane or the Terminal drawer, and not while a picker,
@@ -155,9 +157,9 @@ actions! {
     PreviewInkUndo, "preview.ink_undo", ["u", "Primary+z"], "Undo stroke", "While drawing is on over the shown image or the canvas is shown: remove the last stroke; right after a clear, bring the cleared strokes back.", "Image", Drawing;
     PreviewInkClear, "preview.ink_clear", ["Delete"], "Clear drawing", "While drawing is on over the shown image or the canvas is shown: clear the drawing.", "Image", Drawing;
     ReturnNav, "view.return_nav", ["Escape"], "Return to navigation", "Move focus back to the navigation tree.", "View", Reading;
+    PreviewCopySelection, "preview.copy_selection", ["Primary+c", "Primary+Shift+c"], "Copy selection", "Copy selected preview text, or the words selected on a PDF page, to the clipboard.", "Text", CopyText;
     CaptureRegion, "preview.capture", ["c", "Primary+c"], "Send visible region", "Crop the visible image region and attach it to the agent input.", "Image", Image;
     CopyCode, "preview.copy_code", ["y"], "Copy code blocks", "Copy the displayed markdown code blocks to the clipboard.", "Text", Text;
-    PreviewCopySelection, "preview.copy_selection", ["Primary+c", "Primary+Shift+c"], "Copy selection", "Copy selected preview text to the clipboard.", "Text", Text;
     EditFile, "preview.edit", ["e"], "Edit", "Edit the displayed file or its concept annotation.", "Text", PreviewFile;
     ScrollPageUp, "view.page_up", ["PageUp"], "Scroll up", "Scroll back through this pane.", "Scroll", PageScroll;
     ScrollPageDown, "view.page_down", ["PageDown"], "Scroll down", "Scroll forward through this pane.", "Scroll", PageScroll;
