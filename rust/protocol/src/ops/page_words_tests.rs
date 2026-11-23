@@ -116,3 +116,27 @@ fn the_document_is_one_object_with_all_three_fields() {
     assert!(serde_json::from_slice::<PageWords>(br#"{"lines":[],"cut":true,"page":2}"#).is_ok(), "any key order");
 }
 
+/// The text of a range of words is the words of a line joined by one space and the lines by LF, numbered over all lines;
+/// a range that is not inside the document, or runs backward, is none.
+#[test]
+fn a_range_of_words_is_their_text_by_line_and_space() {
+    let doc: PageWords = serde_json::from_str(PLUGIN_DOCUMENT).unwrap();
+    assert_eq!(doc.word_count(), 3);
+    for (first, last, want) in [
+        (0, 2, Some("alpha beta\ngamma")),
+        (0, 0, Some("alpha")),
+        (1, 1, Some("beta")),
+        (2, 2, Some("gamma")),
+        (0, 1, Some("alpha beta")),
+        (1, 2, Some("beta\ngamma")),
+        (2, 1, None),
+        (0, 3, None),
+        (3, 3, None),
+        (usize::MAX, usize::MAX, None),
+    ] {
+        assert_eq!(doc.text(first, last).as_deref(), want, "{first}..={last}");
+    }
+    let none = PageWords { page: 1, cut: false, lines: vec![] };
+    assert_eq!((none.word_count(), none.text(0, 0)), (0, None), "a page with no words has no range");
+}
+

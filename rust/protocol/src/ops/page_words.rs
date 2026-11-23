@@ -115,6 +115,35 @@ impl TryFrom<RawPageWords> for PageWords {
     }
 }
 
+impl PageWords {
+    /// The words in all lines.
+    pub fn word_count(&self) -> usize {
+        self.lines.iter().map(Vec::len).sum()
+    }
+
+    /// The text of the words `first..=last`, numbered over all lines in order: the words a line gives joined by one space
+    /// and the lines by LF (a line only some of whose words are in the range gives those). The one definition of the text
+    /// a selection of words is: what the window copies, and what the share's digest is of. `None` when `first` is after
+    /// `last` or `last` is no word of the document.
+    pub fn text(&self, first: usize, last: usize) -> Option<String> {
+        if first > last || last >= self.word_count() {
+            return None;
+        }
+        let (mut out, mut at) = (String::new(), 0);
+        for line in &self.lines {
+            let (lo, hi) = (first.max(at), last.min((at + line.len()).saturating_sub(1)));
+            if !line.is_empty() && lo <= hi {
+                if !out.is_empty() {
+                    out.push('\n');
+                }
+                out.push_str(&line[lo - at..=hi - at].iter().map(|w| w.text.as_str()).collect::<Vec<_>>().join(" "));
+            }
+            at += line.len();
+        }
+        Some(out)
+    }
+}
+
 #[cfg(test)]
 #[path = "page_words_tests.rs"]
 mod page_words_tests;

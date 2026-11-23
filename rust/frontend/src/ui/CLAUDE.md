@@ -2438,6 +2438,25 @@ start, end, `len` and the text's digest (`the_want_carries_what_the_daemon_check
   `preview/pane.rs`) is pinned by no test, nor is the arm that leaves a map that does not line up unshared
   (docs/defects.md: SELECT-MARKDOWN-PINS).
 
+## A PDF page's words
+`PageText` (`preview/image/words.rs`) holds wire's `PageWords` of one file's page (`belongs_to` says which) and answers four
+questions, each a pure function of its inputs, with private fields and no mutation; it never takes `State`. A point is a
+fraction of the page as drawn (the canvas rectangle's), so a zoom or a pan changes nothing, and a word is named by its
+index over all lines in order. `word_at` is the first word whose box holds the point, else the first nearest by the distance
+to the box in units of the page's height (`aspect`, the page's width over its height, widens a sideways step), a point past
+the page's edge included, none for a page with no words. `select` is every word from the one at a drag's start to the one at
+its end in the document's order, whichever way the drag runs (`(first, last)`, inclusive); that a press and release without
+motion selects nothing is the press's rule, not this type's. `text` is wire's `PageWords::text` (words of a line joined by
+one space, lines by LF; none for a range outside the page), the one definition the daemon's check and a share's digest also
+read (wire's guarantee 17). `bands` is one rectangle for each line a selection touches, from its first selected word's left
+to its last's right and as high as the tallest, mapped onto the canvas rectangle and clipped to the image rectangle, a band
+the clip leaves nothing of left out. Built, and called by nothing yet: the press, the drag, the marks and copy are the next
+landing of the plan (docs/defects.md: PDF-TEXT-SELECTION), so nothing a person sees changes. Tests
+(`preview/image/words_tests.rs`): `the_word_at_a_point_is_the_one_under_it_else_the_nearest`,
+`a_drag_selects_the_run_between_its_ends_in_the_documents_order_either_way`,
+`the_text_joins_a_line_by_spaces_and_lines_by_lf`, `the_bands_are_one_a_line_clipped_to_the_image`,
+`words_belong_to_their_file_and_page`.
+
 ## Folders
 - `app/`: the winit application (`App`), event-loop callbacks, one frame (`frame.rs`) and the quit prompt and exit.
 - `render/`: glyph text, the ratatui cell backend, textured quads, the surface and the capture readback.
@@ -2480,7 +2499,7 @@ start, end, `len` and the text's digest (`the_want_carries_what_the_daemon_check
 - `preview/`: PreviewRequests owns request clocks, the fired target, concept follow, driven holds and the crop,
   save and aim transactions; InstalledPreviewSource owns the installed source; State coordinates preview installation,
   shaping and transport (fetch, replies, layout, concept, open).
-- `preview/image/`: bitmap previews as quads: figures, overlays, view, ROI.
+- `preview/image/`: bitmap previews as quads: figures, overlays, view, ROI, and `words.rs`, a PDF page's words.
 - `preview/markdown/`: markdown and source text shaped into cosmic-text buffers; `source_lines.rs` maps a rendered buffer's text to the file lines it came from.
 - `preview/editor/`: the in-pane edit buffer.
 - `control/`: the fe.command route, its dispatch, the reply bar (`reply_bar.rs`, with State's side in `reply_dispatch.rs`),

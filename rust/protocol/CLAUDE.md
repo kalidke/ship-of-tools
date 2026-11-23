@@ -360,7 +360,10 @@ name is in this crate's one op table.
     refused whole: it stops before the 16,385th word with `cut` true and leaves out a word of more than 1,024 bytes
     (sidecars' guarantee 19); each side's test states the two numbers as literals. `cut` is required and carried. The
     window's network side reads it (fe-net's contract); the daemon forwards it unread, and its read of one for a share is
-    unbuilt. `PreviewGetReq.words` is defaulted and left out when false, so an ordinary request is the one an older daemon
+    unbuilt. `PageWords::text(first, last)` is the one definition of the text of a range of words, numbered over all
+    lines in order: the words of a line joined by one space and the lines by LF, `None` when `first` is after `last` or
+    `last` is no word (`word_count` counts them); the window copies it and a share's digest is of it, so neither writes
+    its own. `PreviewGetReq.words` is defaulted and left out when false, so an ordinary request is the one an older daemon
     reads; `HelloRes.serves_page_words` is defaulted and left out when false, and says the daemon answers `words` with
     the words or with an error, never the page's picture. A daemon built before it answers a words request with the
     picture, so a window sends one only where the hello said it (fe-net's contract). Mechanism: two defaulted fields
@@ -369,6 +372,7 @@ name is in this crate's one op table.
     reading order; the plugin's test pins the same literal document (`julia/plugins/pdf-file/test/words.jl`). Tests
     `ops/page_words_tests.rs`: `the_plugins_document_is_the_wires`, `page_words_are_bounded_at_decode`,
     `a_words_text_is_clean_at_decode`, `the_document_is_one_object_with_all_three_fields`,
+    `a_range_of_words_is_their_text_by_line_and_space`,
     `a_words_request_is_the_ordinary_one_with_one_more_field`; `ops/session_tests.rs`:
     `a_hello_says_it_serves_page_words_and_stays_additive`.
 
@@ -417,7 +421,7 @@ Same on all three; the blocking codec is the one the ssh bridge and shell wrappe
 | 14 | the drawing's raster | `ink_tests.rs` (the three tests under guarantee 14) |
 | 15 | terminal escapes | `escapes_tests.rs` (the five tests under guarantee 15) |
 | 16 | the update's state | `ops/update_tests.rs` (the five tests under guarantee 16); `ops/session_tests.rs`: `a_hello_and_a_version_answer_carry_the_update_state_and_stay_additive` |
-| 17 | a page's words | `ops/page_words_tests.rs` (the five tests under guarantee 17); `ops/session_tests.rs`: `a_hello_says_it_serves_page_words_and_stays_additive` |
+| 17 | a page's words | `ops/page_words_tests.rs` (the six tests under guarantee 17); `ops/session_tests.rs`: `a_hello_says_it_serves_page_words_and_stays_additive` |
 
 ## Files
 - `Cargo.toml`: the crate manifest (feature `test-support`, dev only); depends on platform alone of ours
