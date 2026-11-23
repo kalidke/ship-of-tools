@@ -338,6 +338,7 @@ rust/frontend/src/ui/render/surface.rs compiles the logo files in, which the wor
 rust/frontend/src/ui/init/mod.rs compiles logo.png in at build time, as above; no test decodes it
 rust/frontend/src/ui/result_tests.rs decodes logo.png, but the module is built only with the feature test-window-progress, which the gate never sets
 rust/frontend/src/ui/preview_return_tests.rs uses logo.png for a parked picture in the same native fixtures, built only with test-window-progress
+rust/frontend/src/ui/preview/replies_notice_tests.rs compiles logo.png in as a page's picture for one fixture, which only the native fixtures run, and those are built only with test-window-progress
 rust/frontend/src/net/transport/golden_tests.rs reads its own crate's testdata
 rust/frontend/src/ui/preview/markdown/tests.rs reads its own crate's testdata
 rust/backend/tests/ancestors.rs its tests are Windows-only; the gate runs on Linux, and the hosted Windows run covers it
