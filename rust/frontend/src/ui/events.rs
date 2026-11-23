@@ -192,8 +192,9 @@ impl State {
                 crate::net::transport::IncomingEvt::Selection { req, reply } => {
                     self.on_selection_reply(&event_host, &req, reply)
                 }
-                // No view reads a page's words yet.
-                crate::net::transport::IncomingEvt::PageWords { .. } => {}
+                crate::net::transport::IncomingEvt::PageWords { node_id, workspace_id, page, reply } => {
+                    self.on_page_words(event_host, node_id, workspace_id, page, reply)
+                }
                 crate::net::transport::IncomingEvt::ReplFrameStreamed {
                     eval_id,
                     workspace_id,

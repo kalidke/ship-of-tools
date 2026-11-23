@@ -170,7 +170,8 @@ the cursor moves. Read-only, derived from `JuliaSyntax.jl`. See
 ### PDF, paged
 
 With the preview focused (`Ctrl+Right`), `n` pages a PDF forward and `p` back;
-each page rasterizes on the backend to fit the pane.
+each page rasterizes on the backend to fit the pane. A drag over a page selects its words and `Ctrl+c` copies them
+(see [Previews](guide/previews.md)).
 
 ```@raw html
 <DemoLoop name="pdf" caption="With the preview focused, n and p page through a PDF, then = zooms in to read it." />

@@ -14,6 +14,15 @@ Drag with the left mouse button to select text in a rendered markdown, source or
 Ctrl+c (Cmd+c on macOS) to copy it. Ctrl+Shift+c (Cmd+Shift+c on macOS) also copies the selection; `y` copies all
 fenced code blocks in a markdown preview.
 
+On a page of a PDF the same drag selects whole words, in the order the PDF's text runs, and marks them; Ctrl+c copies
+them (the words of a line joined by spaces, the lines by line breaks). The first press on a page reads that page's
+words, which takes a fraction of a second; a drag you began while it read marks them when they arrive. Turning the page,
+showing another file or session, or the PDF being written again clears the selection; zooming and panning keep it. A
+scanned page has no words to select, and the window says so once: `No text to select on this page: a scanned page has
+none.` If the computer that runs the session has an older Ship of Tools, the window says `This computer's daemon needs an
+update to select text in a PDF.` With drawing on (`d`) a drag draws instead. The agent does not see a selection on a PDF
+page yet.
+
 ```@raw html
 <DemoLoop name="pdf" caption="With the preview focused, n and p page through a PDF, then = zooms in to read it." />
 ```

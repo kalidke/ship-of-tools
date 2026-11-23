@@ -61,6 +61,7 @@ impl State {
             ),
             raster: RasterView::new(preview_png),
             ink: Default::default(),
+            pdf_select: Default::default(),
             preview_notice: Default::default(),
             shaped: ShapedPreview::new(preview_md, highlight_service, md_rect_px),
             monitor: crate::ui::drawer::monitor::MonitorPane::new(monitor_hub),

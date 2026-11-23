@@ -83,9 +83,10 @@ fn preview_action_key(state: &mut State, key: KeyPress<'_>, h: i32) {
             }
         }
         Some(Action::PreviewCopySelection) if !event.repeat => {
-            if let Some(status) = copy_selection_status(&state.shaped, |text| {
+            let words = state.copy_words();
+            if let Some(status) = words.or_else(|| copy_selection_status(&state.shaped, |text| {
                 crate::ui::input::write_clipboard_text(text).map_err(|e| e.to_string())
-            }) {
+            })) {
                 state.status.set(status);
             }
         }

@@ -93,6 +93,8 @@ impl State {
         // be partial (start_col..pane_cols and 0..=end_col); middle
         // rows are full-width.
         let mut row_rects = if show_md { self.shaped.selection_rects() } else { Vec::new() };
+        // The words selected on a PDF page are marked in the same brush and batch.
+        row_rects.extend(self.pdf_select.bands());
         if let Some(sel) = llm_selection {
             let (a, b) = sel;
             let (start, end) = if a <= b { (a, b) } else { (b, a) };

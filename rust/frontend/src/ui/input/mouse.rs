@@ -15,6 +15,7 @@ pub(in crate::ui) fn cursor_moved(state: &mut State, position: PhysicalPosition<
     let chat_changed = state.chat.extend_drag(state.pointer.at_px());
     if agent_changed || preview_changed || chat_changed { state.window.request_redraw(); }
     state.ink_moved();
+    state.words_moved();
 }
 
 pub(in crate::ui) fn mouse_input(state: &mut State, event_loop: &ActiveEventLoop, btn_state: ElementState, button: MouseButton) {
@@ -34,7 +35,7 @@ pub(in crate::ui) fn mouse_input(state: &mut State, event_loop: &ActiveEventLoop
             dismissed
         },
         press_selections,
-        |state| { state.agent_pane.release(); state.shaped.release(); state.release_chat(); state.ink_released(); },
+        |state| { state.agent_pane.release(); state.shaped.release(); state.release_chat(); state.ink_released(); state.words_released(); },
         |state, down| state.ink_right(down));
 }
 
@@ -44,6 +45,8 @@ trait SelectionContext {
     fn preview_cursor(&self) -> Option<cosmic_text::Cursor>;
     /// A left press the drawing takes: it focuses the preview itself and starts no selection.
     fn draw_press(&mut self) -> bool;
+    /// A left press on a shown PDF page when drawing is off: it focuses the preview itself and starts a words selection.
+    fn words_press(&mut self) -> bool;
     fn focus_selection_pane(&mut self, pane: PaneFocus);
     fn press_agent(&mut self, cell: Option<(u16, u16)>);
     fn press_preview(&mut self, cursor: Option<cosmic_text::Cursor>);
@@ -54,6 +57,7 @@ trait SelectionContext {
 
 fn press_selections(context: &mut impl SelectionContext) {
     if context.draw_press() { context.press_agent(None); context.press_chat(None); return; }
+    if context.words_press() { context.press_agent(None); context.press_chat(None); context.press_preview(None); return; }
     let cell = context.agent_cell();
     let cursor = context.preview_cursor();
     agent_press_continuation(context, cell, |c| c.focus_selection_pane(PaneFocus::Llm), |c, cell| c.press_agent(cell));
@@ -70,6 +74,7 @@ impl SelectionContext for State {
         self.shaped.hit(self.pointer.at_px(), true)
     }
     fn draw_press(&mut self) -> bool { self.press_ink() }
+    fn words_press(&mut self) -> bool { self.press_words() }
     fn focus_selection_pane(&mut self, pane: PaneFocus) { self.set_focus(pane); }
     fn press_agent(&mut self, cell: Option<(u16, u16)>) {
         if self.agent_pane.press(cell) { self.window.request_redraw(); }
@@ -286,6 +291,9 @@ mod tests {
         text_shown: bool,
         focused_before_press: bool,
         drawing: bool,
+        /// The press is on a shown PDF page, and how many presses its words took.
+        on_page: bool,
+        words_pressed: u32,
         pressed_agent: Vec<Option<(u16, u16)>>,
         chat: crate::ui::drawer::chat::ChatView,
     }
@@ -297,6 +305,10 @@ mod tests {
         fn draw_press(&mut self) -> bool {
             if self.drawing { self.focus = PaneFocus::Preview; }
             self.drawing
+        }
+        fn words_press(&mut self) -> bool {
+            if self.on_page { self.focus = PaneFocus::Preview; self.words_pressed += 1; }
+            self.on_page
         }
         fn focus_selection_pane(&mut self, pane: PaneFocus) { self.focus = pane; }
         fn press_agent(&mut self, cell: Option<(u16, u16)>) { self.pressed_agent.push(cell); }
@@ -320,7 +332,7 @@ mod tests {
         let mut probe = SelectionProbe {
             shaped: ShapedPreview::new(md, HighlightService::new().unwrap(), rect),
             at: (rect.x, rect.y + EXTRA_TOP_PAD_PX + 5.0), agent: None, focus: PaneFocus::NavTree,
-            text_shown: true, focused_before_press: false, drawing: false, pressed_agent: Vec::new(), chat: Default::default(),
+            text_shown: true, focused_before_press: false, drawing: false, on_page: false, words_pressed: 0, pressed_agent: Vec::new(), chat: Default::default(),
         };
         pointer_continuation(&mut probe, true, MouseButton::Left, |_, _| {}, |_| None, |_, _| {}, |_| false,
             press_selections, |p| p.shaped.release(), |_, _| {});
@@ -395,7 +407,7 @@ mod tests {
         let mut probe = SelectionProbe {
             shaped: ShapedPreview::new(md, HighlightService::new().unwrap(), rect),
             at: (rect.x, rect.y + EXTRA_TOP_PAD_PX + 5.0), agent: Some((0, 0)), focus: PaneFocus::NavTree,
-            text_shown: true, focused_before_press: false, drawing: true, pressed_agent: Vec::new(), chat: Default::default(),
+            text_shown: true, focused_before_press: false, drawing: true, on_page: false, words_pressed: 0, pressed_agent: Vec::new(), chat: Default::default(),
         };
         let (rec, mut fonts) = (chat_record(), glyphon::FontSystem::new());
         probe.chat.layout(&mut fonts, &[(&rec, false)], CHAT_BODY, 1.0, 1_700_000_100, chrono::FixedOffset::east_opt(0).unwrap());
@@ -413,6 +425,33 @@ mod tests {
         probe.drawing = false;
         press_selections(&mut probe);
         assert_eq!(probe.pressed_agent, [None, Some((0, 0))], "any other press routes as before");
+    }
+
+    /// A left press on a shown PDF page goes to its words, after the drawing: with drawing on the press is the drawing's and
+    /// the words see none; with it off the words take it, focus the preview and clear the agent pane's, the chat's and the
+    /// text selection, and the press starts no text selection of its own; off the page it routes as before.
+    #[test]
+    fn a_press_on_a_pdf_page_goes_to_its_words_after_the_drawing() {
+        use crate::ui::preview::{markdown::{MarkdownPreview, highlight::HighlightService}, shaped::ShapedPreview};
+        use crate::ui::render::{quad::ScreenRect, text::EXTRA_TOP_PAD_PX};
+        let md = MarkdownPreview::new_plain(&mut glyphon::FontSystem::new(), "alpha\nbravo", 200.0, 1.0);
+        let rect = ScreenRect { x: 20.0, y: 30.0, w: 200.0, h: 80.0 };
+        let mut probe = SelectionProbe {
+            shaped: ShapedPreview::new(md, HighlightService::new().unwrap(), rect),
+            at: (rect.x, rect.y + EXTRA_TOP_PAD_PX + 5.0), agent: Some((0, 0)), focus: PaneFocus::NavTree,
+            text_shown: true, focused_before_press: false, drawing: true, on_page: true, words_pressed: 0, pressed_agent: Vec::new(), chat: Default::default(),
+        };
+        press_selections(&mut probe);
+        assert_eq!((probe.words_pressed, probe.pressed_agent.as_slice()), (0, &[None][..]), "the drawing took the press first");
+        probe.drawing = false;
+        probe.pressed_agent.clear();
+        press_selections(&mut probe);
+        assert_eq!((probe.words_pressed, probe.focus, probe.pressed_agent.as_slice()), (1, PaneFocus::Preview, &[None][..]));
+        assert!(!probe.focused_before_press, "the words' press begins no text selection of the preview's");
+        probe.on_page = false;
+        probe.pressed_agent.clear();
+        press_selections(&mut probe);
+        assert_eq!((probe.words_pressed, probe.pressed_agent.as_slice()), (1, &[Some((0, 0))][..]), "off the page it routes as before");
     }
 
     #[derive(Debug, PartialEq)]

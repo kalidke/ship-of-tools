@@ -360,6 +360,8 @@ struct State {
     raster: RasterView,
     /// The row's drawing: its strokes, its raster and the overlay texture made from it.
     ink: preview::image::ink::InkLayer,
+    /// The text a person selects on the shown PDF page: its words once asked for, the drag and the words it selects.
+    pdf_select: preview::image::words_select::PdfSelect,
     /// The preview's latest message, boxed over the preview pane while it is held and fades.
     preview_notice: preview::notice::PreviewNotice,
     /// Pagination of the shown preview: page and count, the page bitmap's raster zoom and a re-raster's keep-view.

@@ -119,7 +119,7 @@ impl ApplicationHandler for FixturesDriver {
 }
 
 fn run_state_fixtures(state: &mut State) -> Result<()> {
-    let fixtures: [(&str, fn(&mut State) -> Result<()>); 55] = [
+    let fixtures: [(&str, fn(&mut State) -> Result<()>); 56] = [
         // First: the window's start-up picture is still the preview's.
         (
             "primary_u_over_the_start_picture_says_the_preview_shows_no_file",
@@ -171,6 +171,7 @@ fn run_state_fixtures(state: &mut State) -> Result<()> {
         ("a_text_selections_reply_stays_off_the_box", State::a_text_selections_reply_stays_off_the_box),
         ("a_drawing_refusal_is_boxed_and_leaves_the_status_line", State::a_drawing_refusal_is_boxed_and_leaves_the_status_line),
         ("a_shown_pdf_page_is_the_drawing_base_by_its_page", State::a_shown_pdf_page_is_the_drawing_base_by_its_page),
+        ("a_drag_over_a_pdf_page_selects_marks_and_copies_its_words", State::a_drag_over_a_pdf_page_selects_marks_and_copies_its_words),
         (
             "a_preview_message_is_on_the_status_line_and_boxed_and_a_row_switch_drops_it",
             State::a_preview_message_is_on_the_status_line_and_boxed_and_a_row_switch_drops_it,

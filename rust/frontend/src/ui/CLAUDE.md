@@ -2438,7 +2438,7 @@ start, end, `len` and the text's digest (`the_want_carries_what_the_daemon_check
   `preview/pane.rs`) is pinned by no test, nor is the arm that leaves a map that does not line up unshared
   (docs/defects.md: SELECT-MARKDOWN-PINS).
 
-## A PDF page's words
+## A PDF page's words and its selection
 `PageText` (`preview/image/words.rs`) holds wire's `PageWords` of one file's page (`belongs_to` says which) and answers four
 questions, each a pure function of its inputs, with private fields and no mutation; it never takes `State`. A point is a
 fraction of the page as drawn (the canvas rectangle's), so a zoom or a pan changes nothing, and a word is named by its
@@ -2450,8 +2450,34 @@ motion selects nothing is the press's rule, not this type's. `text` is wire's `P
 one space, lines by LF; none for a range outside the page), the one definition the daemon's check and a share's digest also
 read (wire's guarantee 17). `bands` is one rectangle for each line a selection touches, from its least left to its greatest right (a line
 read right to left has its band) and as high as the tallest, mapped onto the canvas rectangle and clipped to the image rectangle, a band
-the clip leaves nothing of left out. Built, and called by nothing yet: the press, the drag, the marks and copy are the next
-landing of the plan (docs/defects.md: PDF-TEXT-SELECTION), so nothing a person sees changes. Tests
+the clip leaves nothing of left out. The window's owner of a page's selection is `PdfSelect` (`preview/image/words_select.rs`, one field of
+`State`, private fields, never takes `State`; `preview/image/words_input.rs` wires it): it is keyed by the page shown
+(host, row, file, page; `State::pdf_page`, a raster of a `.pdf` node with its page, no edit or refusal over it), and
+`words_sync` before each frame, press and key drops what was held for another page, which is a page turn, another file
+and a session switch; a fresh install of the page (not a zoom's re-raster, `take_keep_view`) drops it too, so a file
+changed under the page is read again; a zoom or a pan gives a new frame (`set_frame`, from the preview pass beside the
+drawing's) and keeps the words and the selection, the marks following the page. A left press inside both the page's
+rectangle and the image's, with drawing off (a press the drawing takes is its alone and comes first in
+`press_selections`), focuses the preview, clears the agent pane's, the chat's and the text selection, begins a drag and, if
+the words are neither held nor asked for, sends ONE `OutgoingReq::PageWords`; a press while it is out, or once they are
+held, asks nothing, and a request that ended (`Ended`) is asked again at the next press. Motion with the button down
+selects `PageText::select` between the press's point and the pointer's, kept as fractions of the page so words that come
+after the press select too; a press and release with no motion selects nothing (a press clears the last selection), and
+the selection stays after the release. The marks are `PageText::bands` on this frame's rectangles, pushed into the same
+`Solid::SelectionBg` batch as the text selections' (`paint_text_selections`). `preview.copy_selection` copies the
+selected words' text (`PageText::text`) to the clipboard and says `copied PDF text`, ahead of the text selection's copy;
+it is never shared with the agent (the plan's last landing). The reply (`IncomingEvt::PageWords`) is taken only for the
+page still shown; a page with no words, a daemon that does not serve them (`Unsupported`) and a `no_words` refusal are said
+once, on the status line and in the preview's box, and not asked again for that page (`No text to select on this page: a
+scanned page has none.`; `This computer's daemon needs an update to select text in a PDF.`); another refusal is said and
+asked again at the next press. Tests: `preview/image/words_select_tests.rs`
+(`a_press_on_a_pdf_page_asks_once_for_its_words`, `a_drag_over_the_words_selects_marks_and_gives_their_text`,
+`a_page_turn_drops_the_words_and_the_selection_and_a_zoom_keeps_them`, `a_page_with_no_words_says_so_once`),
+`input/mouse.rs` (`a_press_on_a_pdf_page_goes_to_its_words_after_the_drawing`), `words_input.rs`
+(`the_copy_key_copies_the_selected_words`) and the native fixture
+`a_drag_over_a_pdf_page_selects_marks_and_copies_its_words` (preview/replies_notice_tests.rs: the raster install, the
+pointer, the answer's event and the clipboard path, through the real `State`). Not covered by a test: the paint of the
+marks (`panes.rs`), and `preview/keys.rs`'s one call of `copy_words`. Tests of the owner of the page's words
 (`preview/image/words_tests.rs`): `the_word_at_a_point_is_the_one_under_it_else_the_nearest`,
 `a_drag_selects_the_run_between_its_ends_in_the_documents_order_either_way`,
 `the_text_joins_a_line_by_spaces_and_lines_by_lf`, `the_bands_are_one_a_line_clipped_to_the_image`,

@@ -18,6 +18,7 @@ impl State {
         // legible above whatever the preview is.
         self.raster.clear_roi();
         self.ink_sync();
+        self.words_sync();
         let row_key = self.active_result_row_key();
         if let (true, Some(letterbox_rect)) = (self.raster.is_shown(), png_rect) {
             let aim = self.preview_requests.take_ready_roi_aim(row_key.as_ref());
@@ -27,6 +28,7 @@ impl State {
             };
             let canvas_rect = frame.rect;
             self.ink.set_frame(canvas_rect, image_rect);
+            self.pdf_select.set_frame(canvas_rect, image_rect);
             // ADR 0022: stash the visible ROI in source-image px so the
             // `C` hotkey / `capture_roi` fe-command and fe-state.json know
             // what's on screen. Image files only — a PDF page's source is
