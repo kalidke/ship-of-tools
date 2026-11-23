@@ -3165,8 +3165,12 @@ the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the sa
   - The inline renderer: `ccx` passes `--no-alt-screen`, so a Codex row's conversation reaches the terminal's
     scrollback. Two rounds, 22 minutes, the build 5. Open until a person checks it in a row: CODEX-ROW-NO-SCROLLBACK.
   - The spawned handle by kind: `sotd comm derive` takes the child's agent kind, and `comm-spawn.sh` passes it only
-    for a Codex child. Built by a Claude builder before the Codex row existed; one review with no blocker and three
-    smaller items, a second commit; its minutes were not kept.
+    for a Codex child. Built, before the Codex row existed, by a Codex run with write access that the maintaining
+    session started inside itself, committing and running the tests for it (corrected on 2026-11-23 from that run's
+    own job record, after the lab's review of the record found it; this entry had said a Claude builder). That is
+    not one of the uses of Codex the maintainer has named, and it was not done again: Codex builds in a row of its
+    own and reads, without writing, inside another session. One review with no blocker and three smaller items, a
+    second commit; its minutes were not kept.
   - The shared commands: an install that selects only Codex puts `sot-fe`, `show-result` and `sot-gh-auth` on the
     path. One review, no blocker (about 147 collision probes held; the list of earlier shipped versions matched the
     whole history), five smaller items; the follow-up, 8 minutes, checks every shared path before the comm install
@@ -3322,3 +3326,40 @@ the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the sa
   - Set aside: a plan for PTY-INPUT-MARK, raised by the lab's coordinating session and not asked for by the
     maintainer, on which a planner, a reviewer and a decision page were spent overnight before he parked it for
     0.7.5 or later. An item another session raises is now put to him in one line before any agent is spent on it.
+- Landings of the afternoon of 2026-11-23. Ten commits reached `main` together at 15:17 on the maintainer's word:
+  the Chat title and the morning's records (recorded above), and the three below. Each was gated on the gate's
+  computer in about 4 minutes a run.
+  - The bytes-level reader opens only a regular file and reads to its cap (FILES-BYTES-READER-READS-WHOLE, a fix
+    decided when the entry was written). One builder, 29 product lines, the commit 8 minutes after it was asked;
+    read by the maintaining session, no review agent; one gate.
+  - The PDF plugin answers a page's words and their boxes: the first of seven landings toward selecting text on a
+    PDF page (the maintainer's ask of 2026-11-19), from a written plan that measured the text tool first (10 to 70
+    ms a page on Linux). 63 product lines in the plugin alone; read by the maintaining session; one gate. The hosted
+    run after the merge is the first run of the text tool from Julia's copy on macOS and Windows.
+  - A drawing on a PDF page reaches the session's agent (DRAW-ON-PDF-PAGES; his asks of 2026-11-11 and
+    2026-11-19). One builder from a brief and its own plan; six commits, 13:36 to 15:04.
+    - The first commit, 123 product lines over the wire, the window, the files service and the agents' share, was
+      read at once by two reviewers, one of each kind. Both said to fix first. Between them: stale text left
+      shared when a daemon will not take a drawing, a kernel asked to read a file that is no PDF before the
+      refusal, a fallback that could read the file as the picture, three missing tests, an update message that
+      was true only of an older daemon, and records.
+    - Round 1 (71 product lines, 39 minutes after the first commit) gave the hello a word for drawing on pages and
+      made a drawing never sent clear what the session shared before it. Its gate failed once, on the scoped
+      gate's list of test files that read outside their crate: a new fixture compiles the logo in. One line.
+    - Rounds 2 and 3 (26 and 42 product lines, 22 and 14 minutes) each answered a second reading that had found
+      one more sequence in which the window's record of what it shares went wrong: a second clear, then a refused
+      text remembered as if the daemon still held it. Round 3 was asked for the model in place of a patch, and
+      got it: what the daemon holds for the session from this window, and the share that was refused, compared
+      once, with a table test of fourteen sequences.
+    - A fourth reading confirmed the model and found more sequences, in rarer states (two windows on one session;
+      a publish that fails). The maintaining session then decided the round, where it had passed three lists on:
+      three changes of 15 product lines (a refusal ends with the view's change; an answer that does not say what
+      the session holds leaves the record as it was, so a hide sends one clear and never none; the table's
+      stand-in daemon made faithful), and the class that is older than this work recorded with its fix as a
+      landing of its own (CLEAR-REMOVES-ANOTHER-WINDOWS-SHARE: the daemon's clear removes a share whoever set
+      it). It read that round itself; no fifth reading was asked.
+    - What it cost and showed: 88 minutes from the first commit to the last, of which the first commit's building
+      was the small part; five gates. Each reading of the share's state after the first was aimed at the last fix
+      and found the next sequence beside it; the reading that ended it was the one asked to check every reply
+      against the daemon's own code, and the round that ended it was decided by a sort, not by a list. No person
+      has drawn on a page, and nothing ran with the real plugin through a window.
