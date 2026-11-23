@@ -41,6 +41,7 @@ pub(crate) use {
     concept::ConceptWriteResult,
     files::{DirCreateResult, FileDeleteResult, FileWriteResult},
     kernel::{DefinitionInfo, MarkdownToken, MethodInfo, ScanModule, ScanType},
+    preview::PageWordsReply,
     repl::ReplRunFileInfo,
     selection::SelectionReply,
     tree::DirEntry,

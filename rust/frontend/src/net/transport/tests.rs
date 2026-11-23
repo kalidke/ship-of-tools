@@ -375,9 +375,26 @@ fn the_accepted_hello_sets_whether_the_connection_takes_a_drawing_and_posts_plai
     };
     for (reply, want) in [(with(true, true), (true, true)), (with(false, false), (false, false)), (with(true, false), (true, false)), (with(false, true), (false, true))] {
         let host: HostKey = "takes-drawing".to_string();
-        let mut session = SessionState { host: host.clone(), memory: crate::net::state::SessionMemory::fresh(), gate: StateSaveGate::new(), takes_drawing: !want.0, draws_pages: want.0 == want.1, posts_plain_text: !want.1 };
+        let mut session = SessionState { host: host.clone(), memory: crate::net::state::SessionMemory::fresh(), gate: StateSaveGate::new(), takes_drawing: !want.0, draws_pages: want.0 == want.1, posts_plain_text: !want.1, serves_page_words: false };
         accept_hello(Frame::res(1, op::HELLO, reply), &host, &mut session, ResolvedDial::Local, &|_| {}, &NoWindow).unwrap();
         assert_eq!((session.takes_drawing, session.posts_plain_text, session.draws_pages), (want.0, want.1, want.0 != want.1));
+    }
+}
+
+/// The accepted hello sets the connection's `serves_page_words` from what the daemon said; a hello without the field
+/// leaves it false, so a window sends no words request to an older daemon.
+#[test]
+fn the_accepted_hello_sets_whether_the_connection_serves_page_words() {
+    let _env = crate::net::state::test_env::set_test_env();
+    for says in [true, false] {
+        let mut reply = hello_ok();
+        if says {
+            reply["serves_page_words"] = serde_json::json!(true);
+        }
+        let host: HostKey = "serves-words".to_string();
+        let mut session = SessionState { host: host.clone(), memory: crate::net::state::SessionMemory::fresh(), gate: StateSaveGate::new(), takes_drawing: false, draws_pages: false, posts_plain_text: false, serves_page_words: !says };
+        accept_hello(Frame::res(1, op::HELLO, reply), &host, &mut session, ResolvedDial::Local, &|_| {}, &NoWindow).unwrap();
+        assert_eq!(session.serves_page_words, says);
     }
 }
 

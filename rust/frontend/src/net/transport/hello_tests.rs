@@ -46,6 +46,7 @@ async fn the_windows_hello_says_it_reads_terminal_color() {
         takes_drawing: false,
         draws_pages: false,
         posts_plain_text: false,
+        serves_page_words: false,
     };
     let mut wire = Vec::new();
     super::send_hello(&mut wire, 1, &session, None).await.unwrap();

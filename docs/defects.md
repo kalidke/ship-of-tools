@@ -918,11 +918,12 @@ owned by `docs/CLAUDE.md`.
   a page's words and their boxes when a request asks for them (sidecars' guarantee 19 has the form, the bound and the
   tests); and the daemon's `preview.get` takes `words`, forwards it to that plugin and answers the document or
   `no_words`, never the page's picture or the file (files' contract, preview), with wire's one decoder of the document
-  (wire's guarantee 17) and the hello's `serves_page_words`. Nothing in the window asks yet, so no person can select
-  anything. Measured that day on Linux: poppler 22.02, 26.01 and Julia's copy (25.10) give the same word boxes, 10 to
-  70 ms a page, and Julia's copy holds `pdftotext` beside `pdftoppm` and runs; on macOS and Windows the copy's
-  wrappers declare the program and nothing has run it there. Not built: the window's request, drag, marks and copy,
-  and the selection's page and words on the share.
+  (wire's guarantee 17) and the hello's `serves_page_words`. The window's network side asks only a daemon whose hello
+  says it serves them and answers each request as one typed event (fe-net's contract); nothing else in the window asks
+  yet, so no person can select anything. Measured that day on Linux: poppler 22.02, 26.01 and Julia's copy (25.10)
+  give the same word boxes, 10 to 70 ms a page, and Julia's copy holds `pdftotext` beside `pdftoppm` and runs; on
+  macOS and Windows the copy's wrappers declare the program and nothing has run it there. Not built: the window's
+  drag, marks and copy, and the selection's page and words on the share.
 - **DRAW-ON-PDF-PAGES** [feature] The person's drawing, shared with the agent, on a PDF page as on a picture. The
   maintainer, 2026-11-11, after using the drawing on a picture, a blank canvas and a markdown file, wanted it on PDFs
   as well, but not if it delays 0.7.1 significantly. He asked for it for 0.7.3 (2026-11-19, to draw on a PDF in the

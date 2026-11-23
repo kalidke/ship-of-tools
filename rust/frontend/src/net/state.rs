@@ -288,6 +288,9 @@ pub(super) struct SessionState {
     /// This connection's hello said the daemon's chat door escapes a post's text (`HelloRes::posts_plain_text`); false until
     /// it is accepted. A window never posts to a daemon that does not: it would send `<!channel>` as a ping.
     pub(super) posts_plain_text: bool,
+    /// This connection's hello said the daemon answers a preview request for `words` with a page's words
+    /// (`HelloRes::serves_page_words`); false until it is accepted. An older daemon would answer one with the page's picture.
+    pub(super) serves_page_words: bool,
 }
 
 impl Drop for SessionState {

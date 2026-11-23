@@ -25,6 +25,18 @@ through the channel types below.
   the row held, once. Tests: `a_drawing_is_written_only_on_a_connection_whose_hello_took_one`,
   `a_page_drawing_is_written_only_on_a_connection_whose_hello_draws_pages`,
   `the_accepted_hello_sets_whether_the_connection_takes_a_drawing_and_posts_plain_text`.
+- A page's words asked of a daemon that serves them: each connection keeps its own hello's `HelloRes::serves_page_words`
+  (`SessionState`), and `OutgoingReq::PageWords { node_id, workspace_id, page }` (a `preview.get` for the page with `words`
+  true, wire's guarantee 17), on a connection whose hello did not say it, is answered `PageWordsReply::Unsupported` and never
+  written (an older daemon would answer with the page's picture). The reply is one `IncomingEvt::PageWords { node_id,
+  workspace_id, page, reply }` naming the file, row and page asked, `Words` (the blob read by wire's one decoder, under
+  `PAGE_WORDS_MIME`, for the page asked), `Unsupported`, `Refused { code, error }` (the daemon's error with its code, or an
+  answer that is another mime, another page, a document the decoder refuses or a reply that does not parse) or `Ended`. It is
+  not replayable: a request waiting, or written and unanswered, when its connection ends yields one `Ended` and is never
+  written on a later connection; the window asks again for the page it shows then. `ui/events.rs` drops the event until
+  its owner exists. Tests: `a_words_request_is_written_only_on_a_connection_whose_hello_said_the_daemon_serves_them`,
+  `the_accepted_hello_sets_whether_the_connection_serves_page_words`, `a_words_reply_becomes_one_typed_event`,
+  `a_words_request_ends_once_when_its_connection_ends_and_is_never_replayed`.
 - A post sent only to a daemon whose door posts plain text: each connection keeps its own hello's
   `HelloRes::posts_plain_text` (`SessionState`), and a `chat.post`, on a connection whose hello did not say it, is answered
   `ChatEvt::PostNotSent` and never written (that daemon sends the text as given, so `<!channel>` would ping). Tests:
@@ -74,7 +86,7 @@ through the channel types below.
   every waiting one that is not replayable when a connection ends (`run_protocol`) and when the next is about to send its
   hello (`run_session`), with the one outcome its kind already gives a connection that ended (`PendingGuard`: `page.reply`
   is `unknown`, an eval its error frame), so a request is never written on a later connection and never reports twice.
-  Marked: `page.reply`, `repl.eval`, `repl.run_file`, `chat.post` (`unknown`), `selection.set` (`Ended`), `chat.watch` and `chat.history` (no event: the chat owner watches again on every `Connected`, and a replayed read could be taken as the new watch's snapshot; the drawer's own page or thread read (B5) is dropped the same way and must ask again on `Connected`), `chat.file` (no event: its owner asks again on `Connected`). Limit: the other writes (`ConceptWrite`, `FileWrite`,
+  Marked: `page.reply`, `repl.eval`, `repl.run_file`, `chat.post` (`unknown`), `selection.set` (`Ended`), a words request (`Ended`), `chat.watch` and `chat.history` (no event: the chat owner watches again on every `Connected`, and a replayed read could be taken as the new watch's snapshot; the drawer's own page or thread read (B5) is dropped the same way and must ask again on `Connected`), `chat.file` (no event: its owner asks again on `Connected`). Limit: the other writes (`ConceptWrite`, `FileWrite`,
   `FileDelete`, `DirCreate`, `FileUpload`, `WorkspaceCreate`, `WorkspaceDestroy`, `ToggleHidden`, `AgentSend`,
   `ReplInterrupt`) stay replayable, because a connection's end gives their callers no outcome yet; a request sent during
   the few milliseconds of the next connection's hello and preamble is that connection's. Tests in transport/outbox_tests.rs:

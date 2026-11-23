@@ -215,6 +215,12 @@ pub enum OutgoingReq {
         /// generation. See `ConceptRead::generation`.
         generation: u64,
     },
+    /// A page's words (`preview.get` with `words`, wire's guarantee 17) for the PDF `node_id` at `page`. Not replayable, and
+    /// written only on a connection whose hello said the daemon serves them: on any other it is answered
+    /// `PageWordsReply::Unsupported` and never written, since an older daemon would answer with the page's picture. A request
+    /// waiting or unanswered when its connection ends yields one `PageWordsReply::Ended`. The reply surfaces as
+    /// `IncomingEvt::PageWords`.
+    PageWords { node_id: String, workspace_id: Option<String>, page: u32 },
     /// The check of a parked file on a return to its session: `preview.get` on the wire, with no page, and never
     /// replayed, so it is written on the connection current when it was enqueued or on none.
     ReturnPreview { node_id: String, workspace_id: Option<String>, fit_w: Option<u32>, fit_h: Option<u32>, generation: u64 },
@@ -451,7 +457,7 @@ impl OutgoingReq {
     /// `FileUpload`, `WorkspaceCreate`, `WorkspaceDestroy`, `ToggleHidden`, `AgentSend`, `ReplInterrupt`).
     pub(crate) fn replayable(&self) -> bool {
         match self {
-            OutgoingReq::ReturnPreview { .. } | OutgoingReq::PageReply { .. } | OutgoingReq::SelectionSet { .. } | OutgoingReq::ChatPost { .. } | OutgoingReq::ChatPostFile { .. } | OutgoingReq::ChatConnect { .. } | OutgoingReq::ChatPair { .. } | OutgoingReq::ChatWatch { .. } | OutgoingReq::ChatHistory { .. } | OutgoingReq::ChatFile { .. } | OutgoingReq::ReplEval { .. } | OutgoingReq::ReplRunFile { .. } => false,
+            OutgoingReq::ReturnPreview { .. } | OutgoingReq::PageWords { .. } | OutgoingReq::PageReply { .. } | OutgoingReq::SelectionSet { .. } | OutgoingReq::ChatPost { .. } | OutgoingReq::ChatPostFile { .. } | OutgoingReq::ChatConnect { .. } | OutgoingReq::ChatPair { .. } | OutgoingReq::ChatWatch { .. } | OutgoingReq::ChatHistory { .. } | OutgoingReq::ChatFile { .. } | OutgoingReq::ReplEval { .. } | OutgoingReq::ReplRunFile { .. } => false,
             OutgoingReq::ResultTree { .. }
             | OutgoingReq::TreeChildren { .. }
             | OutgoingReq::TreeRoot { .. }
@@ -529,6 +535,7 @@ pub(super) async fn send_request<W: AsyncWrite + Unpin>(
         OutgoingReq::FileParse { path, workspace_id } => send_file_parse(&mut tx, pending, id, path, workspace_id).await?,
         OutgoingReq::ReturnPreview { node_id, workspace_id, fit_w, fit_h, generation } => send_preview_get(&mut tx, pending, id, node_id, workspace_id, None, fit_w, fit_h, generation).await?,
         OutgoingReq::PreviewGet { node_id, workspace_id, page, fit_w, fit_h, generation } => send_preview_get(&mut tx, pending, id, node_id, workspace_id, page, fit_w, fit_h, generation).await?,
+        OutgoingReq::PageWords { node_id, workspace_id, page } => send_page_words(&mut tx, pending, id, node_id, workspace_id, page).await?,
         OutgoingReq::PreviewSetScale { node_id, nm_per_px, workspace_id, generation } => send_preview_set_scale(&mut tx, pending, id, node_id, nm_per_px, workspace_id, generation).await?,
         OutgoingReq::FigureGet { url, node_id, workspace_id } => {
             tracing::debug!(%url, %node_id, ?workspace_id, id, "→ figure.get (preview.get)");

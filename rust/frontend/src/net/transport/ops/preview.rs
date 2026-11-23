@@ -1,7 +1,22 @@
 //! preview.get, preview.set_scale, image.crop, math.render: the requests (send_<op>: write the frame, then record its PendingKind).
-//! Their replies (on_<op>: the reply frame becomes an IncomingEvt).
+//! Their replies (on_<op>: the reply frame becomes an IncomingEvt). A page's words are `preview.get` with `words`
+//! (`send_page_words`, `on_page_words`).
 
 use super::*;
+use sot_protocol::ops::{PageWords, PAGE_WORDS_MIME};
+
+/// What a request for a page's words came to.
+#[derive(Debug)]
+pub(crate) enum PageWordsReply {
+    Words(PageWords),
+    /// This connection's daemon did not say it serves words (`HelloRes::serves_page_words`): the request was not written.
+    Unsupported,
+    /// An error reply (`code` is the daemon's, `None` when it names none), or an answer that is not the page's words:
+    /// another mime, another page, or a document the wire's decoder refuses.
+    Refused { code: Option<String>, error: String },
+    /// The connection ended before the daemon answered (or before the request was written).
+    Ended,
+}
 
 /// Send one `figure.get` request. Extracted from the `OutgoingReq::FigureGet`
 /// arm of `run_protocol`'s dispatch loop so the ordering that fixes a
@@ -147,6 +162,23 @@ pub(crate) async fn send_preview_get<W: AsyncWrite + Unpin>(
             generation,
         },
     );
+    Ok(())
+}
+
+/// Write a words request: `preview.get` for `page` with `words` true, recorded before the write so a write that fails
+/// still ends the request once.
+pub(crate) async fn send_page_words<W: AsyncWrite + Unpin>(
+    tx: &mut W,
+    pending: &mut HashMap<u64, PendingKind>,
+    id: u64,
+    node_id: String,
+    workspace_id: Option<String>,
+    page: u32,
+) -> Result<()> {
+    tracing::debug!(%node_id, ?workspace_id, page, id, "→ preview.get (words)");
+    let req = PreviewGetReq { node_id: node_id.clone(), workspace_id: workspace_id.clone(), page: Some(page), fit_w: None, fit_h: None, words: true };
+    pending.insert(id, PendingKind::PageWords { node_id, workspace_id, page });
+    codec::write_frame(tx, &Frame::req(id, op::PREVIEW_GET, serde_json::to_value(req)?), None).await?;
     Ok(())
 }
 
@@ -337,6 +369,34 @@ pub(crate) fn on_preview_get(
         }
     }
     return;
+}
+
+/// The reply to a words request becomes one `IncomingEvt::PageWords`. The blob is the document, read by the wire's one
+/// decoder; a picture, a document of another page or one past the wire's bounds is a refusal, never words.
+pub(crate) fn on_page_words(
+    frame: Frame,
+    blob: Option<Vec<u8>>,
+    emit: &impl Fn(IncomingEvt),
+    node_id: String,
+    workspace_id: Option<String>,
+    page: u32,
+) {
+    let refused = |error: String| PageWordsReply::Refused { code: None, error };
+    let reply = if let Some(error) = frame.payload.get("error").and_then(|v| v.as_str()) {
+        let code = frame.payload.get("code").and_then(|v| v.as_str()).map(str::to_string);
+        PageWordsReply::Refused { code, error: error.to_string() }
+    } else {
+        match serde_json::from_value::<PreviewGetRes>(frame.payload) {
+            Err(e) => refused(format!("unreadable reply: {e}")),
+            Ok(res) if res.mime != PAGE_WORDS_MIME => refused(format!("the answer was {}, not words", res.mime)),
+            Ok(_) => match serde_json::from_slice::<PageWords>(&blob.unwrap_or_default()) {
+                Ok(words) if words.page == page => PageWordsReply::Words(words),
+                Ok(words) => refused(format!("the words are of page {}, not {page}", words.page)),
+                Err(e) => refused(format!("unreadable words: {e}")),
+            },
+        }
+    };
+    emit(IncomingEvt::PageWords { node_id, workspace_id, page, reply });
 }
 
 pub(crate) fn on_set_scale(

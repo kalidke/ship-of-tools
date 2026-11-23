@@ -73,7 +73,7 @@ pub(crate) use self::{
     ops::{
         AccountInfo, ChatEvt, ChatPicture, ChatReply, ConceptWriteResult, DefinitionInfo, DirCreateResult, DirEntry,
         FileDeleteResult, FileWriteResult, MarkdownToken, MethodInfo, ReplRunFileInfo,
-        ScanModule, ScanType, SelectionReply, WorkspaceCreatedInfo, WorkspaceDestroyedInfo, WorkspaceInfo,
+        PageWordsReply, ScanModule, ScanType, SelectionReply, WorkspaceCreatedInfo, WorkspaceDestroyedInfo, WorkspaceInfo,
     },
     request::{OutgoingReq, ResultAttemptId, ResultTreeRequest},
 };
@@ -508,6 +508,7 @@ where
         takes_drawing: false,
         draws_pages: false,
         posts_plain_text: false,
+        serves_page_words: false,
     };
     tracing::info!(
         %host,
@@ -595,6 +596,7 @@ where
         takes_drawing: false,
         draws_pages: false,
         posts_plain_text: false,
+        serves_page_words: false,
     };
     steady::steady_loop(
         rx,

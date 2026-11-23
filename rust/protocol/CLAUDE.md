@@ -353,8 +353,8 @@ name is in this crate's one op table.
     lines in order, and a line is in the reading order the PDF tool guessed. Decoding refuses a page 0, an empty line
     (the plugin leaves one out, so lines are at most words), more than `MAX_PAGE_WORDS` (16,384) words in all, a word
     of more than `MAX_PAGE_WORD_BYTES` (1,024) bytes, an unordered box and a number that is no `u16`; `cut` (the plugin
-    stopped at its own 512 KiB) is required and carried. The document's readers, the window and the daemon for a share,
-    are unbuilt; the daemon forwards it unread. `PreviewGetReq.words` is defaulted and left out when false, so an ordinary
+    stopped at its own 512 KiB) is required and carried. The window's network side reads it (fe-net's contract); the
+    daemon forwards it unread, and its read of one for a share is unbuilt. `PreviewGetReq.words` is defaulted and left out when false, so an ordinary
     request is the one an older daemon reads; `HelloRes.serves_page_words` is defaulted and left out when false, and
     says the daemon answers `words` with the words or with an error, never the page's picture. A daemon built before
     it answers a words request with the picture, so a window sends one only where the hello said it (fe-net's

@@ -72,6 +72,13 @@ pub(super) enum PendingKind {
         /// straight through to `IncomingEvt::Preview`. See that variant.
         generation: u64,
     },
+    /// Reply to a words request: `preview.get` with `words`, about THIS page of THIS file whatever the window shows by the
+    /// time it lands.
+    PageWords {
+        node_id: String,
+        workspace_id: Option<String>,
+        page: u32,
+    },
     /// Reply to `preview.set_scale`. Carries the SAME `PreviewGetRes` envelope
     /// as a normal preview, so it decodes with the existing type and surfaces
     /// as `IncomingEvt::Preview` — the chrome installs it through the one
@@ -281,6 +288,10 @@ impl Drop for PendingGuard<'_> {
                 PendingKind::ChatPair { row, channel } => IncomingEvt::Chat(ChatEvt::PairUnknown { row, channel }),
                 // Not replayable: the window's share sets its state again after a reconnect.
                 PendingKind::SelectionSet { req } => IncomingEvt::Selection { req, reply: SelectionReply::Ended },
+                // A read: the window asks again, for the page it shows then, on the next connection.
+                PendingKind::PageWords { node_id, workspace_id, page } => {
+                    IncomingEvt::PageWords { node_id, workspace_id, page, reply: PageWordsReply::Ended }
+                }
                 _ => continue,
             };
             let _ = self.evt_tx.send((self.host.clone(), event));
@@ -395,6 +406,7 @@ pub(super) fn handle_response_frame(
             PendingKind::PageReply { handle } => on_page_reply(frame, &emit, handle),
             PendingKind::QuartoOpen => on_quarto_open(frame, blob, &emit),
             PendingKind::SelectionSet { req } => on_selection_set(frame, &emit, req),
+            PendingKind::PageWords { node_id, workspace_id, page } => on_page_words(frame, blob, &emit, node_id, workspace_id, page),
             PendingKind::ChatResolve { row } => on_chat_resolve(frame, &emit, row),
             PendingKind::ChatWatch { target } => on_chat_watch(frame, &emit, target),
             PendingKind::ChatHistory { req } => on_chat_history(frame, &emit, req),

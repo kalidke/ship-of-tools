@@ -27,11 +27,12 @@ fn rig(capacity: usize, ping_every: Duration, first_id: u64) -> Rig {
 
 /// `rig` whose connection's hello said whether the daemon reads a drawing (and with it, one on a page).
 fn rig_taking(capacity: usize, ping_every: Duration, first_id: u64, (takes_drawing, posts_plain_text): (bool, bool)) -> Rig {
-    rig_saying(capacity, ping_every, first_id, (takes_drawing, takes_drawing, posts_plain_text))
+    rig_saying(capacity, ping_every, first_id, (takes_drawing, takes_drawing, posts_plain_text, false))
 }
 
-/// `rig` whose connection's hello said each of: the daemon reads a drawing, draws one on a page, posts plain text.
-fn rig_saying(capacity: usize, ping_every: Duration, first_id: u64, (takes_drawing, draws_pages, posts_plain_text): (bool, bool, bool)) -> Rig {
+/// `rig` whose connection's hello said each of: the daemon reads a drawing, draws one on a page, posts plain text, serves
+/// a page's words.
+fn rig_saying(capacity: usize, ping_every: Duration, first_id: u64, (takes_drawing, draws_pages, posts_plain_text, serves_page_words): (bool, bool, bool, bool)) -> Rig {
     let env = crate::net::state::test_env::set_test_env();
     let (near, far) = tokio::io::duplex(capacity);
     let (events_tx, events) = std::sync::mpsc::channel();
@@ -46,6 +47,7 @@ fn rig_saying(capacity: usize, ping_every: Duration, first_id: u64, (takes_drawi
             takes_drawing,
             draws_pages,
             posts_plain_text,
+            serves_page_words,
         };
         let (rx, tx) = tokio::io::split(near);
         steady::steady_loop(
@@ -406,6 +408,7 @@ async fn a_frame_ready_as_the_silence_deadline_passes_is_read_not_cut() {
                 takes_drawing: false,
                 draws_pages: false,
                 posts_plain_text: false,
+                serves_page_words: false,
             };
             steady::steady_loop(
                 codec::buffered(reader),
@@ -515,7 +518,7 @@ async fn a_page_drawing_is_written_only_on_a_connection_whose_hello_draws_pages(
     let sel = |v: serde_json::Value| -> OutgoingReq { OutgoingReq::SelectionSet { req: serde_json::from_value(v).unwrap() } };
     let on = |base: serde_json::Value| sel(serde_json::json!({ "workspace_id": "w", "selection": null, "drawing": { "base": base, "strokes": [[[1, 2]]] } }));
     for pages in [false, true] {
-        let mut rig = rig_saying(1 << 16, NEVER, 1, (true, pages, true));
+        let mut rig = rig_saying(1 << 16, NEVER, 1, (true, pages, true, false));
         rig.out_tx.as_ref().unwrap().send(on(serde_json::json!({ "figure": { "node_id": "files:doc.pdf", "page": 2 } }))).unwrap();
         rig.out_tx.as_ref().unwrap().send(on(serde_json::json!({ "figure": { "node_id": "files:a.png" } }))).unwrap();
         let (req, _) = tokio::time::timeout(WAIT, codec::read_frame(&mut rig.far_rd)).await.expect("a request reaches the daemon").unwrap();
@@ -544,3 +547,23 @@ async fn a_post_is_written_only_on_a_connection_whose_hello_posts_plain_text() {
         assert_eq!(refused, !plain, "plain={plain}: the not-sent answer");
     }
 }
+
+/// A words request goes only to a connection whose hello said the daemon serves them; on any other it is answered
+/// `Unsupported` and never written (an older daemon would answer with the page's picture), and the request behind it
+/// still goes.
+#[tokio::test]
+async fn a_words_request_is_written_only_on_a_connection_whose_hello_said_the_daemon_serves_them() {
+    let words = || OutgoingReq::PageWords { node_id: "files:a.pdf".into(), workspace_id: None, page: 2 };
+    for serves in [false, true] {
+        let mut rig = rig_saying(1 << 16, NEVER, 1, (false, false, true, serves));
+        rig.out_tx.as_ref().unwrap().send(words()).unwrap();
+        rig.out_tx.as_ref().unwrap().send(OutgoingReq::ChatResolve { row: "r".into() }).unwrap();
+        let (req, _) = tokio::time::timeout(WAIT, codec::read_frame(&mut rig.far_rd)).await.expect("a request reaches the daemon").unwrap();
+        assert_eq!(req.op == op::PREVIEW_GET, serves, "serves={serves}: the first frame written is {}", req.op);
+        assert_eq!(req.payload.get("words").is_some(), serves, "serves={serves}: {}", req.payload);
+        // The answer is sent before the request behind it is taken, so it is already here when that request is read.
+        let unsupported = rig.events.try_iter().any(|(_, e)| matches!(e, IncomingEvt::PageWords { reply: PageWordsReply::Unsupported, page: 2, .. }));
+        assert_eq!(unsupported, !serves, "serves={serves}: the unsupported answer");
+    }
+}
+

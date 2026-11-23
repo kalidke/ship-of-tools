@@ -191,6 +191,10 @@ where
                     // not one on a page (it would read the page's file as the figure and refuse it as no image).
                     answer_locally(evt_tx, &host, window, IncomingEvt::Selection { req, reply: SelectionReply::Unsupported });
                 }
+                Some(OutgoingReq::PageWords { node_id, workspace_id, page }) if !session.serves_page_words => {
+                    // This daemon's hello did not say it serves words; it would answer with the page's picture.
+                    answer_locally(evt_tx, &host, window, IncomingEvt::PageWords { node_id, workspace_id, page, reply: PageWordsReply::Unsupported });
+                }
                 Some(OutgoingReq::ChatPost { req }) if !session.posts_plain_text => {
                     // This daemon's door sends the text as given, so `<!channel>` would ping; the post is never written.
                     answer_locally(evt_tx, &host, window, IncomingEvt::Chat(ChatEvt::PostNotSent { req }));
@@ -231,7 +235,7 @@ fn untaken(req: &sot_protocol::ops::SelectionSetReq, takes_drawing: bool, draws_
     req.drawing.as_ref().is_some_and(|d| !takes_drawing || !draws_pages && paged(d))
 }
 
-/// A request this connection's daemon cannot take (a drawing it does not read, a post it would send unescaped), ended here
+/// A request this connection's daemon cannot take (a drawing it does not read, words it does not serve, a post it would send unescaped), ended here
 /// by `evt` and never written; the window is woken to show it.
 fn answer_locally<Wn: Redraw>(evt_tx: &StdSender<(HostKey, IncomingEvt)>, host: &HostKey, window: &Wn, evt: IncomingEvt) {
     let _ = evt_tx.send((host.clone(), evt));
