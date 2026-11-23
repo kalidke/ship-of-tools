@@ -209,7 +209,17 @@ is something to tell of the update of the computer it runs on (a release found, 
 apply it without ending the sessions, not applied, or updates off for an unreadable install record), from that
 computer's daemon, or from the window's own start-up check on a computer that runs no daemon, where ready is not
 judged against the install (UPDATE-STATE-NOT-SHOWN and UPDATE-MARK-WINDOW-ONLY-COMPUTER, Closed; drawn on Linux
-under a virtual display only, used by no person). Since 2026-11-21 the repo quotes no person (the
+under a virtual display only, used by no person; on a Mac that runs its own sessions no way is known to follow the
+ready words, MAC-NO-QUIT-KEEPING-SESSIONS, a note from reading code); and the fix for a fault the maintainer reported
+on 2026-11-22, that markdown files in the preview did not update when new versions appeared, in two halves, neither
+used by a person: the daemon tells a file's burst of changes once, when the burst closes, by whether the file then
+exists, so a file replaced by a removal and a create is fetched again where the window had been told only the removal
+(PREVIEW-REPLACED-FILE-TOLD-REMOVED, Closed; it takes effect when a computer's daemon runs it, the wire unchanged),
+and a return to a session sends one read of the file its preview shows and draws the reply only when it differs, so
+a file changed while its session was off screen is no longer left as it was parked (PARKED-ROW-PREVIEW-STALE, Closed;
+it takes effect when a window runs it; what a return does not check is listed in fe-ui's contract, and each such read
+goes through the daemon's reader, which reads a whole file before it cuts it, FILES-BYTES-READER-READS-WHOLE). Since
+2026-11-21 the repo quotes no person (the
 maintainer's rule, in the root `CLAUDE.md`): every quotation in a tracked file was rewritten in reported form, and
 the defects check carries a net for the common forms. v0.7.2 was published 2026-11-19. It is 0.7.1 with two faults on a Mac fixed, cut from `main`
 on the maintainer's word with no candidate once the tests had passed: the whole local gate at the commit that was cut,
@@ -460,7 +470,8 @@ a clear, a compaction or a resume; and a Codex session records which conversatio
 state folder (CODEX-ROOT-THREAD-HOOKS, open), and mail filed to a Ready Codex row asks that conversation to poll
 through Codex's own queue, once for each batch of unread mail, with nothing typed into its terminal (sessions operating
 Codex rows had seen them never woken by mail, CODEX-IDLE-ROW-NOT-WOKEN, Closed; proved against a stand-in Codex only,
-no live row has been woken, CODEX-WAKE-QUEUE-LIVE, open). Not built for Codex: a structured question to the person shown red, the move of a row
+no live row has been woken, CODEX-WAKE-QUEUE-LIVE, open). Not built for Codex: a structured question to the person shown red (Codex's hooks cannot carry
+it, CODEX-QUESTION-NOT-SHOWN), a person's reply from a page (CODEX-PAGE-REPLY-NOT-TIED-TO-A-QUESTION), the move of a row
 to another account, a Windows launch, and the three messaging skills and the work-state hooks kept to a row's session
 (CODEX-GLOBAL-SKILLS). Queued, not started: the
 installer-observation pass (`pass/install-observe`), 26.04 runner support, mods (ADR 0051, accepted for 0.7.Z, unbuilt),

@@ -239,6 +239,15 @@ owned by `docs/CLAUDE.md`.
   expected never to show on a Mac with the default keys, and a Mac that runs its own sessions has no known way to quit
   and keep them; the update mark's ready words cannot be followed there. Found by a review reading the code and the
   windowing library; not tried on a Mac. One press of `Cmd+q` in the navigation pane on a Mac decides it.
+- **WINDOW-KILLED-WITH-DAEMON-ENDS-ROWS** [note] A window on the daemon's own computer holds a lease, recorded in
+  `held.json`. When that window and the daemon are killed together (a logout, a stop of the user's service manager, a
+  reboot with the window open), the record stays, and the next start reads it (`lifecycle/lease.rs`, `startup_plan`):
+  a record of another boot plans Cleanup, and holders recorded in the same boot plan a wait of the handover bound that
+  ends in a shutdown when no window answers. Either ends every row through rows' end API (`lifecycle/startup.rs`),
+  which removes the rows, not only their processes, and nothing tells the person before or after. That is the lease's
+  rule applied to a window that never chose to close. From reading the code before a planned stop of a hub on
+  2026-11-22, where no window ran on that computer and the start resumed every row; not seen. Decide at lifecycle's
+  pass whether a start that finds a record its window never closed keeps the rows.
 - **CLAIM-EXIT-OWNER** [note] `Signal::claim_exit` belongs to lifecycle's terminal, not containment.
 - **LEASE-REJECT-NO-DEADLINE** [note] The lease's malformed-line refusals use the undeadlined `reject` in a loop that
   continues (`lifecycle/lease.rs`), so a lease peer that never reads can fill its buffer; wire's `reject`
@@ -554,6 +563,20 @@ owned by `docs/CLAUDE.md`.
 
 ## agents
 
+- **CODEX-QUESTION-NOT-SHOWN** [note] A Codex session's question to its person is not shown as a Claude session's is
+  (the row red, the question on the person's waiting page). Measured on Codex 0.171.0 on 2026-11-22, with no product
+  change: its hooks cannot carry that state. A question that holds the turn is a request of Codex's app server,
+  answered inside the same turn; the hook before it tells only an attempt, the hook after it comes with the answer,
+  and the pending request is in no record a hook reads. A question the turn does not wait for has a tool-return hook
+  with its text, but the turn runs on, and skipping the question fires no hook, so a row stamped at delivery could
+  stay red for a question nobody owes an answer. Two ways, neither built: watch the app server's request and its
+  resolution, as its own integration; or show the delivered question as a notice that is not the blocked state.
+- **CODEX-PAGE-REPLY-NOT-TIED-TO-A-QUESTION** [note] A person's reply from a page does not reach a Codex row. A page's
+  grant is for an entry and a row, or all rows, not for a question, and the reply carries a handle, a text and an
+  optional request id; nothing ties it to the question it answers or to the person's click. Sent through Codex's
+  queue, a reply that waits could start a turn after its question is gone. A Claude row's typed reply has the same
+  gap in a milder form: a reply typed after the question is gone still lands as input. From reading the code on
+  2026-11-22; tying a grant to a question is a change across pages and rows, not built.
 - **CODEX-ROOT-THREAD-HOOKS** [note] The row binding uses the root `session_id` from Codex hook inputs.
   After release, check the live events and the bound id on a fresh start, resume, new conversation, clear,
   compaction, fork and child agent. Record which switches emit a start hook, whether the first prompt corrects
@@ -572,6 +595,8 @@ owned by `docs/CLAUDE.md`.
   fixture covers a busy turn that receives mail, polls after a Stop hold and then finishes, including recovery after
   a writer releases the inbox lock. In that fixture a zero read wait reported a free local inbox busy while the
   lock helper was starting. The reader now tries the lock directly at zero. Confirm the sequence with a live Codex session.
+  One thing no test pins, from the wake's review: a changed wake that reads the row's binding again at every look
+  turns no test red.
 
 - **CODEX-SELECTION-WINDOW** [note] A Linux stub verifies the selection hook, marked PNG and withdrawal across Codex launches.
   To close, select plain text and rendered Markdown in fresh and resumed Codex rows in a real window. At the next
@@ -647,6 +672,14 @@ owned by `docs/CLAUDE.md`.
   After PDF-ZOOM-PAGE-PAST-TEXT-CAP no path seen in use sends a PDF there, but a kernel reply that is unmatched or
   malformed, or a live kernel's wire error, or a bounded plugin's non-picture, non-text output past 2 MiB, still does (a
   bounded picture past 64 MiB is refused with `preview_too_large`, not sent there). A bounded-output type should answer a note there, as video does.
+- **FILES-BYTES-READER-READS-WHOLE** [note] The bytes-level reader (`read_bytes_preview`, `files/preview/mod.rs`) reads
+  the whole file into memory before it cuts text at 2 MiB or refuses a binary past its cap, and it opens whatever the
+  path names. So each read of a very large file holds all of it in the daemon's memory, and a path that names a FIFO
+  is opened and read: the read waits for a writer and takes bytes meant for another reader. Every `preview.get` that
+  no plugin answers goes there: a selection, the re-fetch after a told change, and since 2026-11-22 the window's check
+  at a return to a session, which makes a file that grew or was replaced while its session was off screen one more way
+  in. Found by a review reading the code; not seen. Fix: look the path up first, answer a note for anything but a
+  regular file, and read at most the cap and one byte more.
 - **WATCHER-DIRECTORY-ARRIVAL-GAPS** [note] Found in review. A child created before the manager installs its directory's nonrecursive watch may send no change. Walking the directory registers its subdirectories without replaying existing files. A directory arriving solely by rename may receive no registration hint. Both gaps predate burst coalescing.
 
 ## sidecars

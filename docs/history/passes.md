@@ -3242,3 +3242,48 @@ the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the sa
   - The maintaining session's faults: a chained rebuild that went on to push and delete after a conflict stopped
     its first step (nothing lost; a rebuild is now its own command, read before any push), and two gate runs lost
     to the gate's own suite, whose list of tests that read outside their crate the wake's new tests were not on.
+- Landings of 2026-11-22, afternoon and evening. Times are by the clock, from a brief's writing to `main`. One gate
+  ran at a time, so a landing's clock time includes its wait behind the others.
+  - The state of a computer's update, in two groups built from one plan by one builder (UPDATE-STATE-NOT-SHOWN,
+    UPDATE-MARK-WINDOW-ONLY-COMPUTER). The first group, `sotd status` and `sot-fe version` (four commits): about 4
+    hours, two review rounds; round 1 had four blockers, all fixed in one pass. The second, the window's mark (three
+    commits): about 4 hours, two review rounds. Round 2's one blocker was in the manual, which told a person to quit
+    by a key that names nothing on a Mac; reading it out gave the note MAC-NO-QUIT-KEEPING-SESSIONS. One gate run was
+    lost to a count: this landing and the session-order one each raised the window's list of native fixtures from 38
+    to 39, and the two merged without a conflict into a list of 40 that said 39.
+  - Mail wakes an idle Codex row through Codex's own queue (CODEX-IDLE-ROW-NOT-WOKEN closed, CODEX-WAKE-QUEUE-LIVE
+    open). Three plans in the morning; the binding by the Codex row (recorded above); the daemon's half by a Claude
+    builder, two commits, about 4 hours 15 minutes, two review rounds. Round 2's one blocker was a clause of the
+    contract, so the landing took no third round. The review's mutants left one alive (the same entry).
+  - Typing moves a session in the recent order (the second half of RECENT-ORDER-LEAVES-SESSIONS-WITHOUT-AN-AGENT;
+    MAIL-ALONE-MOVES-NO-SESSION opened). About 7 hours by the clock, most of it waiting: two review rounds, the
+    second with a blocker of words only, and three rebuilds on a `main` that had moved. Its gate failed once on a
+    test of another subsystem, the capsule's idle status probe, where one probe took 57.9 ms against 50 at a load
+    of 35 on the gate's computer and the run passed at a load of 3.6; a fresh reviewer decided between the commit
+    and the load by measurement, and the test now judges by count (a tests-only landing of its own, the Linux
+    sighting beside WIN-IDLE-STATUS-50MS).
+  - An inbox lock asked to wait zero seconds is tried once. Two product lines, found by a fixture the Codex row
+    built to prove the end-of-turn mail check for a Codex row with the shipped hook commands: with a wait of zero
+    the lock's helper never ran, so a free inbox read as busy. Read by the maintaining session as its review; about
+    15 minutes from the Codex row's commit to `main`.
+  - A person's report that files in the preview did not update when new versions appeared, fixed in two halves.
+    The diagnosis (about 30 minutes, from the daemon's journal) found the watcher telling only the first change of
+    a burst, which for a replaced file is its removal. The daemon's half (PREVIEW-REPLACED-FILE-TOLD-REMOVED): about
+    2 hours 15 minutes from the report to `main`, built by the Codex row from two briefs, three read-only reviews.
+    The second review found that the first form awaited each lookup in series and read no events meanwhile, 49 s of
+    held intake for 256 paths; the landed form never holds intake. The window's half (PARKED-ROW-PREVIEW-STALE) was
+    split from it at the third review and took the rest of the evening: its first form grew over four briefs into a
+    redesign of the preview's recovery, and each review found about ten new sequences. It was set aside for a small
+    form, one read at a return that yields to every other read (95 product lines, built in about 20 minutes), and
+    nine cases where the read is simply not sent (about 20 minutes more); gate passed about 5 hours 50 minutes after
+    the report. Its last review named two regressions, both the daemon's own reader reached by one more read
+    (FILES-BYTES-READER-READS-WHOLE, on `main` before it), and five failed rules that each cost one read too many;
+    the maintaining session read them against `main` and landed without another round.
+  - Not landed: a Codex row's work state owned by its conversation and turn. Five commits and three review rounds,
+    each round finding about ten sequences where a Codex row did worse than on `main`. Every rule rested on what
+    Codex puts in its hook inputs, which nobody had seen in a run, so the work stopped for a measurement: 164 hook
+    inputs over four runs of the installed Codex in a scratch home. It showed that a turn held at its stop keeps
+    its turn id and that an interrupted turn sends no stop. A small form built on those facts is the next brief.
+  - What the day showed: a review's findings sorted into regressions against `main`, failures of a stated rule and
+    limits, with only the first two fixed and in their smallest form, ended two lanes that more rounds were not
+    ending; and a rule about another program's behavior is measured before it is built on.
