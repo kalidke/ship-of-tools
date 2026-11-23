@@ -36,7 +36,7 @@ stand-in kernel records the request it is sent),
 program exits at once: a folder and a text file `no_words`, a PDF, an HDF5 file and a video `kernel_unavailable`),
 `a_words_request_through_the_assembly_is_answered_with_the_plugins_words` (a kernel of the test's own answers the words
 mime: the words ship as given, the kernel is asked the page and `words` alone, and for a folder not at all),
-`a_plugins_note_is_logged_with_its_node_and_its_reason_through_words_answer` (an event captured through `words_answer`,
+`a_plugins_note_is_logged_with_its_node_and_its_reason_through_words_answer` (an event captured through `words_answer` with platform's `test_log::capture`, level and words,
 for `a.pdf`, a file named `.pdf` and `A.PDF`; another file's answer and an answer of words log no reason) and
 `the_pdf_plugins_note_is_logged_as_its_fixed_words_and_nothing_else_is` (`plugin_note` alone). The assembly tests give
 the workspace a kernel of its own (`Workspace::set_kernel`) and register nothing for the default kernel project, which

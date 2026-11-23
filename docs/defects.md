@@ -702,6 +702,12 @@ owned by `docs/CLAUDE.md`.
   name that resolves inside the root is replaced by the note, while `file.write` refuses every link at its name; the
   string rule (`target_to_path`) accepts `.` segments and, on Windows, `:`, which the write refuses. Decided: one rule for
   both, at the concept pass.
+- **FILES-SIZE-GATE-PDF-BY-EXTENSION** [note] The preview's size gate tells a PDF by `Path::extension` (`is_bounded_output_plugin`,
+  `files/preview/mod.rs`), which is none for a file named exactly `.pdf`, so such a file past 2 MiB is answered without
+  the kernel (its picture and its words both), where the PDF plugin claims it by the end of its path. A found-by-reading
+  note from the review of a PDF page's words (2026-11-23); no such file was seen. `is_pdf_path` is the daemon's one rule
+  for a PDF and the one to use when this is fixed; a file named `.pdf` under the cap with a kernel that cannot be asked
+  is answered `no_words` for a words request, not `kernel_unavailable`, for the same reason.
 - **FILES-BYTES-READER-PDF-AS-TEXT** [note] The bytes-level reader answers a `.pdf` with the file's own bytes as
   `text/plain; charset=utf-8` (`mime_for_path` has no arm for it), which the window only summarizes as "binary file".
   After PDF-ZOOM-PAGE-PAST-TEXT-CAP no path seen in use sends a PDF there, but a kernel reply that is unmatched or

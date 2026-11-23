@@ -64,7 +64,15 @@ fn the_word_at_a_point_is_the_one_under_it_else_the_nearest() {
     // No words, and an aspect that is no number.
     let empty = PageText::new("n".into(), PageWords { page: 1, cut: false, lines: vec![] });
     assert_eq!(empty.word_at((0.5, 0.5), 1.0), None);
-    assert_eq!(p.word_at((0.2, 0.15), f32::NAN), Some(0));
+    // An aspect that is no number, or no width, is read as 1: the nearest word is the one a square page gives, which a
+    // comparison with a NaN distance would not find (the first word would win).
+    for odd in [f32::NAN, 0.0, -2.0, f32::INFINITY] {
+        assert_eq!(p.word_at((0.2, 0.4), odd), Some(2), "aspect {odd}");
+    }
+    // A word that holds the point wins by that fact: a tiny aspect squares every sideways gap to nothing, and the first
+    // word would win the tie of zeros over the one the point is in.
+    assert_eq!(p.word_at((0.6, 0.15), 1e-30), Some(1));
+    assert_eq!(p.select((0.6, 0.15), (0.6, 0.55), 1e-30), Some((1, 3)));
 }
 
 /// A drag selects every word from the one at its start to the one at its end, in the document's order, whichever way it
@@ -117,6 +125,11 @@ fn the_bands_are_one_a_line_clipped_to_the_image() {
     assert!(near(&cut[1], (300.0, 1050.0, 200.0, 200.0)), "{:?}", cut[1]);
     assert_eq!(p.bands((0, 3), canvas, rect(300.0, 500.0, 200.0, 300.0)).len(), 0, "between the lines");
     assert_eq!(p.bands((0, 1), canvas, rect(900.0, 0.0, 100.0, 5000.0)).len(), 0, "right of every word");
+    // A line read right to left (its first word at the right) has its band, from its least left to its greatest right.
+    let rtl = PageText::new("n".into(), PageWords { page: 1, cut: false, lines: vec![vec![word(0.7, 0.1, 0.9, 0.2, "b"), word(0.1, 0.1, 0.3, 0.2, "a")]] });
+    let band = rtl.bands((0, 1), canvas, view);
+    assert_eq!(band.len(), 1);
+    assert!(near(&band[0], (200.0, 250.0, 800.0, 200.0)), "{:?}", band[0]);
     // A range off the page marks nothing.
     assert!(p.bands((4, 5), canvas, view).is_empty());
 }

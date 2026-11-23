@@ -2442,14 +2442,14 @@ start, end, `len` and the text's digest (`the_want_carries_what_the_daemon_check
 `PageText` (`preview/image/words.rs`) holds wire's `PageWords` of one file's page (`belongs_to` says which) and answers four
 questions, each a pure function of its inputs, with private fields and no mutation; it never takes `State`. A point is a
 fraction of the page as drawn (the canvas rectangle's), so a zoom or a pan changes nothing, and a word is named by its
-index over all lines in order. `word_at` is the first word whose box holds the point, else the first nearest by the distance
+index over all lines in order. `word_at` is the first word whose box holds the point (by that fact, not by a distance of zero, which a tiny `aspect` makes of every gap), else the first nearest by the distance
 to the box in units of the page's height (`aspect`, the page's width over its height, widens a sideways step), a point past
 the page's edge included, none for a page with no words. `select` is every word from the one at a drag's start to the one at
 its end in the document's order, whichever way the drag runs (`(first, last)`, inclusive); that a press and release without
 motion selects nothing is the press's rule, not this type's. `text` is wire's `PageWords::text` (words of a line joined by
 one space, lines by LF; none for a range outside the page), the one definition the daemon's check and a share's digest also
-read (wire's guarantee 17). `bands` is one rectangle for each line a selection touches, from its first selected word's left
-to its last's right and as high as the tallest, mapped onto the canvas rectangle and clipped to the image rectangle, a band
+read (wire's guarantee 17). `bands` is one rectangle for each line a selection touches, from its least left to its greatest right (a line
+read right to left has its band) and as high as the tallest, mapped onto the canvas rectangle and clipped to the image rectangle, a band
 the clip leaves nothing of left out. Built, and called by nothing yet: the press, the drag, the marks and copy are the next
 landing of the plan (docs/defects.md: PDF-TEXT-SELECTION), so nothing a person sees changes. Tests
 (`preview/image/words_tests.rs`): `the_word_at_a_point_is_the_one_under_it_else_the_nearest`,

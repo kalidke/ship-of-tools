@@ -32,13 +32,17 @@ impl PageText {
     }
 
     /// The word at `(x, y)`, fractions of the page (a point past the page's edge is allowed): the first word whose box
-    /// holds it, else the first nearest to it, by the distance to the box in units of the page's height (`aspect` is the
-    /// page's width over its height). None when the page has no words.
+    /// holds it, by that fact and not by a distance of zero (a tiny `aspect` squares a neighbor's gap to zero), else the
+    /// first nearest to it, by the distance to the box in units of the page's height (`aspect` is the page's width over
+    /// its height). None when the page has no words.
     pub(in crate::ui) fn word_at(&self, (x, y): (f32, f32), aspect: f32) -> Option<usize> {
         let aspect = if aspect.is_finite() && aspect > 0.0 { aspect } else { 1.0 };
         let apart = |near: f32, far: f32, at: f32| (near - at).max(at - far).max(0.0);
         let mut best: Option<(usize, f32)> = None;
         for (i, w) in self.words.lines.iter().flatten().enumerate() {
+            if (frac(w.left)..=frac(w.right)).contains(&x) && (frac(w.top)..=frac(w.bottom)).contains(&y) {
+                return Some(i);
+            }
             let (dx, dy) = (apart(frac(w.left), frac(w.right), x) * aspect, apart(frac(w.top), frac(w.bottom), y));
             let d = dx * dx + dy * dy;
             if best.is_none_or(|(_, b)| d < b) {
@@ -73,7 +77,9 @@ impl PageText {
             let chosen = &line[lo - at..=hi - at];
             let top = chosen.iter().map(|w| w.top).min().unwrap_or(0);
             let bottom = chosen.iter().map(|w| w.bottom).max().unwrap_or(0);
-            let (left, right) = (frac(chosen[0].left), frac(chosen[chosen.len() - 1].right));
+            // From the least left to the greatest right, so a line read right to left has its band too.
+            let left = frac(chosen.iter().map(|w| w.left).min().unwrap_or(0));
+            let right = frac(chosen.iter().map(|w| w.right).max().unwrap_or(0));
             let band = ScreenRect {
                 x: canvas.x + left * canvas.w,
                 y: canvas.y + frac(top) * canvas.h,

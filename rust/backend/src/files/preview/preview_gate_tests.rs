@@ -476,35 +476,11 @@ async fn a_words_request_through_the_assembly_is_answered_with_the_plugins_words
     assert_eq!(asked["params"], serde_json::json!({"page": 2, "words": true}));
 }
 
-/// A writer a test's subscriber logs into.
-#[cfg(unix)]
-#[derive(Clone, Default)]
-struct Logged(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
-
-#[cfg(unix)]
-impl std::io::Write for Logged {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0.lock().unwrap().extend_from_slice(buf);
-        Ok(buf.len())
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-#[cfg(unix)]
-impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Logged {
-    type Writer = Logged;
-    fn make_writer(&'a self) -> Logged {
-        self.clone()
-    }
-}
-
 /// When the PDF plugin answers a note in place of words, the daemon logs at info, through `words_answer`, the node and the
 /// note's fixed words, so a missing tool is told from a bad PDF: for a file named `a.pdf` and for one named exactly
-/// `.pdf`, which the plugin claims; another file's text answer is not logged, and an answer of words logs nothing. (No
-/// test of the backend captured an event before this; this one scopes a subscriber of the crate's own dependency to the
-/// test's thread, which the current-thread runtime of `#[tokio::test]` keeps for every await.)
+/// `.pdf`, which the plugin claims; another file's text answer is not logged, and an answer of words logs nothing. The
+/// event is read through platform's `test_log::capture`, the backend's own, which keeps a callsite another thread reached
+/// first from being cached as off; the thread is the test's, which the current-thread runtime keeps for every await.
 #[cfg(unix)]
 #[tokio::test]
 async fn a_plugins_note_is_logged_with_its_node_and_its_reason_through_words_answer() {
@@ -522,21 +498,18 @@ async fn a_plugins_note_is_logged_with_its_node_and_its_reason_through_words_ans
     for (node, reply, reason) in cases {
         let dir = tempfile::tempdir().unwrap();
         let kernel = stub_kernel(dir.path(), reply);
-        let log = Logged::default();
-        let subscriber = tracing_subscriber::fmt().with_writer(log.clone()).with_ansi(false).with_max_level(tracing::Level::INFO).finish();
-        let answered = {
-            let _scoped = tracing::subscriber::set_default(subscriber);
-            words_answer(&kernel, Path::new(node.trim_start_matches("files:")), &words_ask(node, Some(2), true)).await
-        };
-        let text = String::from_utf8(log.0.lock().unwrap().clone()).unwrap();
+        let log = sot_platform::test_log::capture();
+        let answered = words_answer(&kernel, Path::new(node.trim_start_matches("files:")), &words_ask(node, Some(2), true)).await;
+        let text = log.text();
         let event = "words request not answered with words";
+        let line = text.lines().find(|l| l.contains(event)).unwrap_or("");
         match reason {
             Some(reason) => {
                 assert_eq!(answered.unwrap_err().0, "no_words", "{node}");
-                assert!(text.contains(event) && text.contains(node) && text.contains(reason), "{node}: {text}");
+                assert!(line.contains("INFO") && line.contains(node) && line.contains(reason), "{node} at info: {text}");
             }
             None if answered.is_err() => {
-                assert!(text.contains(event) && text.contains(node), "{node}: {text}");
+                assert!(line.contains("INFO") && line.contains(node), "{node}: {text}");
                 assert!(!text.contains(missing) && !text.contains(bad), "{node}: another file's answer is not logged: {text}");
             }
             None => assert!(!text.contains(event), "{node}: words are not a failure: {text}"),
