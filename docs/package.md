@@ -218,7 +218,15 @@ exists, so a file replaced by a removal and a create is fetched again where the 
 and a return to a session sends one read of the file its preview shows and draws the reply only when it differs, so
 a file changed while its session was off screen is no longer left as it was parked (PARKED-ROW-PREVIEW-STALE, Closed;
 it takes effect when a window runs it; what a return does not check is listed in fe-ui's contract, and each such read
-goes through the daemon's reader, which reads a whole file before it cuts it, FILES-BYTES-READER-READS-WHOLE). Since
+goes through the daemon's reader, which reads a whole file before it cuts it, FILES-BYTES-READER-READS-WHOLE); and,
+since 2026-11-23, the fix for a person's report of 2026-11-22 that a kernel never started after an install whose
+checklist read ok: every Julia the daemon starts and every Julia step of an install or update runs without the
+person's startup file (the Pluto server too), and the checklist looks up each package's source under the kernel's
+flags where it had only looked for a manifest (INSTALL-JULIA-STARTUP-MOVES-PACKAGE-STORE, Closed; its limits are
+INSTALL-JULIA-SOURCE-CHECK-LIMITS and INSTALL-SHELL-DEPOT-DIFFERS-FROM-SERVICE; green on the hosted Windows and macOS
+runs, used by no person); and the Chat drawer's title says the workspace and the channel together, as
+`workspace:channel`, on a hub of one workspace too, the workspace by the short name of its Slack address (asked by the
+maintainer on 2026-11-23; seen by no person in a window). Since
 2026-11-21 the repo quotes no person (the
 maintainer's rule, in the root `CLAUDE.md`): every quotation in a tracked file was rewritten in reported form, and
 the defects check carries a net for the common forms. v0.7.2 was published 2026-11-19. It is 0.7.1 with two faults on a Mac fixed, cut from `main`
@@ -470,7 +478,11 @@ a clear, a compaction or a resume; and a Codex session records which conversatio
 state folder (CODEX-ROOT-THREAD-HOOKS, open), and mail filed to a Ready Codex row asks that conversation to poll
 through Codex's own queue, once for each batch of unread mail, with nothing typed into its terminal (sessions operating
 Codex rows had seen them never woken by mail, CODEX-IDLE-ROW-NOT-WOKEN, Closed; proved against a stand-in Codex only,
-no live row has been woken, CODEX-WAKE-QUEUE-LIVE, open). Not built for Codex: a structured question to the person shown red (Codex's hooks cannot carry
+no live row has been woken, CODEX-WAKE-QUEUE-LIVE, open); and, since 2026-11-23, a Codex row's work state belongs to
+the root turn that set it: an interrupted turn releases the row's working state where the row had stayed working, and
+a late event of an older turn no longer clears or completes the newer one, by rules built on what Codex 0.171.0 was
+measured to send to its hooks in a scratch home (CODEX-TURN-OWNERSHIP-LIMITS has the limits; no live row's interrupt
+has been seen). Not built for Codex: a structured question to the person shown red (Codex's hooks cannot carry
 it, CODEX-QUESTION-NOT-SHOWN), a person's reply from a page (CODEX-PAGE-REPLY-NOT-TIED-TO-A-QUESTION), the move of a row
 to another account, a Windows launch, and the three messaging skills and the work-state hooks kept to a row's session
 (CODEX-GLOBAL-SKILLS). Queued, not started: the

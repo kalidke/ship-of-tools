@@ -3287,3 +3287,38 @@ the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the sa
   - What the day showed: a review's findings sorted into regressions against `main`, failures of a stated rule and
     limits, with only the first two fixed and in their smallest form, ended two lanes that more rounds were not
     ending; and a rule about another program's behavior is measured before it is built on.
+- Landings of the night of 2026-11-22 and the morning of 2026-11-23. Four commits reached `main` together at 10:48
+  on the maintainer's word, after a night in which the gate's computer could not run a gate.
+  - The window's half of the stale-preview fix (recorded above) and the records of the day before, each gated by
+    midnight; they waited for the push with the two below.
+  - The installer's Julia steps run as the kernel runs (INSTALL-JULIA-STARTUP-MOVES-PACKAGE-STORE, a person's report
+    in the project's chat at 23:10). Confirmed in the code within 15 minutes. Built by the Codex row from three
+    briefs: the first commit 13 minutes after its brief, then 10 and 5 minutes for two rounds of fixes. One read-only
+    review named four regressions and seven failed rules; the maintaining session took four (Pluto still started with
+    the startup file, the comm refresh's Julia too, a 30 s bound, a verdict that could lose the package's name) and
+    stated the rest as limits. The whole gate then found what the review had only predicted: a check that loaded Pkg
+    took 14 to 16 s from a cold start and ran past its bound under load; the landed check reads the manifest with
+    Julia's Base alone, 0.2 to 0.4 s cold.
+  - A Codex row's work state belongs to the root turn that set it (CODEX-TURN-OWNERSHIP-LIMITS). The small form the
+    measurement of the evening allowed: the first commit 14 minutes after its brief; one review, six regressions
+    and one failed rule, each narrow; a second commit 16 minutes after its brief that answered all six, the main one
+    by refusing an event only when its turn is provably older (the measured turn ids are time-ordered); no further
+    round. The gate's sleep scan refused the new test's lock holder, a tests-only fix.
+  - The gate's computer. After the shared home moved at 22:30, that computer's NFS client asked the home server to
+    test a state id about 4,000 times a second (18.3 million calls in one 76-minute gate) and work that opened files
+    on the home waited: a build of three small crates took 151 s for 9 s of processor time, and the processors sat 96
+    to 97% idle through a gate that took 77 minutes where it takes 14 and failed at two real-Julia tests' bounds and
+    one build check's. Two such gates were run before the cause was measured (the client's per-operation counters,
+    read before and after a run); the first reading, load, was wrong, and one claim made on the way, that a Julia
+    was being installed mid-run, was a test fixture's text. A second computer could not host the gate
+    (GATE-NEEDS-A-DISK-TMP). The lab's administrator cleared the client's state on the server at 07:21 and the same
+    commit's whole gate passed in 219 s. From the first slow gate's start to the passing one: 5 hours, none of it a
+    fault of the commits.
+  - The Chat drawer's title says `workspace:channel` (asked by the maintainer at 10:40). One builder, 57 product
+    lines in about 5 minutes of work; one review, no regression and one failed rule (the short name was lost when the
+    workspace's service restarted); a fix of 30 product lines, which took 96 minutes by the clock because the builder
+    sat about 70 minutes with no entry in its transcript before it went on, and the maintaining session waited
+    without looking.
+  - Set aside: a plan for PTY-INPUT-MARK, raised by the lab's coordinating session and not asked for by the
+    maintainer, on which a planner, a reviewer and a decision page were spent overnight before he parked it for
+    0.7.5 or later. An item another session raises is now put to him in one line before any agent is spent on it.

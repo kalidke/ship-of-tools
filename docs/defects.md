@@ -402,8 +402,15 @@ owned by `docs/CLAUDE.md`.
 - **ROW-RESTART** [feature] One restart action for a row in phase `terminal` or `ended_no_respawn`: daemon op
   `workspace.restart` owned by rows, `sot-fe restart <ws> [--resume <id>]`, Shift+r in Sessions; same workspace id and
   handle, a fresh leg, resume by id on request. Recorded as unbuilt in the rows contract.
-- **PTY-INPUT-MARK** [note] Distinguish `pty.input` from a non-window connection with a visible mark. Until then, approval
-  "typed in that session's pane" without `[sot-page]` is a convention, not proof of physical keyboard input.
+- **PTY-INPUT-MARK** [note] A row's prompt carries no record of how its bytes arrived. `pty.input`, and so
+  `sot-fe type`, types any bytes into any row for any process of this OS account, unmarked, Enter and editing keys
+  included, and `ccx --queue` passes any line to a Codex row's conversation, so a prompt with no mark is not evidence
+  that the person typed it; and a prompt that begins `[sot-page] ` is not evidence of a page's reply, since `pty.input`
+  can type that text too and any process of the account can reach the page-reply door itself. Reported by the lab's
+  coordinating session on 2026-11-22, from another tool's review; not seen misused. A plan exists (into an agent row,
+  the product's doors type only their own marked lines, and a program's keys are only Escape and Ctrl-C); the
+  maintainer set it aside on 2026-11-23 until 0.7.5 or later. Within one OS account nothing will tell the person's
+  keys from a program that speaks the row socket's protocol or drives the window.
 - **TEST-REAPER-LIMITS** [note] The test reaper (`rust/backend/tests/support/reaper.rs`, closing TEST-CAPSULE-OUTLIVES-TEST)
   is Linux only: a killed test leaves any macOS capsule (`Env`'s `Drop` never swept one there) and a Windows capsule that
   broke away from the test's job. It runs inside the test's control group, so a kill of the whole group takes it too;
@@ -463,6 +470,11 @@ owned by `docs/CLAUDE.md`.
 
 ## messaging
 
+- **EDITOR-MODE-TYPED-AS-COMMANDS** [note] The free-prompt test (`comm/wake/screen.rs`) does not read Claude Code's
+  editor mode. In its vim editor mode left in NORMAL mode, the wake's line and a page reply are read as commands: the
+  typed-line gate withholds Enter, but the box can keep an altered remnant, without its mark, that the person's next
+  Enter sends. From reading the code on 2026-11-23, in a review of the plan for PTY-INPUT-MARK; not seen, and what the
+  screen shows in that mode is not measured. Fix when measured: the free test refuses a box in that mode.
 - **SESSION-START-FAILS-ON-A-HELD-REGISTRY-LOCK** [session] Session starts (`comm-session-start.sh`) failed with
   `registry lock ... is held by ... (21s old ...): it is running` and `identity=FAIL`, in 25 of 29 rows, some twice
   before a later try joined (2026-11-17, in the minutes after a boot, while every row started at once:
@@ -789,6 +801,13 @@ owned by `docs/CLAUDE.md`.
   nothing, and the next line then fails on it). The release leg passes. Not read: which pre-release it is, and whether
   that Julia prints a stack's frames in another form or the shim's frames are gone from it. To do before that Julia is
   released: run the test on it, and either follow the new form in the test or fix the shim.
+- **REPL-CHILD-TEST-WATCHDOG-COLD-CACHES** [note] The REPL suite's child test (`julia/repl/test/shim_child.jl`) ends
+  its child after 180 s. In one whole local gate on 2026-11-23 its first test took 3 min 21 s, the watchdog ended the
+  child, and the test's next write failed with a broken pipe; alone on the same computer the suite passed, and so did
+  the next whole gates. What the test did not own, as read and not measured: the compile caches of a Julia version
+  first used in that run (the computer's release channel had moved to 1.13.0 the day before; the child starts with a
+  fresh folder first on its depot path) under a load of about 22. If it is seen again with warm caches, bound the
+  watchdog from the child's first answer, not from its start.
 - **KERNEL-THIRD-SPAWN-WINDOWS** [session] On a Windows window computer under 0.7.1-rc.1, three `julia.exe` kernels ran
   under `sotd` with no REPL rows, spawned hours apart and then twice within five seconds, the third right after a
   `markdown.tokenize` for the workspace `<default>`: a kernel kept past its row, or a second spawn for one request. Seen by
@@ -1038,6 +1057,11 @@ owned by `docs/CLAUDE.md`.
 
 ## distribution
 
+- **GATE-NEEDS-A-DISK-TMP** [session] The local gate (`scripts/tests/rc-gate.sh`) gives its jobs `TMPDIR=/tmp`, and the
+  product refuses to keep a row's records on a memory-backed file system. On a computer whose `/tmp` is memory-backed
+  the install smoke stops at its state folder and nearly every test that starts a row fails (seen by the maintaining
+  session on 2026-11-23, when the gate's usual computer was unusable for a night and a second one was tried). So the
+  gate runs only on a computer with a disk `/tmp`. Fix when forced: the gate takes its temporary root from a variable.
 - **INSTALL-JULIA-SOURCE-CHECK-LIMITS** [note] The installer's Julia skips personal startup files. If a download requires
   package server or proxy settings that exist only in that file, instantiation fails and the installer reports it. Set those
   values and any custom depot in the environment of both the installer and the daemon service.
