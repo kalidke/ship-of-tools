@@ -2456,9 +2456,10 @@ the clip leaves nothing of left out. Tests (`preview/image/words_tests.rs`): `th
 
 The window's owner of a page's selection is `PdfSelect` (`preview/image/words_select.rs`, one field of `State`, private
 fields, never takes `State`; `preview/image/words_input.rs` wires it). It is keyed by the page shown (host, row, file, page;
-`State::pdf_page`: a raster of a `.pdf` node with its page, no edit or refusal over it). `words_sync` drops what was held for
-another page (a page turn, another file, another session) before a press, a key and a reply, and before a frame only when
-something is held (`idle`: no key is built for a page nobody pressed on); a fresh install of the page (not a zoom's
+`State::pdf_page`: a raster of a `.pdf` node with its page, no edit, refusal or canvas over it). `words_sync` drops what was
+held for another page (a page turn, another file, another session) before a press, a key and a reply; before a frame the
+page shown (`pdf_shown`, borrowed) is compared with the key held in place (`PdfSelect::keeps`), and a key is built only when
+the page has changed, so a page that answered (empty, unreadable, an older daemon) costs a frame nothing either; a fresh install of the page (not a zoom's
 re-raster, `take_keep_view`) and a session's restore (`pdf_select.forget`, beside the drawing's `restore`) drop it and the
 frame the pointer maps through too, so a press before the first paint of the page starts nothing; a zoom or a pan gives a new
 frame (`set_frame`, from the preview pass beside the drawing's) and keeps the words and the selection, the marks following
@@ -2467,16 +2468,22 @@ and under no box drawn over the preview (`set_cover`, the help peek or a notice)
 is its alone and comes first in `press_selections`) it focuses the preview, clears the agent pane's, the chat's and the text
 selection, begins a drag and, if the words are neither held nor asked for, sends ONE `OutgoingReq::PageWords` under a new
 `serial`; a press while it is out, or once they are held, asks nothing, and a request that ended (`Ended`) is asked again at
-the next press. A reply is taken only if it carries the serial of the request asked: a reply to an older request, or to
-the same page after it was dropped and asked again, is dropped. Motion with the button down selects `PageText::select`
+the next press. A reply is taken only for the page shown and the request asked: the page is settled first (`on_page_words`
+syncs, so a file installed between the press and the reply drops the request with its page, and neither its notice nor the
+once-per-connection line is spent on that file), and the reply must carry the serial of the request asked; a reply to an
+older request, or to the same page after it was dropped and asked again, is dropped. Motion with the button down selects `PageText::select`
 between the press's point and the pointer's, kept as fractions of the page, so words that come after the press select too,
-after the release as well when the drag had moved; a move to the press's own position is no motion, and a click selects
-nothing (a press clears the last selection). A drag ends at the release, at the window's loss of focus and at a new press;
-its selection stays. The selection is cleared as a text preview's is: by a press anywhere else (`press_preview`, which every
-press reaches) and by Escape in the focused preview. The marks are `PageText::bands` on this frame's rectangles, pushed into
+after the release as well when the drag had moved; a move to the press's own screen position is no motion, whatever the page's rectangle has become since (a zoom or a resize
+with the button down), and a click selects nothing (a press clears the last selection). A drag ends at the release, at the window's loss of focus and at a new press;
+its selection stays. The selection is cleared as a text preview's is: by every left press before it routes (`press_selections`,
+so a press the drawing takes clears it too) and by Escape in the focused preview, and `clear` ends the drag whatever its
+state, down or released and waiting for its words, so no later move, release or reply brings back what was cleared. The marks are `PageText::bands` on this frame's rectangles, pushed into
 the same `Solid::SelectionBg` batch as the text selections' (`paint_text_selections`). With words selected,
-`preview.copy_selection` is allowed in the image context (`Context::pdf_text`, scope `CopyText`, ahead of the region
-capture in the catalog), so the copy chords resolve to it on a PDF page; it copies the words' text to the clipboard, says
+`preview.copy_selection` is allowed in the image context (`Context::pdf_text`, scope `CopyText`), so the copy chords resolve to it on a PDF page. The
+catalog (its order is the precedence) holds it after `preview.copy_code` and ahead of `preview.capture`: the only pair
+whose order changed against the order before the PDF selection is it and the capture, which shared no context before, and
+the code copy and the capture (text and image contexts), which still share none, so a person's own binding of the code copy
+to the copy chord resolves in a markdown preview as it did; it copies the words' text to the clipboard, says
 `copied PDF text`, and is never shared with the agent (the plan's last landing); with none selected the chords do what they
 did. A page with no words (`There is no text to select on this page.`), a refusal `no_words` (`The text on this page can't
 be read on the computer that runs this session, so it can't be selected.`) and a daemon that does not serve them
@@ -2486,16 +2493,27 @@ another refusal is said and asked again at the next press. Tests: `preview/image
 (`a_press_on_a_pdf_page_asks_once_for_its_words`, `a_reply_is_taken_only_for_the_request_asked`,
 `a_drag_over_the_words_selects_marks_and_gives_their_text`, `a_selection_is_cleared_elsewhere_and_a_lost_release_ends_the_drag`,
 `a_page_turn_drops_the_words_and_the_selection_and_a_zoom_keeps_them`, `a_page_with_no_words_says_so_once`,
-`an_owner_with_nothing_held_is_idle`), `input/mouse.rs` (`a_press_on_a_pdf_page_goes_to_its_words_after_the_drawing`, which
-also holds a text and a chat selection before the press), `input/keybindings_tests.rs`
-(`a_pdf_page_with_words_selected_copies_them_with_the_copy_chords`) and the native fixture
+`a_frame_compares_the_page_shown_with_the_key_held_in_every_state`), `input/mouse.rs`
+(`a_press_on_a_pdf_page_goes_to_its_words_after_the_drawing`, which also holds a text and a chat selection before the press,
+and `a_press_the_drawing_takes_focuses_the_preview_and_starts_no_selection`, both counting the clear), `input/keybindings_tests.rs`
+(`a_pdf_page_with_words_selected_copies_them_with_the_copy_chords`,
+`the_copy_chord_bound_to_the_code_copy_still_resolves_to_it_in_a_markdown_preview`) and the native fixture
 `a_drag_over_a_pdf_page_selects_marks_and_copies_its_words` (`preview/replies_notice_tests.rs`: a real frame gives the page its
 rectangles, the press's request is read from the connection's channel, the answer marks the drag's words and the pass hands
 `Brushes` their bands (`last_selection`, a test-only seam), the copy chord is resolved through the catalog and the context to
 `preview_action_key` and the words are copied, a press elsewhere clears them, the file read again drops them, and an
-answer to the first request marks nothing on the page asked again). Not covered by a test: `frame.rs`'s `set_cover`, the
-loss of focus in `app/handler.rs`, Escape in `prepare_keyboard_input` and the two restore sites, which need a winit event or a
-window state a fixture cannot make.
+answer to the first request marks nothing on the page asked again), `a_pdf_pages_reply_and_notice_are_its_own` (a file
+installed between the press and each kind of reply, the old daemon's line not spent on it, a retry's success taking the
+refusal's notice away before a page turn, the canvas over the page dropping it at the frame, and a press under the box drawn
+over the page beginning nothing while one beside it does), `a_departing_pdf_request_says_nothing_in_the_session_entered` (a
+first visit and a return to a cached file, at the two restore sites: the page's rectangle goes and the refusal arriving before
+a frame says nothing) and, through the real `App` event, `a_loss_of_focus_ends_a_drag_over_a_pdf_page` (run by the fixtures'
+child after the State fixtures, `app/native_children.rs`). Not covered by a test: Escape's clear in `prepare_keyboard_input`,
+which takes a winit `KeyEvent` a fixture cannot build. Limits: a request whose reply never comes while its connection stays
+alive leaves the page waiting, and a press asks nothing again until the page is shown again
+(docs/defects.md: PDF-WORDS-REQUEST-WITHOUT-REPLY-WAITS); a press where the reply dialog overlaps the page reaches the page
+under it, as it reaches a text preview's selection and the drawing
+(docs/defects.md: PREVIEW-PRESS-REACHES-UNDER-THE-REPLY-DIALOG).
 
 ## Folders
 - `app/`: the winit application (`App`), event-loop callbacks, one frame (`frame.rs`) and the quit prompt and exit.

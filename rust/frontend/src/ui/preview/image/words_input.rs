@@ -6,12 +6,20 @@ use crate::ui::preview::image::words_select::PageKey;
 use crate::ui::*;
 
 impl State {
-    /// The PDF page on show and whose it is: a raster of a `.pdf` node with its page, with no edit or refusal over it.
-    fn pdf_page(&self) -> Option<PageKey> {
+    /// The PDF page on show, borrowed: its file and page, when a raster of a `.pdf` node (the plugin's rule: its name, in
+    /// any case, ends in `.pdf`) with its page is shown with no edit, refusal or canvas over it, as `preview_shows` decides,
+    /// without building it.
+    fn pdf_shown(&self) -> Option<(&str, u32)> {
         let (node, page) = (self.raster.node()?, self.raster.page()?);
-        let shown = self.preview_shows();
-        (shown.png && !self.editor.is_editing() && node.to_lowercase().ends_with(".pdf"))
-            .then(|| (self.selected.host().clone(), self.selected.workspace_id().clone(), node.to_owned(), page))
+        let (editing, refused) = (self.editor.is_editing(), self.hello_refused.refused(self.selected.host()));
+        let pdf = node.as_bytes().len() >= 4 && node.as_bytes()[node.len() - 4..].eq_ignore_ascii_case(b".pdf");
+        (pdf && self.raster.is_shown() && !editing && !refused && !self.ink.canvas()).then_some((node, page))
+    }
+
+    /// The PDF page on show and whose it is.
+    fn pdf_page(&self) -> Option<PageKey> {
+        let (node, page) = self.pdf_shown()?;
+        Some((self.selected.host().clone(), self.selected.workspace_id().clone(), node.to_owned(), page))
     }
 
     /// What was held for a page no longer shown is dropped, and the notice it put up goes with it.
@@ -21,9 +29,10 @@ impl State {
         self.drop_notice(said);
     }
 
-    /// Before a frame: the same, but a page nobody pressed on costs nothing (no key is built while nothing is held).
+    /// Before a frame: the same, but the page shown is compared with the key held in place, and a key is built only when it
+    /// has changed; a page nobody pressed on (no key held) costs nothing.
     pub(in crate::ui) fn words_frame(&mut self) {
-        if !self.pdf_select.idle() {
+        if !self.pdf_select.keeps(self.selected.host(), self.selected.workspace_id(), self.pdf_shown()) {
             self.words_sync();
         }
     }
@@ -59,11 +68,16 @@ impl State {
 
     pub(in crate::ui) fn words_released(&mut self) { self.pdf_select.released(); }
 
-    /// The reply to the request numbered `serial`: any other is dropped (the page shown may be another, or the same page
-    /// asked again after the file changed).
+    /// The reply to the request numbered `serial`: taken only if the page it was asked for is the one shown, which is settled
+    /// first (a file installed since drops the request with its page), and the request is the one asked (the same page may
+    /// have been asked again after the file changed). A reply that succeeds after a refusal takes the refusal's notice away.
     pub(in crate::ui) fn on_page_words(&mut self, host: HostKey, serial: u64, reply: PageWordsReply) {
-        if let Some(words) = self.pdf_select.arrived(reply, serial, &host) {
-            self.preview_says(words);
+        self.words_sync();
+        let before = self.pdf_select.said();
+        match (self.pdf_select.arrived(reply, serial, &host), self.pdf_select.said()) {
+            (Some(words), _) => self.preview_says(words),
+            (None, None) => self.drop_notice(before),
+            (None, Some(_)) => {}
         }
         self.window.request_redraw();
     }

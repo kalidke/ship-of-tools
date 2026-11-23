@@ -120,6 +120,14 @@ fn a_drag_over_the_words_selects_marks_and_gives_their_text() {
     asks_none(&mut s, at(0.15, 0.1));
     assert_eq!(s.text(), None, "a press clears the last selection");
     assert!(!s.moved(at(0.15, 0.1)), "a move to the press's own position is not motion");
+    // The frame changes under the held button (a zoom or a resize): a move to the press's own screen position is still none.
+    let mut z = shown(2);
+    let p = at(0.15, 0.1);
+    asks(&mut z, p);
+    z.set_frame(rect(300.0, 150.0, 2000.0, 4000.0), rect(0.0, 0.0, 5000.0, 5000.0));
+    assert!(!z.moved(p), "a stationary pointer is no motion, whatever the page's rectangle became");
+    z.released();
+    assert_eq!(z.text(), None);
     s.released();
     assert_eq!((s.text(), s.bands().len()), (None, 0), "a press and release with no motion selects nothing");
     // The same drag run backward selects the same words.
@@ -163,11 +171,30 @@ fn a_selection_is_cleared_elsewhere_and_a_lost_release_ends_the_drag() {
     assert!(!s.moved(at(0.55, 0.1)) && s.text().is_none(), "a drag the window ended selects no more");
     // A drag kept for words still being read is dropped by a press elsewhere.
     let mut t = shown(2);
-    asks(&mut t, at(0.15, 0.1));
+    let n2 = asks(&mut t, at(0.15, 0.1));
     t.moved(at(0.55, 0.1));
     t.released();
     t.clear();
-    assert!(t.idle() || !t.selected());
+    t.arrived(PageWordsReply::Words(words(2)), n2, &host());
+    assert_eq!((t.text(), t.bands().len()), (None, 0), "the words of a cancelled drag mark nothing");
+    // The button still down: Escape or a press elsewhere ends the drag, and no move, release or reply brings it back.
+    let mut u = shown(2);
+    let n = asks(&mut u, at(0.15, 0.1));
+    u.moved(at(0.55, 0.1));
+    u.clear();
+    assert!(!u.moved(at(0.15, 0.55)));
+    u.released();
+    u.arrived(PageWordsReply::Words(words(2)), n, &host());
+    assert_eq!((u.text(), u.selected()), (None, false));
+    // The same with the words held: a move after the clear marks nothing.
+    let mut v = shown(2);
+    let n = asks(&mut v, at(0.15, 0.1));
+    v.arrived(PageWordsReply::Words(words(2)), n, &host());
+    v.moved(at(0.55, 0.1));
+    v.clear();
+    assert!(!v.moved(at(0.15, 0.55)));
+    v.released();
+    assert_eq!((v.text(), v.bands().len()), (None, 0));
 }
 
 /// A page turn, another file, another row or host drops the words and the selection and asks again; a zoom or a pan, which
@@ -190,7 +217,7 @@ fn a_page_turn_drops_the_words_and_the_selection_and_a_zoom_keeps_them() {
         t.moved(at(0.55, 0.1));
         t.released();
         t.sync(other.clone());
-        assert_eq!((t.text(), t.bands().len(), t.idle()), (None, 0, true), "{other:?}");
+        assert_eq!((t.text(), t.bands().len()), (None, 0), "{other:?}");
         t.sync(key(2));
         assert!(matches!(t.press(at(0.15, 0.1)), Some(Some(_))), "{other:?}: the page is asked for again");
     }
@@ -241,22 +268,33 @@ fn a_page_with_no_words_says_so_once() {
     assert!(s.press(at(0.2, 0.1)).is_some_and(|ask| ask.is_some()), "asked again");
 }
 
-/// A frame looks at the page shown only when something is held: a fresh owner, one whose request ended and one whose
-/// selection was cleared are idle, and a press, a held request, held words and a said line are not.
+/// A frame compares the page shown with the key held in place, whatever the state of `words`: the same page keeps, a changed
+/// page or host does not, and an owner holding no key has nothing to drop.
 #[test]
-fn an_owner_with_nothing_held_is_idle() {
+fn a_frame_compares_the_page_shown_with_the_key_held_in_every_state() {
+    let (h, w) = (host(), Some("row".to_string()));
+    let page = |n: u32| Some(("files:a.pdf", n));
+    let fresh = PdfSelect::default();
+    assert!(fresh.keeps(&h, &w, None) && fresh.keeps(&h, &w, page(2)), "no key held: nothing to drop");
+    let empty = PageWords { page: 2, cut: false, lines: vec![] };
+    let mut states = Vec::new();
+    states.push(shown(2));
     let mut s = shown(2);
-    assert!(s.idle());
-    let n = asks(&mut s, at(0.2, 0.1));
-    assert!(!s.idle(), "a press with a request out");
-    s.released();
-    assert!(!s.idle(), "a request out");
-    s.arrived(PageWordsReply::Ended, n, &host());
-    assert!(s.idle());
-    let n = asks(&mut s, at(0.2, 0.1));
+    asks(&mut s, at(0.2, 0.1));
+    states.push(s);
+    let mut s = shown(2);
+    let n = asks(&mut s, at(0.15, 0.1));
     s.arrived(PageWordsReply::Words(words(2)), n, &host());
-    s.released();
-    assert!(!s.idle(), "words held");
-    s.sync(key(3));
-    assert!(s.idle(), "dropped with the page");
+    states.push(s);
+    for reply in [PageWordsReply::Words(empty), PageWordsReply::Unsupported, PageWordsReply::Refused { code: Some("no_words".into()), error: "x".into() }] {
+        let mut s = shown(2);
+        let n = asks(&mut s, at(0.2, 0.1));
+        s.arrived(reply, n, &host());
+        states.push(s);
+    }
+    for (i, s) in states.iter().enumerate() {
+        assert!(s.keeps(&h, &w, page(2)), "state {i}: the same page");
+        assert!(!s.keeps(&h, &w, page(3)) && !s.keeps(&h, &w, None) && !s.keeps(&h, &Some("other".into()), page(2))
+            && !s.keeps(&"elsewhere".into(), &w, page(2)) && !s.keeps(&h, &w, Some(("files:b.pdf", 2))), "state {i}: another page");
+    }
 }

@@ -110,6 +110,12 @@ impl ApplicationHandler for FixturesDriver {
             Some(state) => run_state_fixtures(state),
             None => Err(anyhow::anyhow!("not runnable here: native App/State startup did not complete")),
         });
+        // The fixture that needs the App's own event handler, after the State's, on the State they left.
+        if self.outcome.as_ref().is_some_and(|r| r.is_ok()) {
+            let result = a_loss_of_focus_ends_a_drag_over_a_pdf_page(&mut self.app, event_loop);
+            println!("state-fixture name=a_loss_of_focus_ends_a_drag_over_a_pdf_page ok={}", result.is_ok());
+            self.outcome = Some(result);
+        }
         event_loop.exit();
     }
 
@@ -118,8 +124,21 @@ impl ApplicationHandler for FixturesDriver {
     }
 }
 
+/// The window's loss of focus ends a drag over a PDF page, through the real event: the pointer then moving over the page
+/// selects no more than it had.
+fn a_loss_of_focus_ends_a_drag_over_a_pdf_page(app: &mut App, event_loop: &ActiveEventLoop) -> Result<()> {
+    let state = app.state.as_mut().ok_or_else(|| anyhow::anyhow!("no State"))?;
+    let (id, canvas) = (state.window.id(), state.a_pdf_drag_is_begun()?);
+    anyhow::ensure!(state.a_pdf_drag_moves_to(canvas, 0.25).as_deref() == Some("alpha"), "the drag selected {:?}", state.pdf_select.text());
+    app.window_event(event_loop, id, WindowEvent::Focused(false));
+    let state = app.state.as_mut().ok_or_else(|| anyhow::anyhow!("no State"))?;
+    let after = state.a_pdf_drag_moves_to(canvas, 0.55);
+    anyhow::ensure!(after.as_deref() == Some("alpha"), "the pointer extended a drag the loss of focus ended: {after:?}");
+    Ok(())
+}
+
 fn run_state_fixtures(state: &mut State) -> Result<()> {
-    let fixtures: [(&str, fn(&mut State) -> Result<()>); 56] = [
+    let fixtures: [(&str, fn(&mut State) -> Result<()>); 58] = [
         // First: the window's start-up picture is still the preview's.
         (
             "primary_u_over_the_start_picture_says_the_preview_shows_no_file",
@@ -252,6 +271,8 @@ fn run_state_fixtures(state: &mut State) -> Result<()> {
         ("a_return_uses_only_the_current_connection", State::a_return_uses_only_the_current_connection),
         ("a_replaced_folder_keeps_its_installed_page", State::a_replaced_folder_keeps_its_installed_page),
         ("a_close_dialog_covers_the_returned_preview", State::a_close_dialog_covers_the_returned_preview),
+        ("a_pdf_pages_reply_and_notice_are_its_own", State::a_pdf_pages_reply_and_notice_are_its_own),
+        ("a_departing_pdf_request_says_nothing_in_the_session_entered", State::a_departing_pdf_request_says_nothing_in_the_session_entered),
     ];
     // Every fixture runs and reports; the child fails after the last if any failed.
     let mut failed = Vec::new();

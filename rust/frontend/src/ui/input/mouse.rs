@@ -43,6 +43,9 @@ pub(in crate::ui) fn mouse_input(state: &mut State, event_loop: &ActiveEventLoop
 pub(in crate::ui) trait SelectionContext {
     fn agent_cell(&self) -> Option<(u16, u16)>;
     fn preview_cursor(&self) -> Option<cosmic_text::Cursor>;
+    /// Every left press begins by clearing the PDF page's selection, as a text preview's goes at a press elsewhere; a press on
+    /// the page then begins its own.
+    fn clear_words(&mut self);
     /// A left press the drawing takes: it focuses the preview itself and starts no selection.
     fn draw_press(&mut self) -> bool;
     /// A left press on a shown PDF page when drawing is off: it focuses the preview itself and starts a words selection.
@@ -56,6 +59,7 @@ pub(in crate::ui) trait SelectionContext {
 }
 
 pub(in crate::ui) fn press_selections(context: &mut impl SelectionContext) {
+    context.clear_words();
     if context.draw_press() { context.press_agent(None); context.press_chat(None); return; }
     if context.words_press() { context.press_agent(None); context.press_chat(None); context.press_preview(None); return; }
     let cell = context.agent_cell();
@@ -74,13 +78,13 @@ impl SelectionContext for State {
         self.shaped.hit(self.pointer.at_px(), true)
     }
     fn draw_press(&mut self) -> bool { self.press_ink() }
+    fn clear_words(&mut self) { self.pdf_select.clear(); }
     fn words_press(&mut self) -> bool { self.press_words() }
     fn focus_selection_pane(&mut self, pane: PaneFocus) { self.set_focus(pane); }
     fn press_agent(&mut self, cell: Option<(u16, u16)>) {
         if self.agent_pane.press(cell) { self.window.request_redraw(); }
     }
     fn press_preview(&mut self, cursor: Option<cosmic_text::Cursor>) {
-        self.pdf_select.clear();
         if self.shaped.press(cursor) { self.window.request_redraw(); }
     }
     fn chat_hit(&self) -> Option<ChatHit> {
@@ -295,6 +299,7 @@ mod tests {
         /// The press is on a shown PDF page, and how many presses its words took.
         on_page: bool,
         words_pressed: u32,
+        words_cleared: u32,
         pressed_agent: Vec<Option<(u16, u16)>>,
         chat: crate::ui::drawer::chat::ChatView,
     }
@@ -307,6 +312,7 @@ mod tests {
             if self.drawing { self.focus = PaneFocus::Preview; }
             self.drawing
         }
+        fn clear_words(&mut self) { self.words_cleared += 1; }
         fn words_press(&mut self) -> bool {
             if self.on_page { self.focus = PaneFocus::Preview; self.words_pressed += 1; }
             self.on_page
@@ -333,7 +339,7 @@ mod tests {
         let mut probe = SelectionProbe {
             shaped: ShapedPreview::new(md, HighlightService::new().unwrap(), rect),
             at: (rect.x, rect.y + EXTRA_TOP_PAD_PX + 5.0), agent: None, focus: PaneFocus::NavTree,
-            text_shown: true, focused_before_press: false, drawing: false, on_page: false, words_pressed: 0, pressed_agent: Vec::new(), chat: Default::default(),
+            text_shown: true, focused_before_press: false, drawing: false, on_page: false, words_pressed: 0, words_cleared: 0, pressed_agent: Vec::new(), chat: Default::default(),
         };
         pointer_continuation(&mut probe, true, MouseButton::Left, |_, _| {}, |_| None, |_, _| {}, |_| false,
             press_selections, |p| p.shaped.release(), |_, _| {});
@@ -408,7 +414,7 @@ mod tests {
         let mut probe = SelectionProbe {
             shaped: ShapedPreview::new(md, HighlightService::new().unwrap(), rect),
             at: (rect.x, rect.y + EXTRA_TOP_PAD_PX + 5.0), agent: Some((0, 0)), focus: PaneFocus::NavTree,
-            text_shown: true, focused_before_press: false, drawing: true, on_page: false, words_pressed: 0, pressed_agent: Vec::new(), chat: Default::default(),
+            text_shown: true, focused_before_press: false, drawing: true, on_page: false, words_pressed: 0, words_cleared: 0, pressed_agent: Vec::new(), chat: Default::default(),
         };
         let (rec, mut fonts) = (chat_record(), glyphon::FontSystem::new());
         probe.chat.layout(&mut fonts, &[(&rec, false)], CHAT_BODY, 1.0, 1_700_000_100, chrono::FixedOffset::east_opt(0).unwrap());
@@ -420,6 +426,7 @@ mod tests {
         press_selections(&mut probe);
         assert_eq!(probe.focus, PaneFocus::Preview);
         assert!(probe.chat.selected_text().is_none(), "a drawing press clears the chat's selection");
+        assert_eq!(probe.words_cleared, 1, "a press the drawing takes clears the PDF page's selection too");
         assert_eq!(probe.pressed_agent, [None], "a drawing press clears the agent pane's selection");
         assert!(!probe.focused_before_press && !probe.shaped.extend_drag((rect.x + 100.0, rect.y + 60.0)),
             "a drawing press begins no text selection");
@@ -444,9 +451,10 @@ mod tests {
         let mut probe = SelectionProbe {
             shaped: ShapedPreview::new(md, HighlightService::new().unwrap(), rect),
             at: (rect.x, rect.y + EXTRA_TOP_PAD_PX + 5.0), agent: Some((0, 0)), focus: PaneFocus::NavTree,
-            text_shown: true, focused_before_press: false, drawing: true, on_page: true, words_pressed: 0, pressed_agent: Vec::new(), chat: Default::default(),
+            text_shown: true, focused_before_press: false, drawing: true, on_page: true, words_pressed: 0, words_cleared: 0, pressed_agent: Vec::new(), chat: Default::default(),
         };
         press_selections(&mut probe);
+        assert_eq!(probe.words_cleared, 1, "the page's selection is cleared before the drawing takes the press");
         assert_eq!((probe.words_pressed, probe.pressed_agent.as_slice()), (0, &[None][..]), "the drawing took the press first");
         probe.drawing = false;
         probe.pressed_agent.clear();

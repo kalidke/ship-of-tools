@@ -33,6 +33,8 @@ enum Words {
 /// A press of the left button, its first point and its latest, in fractions of the page. `down` is false after the
 /// release of a drag that moved while the words were still being read: its ends select them when they come.
 struct Drag {
+    /// The press's screen position: a move to it is no motion, whatever the page's rectangle has become.
+    at_px: (f32, f32),
     anchor: (f32, f32),
     last: (f32, f32),
     moved: bool,
@@ -63,8 +65,17 @@ impl PdfSelect {
 
     pub(in crate::ui) fn set_cover(&mut self, cover: Option<ScreenRect>) { self.cover = cover; }
 
-    /// Nothing held, asked for or begun: a frame need not look which page is shown.
-    pub(in crate::ui) fn idle(&self) -> bool { matches!(self.words, Words::None) && self.drag.is_none() }
+    /// Whether the key held is the page shown (or none is held, so there is nothing to drop): compared in place, so a
+    /// frame builds no key and lowercases no name while the page stays.
+    pub(in crate::ui) fn keeps(&self, host: &HostKey, workspace_id: &Option<String>, shown: Option<(&str, u32)>) -> bool {
+        match &self.key {
+            None => true,
+            Some((h, w, node, page)) => h == host && w == workspace_id && shown == Some((node.as_str(), *page)),
+        }
+    }
+
+    /// What this page's owner said last, which a notice may still show.
+    pub(in crate::ui) fn said(&self) -> Option<&'static str> { self.said }
 
     /// Words are selected: the copy key has them to copy.
     pub(in crate::ui) fn selected(&self) -> bool { matches!(self.words, Words::Held(_)) && self.range.is_some() }
@@ -104,7 +115,7 @@ impl PdfSelect {
             return None;
         }
         let at = ((p.0 - canvas.x) / canvas.w, (p.1 - canvas.y) / canvas.h);
-        self.drag = Some(Drag { anchor: at, last: at, moved: false, down: true });
+        self.drag = Some(Drag { at_px: p, anchor: at, last: at, moved: false, down: true });
         self.range = None;
         if !matches!(self.words, Words::None) {
             return Some(None);
@@ -118,11 +129,10 @@ impl PdfSelect {
     /// move to the press's own position is no motion.
     pub(in crate::ui) fn moved(&mut self, p: (f32, f32)) -> bool {
         let (Some(canvas), Some(drag)) = (self.page(), self.drag.as_mut().filter(|d| d.down)) else { return false };
-        let at = ((p.0 - canvas.x) / canvas.w, (p.1 - canvas.y) / canvas.h);
-        if !drag.moved && at == drag.anchor {
+        if !drag.moved && p == drag.at_px {
             return false;
         }
-        (drag.last, drag.moved) = (at, true);
+        (drag.last, drag.moved) = (((p.0 - canvas.x) / canvas.w, (p.1 - canvas.y) / canvas.h), true);
         self.reselect();
         true
     }
@@ -142,12 +152,11 @@ impl PdfSelect {
         self.drag = self.drag.take().filter(|d| d.moved && waiting).map(|d| Drag { down: false, ..d });
     }
 
-    /// A press elsewhere, in another pane, or Escape: the selection goes as a text preview's does.
+    /// A press elsewhere (a drawing's too), in another pane, or Escape: the selection goes as a text preview's does, and
+    /// the drag with it, held or waiting for its words, so no release, move or reply brings anything back.
     pub(in crate::ui) fn clear(&mut self) {
         self.range = None;
-        if self.drag.as_ref().is_some_and(|d| !d.down) {
-            self.drag = None;
-        }
+        self.drag = None;
     }
 
     /// The answer to the request numbered `serial`, from `host`: what to say to the person, if anything. An answer to
@@ -194,9 +203,12 @@ impl PdfSelect {
         }
     }
 
-    /// The page's rectangle, for a test that presses on it.
+    /// The page's rectangle and the box drawn over it, for a test that presses on them.
     #[cfg(test)]
     pub(in crate::ui) fn page_rect(&self) -> Option<ScreenRect> { self.page() }
+
+    #[cfg(test)]
+    pub(in crate::ui) fn cover_rect(&self) -> Option<ScreenRect> { self.cover }
 }
 
 #[cfg(test)]

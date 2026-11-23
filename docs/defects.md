@@ -1098,6 +1098,21 @@ owned by `docs/CLAUDE.md`.
 - **PREVIEW-TABLE-PADDING-AMPLIFIES** [note] From a probe, never seen in use: `build_table_block` pads every row to the widest cell, so the text a table renders to is not bounded by the markdown file's size, and `PREVIEW_TEXT_CAP` bounds only the file. A 28 KB file with one 3,000-character cell and 2,000 short rows renders 6 MB of table text (217 times the file), which shaped is about 3 GB (a byte of padding holds 520 resident bytes). Shaped whole in one frame, as before PREVIEW-TABLES-FIRST-VIEW-SHAPES-ALL's landings, a page of that shape (37 KB, 6.07 MB of table text) took 30.7 s on the UI thread (measured in a review, 2026-11-22). Now its first view shapes the 42 rows in view in one frame of 550 ms, and the frames after shape one row each, about 14 ms a row, so a fill frame is 25 ms at the median and 43 ms at the longest, with the UI thread 0.75 busy until the set is whole after 1,962 frames and 67 s; the fill shapes every row, so the shown set still reaches the size above. The kept sets are bounded (a set over `PARKED_TABLE_BYTES` is not kept), the shown set is not, and it was not before the kept sets. Fix not decided: a cap on a table's rendered size, past which the table is shown as its source text.
 - **PREVIEW-DOCUMENT-RESHAPED-AT-EVERY-ARRIVAL** [note] Measured on release builds on the second host, never seen in use at this size: every return to a row renders its parked document again inside `switch_to_workspace` (`restore_workspace_ui`, `render_preview_source`), before the first frame, so every pane waits. For a document of the text cap's size, two measurements agreeing: about 250 to 330 ms for 500 KB of markdown prose, about 700 ms for 455 KB of plain text, about 980 ms for one 500 KB code fence; and for a PNG's decode and upload, 194 to 204 ms for 6000 x 4000. The parked row keeps the bytes, not the shaped document. Fix not decided: keep the shaped document with the parked row within a budget, as the tables' sets are now.
 
+- **PREVIEW-PRESS-REACHES-UNDER-THE-REPLY-DIALOG** [note] From reading code, never seen in use: the reply dialog is drawn
+  over the middle of the window, and a left press where it overlaps the preview reaches the preview under it. The mouse
+  handler (`input/mouse.rs`, `mouse_input`) intercepts a quit question and a stayed notice but names no interception for the
+  reply dialog, and the frame hands the preview's pointer owners only the help peek's or notice's box (`set_cover`), not
+  the dialog's rectangle. A PDF page's selection (`PdfSelect::press`), a text preview's selection (`ShapedPreview::hit`)
+  and the drawing (`InkLayer::left_press`) each begin on that press; none checks the dialog, so it is one entry for the
+  dialog, older than the PDF selection. Fix not decided: the handler takes a left press while the dialog is shown, as it
+  takes the quit question's.
+- **PDF-WORDS-REQUEST-WITHOUT-REPLY-WAITS** [note] From reading code, never seen in use: a request for a PDF page's words
+  whose reply never comes while its connection stays alive leaves the page waiting (`Words::Asked`): the transport's watchdog
+  counts silence across the connection, so other traffic keeps it alive, and a press on that page asks nothing again until
+  the page is shown again (a page turn, another file or session, a read of the file) or the connection ends. A request
+  queued while its computer is down waits the same way until a hello. `rust/frontend/src/ui/CLAUDE.md` states it as a limit.
+  Fix not decided: a bound on the wait in `PdfSelect`, which would end it as `Ended` and ask at the next press.
+
 ## distribution
 
 - **GATE-NEEDS-A-DISK-TMP** [session] The local gate (`scripts/tests/rc-gate.sh`) gives its jobs `TMPDIR=/tmp`, and the

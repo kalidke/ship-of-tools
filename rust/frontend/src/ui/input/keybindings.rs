@@ -157,9 +157,9 @@ actions! {
     PreviewInkUndo, "preview.ink_undo", ["u", "Primary+z"], "Undo stroke", "While drawing is on over the shown image or the canvas is shown: remove the last stroke; right after a clear, bring the cleared strokes back.", "Image", Drawing;
     PreviewInkClear, "preview.ink_clear", ["Delete"], "Clear drawing", "While drawing is on over the shown image or the canvas is shown: clear the drawing.", "Image", Drawing;
     ReturnNav, "view.return_nav", ["Escape"], "Return to navigation", "Move focus back to the navigation tree.", "View", Reading;
+    CopyCode, "preview.copy_code", ["y"], "Copy code blocks", "Copy the displayed markdown code blocks to the clipboard.", "Text", Text;
     PreviewCopySelection, "preview.copy_selection", ["Primary+c", "Primary+Shift+c"], "Copy selection", "Copy selected preview text, or the words selected on a PDF page, to the clipboard.", "Text", CopyText;
     CaptureRegion, "preview.capture", ["c", "Primary+c"], "Send visible region", "Crop the visible image region and attach it to the agent input.", "Image", Image;
-    CopyCode, "preview.copy_code", ["y"], "Copy code blocks", "Copy the displayed markdown code blocks to the clipboard.", "Text", Text;
     EditFile, "preview.edit", ["e"], "Edit", "Edit the displayed file or its concept annotation.", "Text", PreviewFile;
     ScrollPageUp, "view.page_up", ["PageUp"], "Scroll up", "Scroll back through this pane.", "Scroll", PageScroll;
     ScrollPageDown, "view.page_down", ["PageDown"], "Scroll down", "Scroll forward through this pane.", "Scroll", PageScroll;

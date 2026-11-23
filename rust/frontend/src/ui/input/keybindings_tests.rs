@@ -99,6 +99,27 @@ fn a_pdf_page_with_words_selected_copies_them_with_the_copy_chords() {
     }
 }
 
+/// The catalog's order is dispatch precedence, and the PDF copy moved it only between actions that share no context: a
+/// person's own binding of the code copy to the copy chord still wins over the selection copy in a markdown preview, as it
+/// did before a PDF page could copy, and the code copy and the capture, which never share one, resolve as ever.
+#[test]
+fn the_copy_chord_bound_to_the_code_copy_still_resolves_to_it_in_a_markdown_preview() {
+    use crate::ui::input::help::{Context, Pane};
+    let mut b = KeyBindings::defaults();
+    b.merge_text("preview.copy_code = \"Primary+c\"\n");
+    let markdown = Context { pane: Pane::Preview, file: Some("notes.md".into()), ..Context::default() };
+    let resolve = |b: &KeyBindings, context: &Context, key: &str| {
+        b.resolve(&Key::Character(key.into()), None, primary(), context.consumes_text(), |a| context.allows(a)).map(|a| a.spec().name)
+    };
+    assert_eq!(resolve(&b, &markdown, "c"), Some("preview.copy_code"));
+    let picture = Context { image: true, ..markdown.clone() };
+    assert_eq!(resolve(&b, &picture, "c"), Some("preview.capture"), "a picture's capture keeps its chord");
+    let defaults = KeyBindings::defaults();
+    assert_eq!(resolve(&defaults, &markdown, "c"), Some("preview.copy_selection"));
+    let order = |name: &str| ACTIONS.iter().position(|s| s.name == name).unwrap();
+    assert!(order("preview.copy_code") < order("preview.copy_selection") && order("preview.copy_selection") < order("preview.capture"));
+}
+
 /// The Chat drawer takes `Primary+k` alone, like its siblings `drawer.repl` (`Primary+j`), `drawer.terminal` and
 /// `drawer.monitor`, in every context; `Primary+Shift+k` is `chat.setup`, the Chat tenant's channel picker, and resolves to
 /// nothing in any other pane, and no other action holds either chord.
