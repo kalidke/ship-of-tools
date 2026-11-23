@@ -154,6 +154,42 @@ Sys.isunix() && @testset "the document is cut at a whole word under its bound" b
     end
 end
 
+# The decoder of the wire (`sot_protocol::ops::PageWords`) refuses a document of more than 16384 words or with a word of
+# more than 1024 bytes, so the plugin keeps to both: the numbers are written out here, not read from the plugin's constants.
+Sys.isunix() && @testset "the document keeps to the wire's bounds of words and of a word's bytes" begin
+    word(text) = "<word xMin=\"40.000000\" yMin=\"20.000000\" xMax=\"80.000000\" yMax=\"40.000000\">$text</word>\n"
+    page(words) = "<page width=\"200.000000\" height=\"100.000000\">\n<line>\n$words</line>\n"
+    mktempdir() do dir
+        n = Ref(0)
+        function read_page(texts)
+            info, render = words_tools(joinpath(dir, "bin$(n[] += 1)"); xhtml = page(join(word.(texts))))
+            doc = joinpath(dir, "doc$(n[]).pdf")
+            write(doc, "x")
+            stand_in_tools(info, render) do
+                pp = words_of(doc, 2)
+                JSON3.read(pp.data), length(pp.data)
+            end
+        end
+        count(d) = sum(length, d.lines; init = 0)
+        # Words: exactly 16384 are whole; one more is cut before the 16385th, with `cut` true, though 512 KiB has room.
+        whole, _ = read_page(fill("w", 16384))
+        @test (count(whole), whole.cut) == (16384, false)
+        cut, bytes = read_page(fill("w", 16385))
+        @test (count(cut), cut.cut) == (16384, true)
+        @test bytes < 512 * 1024
+        # A word's bytes: 1024 stay, 1025 are left out as an empty word is, and bytes are not characters.
+        kept, _ = read_page(["a", "b"^1024, "é"^512, "c"])
+        @test texts(kept) == [["a", "b"^1024, "é"^512, "c"]]
+        @test kept.cut == false
+        left_out, _ = read_page(["a", "b"^1025, "é"^513, "c"])
+        @test texts(left_out) == [["a", "c"]]
+        @test left_out.cut == false
+        # A word left out does not count toward the 16384.
+        mixed, _ = read_page(vcat(fill("w", 16383), ["b"^1025, "z"]))
+        @test (count(mixed), mixed.cut, texts(mixed)[1][end]) == (16384, false, "z")
+    end
+end
+
 Sys.isunix() && @testset "a page with no text answers no lines" begin
     mktempdir() do dir
         info, render = words_tools(joinpath(dir, "bin"); xhtml = "<doc>\n  <page width=\"612.000000\" height=\"792.000000\">\n  </page>\n</doc>\n")

@@ -517,6 +517,8 @@ async fn try_plugin_preview(
     let bytes = match fit_plugin_output(path, node_id, &mime, bytes) {
         Ok(b) => b,
         Err(Unfit::Reader) => return Ok(None),
+        // A words request is for words: a picture past the bound is no words, not a refusal of a picture.
+        Err(Unfit::TooLarge(_)) if words => return Ok(None),
         Err(Unfit::TooLarge(len)) => {
             return Err((
                 "preview_too_large".to_string(),
@@ -542,19 +544,33 @@ fn no_words() -> (String, String) {
 /// A page's words from the kernel's plugin (`params.words`), the plugin's document as it answered, or `no_words`. Only the
 /// plugin's words mime is shipped: a note of the plugin's, a picture of a plugin that ignored the parameter, no plugin,
 /// and an output past the cap (which `try_plugin_preview` sends to the bytes-level reader) are each `no_words`, because
-/// that reader would answer with the file's own bytes. A kernel confirmed dead is the error `try_plugin_preview` gives.
+/// that reader would answer with the file's own bytes. A kernel confirmed dead is the error `try_plugin_preview` gives
+/// for a bounded-output type (PDF, HDF5, video). The request is the page and `words`: the plugin reads no fit for words.
+/// When the PDF plugin answered a note, its fixed words are logged, so a missing tool is told from a bad PDF.
 async fn words_answer(
     kernel: &Kernel,
     path: &std::path::Path,
     req: &PreviewGetReq,
 ) -> std::result::Result<(String, Vec<u8>, Option<serde_json::Value>), (String, String)> {
-    match try_plugin_preview(kernel, path, &req.node_id, req.page, req.fit_w, req.fit_h, true).await? {
+    match try_plugin_preview(kernel, path, &req.node_id, req.page, None, None, true).await? {
         Some((mime, bytes, extras)) if mime == sot_protocol::ops::PAGE_WORDS_MIME => Ok((mime, bytes, extras)),
         other => {
-            tracing::info!(node_id = %req.node_id, answered = ?other.map(|(m, b, _)| (m, b.len())), "words request not answered with words");
+            let note = other.as_ref().and_then(|(mime, bytes, _)| plugin_note(path, mime, bytes));
+            tracing::info!(node_id = %req.node_id, answered = ?other.map(|(m, b, _)| (m, b.len())), note = note.as_deref().unwrap_or(""), "words request not answered with words");
             Err(no_words())
         }
     }
+}
+
+/// The PDF plugin's note, when `mime` and `bytes` are one: its fixed words, the first line after the heading, at most 200
+/// characters. Another file's text answer is never logged.
+fn plugin_note(path: &std::path::Path, mime: &str, bytes: &[u8]) -> Option<String> {
+    let pdf = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("pdf"));
+    if !pdf || mime != "text/markdown" {
+        return None;
+    }
+    let text = String::from_utf8_lossy(bytes);
+    text.lines().map(str::trim).find(|l| !l.is_empty() && !l.starts_with('#')).map(|l| l.chars().take(200).collect())
 }
 
 /// The most a bounded-output plugin's picture ships: a 4096 x 4096 picture at four bytes a pixel, a bound chosen for

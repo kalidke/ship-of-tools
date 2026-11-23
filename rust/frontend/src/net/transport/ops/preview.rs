@@ -388,7 +388,10 @@ pub(crate) fn on_page_words(
     } else {
         match serde_json::from_value::<PreviewGetRes>(frame.payload) {
             Err(e) => refused(format!("unreadable reply: {e}")),
-            Ok(res) if res.mime != PAGE_WORDS_MIME => refused(format!("the answer was {}, not words", res.mime)),
+            // Words only when the reply and its blob's descriptor both say so.
+            Ok(res) if res.mime != PAGE_WORDS_MIME || res.blob.mime != PAGE_WORDS_MIME => {
+                refused(format!("the answer was {} ({}), not words", res.mime, res.blob.mime))
+            }
             Ok(_) => match serde_json::from_slice::<PageWords>(&blob.unwrap_or_default()) {
                 Ok(words) if words.page == page => PageWordsReply::Words(words),
                 Ok(words) => refused(format!("the words are of page {}, not {page}", words.page)),

@@ -29,14 +29,14 @@ through the channel types below.
   (`SessionState`), and `OutgoingReq::PageWords { node_id, workspace_id, page }` (a `preview.get` for the page with `words`
   true, wire's guarantee 17), on a connection whose hello did not say it, is answered `PageWordsReply::Unsupported` and never
   written (an older daemon would answer with the page's picture). The reply is one `IncomingEvt::PageWords { node_id,
-  workspace_id, page, reply }` naming the file, row and page asked, `Words` (the blob read by wire's one decoder, under
-  `PAGE_WORDS_MIME`, for the page asked), `Unsupported`, `Refused { code, error }` (the daemon's error with its code, or an
+  workspace_id, page, reply }` naming the file, row and page asked, `Words` (the blob read by wire's one decoder, when the reply and its
+  blob's descriptor both say `PAGE_WORDS_MIME`, for the page asked), `Unsupported`, `Refused { code, error }` (the daemon's error with its code, or an
   answer that is another mime, another page, a document the decoder refuses or a reply that does not parse) or `Ended`. It is
   not replayable: a request waiting, or written and unanswered, when its connection ends yields one `Ended` and is never
   written on a later connection; the window asks again for the page it shows then. `ui/events.rs` drops the event until
   its owner exists. Tests: `a_words_request_is_written_only_on_a_connection_whose_hello_said_the_daemon_serves_them`,
   `the_accepted_hello_sets_whether_the_connection_serves_page_words`, `a_words_reply_becomes_one_typed_event`,
-  `a_words_request_ends_once_when_its_connection_ends_and_is_never_replayed`.
+  `a_words_request_ends_once_when_its_connection_ends_and_is_never_replayed` (which also pins the row the frame names).
 - A post sent only to a daemon whose door posts plain text: each connection keeps its own hello's
   `HelloRes::posts_plain_text` (`SessionState`), and a `chat.post`, on a connection whose hello did not say it, is answered
   `ChatEvt::PostNotSent` and never written (that daemon sends the text as given, so `<!channel>` would ping). Tests:

@@ -193,8 +193,13 @@ end
 # `pdftotext -bbox-layout`, in the reading order that tool guesses; a box is the word's rectangle as fractions of the
 # page as `pdftoppm` draws it, each times 65535 and rounded (0 is the left or the top edge), clamped to the page.
 const WORDS_MIME = "application/vnd.sot.page-words+json"
-# The most bytes of the document: the words are cut before the one that would pass it, and `cut` says so.
+# The most bytes of the document: the words are cut before the one that would pass it, and `cut` says so. The wire
+# decoder (`sot_protocol::ops::PageWords`) owns two more bounds, which the document honors so it is never refused whole:
+# at most 16384 words, cut before the 16385th the same way, and a word of at most 1024 bytes of text, a longer one left
+# out as an empty one is.
 const MAX_WORDS_BYTES = 512 * 1024
+const MAX_WORDS = 16384
+const MAX_WORD_BYTES = 1024
 const WORD_OR_LINE = r"<line[ >]|<word xMin=\"([-\d.]+)\" yMin=\"([-\d.]+)\" xMax=\"([-\d.]+)\" yMax=\"([-\d.]+)\">([^<]*)</word>"
 
 function _page_words(path::AbstractString, page::Int;
@@ -226,7 +231,7 @@ end
 
 # The document for one page of `pdftotext -bbox-layout`'s output, or `nothing` when it names no page size. A word's
 # text has the tool's five entities decoded and every control character, U+2028 and U+2029 dropped, so no word breaks
-# a line or carries an escape; a word left empty and a line left empty are left out.
+# a line or carries an escape; a word left empty or past `MAX_WORD_BYTES` and a line left empty are left out.
 function _words_document(xhtml::AbstractString, page::Int, turned::Bool, limit::Int)
     isvalid(xhtml) || (xhtml = filter(isvalid, xhtml))   # bytes that are no character are dropped before anything is matched
     size = match(r"<page width=\"([\d.]+)\" height=\"([\d.]+)\"", xhtml)
@@ -235,7 +240,7 @@ function _words_document(xhtml::AbstractString, page::Int, turned::Bool, limit::
     turned && ((w, h) = (h, w))
     (w > 0 && h > 0) || return nothing
     at(v, of) = round(Int, clamp(something(tryparse(Float64, v), 0.0) / of, 0, 1) * 65535)
-    lines, line, cut = String[], String[], false
+    lines, line, cut, count = String[], String[], false, 0
     used = sizeof("{\"page\":$page,\"cut\":false,\"lines\":[]}")
     for m in eachmatch(WORD_OR_LINE, xhtml)
         if m.captures[1] === nothing   # a line begins
@@ -245,17 +250,18 @@ function _words_document(xhtml::AbstractString, page::Int, turned::Bool, limit::
         end
         text = replace(m.captures[5], "&amp;" => "&", "&lt;" => "<", "&gt;" => ">", "&quot;" => "\"", "&apos;" => "'")
         text = filter(c -> !iscntrl(c) && c != '\u2028' && c != '\u2029', text)
-        isempty(text) && continue
+        (isempty(text) || sizeof(text) > MAX_WORD_BYTES) && continue
         x0, x1 = minmax(at(m.captures[1], w), at(m.captures[3], w))
         y0, y1 = minmax(at(m.captures[2], h), at(m.captures[4], h))
         word = "[$x0,$y0,$x1,$y1,\"" * replace(text, "\\" => "\\\\", "\"" => "\\\"") * "\"]"
         # A word after another costs a comma; a line's first costs the line's brackets, and a comma after another line.
         cost = sizeof(word) + (isempty(line) ? 2 + !isempty(lines) : 1)
-        if used + cost > limit
+        if used + cost > limit || count == MAX_WORDS
             cut = true
             break
         end
         used += cost
+        count += 1
         push!(line, word)
     end
     isempty(line) || push!(lines, "[" * join(line, ",") * "]")

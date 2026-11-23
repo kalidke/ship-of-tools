@@ -232,9 +232,11 @@ of each.
     draws it (the media box; the sides swapped for a page turned a quarter, which `pdfinfo -f P -l P` tells), each
     times 65535 and rounded, clamped to the page and put in order; a word's text has the tool's five entities decoded
     and every control character, U+2028 and U+2029 dropped (a byte that is no character is dropped from the tool's
-    output before anything is matched), and a word or a line left empty is left out, so no word breaks a line or
-    carries an escape. The document is at most `MAX_WORDS_BYTES` (512 KiB), cut before the word that would pass it
-    with `cut` true. A page with no text is a document with no lines. The text tool is the file beside the
+    output before anything is matched), and a word left empty, a word of more than `MAX_WORD_BYTES` (1,024) bytes of
+    text and a line left empty are left out, so no word breaks a line or carries an escape. The document is at most
+    `MAX_WORDS_BYTES` (512 KiB) and `MAX_WORDS` (16,384) words, cut before the word that would pass either with `cut`
+    true; the two last are the bounds of wire's decoder (guarantee 17), which refuses a document past them whole, and
+    the plugin's test states the same two numbers as literals. A page with no text is a document with no lines. The text tool is the file beside the
     `pdftoppm` in use with `pdftotext` in its name, run with that program's environment (the copy's library path);
     the tool set stays the two programs, so a copy fetched before this is still a copy. `pdfinfo` and `pdftotext`
     share the request's `TOOL_WAIT`, and each failure (no text tool there, a tool that did not start, ran out of
@@ -244,7 +246,8 @@ of each.
     the fetched copy for a page's words, on all three systems, at its next run.
     Limits: the words are the tool's (word boxes, no character boxes; its line breaks and its reading order, which
     it gets wrong on some two-column pages; right-to-left and vertical text unmeasured); nothing is kept between
-    requests, so each one runs both tools; the tool's whole output is held before it is cut. A lazy load that failed is not retried until the kernel restarts; nothing discovers a user's packages as
+    requests, so each one runs both tools; the tool's whole output is held before it is cut (the plugin holds as much
+    XHTML as `pdftotext` writes within the request's bound, which a page of thousands of words makes large). A lazy load that failed is not retried until the kernel restarts; nothing discovers a user's packages as
     plugins (see the root CLAUDE.md); a plugin's own code is the plugin's; `error_words` does not cover an
     `ErrorException` whose message someone built from a command. The fetch's 600 s bound and its lock's refresh are the
     child's own timers on its own event loop, so they are cooperative: a child that never yields is not ended by its

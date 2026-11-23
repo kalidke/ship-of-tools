@@ -1,5 +1,5 @@
 use super::{
-    build_preview_payload, fit_plugin_output, is_bounded_output_plugin, read_bytes_preview, try_plugin_preview, words_answer, Unfit,
+    build_preview_payload, fit_plugin_output, is_bounded_output_plugin, plugin_note, read_bytes_preview, try_plugin_preview, words_answer, Unfit,
     MAX_BOUNDED_PICTURE_BYTES, NOT_A_FILE_NOTE, PREVIEW_BYTE_CAP,
 };
 use std::path::Path;
@@ -361,10 +361,12 @@ async fn a_words_request_reaches_the_plugin_with_the_parameter_and_a_page_reques
 async fn a_words_request_is_answered_with_words_or_refused_never_with_a_picture_or_the_file() {
     let words = br#"{"page":1,"cut":false,"lines":[[[0,0,9,9,"a"]]]}"#;
     let past_the_cap = vec![b' '; PREVIEW_BYTE_CAP + 1];
-    let cases: [(&str, serde_json::Value, bool); 7] = [
+    let too_big_a_picture = vec![0x89; MAX_BOUNDED_PICTURE_BYTES + 1];
+    let cases: [(&str, serde_json::Value, bool); 8] = [
         ("words", matched(sot_protocol::ops::PAGE_WORDS_MIME, words), true),
         ("a picture", matched("image/png", b"\x89PNG"), false),
         ("a note", matched("text/markdown", b"# pdf\n\nno pdftotext\n"), false),
+        ("a picture past the bound", matched("image/png", &too_big_a_picture), false),
         ("words past the cap", matched(sot_protocol::ops::PAGE_WORDS_MIME, &past_the_cap), false),
         ("no plugin", serde_json::json!({"matched": false}), false),
         ("no blob", serde_json::json!({"matched": true, "mime": sot_protocol::ops::PAGE_WORDS_MIME}), false),
@@ -383,26 +385,124 @@ async fn a_words_request_is_answered_with_words_or_refused_never_with_a_picture_
     }
 }
 
-/// Through the whole assembly: a words request for a folder and for a file no plugin claims is `no_words`
-/// (never the folder's page or the file's bytes), and the same file asked as a page is its bytes.
-#[tokio::test]
-async fn a_words_request_through_the_assembly_never_reaches_the_pages_or_the_bytes_reader() {
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().join("row");
+/// A stand-in for the kernel every workspace starts by default, registered for the default kernel project while it
+/// lives (and only one test holds it at a time, since the table is the process's). The stand-in reads the file
+/// `.stub-reply` in the workspace's own folder (its `SOT_KERNEL_PROJECT_ROOT`): with none it exits at once, a kernel that
+/// cannot be asked; with one it answers its second line, the request, with the file's line, after writing that request
+/// to `.stub-request`. No test of it starts a real Julia.
+#[cfg(unix)]
+struct DefaultKernelStub {
+    _held: tokio::sync::MutexGuard<'static, ()>,
+    _dir: tempfile::TempDir,
+}
+
+#[cfg(unix)]
+static DEFAULT_KERNEL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+#[cfg(unix)]
+impl DefaultKernelStub {
+    async fn register() -> Self {
+        let held = DEFAULT_KERNEL.lock().await;
+        let dir = tempfile::tempdir().unwrap();
+        let stub = dir.path().join("stub-julia");
+        sot_platform::test_exec::write_executable(
+            &stub,
+            "#!/bin/sh\nr=\"$SOT_KERNEL_PROJECT_ROOT\"\n[ -f \"$r/.stub-reply\" ] || exit 1\nread l\necho '{\"id\":1,\"payload\":{\"protocol\":1}}'\nread l\nprintf '%s\\n' \"$l\" > \"$r/.stub-request\"\ncat \"$r/.stub-reply\"\nexec sleep 30\n".to_string(),
+        );
+        let project = crate::sidecars::kernel::Kernel::default_kernel_project();
+        crate::sidecars::kernel::tests::STUB_BIN.lock().unwrap().push((project, stub.to_string_lossy().into_owned()));
+        DefaultKernelStub { _held: held, _dir: dir }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for DefaultKernelStub {
+    fn drop(&mut self) {
+        let project = crate::sidecars::kernel::Kernel::default_kernel_project();
+        crate::sidecars::kernel::tests::STUB_BIN.lock().unwrap().retain(|(p, _)| *p != project);
+    }
+}
+
+/// A workspace over a new folder `row` holding a folder, a text file and a PDF; `reply` is what its kernel stand-in
+/// answers its request with (none: a kernel that cannot be asked).
+#[cfg(unix)]
+fn words_workspace(dir: &Path, reply: Option<serde_json::Value>) -> crate::rows::Workspace {
+    let root = dir.join("row");
     std::fs::create_dir(&root).unwrap();
     std::fs::create_dir(root.join("folder")).unwrap();
-    std::fs::write(root.join("notes.txt"), b"plain bytes").unwrap();
-    let ws = crate::rows::Workspace::meta_only(
+    for name in ["notes.txt", "a.pdf", "a.h5", "a.mp4"] {
+        std::fs::write(root.join(name), b"plain bytes").unwrap();
+    }
+    if let Some(reply) = reply {
+        std::fs::write(root.join(".stub-reply"), format!("{}\n", serde_json::json!({"id": 2, "payload": reply}))).unwrap();
+    }
+    crate::rows::Workspace::meta_only(
         "ws-words".into(), "words".into(), "Words".into(), root,
         "words".into(), 0, false, "none".into(), String::new(), String::new(),
-    );
-    let ask = |node: &str, words| sot_protocol::PreviewGetReq { node_id: node.into(), workspace_id: None, page: None, fit_w: None, fit_h: None, words };
-    let page = build_preview_payload(&ws, &ask("files:notes.txt", false)).await.unwrap().expect("a page request");
-    assert_eq!(page.1, b"plain bytes");
-    for node in ["files:folder", "files:notes.txt"] {
-        let refused = build_preview_payload(&ws, &ask(node, true)).await.unwrap().expect_err(node);
-        assert_eq!(refused.0, "no_words", "{node}: {refused:?}");
-    }
-    // A PDF the dead kernel cannot read is that error, as a page's is: an answer that is neither words nor the file.
-    assert!(build_preview_payload(&ws, &ask("files:absent.pdf", true)).await.unwrap().is_err());
+    )
 }
+
+#[cfg(unix)]
+fn words_ask(node: &str, page: Option<u32>, words: bool) -> sot_protocol::PreviewGetReq {
+    sot_protocol::PreviewGetReq { node_id: node.into(), workspace_id: None, page, fit_w: None, fit_h: None, words }
+}
+
+/// Through the whole assembly with a kernel that cannot be asked: a words request for a folder and for a file no plugin
+/// claims is `no_words` (never the folder's page or the file's bytes), and for each file type that has no bytes-level
+/// answer (PDF, HDF5, video) it is `kernel_unavailable`, as a page request's is; the same file asked as a page is its bytes.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_words_request_through_the_assembly_with_no_kernel_is_one_refusal_by_its_code() {
+    let _stub = DefaultKernelStub::register().await;
+    let dir = tempfile::tempdir().unwrap();
+    let ws = words_workspace(dir.path(), None);
+    let page = build_preview_payload(&ws, &words_ask("files:notes.txt", None, false)).await.unwrap().expect("a page request");
+    assert_eq!(page.1, b"plain bytes");
+    for (node, code) in [
+        ("files:folder", "no_words"),
+        ("files:notes.txt", "no_words"),
+        ("files:a.pdf", "kernel_unavailable"),
+        ("files:absent.pdf", "kernel_unavailable"),
+        ("files:a.h5", "kernel_unavailable"),
+        ("files:a.mp4", "kernel_unavailable"),
+    ] {
+        let refused = build_preview_payload(&ws, &words_ask(node, Some(2), true)).await.unwrap().expect_err(node);
+        assert_eq!(refused.0, code, "{node}: {refused:?}");
+    }
+}
+
+/// Through the whole assembly with a kernel that answers: a words request is answered with the plugin's words, as it gave
+/// them, and the kernel was asked for the page and `words` and nothing else; a folder is refused before the kernel is asked.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_words_request_through_the_assembly_is_answered_with_the_plugins_words() {
+    let _stub = DefaultKernelStub::register().await;
+    let dir = tempfile::tempdir().unwrap();
+    let words = br#"{"page":2,"cut":false,"lines":[[[0,0,9,9,"a"]]]}"#;
+    let ws = words_workspace(dir.path(), Some(matched(sot_protocol::ops::PAGE_WORDS_MIME, words)));
+    let root = dir.path().join("row");
+    let refused = build_preview_payload(&ws, &words_ask("files:folder", Some(2), true)).await.unwrap().expect_err("a folder");
+    assert_eq!(refused.0, "no_words");
+    assert!(!root.join(".stub-request").exists(), "the kernel was not asked about a folder");
+    // A fit the window never sends with words is not forwarded: the plugin is asked for the page and `words` alone.
+    let asked_with_a_fit = sot_protocol::PreviewGetReq { fit_w: Some(800), fit_h: Some(600), ..words_ask("files:a.pdf", Some(2), true) };
+    let (mime, bytes, _) = build_preview_payload(&ws, &asked_with_a_fit).await.unwrap().expect("words");
+    assert_eq!((mime.as_str(), bytes.as_slice()), (sot_protocol::ops::PAGE_WORDS_MIME, &words[..]));
+    let asked: serde_json::Value = serde_json::from_str(std::fs::read_to_string(root.join(".stub-request")).unwrap().trim()).unwrap();
+    assert_eq!((&asked["op"], &asked["payload"]["params"]), (&serde_json::json!("file.preview"), &serde_json::json!({"page": 2, "words": true})));
+}
+
+/// What is logged of a note: the PDF plugin's fixed words, never a heading, another file's answer or more than 200 characters.
+#[test]
+fn the_pdf_plugins_note_is_logged_as_its_fixed_words_and_nothing_else_is() {
+    let note = b"# pdf\n\nThis computer's poppler has no `pdftotext`, so the text of page 2 cannot be read.\n";
+    let words = Some("This computer's poppler has no `pdftotext`, so the text of page 2 cannot be read.".to_string());
+    assert_eq!(plugin_note(Path::new("a.pdf"), "text/markdown", note), words);
+    assert_eq!(plugin_note(Path::new("A.PDF"), "text/markdown", note), words);
+    assert_eq!(plugin_note(Path::new("a.md"), "text/markdown", note), None, "another file's text answer");
+    assert_eq!(plugin_note(Path::new("a.pdf"), "image/png", note), None);
+    assert_eq!(plugin_note(Path::new("a.pdf"), "text/markdown", b"# pdf\n"), None);
+    let long = format!("# pdf\n\n{}\n", "x".repeat(500));
+    assert_eq!(plugin_note(Path::new("a.pdf"), "text/markdown", long.as_bytes()).map(|n| n.chars().count()), Some(200));
+}
+

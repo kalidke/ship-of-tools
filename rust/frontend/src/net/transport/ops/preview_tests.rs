@@ -92,6 +92,11 @@ fn said(mime: &str, len: usize) -> serde_json::Value {
     serde_json::json!({ "mime": mime, "blob": { "len": len, "mime": mime } })
 }
 
+/// A reply whose own mime and whose blob's descriptor differ.
+fn said_twice(mime: &str, blob_mime: &str, len: usize) -> serde_json::Value {
+    serde_json::json!({ "mime": mime, "blob": { "len": len, "mime": blob_mime } })
+}
+
 /// Every reply to a words request is exactly one typed event that names the file, row and page asked, never bytes: the
 /// words, the daemon's refusal by its code, and what is no words (a picture, another page, a document the wire's
 /// decoder refuses, a reply that does not parse).
@@ -104,7 +109,9 @@ fn a_words_reply_becomes_one_typed_event() {
         (words.clone(), Some(WORDS), "reply: Words(PageWords { page: 2, cut: false, lines: [[PageWord { left: 1, top: 2, right: 3, bottom: 4, text: \"alpha\" }]] }) }"),
         (serde_json::json!({ "error": "no words", "code": "no_words" }), None, "reply: Refused { code: Some(\"no_words\"), error: \"no words\" } }"),
         (serde_json::json!({ "error": "no words" }), None, "reply: Refused { code: None, error: \"no words\" } }"),
-        (said("image/png", 4), Some("\u{89}PNG"), "reply: Refused { code: None, error: \"the answer was image/png, not words\" } }"),
+        (said("image/png", 4), Some("\u{89}PNG"), "reply: Refused { code: None, error: \"the answer was image/png (image/png), not words\" } }"),
+        (said_twice(sot_protocol::ops::PAGE_WORDS_MIME, "image/png", WORDS.len()), Some(WORDS), "reply: Refused { code: None, error: \"the answer was application/vnd.sot.page-words+json (image/png), not words\" } }"),
+        (said_twice("image/png", sot_protocol::ops::PAGE_WORDS_MIME, WORDS.len()), Some(WORDS), "reply: Refused { code: None, error: \"the answer was image/png (application/vnd.sot.page-words+json), not words\" } }"),
         (words.clone(), Some(other_page.as_str()), "reply: Refused { code: None, error: \"the words are of page 3, not 2\" } }"),
         (said(sot_protocol::ops::PAGE_WORDS_MIME, empty_line.len()), Some(empty_line), "reply: Refused { code: None, error: \"unreadable words: "),
         (words.clone(), None, "reply: Refused { code: None, error: \"unreadable words: "),
@@ -140,5 +147,12 @@ async fn a_words_request_ends_once_when_its_connection_ends_and_is_never_replaye
     assert_eq!((frame.op.as_str(), frame.payload), (op::PREVIEW_GET, serde_json::json!({ "node_id": "files:a.pdf", "page": 2, "words": true })));
     drop(PendingGuard { map: pending, evt_tx: &evt_tx, host: "h".into() });
     assert_eq!(events(&evt_rx).len(), 1, "written and unanswered ends once");
+
+    // A request for another row than the default names it on the wire, not only in the event it will answer.
+    let mut pending = HashMap::new();
+    let mut wire = Vec::new();
+    send_page_words(&mut wire, &mut pending, 8, "files:a.pdf".into(), Some("repo__box".into()), 3).await.unwrap();
+    let frame = sot_protocol::codec::read_frame_blocking(&mut std::io::BufReader::new(&wire[..])).unwrap();
+    assert_eq!(frame.payload, serde_json::json!({ "node_id": "files:a.pdf", "workspace_id": "repo__box", "page": 3, "words": true }));
 }
 

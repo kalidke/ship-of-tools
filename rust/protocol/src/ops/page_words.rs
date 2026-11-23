@@ -14,7 +14,7 @@ type RawWord = (u16, u16, u16, u16, String);
 
 /// One word: its box, as fractions of the page as drawn (each `/ 65535`, the convention of a drawing's points, 0 at the
 /// left and the top), and its text. The box has `left <= right` and `top <= bottom`; the text is at most
-/// `MAX_PAGE_WORD_BYTES` bytes.
+/// `MAX_PAGE_WORD_BYTES` bytes, not empty, and holds no control character, U+2028 or U+2029.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "RawWord", into = "RawWord")]
 pub struct PageWord {
@@ -34,6 +34,9 @@ impl TryFrom<RawWord> for PageWord {
         if text.len() > MAX_PAGE_WORD_BYTES {
             return Err(format!("a word of more than {MAX_PAGE_WORD_BYTES} bytes"));
         }
+        if text.is_empty() || text.chars().any(|c| c.is_control() || c == '\u{2028}' || c == '\u{2029}') {
+            return Err("a word that is empty or holds a control character or a line separator".to_string());
+        }
         Ok(PageWord { left, top, right, bottom, text })
     }
 }
@@ -45,11 +48,42 @@ impl From<PageWord> for RawWord {
 }
 
 /// What a decoder reads before it checks the bounds a `PageWords` keeps.
-#[derive(Deserialize)]
 struct RawPageWords {
     page: u32,
     cut: bool,
     lines: Vec<Vec<PageWord>>,
+}
+
+/// Read as the one object the document is: a derived reader would take `[2,false,[]]` for it too. Each of the three
+/// fields is required, and a field this reader does not know is ignored.
+impl<'de> Deserialize<'de> for RawPageWords {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        use serde::de::{Error, IgnoredAny, MapAccess, Visitor};
+        struct Object;
+        impl<'de> Visitor<'de> for Object {
+            type Value = RawPageWords;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("an object with page, cut and lines")
+            }
+            fn visit_map<A: MapAccess<'de>>(self, mut m: A) -> Result<RawPageWords, A::Error> {
+                let (mut page, mut cut, mut lines) = (None, None, None);
+                while let Some(key) = m.next_key::<String>()? {
+                    match key.as_str() {
+                        "page" => page = Some(m.next_value()?),
+                        "cut" => cut = Some(m.next_value()?),
+                        "lines" => lines = Some(m.next_value()?),
+                        _ => drop(m.next_value::<IgnoredAny>()?),
+                    }
+                }
+                Ok(RawPageWords {
+                    page: page.ok_or_else(|| A::Error::missing_field("page"))?,
+                    cut: cut.ok_or_else(|| A::Error::missing_field("cut"))?,
+                    lines: lines.ok_or_else(|| A::Error::missing_field("lines"))?,
+                })
+            }
+        }
+        d.deserialize_map(Object)
+    }
 }
 
 /// The document `application/vnd.sot.page-words+json` is: `{"page":P,"cut":false,"lines":[[[x0,y0,x1,y1,"text"],...],...]}`.

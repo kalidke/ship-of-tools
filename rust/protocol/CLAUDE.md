@@ -350,18 +350,25 @@ name is in this crate's one op table.
     [[[x0,y0,x1,y1,"text"],...],...]}`, each `PageWord { left, top, right, bottom, text }` written as the one array of
     five. A box is four integers 0 to 65535, the fractions of the page as drawn (the convention of a drawing's points,
     guarantee 13), ordered (`left <= right`, `top <= bottom`); a word's place in the document is its index over all
-    lines in order, and a line is in the reading order the PDF tool guessed. Decoding refuses a page 0, an empty line
-    (the plugin leaves one out, so lines are at most words), more than `MAX_PAGE_WORDS` (16,384) words in all, a word
-    of more than `MAX_PAGE_WORD_BYTES` (1,024) bytes, an unordered box and a number that is no `u16`; `cut` (the plugin
-    stopped at its own 512 KiB) is required and carried. The window's network side reads it (fe-net's contract); the
-    daemon forwards it unread, and its read of one for a share is unbuilt. `PreviewGetReq.words` is defaulted and left out when false, so an ordinary
-    request is the one an older daemon reads; `HelloRes.serves_page_words` is defaulted and left out when false, and
-    says the daemon answers `words` with the words or with an error, never the page's picture. A daemon built before
-    it answers a words request with the picture, so a window sends one only where the hello said it (fe-net's
-    contract). Mechanism: three defaulted fields and one new type, no new op, so `PROTOCOL_VERSION` stays 4. Limit: the
-    decoder does not check that the words lie inside the page beyond the `u16` range, or that they are in a reading
-    order; the plugin's test pins the same literal document (`julia/plugins/pdf-file/test/words.jl`). Tests
+    lines in order, and a line is in the reading order the PDF tool guessed. The decoder reads the one object and nothing
+    else: a positional array, a value that is no object and a document with no `page`, `cut` or `lines` are refused (a
+    missing `cut` read as false would show a cut page as whole), and a field it does not know is ignored. It refuses a page
+    0, an empty line (the plugin leaves one out, so lines are at most words), more than `MAX_PAGE_WORDS` (16,384) words in
+    all, a word of more than `MAX_PAGE_WORD_BYTES` (1,024) bytes, an empty word, a word holding a control character,
+    U+2028 or U+2029 (so a reader of `PageWord.text` takes a clean string from the type, not from the plugin's word), an
+    unordered box and a number that is no `u16`. The PDF plugin honors the same two bounds, so a page it ships is never
+    refused whole: it stops before the 16,385th word with `cut` true and leaves out a word of more than 1,024 bytes
+    (sidecars' guarantee 19); each side's test states the two numbers as literals. `cut` is required and carried. The
+    window's network side reads it (fe-net's contract); the daemon forwards it unread, and its read of one for a share is
+    unbuilt. `PreviewGetReq.words` is defaulted and left out when false, so an ordinary request is the one an older daemon
+    reads; `HelloRes.serves_page_words` is defaulted and left out when false, and says the daemon answers `words` with
+    the words or with an error, never the page's picture. A daemon built before it answers a words request with the
+    picture, so a window sends one only where the hello said it (fe-net's contract). Mechanism: two defaulted fields
+    (`PreviewGetReq.words` and `HelloRes.serves_page_words`) and one new type, no new op, so `PROTOCOL_VERSION` stays 4.
+    Limit: the decoder does not check that the words lie inside the page beyond the `u16` range, or that they are in a
+    reading order; the plugin's test pins the same literal document (`julia/plugins/pdf-file/test/words.jl`). Tests
     `ops/page_words_tests.rs`: `the_plugins_document_is_the_wires`, `page_words_are_bounded_at_decode`,
+    `a_words_text_is_clean_at_decode`, `the_document_is_one_object_with_all_three_fields`,
     `a_words_request_is_the_ordinary_one_with_one_more_field`; `ops/session_tests.rs`:
     `a_hello_says_it_serves_page_words_and_stays_additive`.
 
@@ -410,7 +417,7 @@ Same on all three; the blocking codec is the one the ssh bridge and shell wrappe
 | 14 | the drawing's raster | `ink_tests.rs` (the three tests under guarantee 14) |
 | 15 | terminal escapes | `escapes_tests.rs` (the five tests under guarantee 15) |
 | 16 | the update's state | `ops/update_tests.rs` (the five tests under guarantee 16); `ops/session_tests.rs`: `a_hello_and_a_version_answer_carry_the_update_state_and_stay_additive` |
-| 17 | a page's words | `ops/page_words_tests.rs` (the three tests under guarantee 17); `ops/session_tests.rs`: `a_hello_says_it_serves_page_words_and_stays_additive` |
+| 17 | a page's words | `ops/page_words_tests.rs` (the five tests under guarantee 17); `ops/session_tests.rs`: `a_hello_says_it_serves_page_words_and_stays_additive` |
 
 ## Files
 - `Cargo.toml`: the crate manifest (feature `test-support`, dev only); depends on platform alone of ours

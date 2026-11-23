@@ -13,19 +13,27 @@ Behavior tests: `preview_gate_tests::a_bounded_plugins_picture_past_the_text_cap
 
 A request with `words` true (`PreviewGetReq::words`, wire's guarantee 17) asks for a page's words, not its picture.
 `build_preview_payload` answers it before the folder page, the plugin's picture, the bytes-level reader and the scale
-sidecar are reached, through `words_answer`: the plugin is asked with `params.words` beside `page` (a request without
-`words` carries no such key), and only an answer under `PAGE_WORDS_MIME` is shipped, as the plugin gave it. Every other
-outcome is the error `no_words`: a folder, a file no plugin claims, a plugin's note, the picture of a plugin that
-ignored the parameter, an answer with no blob or one that is not base64 or that passes `PREVIEW_BYTE_CAP` (each the
-reply of `try_plugin_preview` that sends any other request to the reader), and a kernel that cannot be asked is its
-`kernel_unavailable` for a PDF, as a page's is. The reader would answer a words request with the file's own bytes, which a
-window would read as no words at best, so it is never reached. The words document is the plugin's and is not decoded
-here; the window decodes it with wire's reader. The hello says the daemon does this (`serves_page_words`, server's
-contract). Tests, in `preview_gate_tests`:
-`a_words_request_reaches_the_plugin_with_the_parameter_and_a_page_request_without_it` (a stand-in kernel records the
-request it is sent), `a_words_request_is_answered_with_words_or_refused_never_with_a_picture_or_the_file` (seven plugin
-answers) and `a_words_request_through_the_assembly_never_reaches_the_pages_or_the_bytes_reader` (a folder and a file no
-plugin claims, with the kernel unable to start).
+sidecar are reached, through `words_answer`: a folder is `no_words` with no request to the kernel; otherwise the plugin
+is asked for the page with `params.words` and nothing else (a request without `words` carries no such key, and a fit is
+never forwarded), and only an answer under `PAGE_WORDS_MIME` is shipped, as the plugin gave it. Every other outcome is
+the error `no_words`: a folder, a file no plugin claims, a plugin's note, the picture of a plugin that ignored the
+parameter (one past `MAX_BOUNDED_PICTURE_BYTES` too, not `preview_too_large`), and an answer with no blob, one that is
+not base64 or one past `PREVIEW_BYTE_CAP` (each the reply with which `try_plugin_preview` sends any other request to the
+reader). The one other error is a kernel that cannot be asked: `kernel_unavailable` for each type with no bytes-level
+answer (PDF, HDF5 and video, `is_bounded_output_plugin`), as a page's is, and `no_words` for any other file. The reader
+would answer a words request with the file's own bytes, which a window would read as no words at best, so it is never
+reached. When the PDF plugin answered a note (no `pdftotext`, a tool that failed or ran out of time, a page past the
+end), its fixed words are logged at info with the node, never the reply's: the window is told `no_words` alone, and the
+log tells a missing tool from a bad PDF (`plugin_note`). The words document is the plugin's and is not decoded here; the
+window decodes it with wire's reader. The hello says the daemon does this (`serves_page_words`, server's contract).
+Tests, in `preview_gate_tests`: `a_words_request_reaches_the_plugin_with_the_parameter_and_a_page_request_without_it` (a
+stand-in kernel records the request it is sent),
+`a_words_request_is_answered_with_words_or_refused_never_with_a_picture_or_the_file` (eight plugin answers),
+`a_words_request_through_the_assembly_with_no_kernel_is_one_refusal_by_its_code` (a stand-in for the default kernel
+exits at once: a folder and a text file `no_words`, a PDF, an HDF5 file and a video `kernel_unavailable`),
+`a_words_request_through_the_assembly_is_answered_with_the_plugins_words` (the stand-in answers the words mime: the
+words ship as given, the kernel is asked the page and `words` alone, and for a folder not at all) and
+`the_pdf_plugins_note_is_logged_as_its_fixed_words_and_nothing_else_is`.
 
 The bytes-level reader (`read_bytes_preview`) answers what no plugin answered. It looks the path up before it opens
 anything, following links as the read resolver does (`node_id_to_path`) and nothing more, and opens only a regular

@@ -41,16 +41,20 @@ fn the_plugins_document_is_the_wires() {
 
 #[test]
 fn page_words_are_bounded_at_decode() {
-    assert!(!refused(document(1, MAX_PAGE_WORDS)), "exactly the most words");
-    assert!(refused(document(1, MAX_PAGE_WORDS + 1)), "one word more");
-    assert!(refused(document(MAX_PAGE_WORDS + 1, 1)), "one word more, in lines of one");
+    // The two numbers are written out: the plugin's test states the same two, and a change to either constant breaks one.
+    assert_eq!((MAX_PAGE_WORDS, MAX_PAGE_WORD_BYTES), (16384, 1024));
+    assert!(!refused(document(1, 16384)), "exactly the most words");
+    assert!(refused(document(1, 16385)), "one word more");
+    assert!(refused(document(16385, 1)), "one word more, in lines of one");
     let mut v = document(1, 1);
-    v["lines"][0][0][4] = json!("w".repeat(MAX_PAGE_WORD_BYTES));
+    v["lines"][0][0][4] = json!("w".repeat(1024));
     assert!(!refused(v.clone()), "a word of exactly the most bytes");
-    v["lines"][0][0][4] = json!("w".repeat(MAX_PAGE_WORD_BYTES + 1));
+    v["lines"][0][0][4] = json!("w".repeat(1025));
     assert!(refused(v.clone()), "a word of one byte more");
     // The bound is in bytes, not characters.
-    v["lines"][0][0][4] = json!("é".repeat(MAX_PAGE_WORD_BYTES / 2 + 1));
+    v["lines"][0][0][4] = json!("é".repeat(512));
+    assert!(!refused(v.clone()), "512 two-byte characters are 1024 bytes");
+    v["lines"][0][0][4] = json!("é".repeat(513));
     assert!(refused(v), "a word of more bytes than characters");
     let mut v = document(1, 1);
     v["lines"] = json!([[]]);
@@ -83,3 +87,32 @@ fn a_words_request_is_the_ordinary_one_with_one_more_field() {
     assert!(!old.words, "an older window's request asks for no words");
     assert_eq!(serde_json::from_value::<PreviewGetReq>(json!({"node_id": "n", "words": true})).unwrap().words, true);
 }
+
+/// The type, not the plugin alone, guarantees a word's text is clean: no empty word, no control character (C0, DEL, C1
+/// and the escape of a terminal sequence among them) and no line or paragraph separator.
+#[test]
+fn a_words_text_is_clean_at_decode() {
+    for (text, ok) in [("w", true), ("é日本", true), ("a b", true), ("", false), ("\u{1b}[2J", false), ("a\nb", false), ("a\tb", false), ("\u{7f}", false), ("\u{85}", false), ("a\u{2028}b", false), ("\u{2029}", false)] {
+        let mut v = document(1, 1);
+        v["lines"][0][0][4] = json!(text);
+        assert_eq!(!refused(v), ok, "{text:?}");
+    }
+}
+
+/// The document is the one object the plugin writes: a positional array of the same values, a document with no `cut` or
+/// no `lines` or no `page` (each required: a missing `cut` read as false would show a cut page as whole) and a value that
+/// is no object are refused, and a field this reader does not know is ignored.
+#[test]
+fn the_document_is_one_object_with_all_three_fields() {
+    assert!(refused(json!([2, false, []])), "a positional array");
+    assert!(refused(json!([2, false, [[[1, 2, 3, 4, "w"]]]])), "a positional array with a word");
+    assert!(refused(json!({"page": 2, "lines": []})), "no cut");
+    assert!(refused(json!({"page": 2, "cut": false})), "no lines");
+    assert!(refused(json!({"cut": false, "lines": []})), "no page");
+    assert!(refused(json!("page")) && refused(json!(null)) && refused(json!(2)), "no object");
+    assert!(!refused(json!({"page": 2, "cut": false, "lines": [], "later": [1, {"a": null}]})), "a field of a later reader");
+    // Through the bytes the window reads, as the array was not refused before.
+    assert!(serde_json::from_slice::<PageWords>(b"[2,false,[]]").is_err());
+    assert!(serde_json::from_slice::<PageWords>(br#"{"lines":[],"cut":true,"page":2}"#).is_ok(), "any key order");
+}
+
