@@ -297,6 +297,19 @@ owned by `docs/CLAUDE.md`.
 
 ## rows
 
+- **CODEX-TURN-OWNERSHIP-LIMITS** [note] A Codex row takes work-state ownership at a root prompt with complete
+  conversation and turn ids. No state hook reads the binding file or writes on rebind. A switched conversation
+  inherits the previous floor until its first prompt, and a join can restore the earlier floor from the ordinary
+  pre-join mark. The join and mark verbs, mail tick and feedback file keep their existing keys and behavior. A
+  compaction that sends no prompt owns nothing. Scratch-home trials on Codex 0.171.0 recorded the Interrupt
+  and Stop sequences and child ids. A real row's interrupt and an older event arriving during its next turn
+  remain to be observed.
+  A new prompt between the Stop's single ownership check and its mail tick lets the earlier Stop write the tick and raise a hold.
+  An owner left by a turn with neither Stop nor Interrupt survives a lost prompt write, so the newer turn runs unowned
+  and the stale owner's own late events still pass until another root prompt.
+  The 24 distinct turn ids measured on Codex 0.171.0 were UUIDv7s in time order, and other forms pass the age check.
+  The Codex prompt and permission hooks each copy their input once before parsing, as the heartbeat and Stop hooks already do.
+
 - **MAIL-ALONE-MOVES-NO-SESSION** [person] The maintainer asked on 2026-11-22 that a session another session writes
   into is moved in the session strip's recent order. That is served where something is typed into the session: a
   line typed through the agent control surface, a new child's first line, and the wake's line when mail reaches an

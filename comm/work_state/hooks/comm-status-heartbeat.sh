@@ -45,6 +45,7 @@ SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # needs it every call, throttle or no throttle. Cached in a variable, not
 # re-read: stdin is a pipe, and jq would see EOF on a second read.
 _envelope="$(cat)"
+[ "${SOT_AGENT_KIND:-}" != codex ] || [ ! -r "$COMM_HOME/bin/codex-turn.sh" ] || . "$COMM_HOME/bin/codex-turn.sh" <<< "$_envelope"
 tool="$(printf '%s' "$_envelope" | jq -r '.tool_name // ""' 2>/dev/null || true)"
 
 # comm-lib.sh, in the comm home's bin first (update_comm puts every script

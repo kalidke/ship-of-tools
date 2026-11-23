@@ -59,6 +59,10 @@ the session's screen every five seconds, on every system, whether a turn runs or
 not: a background agent's permission prompt after the session's turn has ended
 reads red too, and so does a menu you open (`/model`, `/resume`) until it closes.
 
+When you interrupt a Codex turn whose prompt recorded its conversation and turn ids, the row releases its
+working colour and any permission dialog. A declared wait, question or unread result shows again. A late
+tool return or Stop leaves the current turn alone when its turn id proves it began earlier. A root prompt missing either id clears the previous owner.
+
 These facts live in the comm registry, next to each session's handle, which is
 why another agent — and every frontend attached to the backend — sees the same
 colour you do. The declarations are sent with `comm-status.sh`; see

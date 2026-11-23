@@ -1,6 +1,7 @@
 Part of rows: see ../../../rust/backend/src/rows/CLAUDE.md (work-state); the Stop hook's mail gate and comm-subagent-guard.sh are messaging's (../../CLAUDE.md).
 
-`comm-status-idle.sh` checks unread mail before markers. A blocked closing marker carries this convention on one
+`comm-status-idle.sh` checks unread mail before markers. A Codex Stop whose stop-mark write identifies a provably older
+root turn exits before either check. A blocked closing marker carries this convention on one
 line, followed by the context needed to answer cold:
 
     SITREP-QUESTION: <question> Irreversible: <what happens>. Options: (a) ...; (b) .... Recommend (a). Page: <absolute path>

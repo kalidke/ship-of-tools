@@ -58,7 +58,7 @@ Windows the folder inherits the profile's access list.
 ```
 
 The address-book fields are messaging's; `state`, `summary`, `status_at` and the facts they reduce (`floor`,
-`question`, `waiting`, `done`, `dialog`, `note`) are rows' work-state (rust/backend/src/rows/CLAUDE.md). A join writes
+`question`, `waiting`, `done`, `dialog`, `note`) are rows' work-state, along with the optional `codex_turn` pair of conversation and turn ids (rust/backend/src/rows/CLAUDE.md). A join writes
 the whole entry, except that a join of the same row (equal `host`, `workspace_id` and `root`) keeps that row's open
 `question`; every other write changes only its own fields.
 

@@ -37,6 +37,12 @@ set -uo pipefail
 COMM_HOME="${SOT_COMM_HOME:-$HOME/.sot-comm}"
 STATUS="$COMM_HOME/bin/comm-status.sh"
 [ -x "$STATUS" ] || exit 0
+if [ "${SOT_AGENT_KIND:-}" = codex ] && [ -r "$COMM_HOME/bin/codex-turn.sh" ]; then
+    input=$(tr -d '\000')
+    . "$COMM_HOME/bin/codex-turn.sh" <<< "$input"
+    export SOT_CODEX_PROMPT="${SOT_CODEX_ROOT-${SOT_CODEX_TURN:+1}}"
+    exec <<< "$input"
+fi
 prompt="$(jq -r '.prompt // ""' 2>/dev/null || true)"   # consumes hook stdin
 ORIGIN=user
 # Twin copy (2026-09-15): comm-status-idle.sh's turn-origin correction

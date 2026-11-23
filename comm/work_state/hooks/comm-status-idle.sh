@@ -149,6 +149,7 @@ sot_end_by_signal() { [ -z "${_SOT_SIG:-}" ] || { trap - "$_SOT_SIG"; exec sh -c
 
 # Stop-hook input (JSON on stdin): {stop_hook_active, transcript_path, ...}.
 input="$(cat 2>/dev/null || true)"
+[ "${SOT_AGENT_KIND:-}" != codex ] || [ ! -r "$HOME_DIR/bin/codex-turn.sh" ] || . "$HOME_DIR/bin/codex-turn.sh" <<< "$input"
 jqget() { printf '%s' "$input" | jq -j "$1" 2>/dev/null || true; }
 
 # Comm-agent gate (the safety line): resolve our handle; ONLY a joined comm agent
@@ -185,7 +186,9 @@ fi
 # wait bounds the lock, not the write (on Linux the mark landed about 0.13 s
 # after the hook started), so landing inside the daemon's 1.5 s hold is
 # likely, not guaranteed.
-( . "$FE_LIB" >/dev/null 2>&1 && sot_comm stop-mark "$NAME" ) >/dev/null 2>&1 || true
+( . "$FE_LIB" >/dev/null 2>&1 && sot_comm stop-mark "$NAME" ) >/dev/null 2>&1 || {
+    [ "$?" != 3 ] || exit 0  # the locked entry named another Codex turn
+}
 
 # Clear the heartbeat's own throttle stamp for this session key (same key
 # formula as comm-status-heartbeat.sh's _hb_key) so a tick left over from

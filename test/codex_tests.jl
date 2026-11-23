@@ -45,9 +45,9 @@ function check_hooks_payload(hooks_path, events)
 end
 
 @testset "codex hooks payload" begin
-    check_hooks_payload(ShipTools.CODEX_HOOKS_JSON_SRC, ["UserPromptSubmit", "PostToolUse", "Stop", "PermissionRequest"])
+    check_hooks_payload(ShipTools.CODEX_HOOKS_JSON_SRC, ["UserPromptSubmit", "PostToolUse", "Stop", "Interrupt", "PermissionRequest"])
     # The global plugin is the shipped work-state plugin, including its original command bytes.
-    for (path, digest) in [(ShipTools.CODEX_HOOKS_JSON_SRC, "a52d37fadd48c8424e918654f3cd253025ee9761de9515ae1dd0232931edccb1"),
+    for (path, digest) in [(ShipTools.CODEX_HOOKS_JSON_SRC, "ba8781383f18e1ec51cc2a11fb572a4c230993987afb7753a803ca90b6b05583"),
                            (joinpath(ShipTools.CODEX_PLUGIN_SRC, ".codex-plugin", "plugin.json"), "332fb2edaf3cf0e1e0bb9b5114fd9938b9ef97b0ae2d8521be1b4d946b3711c5")]
         @test bytes2hex(Base.invokelatest(Base.require(ShipTools._SHA_ID).sha256, replace(read(path, String), "\r\n" => "\n"))) == digest
     end

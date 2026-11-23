@@ -114,9 +114,9 @@ source "$SCRIPT_DIR/comm-lib.sh"
 
 VERB="${1:-}"
 case "$VERB" in
-    prompt|stop|join|dialog|resumed|working|idle|blocked|done|waiting) ;;
-    "") echo "usage: comm-status.sh <prompt|stop|join|dialog|resumed|working|idle|blocked|done|waiting> [\"text\"]" >&2; exit 2 ;;
-    *)  echo "comm-status.sh: invalid verb '$VERB' (want prompt|stop|join|dialog|resumed|working|idle|blocked|done|waiting)" >&2; exit 2 ;;
+    prompt|stop|interrupt|join|dialog|resumed|working|idle|blocked|done|waiting) ;;
+    "") echo "usage: comm-status.sh <prompt|stop|interrupt|join|dialog|resumed|working|idle|blocked|done|waiting> [\"text\"]" >&2; exit 2 ;;
+    *)  echo "comm-status.sh: invalid verb '$VERB' (want prompt|stop|interrupt|join|dialog|resumed|working|idle|blocked|done|waiting)" >&2; exit 2 ;;
 esac
 
 if [ -n "${SOT_COMM_ROW_HANDLE:-}" ]; then
@@ -127,7 +127,7 @@ fi
 # no-op, a declaration a loud failure. The gate comes before the context call, so
 # a refused child touches nothing.
 if ! _why="$(sot_require_agent)"; then
-    case "$VERB" in prompt|stop|join|dialog|resumed) exit 0 ;; esac
+    case "$VERB" in prompt|stop|interrupt|join|dialog|resumed) exit 0 ;; esac
     echo "comm-status.sh: $_why" >&2; exit 1
 fi
 if [ "$VERB" = dialog ] && [ -z "${2-}" ]; then
@@ -158,7 +158,7 @@ esac
 # NAME comes from comm-context (the pane-keyed self file); empty / no row →
 # no-op for an EVENT, a loud failure for a DECLARATION.
 _no_row() {
-    case "$VERB" in prompt|stop|dialog|resumed) exit 0 ;; esac
+    case "$VERB" in prompt|stop|interrupt|dialog|resumed) exit 0 ;; esac
     echo "comm-status.sh: no registry row for '${NAME:-<no identity>}' from cwd $PWD -- stamp discarded; run it from the session's project root" >&2
     exit 1
 }
@@ -192,6 +192,7 @@ set -- work-state "$VERB" --handle "$NAME" --origin "$ORIGIN" --lock-wait "$SOT_
 [ "${COMM_STATUS_PAGE_NUDGED:-}" = 1 ] && set -- "$@" --page-nudged
 rc=0
 if [ "$HAVE" = 1 ]; then printf '%s' "$SUM" | "$SOTD" "$@" --text || rc=$?; else "$SOTD" "$@" </dev/null || rc=$?; fi
+[ "$rc" != 3 ] || exit 0  # another turn owns the row; its dialog marker stays
 if [ "$rc" = 2 ] && [ -z "$SUM" ]; then
     case "$VERB" in blocked|waiting) echo "comm-status.sh: $VERB needs its text -- stamp discarded" >&2 ;; esac
 fi

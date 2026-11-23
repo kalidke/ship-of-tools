@@ -7,14 +7,15 @@
 //! addresses the session's person, `question::addresses_person`, each with its reason on stderr) or a bad argument.
 //! `--page-nudged` lets that question or wait through: the Stop hook passes it once it has nudged the session, so a
 //! closing line is never left unstamped. `comm-status.sh` keeps its own identity, gate and markers.
+//! Exit 3 tells the hook to leave the dialog marker alone when the turn check declined its write.
 
 use std::io::Read;
 use std::time::Duration;
 
-use super::{write_event, Declaration, Event, Origin, StampError};
+use super::{codex_turn, write_hook_event, Declaration, Event, Origin, StampError, Stamped};
 use crate::comm::registry::registry::EditError;
 
-pub(crate) const USAGE: &str = "usage: sotd work-state <prompt|stop|dialog|resumed|tick|working|idle|blocked|waiting|done> \
+pub(crate) const USAGE: &str = "usage: sotd work-state <prompt|stop|interrupt|dialog|resumed|tick|working|idle|blocked|waiting|done> \
 --handle <h> [--origin user|machine] [--text] [--lock-wait <secs>] [--page-nudged]";
 
 /// The registry lock's wait when `--lock-wait` is not given: `comm-lib.sh`'s `SOT_LOCK_WAIT_SECS`.
@@ -26,6 +27,7 @@ fn event_for(verb: &str, origin: Origin, text: Option<String>) -> Option<Event> 
     match verb {
         "prompt" => Some(Event::Prompt(origin)),
         "stop" => Some(Event::Stop),
+        "interrupt" => Some(Event::Interrupt),
         "dialog" => Some(Event::Dialog(text.clone().unwrap_or_default())),
         "resumed" => Some(Event::Resumed),
         "tick" => Some(Event::Tick),
@@ -102,7 +104,11 @@ pub(crate) fn run(args: &[String]) -> i32 {
         eprintln!("{line}");
         return 2;
     }
-    match write_event(&handle, &event, lock_wait) {
+    let turn = std::env::var("SOT_CODEX_TURN").ok().and_then(|s| codex_turn(&s));
+    let root_prompt = matches!(event, Event::Prompt(_)) && std::env::var("SOT_CODEX_PROMPT").as_deref() == Ok("1");
+    match write_hook_event(&handle, &event, lock_wait, turn.as_ref(), root_prompt) {
+        Ok(Stamped::OtherTurn) => 3,
+        Ok(Stamped::NoEntry) if event == Event::Interrupt => 3,
         Ok(_) => 0,
         Err(StampError::Refused) => 2,
         Err(StampError::Registry(e)) => {

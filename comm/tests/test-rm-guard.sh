@@ -111,6 +111,7 @@ done < <(git -C "$REPO" ls-files)
 read -r -d '' SLEEP_ALLOWED <<'ALLOW'
 agents/tests/test-sot-fe-paths.sh 1 polls for the stand-in's socket, 100 tries of 0.1 s; moves to await when the file is next changed
 comm/tests/lib-temp-files.sh 1 the stub jq that hangs until the signal under test ends it
+comm/tests/status_floor/codex_turn.sh 1 bounds the Interrupt lock holder's lifetime. The test uses await for readiness and kills the holder on exit.
 comm/tests/test-endpoint-gate.sh 4 children that run until the case ends them, and a stub pgrep's printed text
 comm/tests/test-heartbeat-ctx-wait.py 4 the generated bodies' own poll loops, which the suite's frozen observations time
 comm/tests/test-rm-guard.sh 4 this file's synthetic offender text and the pipeline members end_group is run on

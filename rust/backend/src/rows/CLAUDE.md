@@ -307,9 +307,28 @@ its name:
   every red card (`join::tests::a_join_of_the_same_row_keeps_its_open_question_and_nothing_else`, `join::tests::
   a_join_over_another_computers_entry_keeps_nothing`, `start::tests::a_session_start_names_the_question_its_row_kept`,
   and the status-floor case `case_a_restarted_legs_session_keeps_its_rows_question`).
-- One writer path. Every write of a work-state fact is `work_state::apply_event` (through `write_event`), one read-decide-write under the registry lock
+- One writer path. Every work-state stamp runs through `write_hook_event` and applies its facts with `work_state::apply_event`, one read-decide-write under the registry lock
   on a fresh read (messaging's `edit_entry`). A session reaches it through `sotd work-state`, which `comm-status.sh`
   runs; the daemon calls it in its own process.
+- In a Codex row a root prompt writes `codex_turn` as the JSON pair `[session_id, turn_id]` with its floor.
+  A root prompt missing either id clears the owner in that same write. A child prompt carrying `agent_id` keeps it.
+  Each root permission, tool return, tick and Stop checks its pair against the complete stored pair under the
+  lock for its write. It refuses the write only when both turn ids are canonical UUIDv7s and the event's millisecond
+  precedes the owner's. The existing stop-mark write checks before mail, within its usual lock budget.
+  A matching final Stop clears the owner. A Stop held for mail keeps it. A matching root Interrupt clears the
+  owner, floor, dialog and stop mark together and preserves declarations. Its lock budget is at most three seconds.
+  The next prompt removes the shell dialog marker. Other Interrupts have no effect. Child events, an absent or
+  incomplete owner, an inconclusive Stop-mark check or an older binary follow the ordinary rules.
+- The hooks use the event ids alone. A conversation switch keeps the preceding floor up to the first prompt, and
+  a join can restore it from the existing pre-join mark. The mail tick and feedback file retain their session keys.
+  A compaction with no prompt takes no ownership. A real row interrupt and a late event remain to be observed
+  (docs/defects.md: CODEX-TURN-OWNERSHIP-LIMITS).
+  The Stop mark checks ownership once, so a new prompt between that mark and the mail tick lets the earlier Stop
+  write the tick and raise a hold.
+  If neither Stop nor Interrupt closed the owner and the next prompt write is lost, the newer turn runs unowned
+  and the recorded owner's own late events still go through until another root prompt.
+  All 24 distinct turn ids measured on Codex 0.171.0 were UUIDv7s in time order, and other forms pass the age check.
+  The Codex prompt and permission hooks each copy their input once before parsing, as the heartbeat and Stop hooks do.
 - Who may set it. The row's own session: its hooks' events (`prompt` with its origin, `stop`, `join`, a Codex `dialog`,
   `resumed`, the heartbeat's `tick`) and its declarations (`comm-status.sh working|idle|blocked|waiting|done ["text"]`,
   and the Stop hook's closing markers on its behalf). A second agent inside the session stamps nothing
@@ -384,7 +403,8 @@ its name:
   per run, so a row that sat on a dialog and never read red names the reason in the daemon's log. A Codex row's dialog is its own `PermissionRequest` hook's, cleared by the call's return, the
   turn's end or the next prompt.
 - Limits: a dialog that closes between the tick's read and its write reads red for one more tick; a turn that ends with
-  no Stop (Esc, a bare No, a reauth, an API error) leaves the row `working` until its next turn.
+  no Stop (Esc, a bare No, a reauth, an API error) leaves the row `working` until its next turn, but for a Codex turn
+  whose matching Interrupt arrives.
 
 Activity. A row's last activity is the newest of three facts: its creation (`created`, kept in its toml, so it survives
 restarts; the default row's too, whose re-seed at each daemon start carries it over,

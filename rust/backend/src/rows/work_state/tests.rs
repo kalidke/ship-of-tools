@@ -371,3 +371,83 @@ fn a_stamp_decides_against_the_row_under_the_lock() {
         assert_eq!(home.agent("h")["state"], want, "{}", competing.0);
     }
 }
+
+/// Exercise the installed command boundary on an on-disk entry. The shell tests supply the hook envelopes.
+fn codex_command(verb: &str, turn: Option<[&str; 2]>) -> i32 {
+    let _turn = crate::paths::EnvGuard::capture("SOT_CODEX_TURN");
+    let _prompt = crate::paths::EnvGuard::capture("SOT_CODEX_PROMPT");
+    match turn {
+        Some(ids) => std::env::set_var("SOT_CODEX_TURN", json!(ids).to_string()),
+        None => std::env::remove_var("SOT_CODEX_TURN"),
+    }
+    std::env::set_var("SOT_CODEX_PROMPT", if verb == "prompt" { "1" } else { "" });
+    cli::run(&[verb, "--handle", "h", "--origin", "user"].map(String::from))
+}
+
+#[test]
+fn codex_interrupt_preserves_each_declaration() {
+    for (fact, value, state) in [("waiting", json!("build"), "waiting"), ("question", json!("which?"), "blocked"), ("done", json!(true), "done")] {
+        let home = Home::with(json!({"h": {"codex_turn":["s","one"], "floor":"user", "dialog":"permission", "stop_at":"old", fact:value}}));
+        let before = home.bytes();
+        for turn in [None, Some(["s", ""]), Some(["s", "two"]), Some(["other", "one"])] {
+            codex_command("interrupt", turn);
+            assert_eq!(home.bytes(), before);
+        }
+        assert_eq!(codex_command("interrupt", Some(["s", "one"])), 0);
+        let e = home.agent("h");
+        assert_eq!(e[fact], value);
+        assert_eq!(e["state"], state);
+        for key in ["codex_turn", "floor", "dialog", "stop_at"] { assert!(e.get(key).is_none(), "{key}"); }
+    }
+}
+
+#[test]
+fn codex_late_writes_preserve_the_registry_bytes() {
+    let home = Home::with(json!({"h":{"floor":"user","dialog":"approval","codex_turn":["s","01990000-0020-7000-8000-000000000000"]}}));
+    let before = home.bytes();
+    for event in ["stop", "resumed", "tick", "done"] {
+        codex_command(event, Some(["s", "01990000-0010-7000-8000-000000000000"]));
+        assert_eq!(home.bytes(), before, "{event}");
+    }
+}
+
+#[test]
+fn codex_root_prompt_claims_and_its_stop_releases() {
+    let home = Home::with(json!({"h":{}}));
+    let turn = Some(["s", "one"]);
+    assert_eq!(codex_command("prompt", turn), 0);
+    assert_eq!(home.agent("h")["codex_turn"], json!(["s","one"]));
+    assert_eq!(write_event("h", &Event::Prompt(Origin::User), Duration::from_secs(1)), Ok(Stamped::Written)); // unkeyed child
+    assert_eq!(home.agent("h")["codex_turn"], json!(["s","one"]));
+    assert_eq!(codex_command("stop", turn), 0);
+    assert_eq!(home.agent("h")["state"], "done");
+    assert!(home.agent("h").get("codex_turn").is_none());
+}
+
+#[test]
+fn codex_incomplete_pairs_allow_the_ordinary_write() {
+    for (owner, turn) in [(Value::Null, Some(["s", "new"])), (json!(["s","old"]), None),
+                          (json!(["s",""]), Some(["s", "new"])), (json!(["s","old"]), Some(["", "new"]))] {
+        let home = Home::with(json!({"h":{"floor":"user","dialog":"approval","codex_turn":owner}}));
+        assert_eq!(codex_command("resumed", turn), 0);
+        assert!(home.agent("h").get("dialog").is_none());
+    }
+}
+
+#[test]
+fn turn_order_uses_only_complete_pairs_and_the_uuid_v7_millisecond() {
+    let owner = json!(["a", "01990000-0020-7fff-bfff-ffffffffffff"]);
+    let entry = json!({"codex_turn":owner}).as_object().unwrap().clone();
+    let early = "01990000-0010-7000-8000-000000000000";
+    assert!(older_turn(&entry, Some(&json!(["b", early]))));
+    for event in [json!(["", early]), json!(["b","01990000-0020-7000-8000-000000000000"]),
+                  json!(["b","01990000-0030-7000-8000-000000000000"]), json!(["b","opaque"]),
+                  json!(["b",early.replace('-', "")]), json!(["b",early.replace("-7000", "-4000")]),
+                  json!(["b",early.replace("-8000", "-c000")]), json!(["b",early.replace("0010-", "0x10-")])] {
+        assert!(!older_turn(&entry, Some(&event)), "{event}");
+    }
+    for malformed in [json!(["", early]), json!(["a","opaque"]), json!(["a","01990000-0020-4000-8000-000000000000"])] {
+        let entry = json!({"codex_turn":malformed}).as_object().unwrap().clone();
+        assert!(!older_turn(&entry, Some(&json!(["b",early]))));
+    }
+}

@@ -13,7 +13,16 @@ like a Claude Code session does:
 | `UserPromptSubmit`  | `comm-status-working.sh`   | working / green  |
 | `PostToolUse`       | `comm-status-heartbeat.sh` | working / green  |
 | `Stop`              | `comm-status-idle.sh`      | closing marker → done/blocked/waiting; else done (blue, human-started turn) / idle |
+| `Interrupt`         | `codex-status-interrupted.sh` | matching root turn releases its floor and permission wait |
 | `PermissionRequest` | `codex-status-blocked.sh`  | dialog / red until the call returns |
+
+In a row, a root prompt records its conversation and turn ids with its working state. A late permission,
+tool return or Stop with a UUIDv7 timestamp earlier than the recorded turn leaves the current turn alone. A held Stop keeps the owner
+until the matching Stop finishes. A matching Interrupt ends the working state and permission wait and preserves
+the session's declarations. A root prompt missing either id clears the previous owner. Child events follow the ordinary hook behavior.
+Codex 0.171.0 in a scratch home supplied the same ids to both Stops across a hold, sent Interrupt without a
+following Stop on Escape, identified child events with `agent_id`, and resumed an already-loaded thread without
+SessionStart. The row's state hooks read no binding file.
 
 `PermissionRequest` maps to the `dialog` fact (red) because a permission prompt
 is codex's nearest "needs the USER to act". Its payload carries a top-level
@@ -141,6 +150,6 @@ this wiring being broken again.
 ## Re-check after any codex upgrade
 
 Both failure modes above are silent. After upgrading codex, open `/hooks` and
-confirm the four events read `Installed = 1` and `Active = 1`. The repo's test
+confirm the registered events supported by that version read `Installed = 1` and `Active = 1`. The repo's test
 suite checks the file's shape, but only the running binary can tell you whether
 *this* codex still accepts it.

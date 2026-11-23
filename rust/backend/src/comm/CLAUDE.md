@@ -345,7 +345,7 @@ exit codes are kept; rows' work-state scripts and hooks and the agents' CLIs thr
 Claude when omitted, and a Claude child's spawn passes no `--agent`, so an older sotd serves it as before; pinned in
 `door_tests.rs` and `agents/tests/test-spawn-remote-no-local-row.sh`), `slug`; the despawn: `registry del`, `self-slot`;
 the spawn, despawn, probe and three comm test suites:
-`ensure-home`; ccx: `handoff-line`; the Stop hook: `unread`, `stop-mark`), and three functions kept because many
+`ensure-home`; ccx: `handoff-line`; the Stop hook: `unread`, `stop-mark`, whose locked write returns 3 when rows proves the Codex event predates the owning turn), and three functions kept because many
 scripts call them and tests stand in for them: `sot_require_agent` (the spawn, despawn, probe and worktree scripts,
 `comm-status.sh` and its two hooks; the heartbeat test stubs it), `sot_registry_read` (the spawn, despawn, probe,
 worktree status and sync scripts, `comm-status.sh`, the turn auditor and both hooks; the probe test stubs it) and

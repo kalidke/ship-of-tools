@@ -261,12 +261,16 @@ pub(crate) fn ensure_home(env: &Env, _args: &[String]) -> Out {
 pub(crate) fn stop_mark(env: &Env, args: &[String]) -> Out {
     let o = Out::default();
     let [h] = args else { return usage(o, "stop-mark <handle>") };
+    let turn = crate::rows::work_state::codex_turn(&env.text("SOT_CODEX_TURN"));
     let marked = update(env, &registry_path(env), TOUCH_LOCK_WAIT, |agents| {
-        let Some(e) = agents.get_mut(h).and_then(Value::as_object_mut) else { return Ok(((), false)) };
+        let Some(e) = agents.get_mut(h).and_then(Value::as_object_mut) else { return Ok((0, false)) };
+        if crate::rows::work_state::older_turn(e, turn.as_ref()) {
+            return Ok((3, false));
+        }
         e.insert("stop_at".into(), iso8601_utc_now().into());
-        Ok(((), true))
+        Ok((0, true))
     });
-    if marked.is_err() { o.exit(1) } else { o }
+    o.exit(marked.unwrap_or(1))
 }
 
 #[cfg(test)]

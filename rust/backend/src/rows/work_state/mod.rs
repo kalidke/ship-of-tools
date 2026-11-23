@@ -49,6 +49,8 @@ pub(crate) enum Event {
     Prompt(Origin),
     /// A turn ends: `done` when a person's turn ended with nothing else pending; the floor and any dialog go.
     Stop,
+    /// A matching Codex root turn ended without a Stop.
+    Interrupt,
     /// A dialog that waits on a person shows (a Codex hook's, or the daemon's read of a Claude screen).
     Dialog(String),
     /// The dialog is gone.
@@ -161,6 +163,7 @@ pub(crate) fn apply_event(entry: &mut Map<String, Value>, event: &Event, now: &s
             }
             drop_keys(entry, &["floor", "stop_at", "dialog"]);
         }
+        Event::Interrupt => drop_keys(entry, &["floor", "stop_at", "dialog"]),
         Event::Dialog(text) => set(entry, "dialog", text),
         Event::Resumed => {
             entry.remove("dialog");
@@ -204,6 +207,7 @@ pub(crate) fn apply_event(entry: &mut Map<String, Value>, event: &Event, now: &s
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Stamped {
     Written,
+    OtherTurn,
     /// The event changed nothing (a tick with no turn running, a read with nothing to clear).
     Unchanged,
     /// No registry, or no entry for the handle: nothing to stamp.
@@ -219,15 +223,56 @@ pub(crate) enum StampError {
 
 /// The one write: `event` applied to `.agents[handle]` under the registry lock, waiting at most `lock_wait` for it.
 pub(crate) fn write_event(handle: &str, event: &Event, lock_wait: Duration) -> Result<Stamped, StampError> {
+    write_hook_event(handle, event, lock_wait, None, false)
+}
+
+fn complete_pair(pair: &Value) -> bool {
+    pair.as_array().is_some_and(|ids| ids.len() == 2 && ids.iter().all(|v| v.as_str().is_some_and(|s| !s.is_empty())))
+}
+
+pub(crate) fn codex_turn(raw: &str) -> Option<Value> {
+    serde_json::from_str(raw).ok().filter(complete_pair)
+}
+
+/// None means there is no complete pair to compare on one side or the other.
+pub(crate) fn owner_matches(entry: &Map<String, Value>, turn: Option<&Value>) -> Option<bool> {
+    Some(turn? == entry.get("codex_turn").filter(|owner| complete_pair(owner))?)
+}
+
+/// Only canonical UUIDv7 turn ids with different millisecond clocks prove that an event predates the owner.
+pub(crate) fn older_turn(entry: &Map<String, Value>, turn: Option<&Value>) -> bool {
+    let millis = |pair: &Value| {
+        let text = pair[1].as_str()?;
+        let id = uuid::Uuid::try_parse(text).ok()?;
+        (complete_pair(pair) && text.len() == 36 && id.get_version_num() == 7 && id.get_variant() == uuid::Variant::RFC4122).then(|| id.as_u128() >> 80)
+    };
+    turn.and_then(millis).zip(entry.get("codex_turn").and_then(millis)).is_some_and(|(event, owner)| event < owner)
+}
+
+fn write_hook_event(
+    handle: &str, event: &Event, lock_wait: Duration, turn: Option<&Value>, root_prompt: bool,
+) -> Result<Stamped, StampError> {
     let now = iso8601_utc_now();
-    match edit_entry(handle, lock_wait, |entry| match apply_event(entry, event, &now) {
-        Ok(write) => (Ok(write), write),
-        Err(refused) => (Err(refused), false),
+    match edit_entry(handle, lock_wait, |entry| {
+        let owner = owner_matches(entry, turn);
+        if (!root_prompt && owner == Some(false) && older_turn(entry, turn)) || (matches!(event, Event::Interrupt) && owner != Some(true)) {
+            return (Ok(Stamped::OtherTurn), false);
+        }
+        match apply_event(entry, event, &now) {
+            Ok(true) => {
+                if let Some(turn) = turn.filter(|_| root_prompt) {
+                    entry.insert("codex_turn".into(), turn.clone());
+                } else if root_prompt || (owner == Some(true) && matches!(event, Event::Stop | Event::Interrupt)) {
+                    entry.remove("codex_turn");
+                }
+                (Ok(Stamped::Written), true)
+            }
+            Ok(false) => (Ok(Stamped::Unchanged), false),
+            Err(refused) => (Err(refused), false),
+        }
     }) {
         Ok(None) => Ok(Stamped::NoEntry),
-        Ok(Some(Ok(true))) => Ok(Stamped::Written),
-        Ok(Some(Ok(false))) => Ok(Stamped::Unchanged),
-        Ok(Some(Err(Refused))) => Err(StampError::Refused),
+        Ok(Some(result)) => result.map_err(|Refused| StampError::Refused),
         Err(e) => Err(StampError::Registry(e)),
     }
 }

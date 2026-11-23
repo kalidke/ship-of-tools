@@ -352,5 +352,20 @@ check "a failed declaration write exits non-zero and leaves the row untouched" c
 check "a failed prompt-event write exits non-zero and leaves the row untouched" case_failed_prompt_write_exits_nonzero
 
 echo ""
+. "$(dirname "${BASH_SOURCE[0]}")/status_floor/codex_turn.sh"
+check "Codex Interrupt releases only its root turn and preserves a declared wait" case_codex_interrupt
+check "a late Codex Stop writes nothing and leaves unread mail for its owner" case_codex_late_stop
+check "a late Codex tool return or permission leaves the newer dialog intact" case_codex_late_tool
+check "the two Codex Stops around a mail hold share one owner" case_codex_held_stop
+check "a Codex child's prompt and tool events keep the root owner" case_codex_child_events
+check "incomplete Codex ownership, a lost prompt and older sotd keep main's behavior" case_codex_fallbacks
+check "a Codex Stop still checks mail when ownership cannot be read or locked" case_codex_uncertain_stop_checks_mail
+check "a newer Codex turn works and checks mail after its claim was lost" case_codex_lost_claim_after_unclosed_turn
+check "a root prompt missing an id retires the old Interrupt owner" case_codex_unkeyed_root
+check "Interrupt leaves the shell dialog marker for the next prompt" case_codex_interrupt_keeps_marker
+check "all five Codex hooks fall back quietly when the helper is missing" case_codex_missing_helper
+check "a Codex Interrupt ends inside five seconds while a child holds the lock" case_codex_interrupt_lock_budget
+check "Codex prompt and permission capture NUL input quietly" case_codex_binary_input
+
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
