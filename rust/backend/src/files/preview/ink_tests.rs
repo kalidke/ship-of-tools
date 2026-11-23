@@ -186,9 +186,13 @@ async fn a_base_that_is_no_page_of_a_pdf_file_never_reaches_the_kernel() {
         assert_eq!(page_png(&ws, node, page).await.unwrap_err().0, NOT_AN_IMAGE, "{node} page {page}");
         assert!(!dir.path().join("asked").exists(), "{node} page {page}: the kernel was asked");
     }
-    // the same kernel draws the page of the file itself, whatever the case of its extension
+    // the same kernel draws the page of the file itself, whatever the case of its extension, and of a file whose whole
+    // name is `.pdf`, which the plugin claims by the end of its path
     assert!(page_png(&ws, "files:doc.PDF", 2).await.is_ok());
     assert!(dir.path().join("asked").exists());
+    std::fs::create_dir(project.path().join("sub")).unwrap();
+    std::fs::write(project.path().join("sub/.pdf"), b"%PDF-1.4").unwrap();
+    assert!(page_png(&ws, "files:sub/.pdf", 2).await.is_ok(), "a file named `.pdf` is a PDF to its plugin");
 }
 
 /// A link (a junction on Windows) at `at` to the folder `target`.

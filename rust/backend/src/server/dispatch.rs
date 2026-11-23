@@ -11,7 +11,8 @@ use sot_protocol::reply::HandlerOutput;
 use super::*;
 
 /// Where a request op runs. Off the loop is the default: while an inline op runs, the loop reads nothing else,
-/// answers no ping and writes no event, so no op runs inline that can wait on a child, a peer or an unbounded lock.
+/// answers no ping and writes no event, so no op runs inline that can wait on a peer or an unbounded lock, or on a
+/// child past the bounds [`INLINE`]'s doc names (the kernel's 10 s among them).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Place {
     /// In the connection's loop ([`INLINE`]).

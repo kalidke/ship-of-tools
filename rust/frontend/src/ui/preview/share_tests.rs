@@ -303,19 +303,36 @@ fn the_window_shares_its_drawing_and_withdraws_it() {
 
 /// A drawing fe-net answered for was never sent, so the daemon still holds what the row shared before it (a text
 /// selection replaced in place by a page's drawing on a daemon that draws no pages, or by any drawing on one that reads
-/// none): the row is told to hold nothing, and the drawing is not asked again until it changes.
+/// none): the row is told to hold nothing, once, and the drawing is not asked again until it changes. After that
+/// clear's reply the daemon holds nothing of this window's for the row, so hiding the drawing or switching session
+/// sends the row no second clear (which would remove what another window shared there since).
 #[test]
 fn a_drawing_answered_here_leaves_nothing_shared() {
-    let mut s = up();
-    let text = req(go(&mut s, want("abc")));
-    s.on_reply(&host(), &text, done());
-    let drawing = req(go_ink(&mut s, ink_want("r1", "files:doc.pdf", 1), 1));
-    assert!(drawing.drawing.is_some() && drawing.workspace_id == "r1", "the drawing replaces the text in place");
-    assert!(s.on_reply(&host(), &drawing, SelectionReply::Unsupported).unwrap().starts_with("drawing not shared: "));
-    let clear = req(go_ink(&mut s, ink_want("r1", "files:doc.pdf", 1), 1));
-    assert_eq!(clear, SelectionSetReq { workspace_id: "r1".into(), selection: None, drawing: None }, "the row is cleared");
-    assert_eq!(s.on_reply(&host(), &clear, done()), None, "a clear is not announced");
+    // The text is shared, the drawing that replaces it is answered here, and the one clear is sent and answered.
+    let refused = || {
+        let mut s = up();
+        let text = req(go(&mut s, want("abc")));
+        s.on_reply(&host(), &text, done());
+        let drawing = req(go_ink(&mut s, ink_want("r1", "files:doc.pdf", 1), 1));
+        assert!(drawing.drawing.is_some() && drawing.workspace_id == "r1", "the drawing replaces the text in place");
+        assert!(s.on_reply(&host(), &drawing, SelectionReply::Unsupported).unwrap().starts_with("drawing not shared: "));
+        let clear = req(go_ink(&mut s, ink_want("r1", "files:doc.pdf", 1), 1));
+        assert_eq!(clear, SelectionSetReq { workspace_id: "r1".into(), selection: None, drawing: None }, "the row is cleared");
+        assert_eq!(s.on_reply(&host(), &clear, done()), None, "a clear is not announced");
+        s
+    };
+    // a switch of session shares the new row's drawing with no clear to the row left
+    let mut s = refused();
+    let next = req(go_ink(&mut s, ink_want("r2", "files:b.png", 1), 1));
+    assert!(next.workspace_id == "r2" && next.drawing.is_some(), "a second clear went to the row left: {next:?}");
+    let mut s = refused();
     assert!(go_ink(&mut s, ink_want("r1", "files:doc.pdf", 1), 1).is_none(), "the same drawing is not asked again");
+    // hiding the drawing sends no second clear; shown again it is asked again, and with nothing held no clear follows
+    assert!(go_ink(&mut s, None, 0).is_none(), "a second clear went to the row");
+    let again = req(go_ink(&mut s, ink_want("r1", "files:doc.pdf", 1), 1));
+    assert!(again.drawing.is_some());
+    s.on_reply(&host(), &again, SelectionReply::Unsupported);
+    assert!(go_ink(&mut s, ink_want("r1", "files:doc.pdf", 1), 1).is_none(), "a clear for a row that held nothing");
     assert!(req(go_ink(&mut s, ink_want("r1", "files:doc.pdf", 2), 1)).drawing.is_some(), "a changed drawing is");
     // a link that goes before the clear is sent owes none: the daemon withdrew everything at the connection's end
     let q = s.flight.as_ref().unwrap().req.clone();

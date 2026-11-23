@@ -40,7 +40,8 @@ Per workspace row (built in `rows/workspace.rs`):
   name and fails the decode); TIFF is not one, so a `.tif` is `not_an_image`. Test: `ink_tests::the_picture_is_the_base_with_its_ink`. The daemon never reads a page from the file: `page_png` asks the row's kernel for it as `preview.get` does
   (`try_plugin_preview`, with the page and a fit of `INK_RASTER_MAX` each way; within the kernel's 10 s request bound),
   and `compose` decodes those bytes under the figure's limits. The kernel is asked only for a page from 1 of a regular
-  file named `.pdf`, by a lookup that opens nothing (as the bytes-level reader looks a path up): a base with a page
+  file the PDF plugin claims, by the plugin's own rule (the path handed to the kernel, lowercased, ends in `.pdf`; a
+  file whose whole name is `.pdf` is one) and a lookup that opens nothing (as the bytes-level reader looks a path up): a base with a page
   whose node is a text file (its own plugin would read it), a FIFO, a folder or a missing file, and page 0, are
   `not_an_image` with the kernel never asked. What the kernel reads is the PDF itself, through the plugin's two tools,
   at the path a read resolves (a link out of the root is followed, as `preview.get` follows it); a file replaced by a

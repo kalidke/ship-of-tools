@@ -853,6 +853,14 @@ owned by `docs/CLAUDE.md`.
 
 ## fe-ui
 
+- **SHARE-CLEAR-FAILURE-NOT-TOLD** [note] From reading code, 2026-11-23; never seen. A withdrawal the daemon fails is
+  not told and not tried again: `SelectionShare::on_reply` (`rust/frontend/src/ui/preview/share.rs`) gives a clear's
+  reply no status line whatever it says, and by then the share holds that nothing is wanted and nothing is held, so
+  no later frame sends the clear again. The daemon answers a clear `publish_failed` when it cannot remove the row's
+  selection file, and keeps the file and its setter, so the text or drawing withdrawn on screen can still reach the
+  agent's later prompts until that window's connection ends or another share replaces it. The clear that follows a
+  drawing the window's network side answered for itself is such a clear and shares this. Fix: a refused clear says
+  so on the status line and is sent again at the next change of what is wanted.
 - **STAMP-BE-HALF-KEEPS-THE-HOST-LEFT** [note] From reading code while planning the update's mark, 2026-11-22; never seen: the version stamp's `be` half is set only by the selected computer's own `Connected` (`chrome/replies.rs`, `set_status_line_fields`), and a switch to a row of a computer that is already connected only relabels (`host_view.rs`, `ActiveLink::relabel`), so after such a switch `be` still reads the version of the daemon of the computer left, and the skew color with it, until that computer reconnects. The update's mark does not share the fault: it is always this computer's own daemon's.
 - **SELECTION-BAND-HIDES-ITS-TEXT** [note] Measured by a review, 2026-11-19, not seen in use by a person: the
   selection band the preview and the agent pane share (`Solid::SelectionBg`, (252, 240, 130) at alpha 140 of 255 over

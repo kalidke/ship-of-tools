@@ -215,7 +215,7 @@ over a picture that is not an image file is under [What is not built](#What-is-n
 | `selection not shared: this host's daemon does not take selections`, `drawing not shared: this daemon cannot take a drawing; update it` | The computer that runs the session has an older Ship of Tools. Update it. |
 | `drawing not shared: the image is over 40 megapixels` | The image is too large to draw on. |
 | `drawing not shared: the daemon cannot read this image` | The service could not read the file as a picture. |
-| `drawing not shared: this daemon cannot draw on a PDF page; update it` | The computer that runs the session has a Ship of Tools that draws on images only. Update it. |
+| `drawing not shared: this daemon cannot draw on a PDF page; update it` | The computer that runs the session has an older Ship of Tools, which takes drawings on images and the canvas only, or takes no drawing at all. Update it. |
 | `drawing not shared: the daemon could not render this page` | The service did not draw the PDF page under your ink: the file or the page is gone, or the program that draws pages did not answer in time. Draw another stroke to try again. |
 | `selection not shared: <reason>`, `drawing not shared: <reason>` | Any other refusal, with the service's short word for the reason. Select or draw again; if it stays, that word is what to report. |
 

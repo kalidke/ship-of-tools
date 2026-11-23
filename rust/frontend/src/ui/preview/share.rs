@@ -44,6 +44,8 @@ impl Want {
 struct Flight {
     host: HostKey,
     req: SelectionSetReq,
+    /// What the daemon held for the row when this request went: what it still holds if the request is never written.
+    replaced: Option<Want>,
 }
 
 #[derive(Default)]
@@ -53,25 +55,25 @@ pub(in crate::ui) struct SelectionShare {
     /// What the daemon was last asked to hold; a refusal is not retried until the desired state changes.
     sent: Option<Want>,
     flight: Option<Flight>,
-    /// A row whose drawing fe-net answered for and never sent: its daemon still holds what it held before, so the row
-    /// is owed a clear.
-    unsent: Option<(HostKey, String)>,
+    /// The wanted share fe-net answered for and never wrote: while the view wants exactly it, the view wants nothing
+    /// the daemon can hold, and it is not asked again until it changes.
+    unsent: Option<Want>,
 }
 
 impl SelectionShare {
     /// Hands `send` the next request toward `desired`; nothing when the daemon already holds it, a request waits for its
     /// reply or the host that must be told is down. A row switch is a clear to the row that held the share, then the new
-    /// row's share. A send that fails is as a connection's end: the host reads as down and its share is forgotten. A row
-    /// whose drawing was never sent is cleared first, and that drawing is not asked again until it changes.
+    /// row's share. A send that fails is as a connection's end: the host reads as down and its share is forgotten. A
+    /// drawing that was never written (`unsent`) counts as nothing wanted, so what the row held before it is cleared
+    /// once, as any share that stops being wanted.
     pub(in crate::ui) fn reconcile<E>(
         &mut self, desired: Option<Want>, strokes: &[Vec<[u16; 2]>], send: impl FnOnce(&HostKey, OutgoingReq) -> Result<(), E>,
     ) {
         if self.flight.is_some() {
             return;
         }
-        if let Some((host, workspace_id)) = self.unsent.take() {
-            return self.put(host, SelectionSetReq { workspace_id, selection: None, drawing: None }, send);
-        }
+        self.unsent.take_if(|u| desired.as_ref() != Some(&*u));
+        let desired = desired.filter(|d| self.unsent.as_ref() != Some(d));
         if self.sent == desired {
             return;
         }
@@ -82,23 +84,17 @@ impl SelectionShare {
             (_, Some(w)) => (w.host.clone(), w.workspace_id.clone(), Some(w)),
             (_, None) => return,
         };
+        if !self.up.contains(&host) {
+            return;
+        }
         let (selection, drawing) = match next.as_ref().map(|w| &w.share) {
             Some(Share::Text(t)) => (Some(t.clone()), None),
             Some(Share::Ink { base, .. }) => (None, Some(Drawing { base: base.clone(), strokes: strokes.to_vec() })),
             None => (None, None),
         };
-        if self.up.contains(&host) {
-            self.sent = next;
-            self.put(host, SelectionSetReq { workspace_id, selection, drawing }, send);
-        }
-    }
-
-    /// Sends `req` to `host` as the one request in flight; nothing to a host that is down.
-    fn put<E>(&mut self, host: HostKey, req: SelectionSetReq, send: impl FnOnce(&HostKey, OutgoingReq) -> Result<(), E>) {
-        if !self.up.contains(&host) {
-            return;
-        }
-        self.flight = Some(Flight { host: host.clone(), req: req.clone() });
+        let req = SelectionSetReq { workspace_id, selection, drawing };
+        let replaced = std::mem::replace(&mut self.sent, next);
+        self.flight = Some(Flight { host: host.clone(), req: req.clone(), replaced });
         if send(&host, OutgoingReq::SelectionSet { req }).is_err() {
             self.on_connection(&host, false);
         }
@@ -118,16 +114,13 @@ impl SelectionShare {
         if self.flight.as_ref().is_some_and(|f| &f.host == host) {
             self.flight = None;
         }
-        self.unsent.take_if(|(h, _)| h == host);
+        self.unsent.take_if(|u| &u.host == host);
     }
 
     /// A reply: the status line it earns, if any. A reply that does not answer the request in flight on that host (one from
     /// a connection that ended) is dropped. An ended reply shows nothing; the reconcile sends again after `Connected`.
     pub(in crate::ui) fn on_reply(&mut self, host: &HostKey, req: &SelectionSetReq, reply: SelectionReply) -> Option<String> {
-        if !self.flight.as_ref().is_some_and(|f| &f.host == host && &f.req == req) {
-            return None;
-        }
-        self.flight = None;
+        let flight = self.flight.take_if(|f| &f.host == host && &f.req == req)?;
         // A clear is not announced, and a refused one leaves nothing to retry.
         let share = req.selection.is_some();
         match reply {
@@ -140,7 +133,7 @@ impl SelectionShare {
             reply if req.drawing.is_some() => {
                 // fe-net answers a drawing as unsupported itself and writes nothing, so the daemon holds what it held.
                 if matches!(reply, SelectionReply::Unsupported) {
-                    self.unsent = Some((host.clone(), req.workspace_id.clone()));
+                    self.unsent = std::mem::replace(&mut self.sent, flight.replaced);
                 }
                 drawing_line(reply, req.drawing.as_ref().is_some_and(|d| matches!(d.base, InkBase::Figure { page: Some(_), .. })))
             }

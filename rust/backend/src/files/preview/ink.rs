@@ -23,14 +23,17 @@ pub(crate) type Refusal = (&'static str, String);
 
 /// Page `page` of `node_id` as the row's kernel draws it for `preview.get` (its plugin is the one reader of a paged
 /// file), fitted to the wire's raster: a picture's bytes for `compose`. The kernel is asked only for a page from 1 of a
-/// regular file named `.pdf`, by a lookup that opens nothing: any other node (a text file, which its own plugin would
+/// regular file the PDF plugin claims (a path ending in `.pdf`, in any case), by a lookup that opens nothing: any other node (a text file, which its own plugin would
 /// read; a FIFO, which the kernel's tool would open and wait on) and page 0 are `not_an_image` unasked. So are a note
 /// in place of a picture, a kernel that does not answer within its bound, and a page other than the one asked (the
 /// plugin clamps the page and says which it drew).
 pub(crate) async fn page_png(ws: &Workspace, node_id: &str, page: u32) -> Result<Vec<u8>, Refusal> {
     let files = ws.files_mode().map_err(|e| (BAD_NODE_ID, format!("{e:#}")))?;
     let path = files.node_id_to_path(node_id).map_err(|e| (BAD_NODE_ID, format!("{e:#}")))?;
-    let pdf = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("pdf")) && std::fs::metadata(&path).is_ok_and(|m| m.is_file());
+    // The plugin's own rule for a PDF (`matches` in the PDF plugin): the path as the kernel is handed it, lowercased,
+    // ends in `.pdf`. A file whose whole name is `.pdf` is one, which `Path::extension` would not call one.
+    let named = path.to_string_lossy().to_lowercase().ends_with(".pdf");
+    let pdf = named && std::fs::metadata(&path).is_ok_and(|m| m.is_file());
     if page == 0 || !pdf {
         return Err((NOT_AN_IMAGE, format!("{path:?} page {page} is no page of a PDF file")));
     }
