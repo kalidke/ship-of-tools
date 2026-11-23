@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 use sot_protocol::chat::Origin;
 
 use crate::api::{
-    identify_at, Api, ApiError, Bounds, Channel, Continuation, FileFetch, FileOutcome, FileVariant, HistoryQuery,
+    identify_at, tag_of, Api, ApiError, Bounds, Channel, Continuation, FileFetch, FileOutcome, FileVariant, HistoryQuery,
     Identified, JoinOutcome, PostKind, PostOutcome, ScanQuery, ASSUMED_RETRY, MAX_CHAT_FILE, MAX_CURSOR, MAX_LISTED,
     MAX_NAMES, MAX_RETRY, MAX_SCAN, MAX_THUMB,
 };
@@ -3273,8 +3273,31 @@ async fn the_workspaces_name_comes_from_auth_test_and_a_bad_one_is_none() {
             assert_eq!(api.workspace_name().as_deref(), name, "{mode}");
             let id = identify_at(&fake.http(), Secret::new(TOKEN), base).await.unwrap();
             assert_eq!(id.name.as_deref(), name, "identify, {mode}");
+            assert_eq!(api.workspace_tag().as_deref(), name, "no address: the name stands in, {mode}");
         }
         fake.shutdown().await;
     })
     .await;
+}
+
+/// The workspace's short name is the first label of its Slack address; an address that is not under `slack.com`, not
+/// https or with an odd label gives the name's place to the name.
+#[test]
+fn the_workspace_tag_is_the_first_label_of_its_slack_address() {
+    for (url, team, tag) in [
+        ("https://acme.slack.com/", Some("Acme Lab"), Some("acme")),
+        ("https://acme-two.slack.com", None, Some("acme-two")),
+        ("https://acme.enterprise.slack.com/x", None, Some("acme")),
+        ("http://acme.slack.com/", Some("Acme Lab"), Some("Acme Lab")),
+        ("https://acme.example.com/", Some("Acme Lab"), Some("Acme Lab")),
+        ("https://a%20b.slack.com/", None, None),
+        ("https://.slack.com/", None, None),
+    ] {
+        let mut v = serde_json::json!({ "url": url });
+        if let Some(t) = team {
+            v["team"] = t.into();
+        }
+        assert_eq!(tag_of(&v).as_deref(), tag, "{url}");
+    }
+    assert_eq!(tag_of(&serde_json::json!({ "team": "Acme Lab" })).as_deref(), Some("Acme Lab"), "no address");
 }

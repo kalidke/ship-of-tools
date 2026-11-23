@@ -243,6 +243,11 @@ impl Service {
         self.api.workspace()
     }
 
+    /// The workspace's short name as the start's `auth.test` gave it (`Api::workspace_tag`).
+    pub fn workspace_tag(&self) -> Option<String> {
+        self.api.workspace_tag()
+    }
+
     /// The workspace's name as the start's `auth.test` gave it, whether the service still runs or not.
     pub fn workspace_name(&self) -> Option<String> {
         self.api.workspace_name()

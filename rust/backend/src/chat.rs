@@ -357,6 +357,8 @@ pub(crate) struct Chat<L: Listener = Service> {
     /// The last name Slack gave this daemon for each admitted workspace (a start's `auth.test`, a connect's check), kept
     /// past its service's end, so a failed workspace is still named; pruned to the admitted workspaces at every load.
     names: Mutex<BTreeMap<String, String>>,
+    /// The short name of each admitted workspace beside its name, kept and pruned as it is, so a resolve says it whatever its service is doing.
+    tags: Mutex<BTreeMap<String, String>>,
     /// The runtime that stops the services; `None` only for a chat that never started one.
     handle: Option<Handle>,
     /// Which connection watches which channel of which workspace, and each workspace's owner task.
@@ -459,6 +461,7 @@ impl<L: Listener> Chat<L> {
             config,
             units: Mutex::new(units),
             names: Default::default(),
+            tags: Default::default(),
             handle,
             hub: watch::Hub::new(),
             env: env.clone(),
@@ -607,6 +610,7 @@ impl<L: Listener> Chat<L> {
             config,
             units,
             names: Default::default(),
+            tags: Default::default(),
             handle,
             hub: watch::Hub::new(),
             env: Env::empty(),
@@ -696,6 +700,17 @@ impl<L: Listener> Chat<L> {
     pub(crate) fn name_to_show(&self, workspace: &str) -> Option<String> {
         let several = self.units().map.len() > 1;
         several.then(|| self.names.lock().unwrap_or_else(|e| e.into_inner()).get(workspace).cloned()).flatten()
+    }
+
+    /// `workspace`'s last short name, whether or not its service runs.
+    pub(crate) fn tag_of(&self, workspace: &str) -> Option<String> {
+        self.tags.lock().unwrap_or_else(|e| e.into_inner()).get(workspace).cloned()
+    }
+
+    /// Ends every service, as a step-down does.
+    #[cfg(test)]
+    pub(crate) fn stop_for_test(&self) {
+        self.stop_all(Status::Stopped);
     }
 
     /// Keeps `name` as the last one Slack gave for `workspace`, when the workspace is admitted.
@@ -924,6 +939,7 @@ impl<L: Listener> Chat<L> {
             }
             *self.config.lock().unwrap_or_else(|e| e.into_inner()) = Arc::new(load.config);
             self.names.lock().unwrap_or_else(|e| e.into_inner()).retain(|w, _| plans.contains_key(w));
+            self.tags.lock().unwrap_or_else(|e| e.into_inner()).retain(|w, _| plans.contains_key(w));
             (units.off, units.refused, units.plans, units.locks) = (load.off, load.refused, plans, load.locks);
             match units.locks.clone() {
                 Some(locks) => launched.iter().for_each(|w| self.launch(&units, w, locks.clone())),
@@ -1031,6 +1047,9 @@ impl Chat<Service> {
             tracing::warn!(code, workspace, "project chat: the saved user token is not this workspace's, so a person's post waits for Connect Slack");
         }
         self.remember_name(workspace, service.workspace_name());
+        if let (true, Some(tag)) = (self.units().plans.contains_key(workspace), service.workspace_tag()) {
+            self.tags.lock().unwrap_or_else(|e| e.into_inner()).insert(workspace.to_string(), tag);
+        }
         // The mapped channels' names, looked up once in the background (`Api::channel_names`, which holds the
         // lookup to a count and a deadline): `chat.resolve` makes no Slack call and carries what the cache holds, so a
         // window's title can name the channel. A channel that got no name keeps its id, and its code is logged.

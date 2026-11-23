@@ -18,8 +18,10 @@ changed; see [Keybindings](../ref/keybindings.md).
 - **Where it is.** The bottom of the window shows one thing at a time: the Julia REPL, a terminal, the monitor, Help or
   the Chat panel. `Ctrl+k` shows the Chat panel there and gives it the keys; `Ctrl+k` again makes it full height, and a third `Ctrl+k` hides it. A click in the
   messages gives it the keys too, and Escape gives them back to the navigation tree, after closing an open thread first.
-- **Its top line.** The panel's first line reads `chat ·` and the channel (`chat · #lab-general`); when more than one
-  Slack workspace is connected it names the workspace first (`chat · Alpha Lab · #lab-general`). After the channel it
+- **Its top line.** The panel's first line reads `chat ·`, the Slack workspace's short name, a colon and the channel's name (`chat · acme:lab-general`; the
+  short name is the first part of the workspace's Slack address, or the workspace's name when Slack gave no address).
+  A hub whose computer is older than this shows the older form, the channel alone, with the workspace's name before it
+  when more than one workspace is connected. After the channel it
   says what the panel is waiting for or why it shows nothing; [What the top line says](#What-the-top-line-says) lists
   every case.
 - **The status line.** What a key did is said on the status line, the line starting `status:` at the top of the
@@ -350,7 +352,7 @@ computer's name, `this computer`, or `the computer that runs your sessions`.
 | `your Slack plan hides older messages`, `older messages could not be read`, `older messages are not read: <reason>`, `older messages beyond the limit are not shown` | Scrolling to the oldest found no more to read: Slack keeps older history only on some plans, a read was refused, or the panel's 256 are full. | |
 | `the thread is not read: <reason>`, `the rest of this thread is not shown` | In a thread: a read was refused (the panel tries again by itself), or the thread is longer than the panel shows. | |
 
-The channel shows as `#` and its name, or as its ID while its name is not known yet. The top line does not say whether
+In the top line the channel shows by its name after the workspace's short name and a colon (`acme:lab-general`), or by its ID while its name is not known yet; in the older form, with no short name, its name has a `#` before it (`#lab-general`). The top line does not say whether
 Slack itself can be reached from the computer that runs your sessions; when that connection is lost long enough for
 messages to be missed, the top line says `not up to date`.
 

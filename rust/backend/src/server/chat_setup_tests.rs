@@ -1287,11 +1287,26 @@ fn a_channel_of_another_workspace_is_no_such_channel() {
     });
 }
 
-/// C12, L11 rule 3: a mapped answer names its workspace only while more than one is admitted, so a hub with one keeps
-/// the title as it was; the name is the last one Slack gave, each row's its own workspace's, and a workspace admitted
-/// with no name leaves the named one named and carries none itself.
+/// A resolve answered after the workspace's service has stopped still carries the short name it had.
 #[test]
-fn a_resolve_names_its_workspace_only_while_the_hub_serves_two() {
+fn a_resolve_after_the_service_stopped_still_says_the_short_name() {
+    logged(|| async {
+        let w = two().await;
+        let mut conn = connect_window(w.services.clone()).await;
+        conn.ask(2, op::CHAT_CONNECT, w.connect_req(A)).await;
+        assert_eq!(conn.ask(3, op::CHAT_PAIR, json!({"row": w.ids[0], "channel": "C0AAAA01"})).await, json!({}));
+        w.services.chat.stop_for_test();
+        until("the service stops", || w.services.chat.status() == Status::Stopped).await;
+        let after = conn.ask(4, op::CHAT_RESOLVE, json!({"row": w.ids[0]})).await;
+        assert_eq!((after["state"].as_str(), after["workspace_tag"].as_str()), (Some("mapped"), Some("Alpha Lab")), "{after}");
+    });
+}
+
+/// C12, L11 rule 3: a mapped answer carries the workspace's short name always and its name only while more than one is
+/// admitted; each is the last one Slack gave, each row's its own workspace's, and a workspace admitted with no name
+/// leaves the named one named and carries none itself.
+#[test]
+fn a_resolve_says_the_short_name_always_and_the_name_only_while_the_hub_serves_two() {
     logged(|| async {
         let w = two().await;
         let mut conn = connect_window(w.services.clone()).await;
@@ -1299,6 +1314,8 @@ fn a_resolve_names_its_workspace_only_while_the_hub_serves_two() {
         assert_eq!(conn.ask(3, op::CHAT_PAIR, json!({"row": w.ids[0], "channel": "C0AAAA01"})).await, json!({}));
         let one = conn.ask(4, op::CHAT_RESOLVE, json!({"row": w.ids[0]})).await;
         assert_eq!((one["state"].as_str(), one.get("workspace_name")), (Some("mapped"), None), "{one}");
+        // The short name is sent on a hub of one too (this fixture's answer has no address, so the name stands in).
+        assert_eq!(one["workspace_tag"].as_str(), Some("Alpha Lab"), "{one}");
         conn.ask(5, op::CHAT_CONNECT, w.connect_req(B)).await;
         let two = conn.ask(6, op::CHAT_RESOLVE, json!({"row": w.ids[0]})).await;
         assert_eq!((two["state"].as_str(), two["workspace_name"].as_str()), (Some("mapped"), Some("Alpha Lab")), "{two}");
@@ -1306,6 +1323,7 @@ fn a_resolve_names_its_workspace_only_while_the_hub_serves_two() {
         assert_eq!(conn.ask(7, op::CHAT_PAIR, w.target(1, B, "C0BBBB01")).await, json!({}));
         let beta = conn.ask(8, op::CHAT_RESOLVE, json!({"row": w.ids[1]})).await;
         assert_eq!(beta["workspace_name"].as_str(), Some("Beta Lab"), "{beta}");
+        assert_eq!((two["workspace_tag"].as_str(), beta["workspace_tag"].as_str()), (Some("Alpha Lab"), Some("Beta Lab")), "{two} {beta}");
         assert_eq!(w.services.chat.name_to_show("T0ZZZZ"), None);
     });
 

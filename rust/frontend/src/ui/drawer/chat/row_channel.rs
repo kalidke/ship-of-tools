@@ -31,6 +31,7 @@ struct Remembered {
     channel: ChatChannel,
     name: Option<String>,
     workspace_name: Option<String>,
+    workspace_tag: Option<String>,
 }
 
 /// The rows remembered: as many as the owner parks channels, so a remembered row's records can still be there.
@@ -57,6 +58,8 @@ struct Wanted {
     workspace: Option<String>,
     /// The workspace's name the last mapped answer carried, which the daemon sends only while the hub serves several.
     workspace_name: Option<String>,
+    /// The workspace's short name the last mapped answer carried (an older daemon sends none): the title says `tag:channel`.
+    workspace_tag: Option<String>,
     /// Mapped answers with no name so far, and when the next one is asked for (`None` once the asking ended).
     nameless: usize,
     retry_at: Option<Instant>,
@@ -154,6 +157,7 @@ impl RowChannel {
                     unconfirmed: m.map(|m| (m.workspace.clone(), m.channel.clone())),
                     name: m.and_then(|m| Some((m.channel.as_str().to_string(), m.name.clone()?))),
                     workspace_name: m.and_then(|m| m.workspace_name.clone()),
+                    workspace_tag: m.and_then(|m| m.workspace_tag.clone()),
                     id, since: now, asked: false, answer: None, nameless: 0, retry_at: None,
                 }
             });
@@ -249,17 +253,24 @@ impl RowChannel {
             ChatReply::Done(ChatResolveRes::Mapped { workspace_name, .. }) => workspace_name.clone(),
             _ => None,
         };
+        // An answer for the same workspace that carries no short name leaves the one held (the daemon may answer while a service is
+        // starting); another workspace's or an unmapped answer clears it.
+        let workspace_tag = match reply {
+            ChatReply::Done(ChatResolveRes::Mapped { workspace_tag: Some(t), .. }) => Some(t.clone()),
+            ChatReply::Done(ChatResolveRes::Mapped { workspace, .. }) => self.wanted.as_ref().filter(|w| w.workspace.as_ref().or(w.unconfirmed.as_ref().map(|u| &u.0)) == Some(workspace)).and_then(|w| w.workspace_tag.clone()),
+            _ => None,
+        };
         let nameless = stand == Stand::Mapped && name.is_none();
         if let Some(id) = self.wanted.as_ref().map(|w| w.id.clone()) {
             self.memory.retain(|m| m.id != id);
             if let ChatReply::Done(ChatResolveRes::Mapped { workspace, channel, .. }) = reply {
-                self.memory.insert(0, Remembered { id, workspace: workspace.clone(), channel: channel.clone(), name: name.as_ref().map(|(_, n)| n.clone()), workspace_name: workspace_name.clone() });
+                self.memory.insert(0, Remembered { id, workspace: workspace.clone(), channel: channel.clone(), name: name.as_ref().map(|(_, n)| n.clone()), workspace_name: workspace_name.clone(), workspace_tag: workspace_tag.clone() });
                 self.memory.truncate(REMEMBERED);
             }
         }
         for w in self.wanted.iter_mut() {
             w.unconfirmed = None;
-            (w.answer, w.name, w.workspace, w.workspace_name) = (Some((stand, now)), name.clone(), workspace.clone(), workspace_name.clone());
+            (w.answer, w.name, w.workspace, w.workspace_name, w.workspace_tag) = (Some((stand, now)), name.clone(), workspace.clone(), workspace_name.clone(), workspace_tag.clone());
             w.nameless = if nameless { w.nameless + 1 } else { 0 };
             w.retry_at = nameless.then(|| NAME_RETRIES.get(w.nameless - 1).map(|d| now + *d)).flatten();
         }
@@ -274,21 +285,26 @@ impl RowChannel {
         }
     }
 
-    /// The workspace's name for the title, when the last answer carried one: the daemon's text, so it reaches the cells
-    /// through `cell_row`, and at most `WORKSPACE_CELLS` of them, a cut one ending in `…`, so the channel behind it keeps
-    /// its room.
-    pub(super) fn workspace_label(&self) -> Option<String> {
+    /// The workspace's words for the title, when the last answer carried any: the short name (`true`, the title joins it
+    /// to the channel with a colon) or else the name (`false`, an older daemon's, only while the hub serves several). The
+    /// daemon's text, so it reaches the cells through `cell_row`, at most `WORKSPACE_CELLS` of them, a cut one ending in
+    /// `…`, so the channel behind it keeps its room.
+    pub(super) fn workspace_label(&self) -> Option<(String, bool)> {
         use unicode_width::UnicodeWidthChar;
-        let name = self.wanted.as_ref().and_then(|w| w.workspace_name.as_deref())?;
+        let w = self.wanted.as_ref()?;
+        let (name, tagged) = match &w.workspace_tag {
+            Some(t) => (t.as_str(), true),
+            None => (w.workspace_name.as_deref()?, false),
+        };
         let name = cell_row(name);
         let cells = |c: char| c.width().unwrap_or(0);
         if name.chars().map(cells).sum::<usize>() <= WORKSPACE_CELLS {
-            return Some(name.into_owned());
+            return Some((name.into_owned(), tagged));
         }
         let mut kept = 0;
         let mut out: String = name.chars().take_while(|&c| { kept += cells(c); kept < WORKSPACE_CELLS }).collect();
         out.push('…');
-        Some(out)
+        Some((out, tagged))
     }
 
     /// The Slack workspace the wanted row's last answer named (a mapped row's, or the failed one of an `unconfigured`).

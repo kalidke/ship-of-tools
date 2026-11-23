@@ -67,16 +67,20 @@ fn the_chat_ops_are_declared_in_the_one_table() {
 fn every_request_reply_and_event_keeps_its_shape() {
     pinned(ChatResolveReq { row: "ws-a-1".into() }, json!({"row": "ws-a-1"}));
     pinned(
-        ChatResolveRes::Mapped { workspace: "T1".into(), channel: target().channel, delivers: false, name: None, workspace_name: None },
+        ChatResolveRes::Mapped { workspace: "T1".into(), channel: target().channel, delivers: false, name: None, workspace_name: None, workspace_tag: None },
         json!({"state": "mapped", "workspace": "T1", "channel": "C1", "delivers": false}),
     );
     pinned(
-        ChatResolveRes::Mapped { workspace: "T1".into(), channel: target().channel, delivers: false, name: Some("general".into()), workspace_name: None },
+        ChatResolveRes::Mapped { workspace: "T1".into(), channel: target().channel, delivers: false, name: Some("general".into()), workspace_name: None, workspace_tag: None },
         json!({"state": "mapped", "workspace": "T1", "channel": "C1", "delivers": false, "name": "general"}),
     );
     pinned(
-        ChatResolveRes::Mapped { workspace: "T1".into(), channel: target().channel, delivers: false, name: None, workspace_name: Some("Lab".into()) },
+        ChatResolveRes::Mapped { workspace: "T1".into(), channel: target().channel, delivers: false, name: None, workspace_name: Some("Lab".into()), workspace_tag: None },
         json!({"state": "mapped", "workspace": "T1", "channel": "C1", "delivers": false, "workspace_name": "Lab"}),
+    );
+    pinned(
+        ChatResolveRes::Mapped { workspace: "T1".into(), channel: target().channel, delivers: false, name: None, workspace_name: None, workspace_tag: Some("acme".into()) },
+        json!({"state": "mapped", "workspace": "T1", "channel": "C1", "delivers": false, "workspace_tag": "acme"}),
     );
     pinned(ChatResolveRes::Unmapped, json!({"state": "unmapped"}));
     pinned(ChatWatchReq { target: target() }, json!({"target": target_json()}));
@@ -572,7 +576,7 @@ fn an_older_reader_decodes_the_named_reply_and_this_one_the_unnamed() {
     let unnamed = json!({"state": "mapped", "workspace": "T1", "channel": "C1", "delivers": true});
     assert_eq!(
         serde_json::from_value::<ChatResolveRes>(unnamed).unwrap(),
-        ChatResolveRes::Mapped { workspace: "T1".into(), channel: target().channel, delivers: true, name: None, workspace_name: None }
+        ChatResolveRes::Mapped { workspace: "T1".into(), channel: target().channel, delivers: true, name: None, workspace_name: None, workspace_tag: None }
     );
 }
 

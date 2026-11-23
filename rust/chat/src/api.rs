@@ -574,6 +574,8 @@ pub struct Api {
     transfers: Transfers,
     /// The workspace's name as the last `auth.test` gave it (`team`, cleaned), for words only.
     name: Mutex<Option<String>>,
+    /// The workspace's short name as the last `auth.test` gave it: the first label of its address, else `name`.
+    tag: Mutex<Option<String>>,
     /// The service's end: a refusal of the bot's token ends it, and an ended service's client is closed.
     end: Arc<End>,
 }
@@ -680,6 +682,7 @@ impl Api {
             closed: AtomicBool::new(false),
             transfers: Transfers::new(),
             name: Mutex::new(None),
+            tag: Mutex::new(None),
             end: End::detached(),
         }
     }
@@ -698,6 +701,12 @@ impl Api {
     /// The workspace's name as the last `auth.test` gave it; `None` before one, or when Slack gave none usable.
     pub fn workspace_name(&self) -> Option<String> {
         self.name.lock().unwrap().clone()
+    }
+
+    /// The workspace's short name as the last `auth.test` gave it, for words only: the first label of its Slack address,
+    /// or its name when Slack gave no usable address.
+    pub fn workspace_tag(&self) -> Option<String> {
+        self.tag.lock().unwrap().clone()
     }
 
     /// This client under its service's end.
@@ -821,6 +830,7 @@ impl Api {
         let identity = identity_of(&v)?;
         *self.own.lock().unwrap() = Some(identity.clone());
         *self.name.lock().unwrap() = name_of(&v);
+        *self.tag.lock().unwrap() = tag_of(&v);
         Ok(identity)
     }
 
@@ -1567,6 +1577,17 @@ fn identity_of(v: &Value) -> Result<Identity, ApiError> {
 /// An `auth.test` answer's `team`, the workspace's name, read by [`name_at`].
 fn name_of(v: &Value) -> Option<String> {
     name_at(v, "team")
+}
+
+/// An `auth.test` answer's workspace short name: the first label of the `url`'s host when that host is under
+/// `slack.com`, else `team` (read by [`name_at`]).
+pub(crate) fn tag_of(v: &Value) -> Option<String> {
+    let label = || {
+        let host = v.get("url")?.as_str()?.strip_prefix("https://")?.split(['/', ':']).next()?;
+        let label = host.strip_suffix(".slack.com")?.split('.').next()?;
+        (!label.is_empty() && label.len() <= MAX_NAME && label.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')).then(|| label.to_string())
+    };
+    label().or_else(|| name_of(v))
 }
 
 /// A name Slack gave under `key`, its control characters dropped and trimmed; absent, not a string, empty, or past

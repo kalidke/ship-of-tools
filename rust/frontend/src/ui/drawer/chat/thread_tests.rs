@@ -634,7 +634,7 @@ fn the_foot_is_silent_only_when_the_title_shows_the_drafts_destination() {
 
 /// A channel the window has a name for is spelled in the foot as the title spells it.
 #[test]
-fn the_foot_spells_the_channel_as_the_title_does() {
+fn the_foot_names_the_channel_the_title_names() {
     let mut fonts = FontSystem::new();
     let held: Vec<ChatRecord> = (0..3).map(top).collect();
     let (mut d, at) = channel(&held);

@@ -639,6 +639,69 @@ fn the_title_names_the_workspace_when_the_hub_does() {
     assert_eq!(d.title(), " chat · #general reading… ");
 }
 
+/// A mapped answer with a `workspace_tag` makes the title `tag:channel`, with no `#`; the id stands for an unnamed channel;
+/// an answer with the name alone (an older daemon) keeps the older form; the tag is cut like the name.
+#[test]
+fn the_title_joins_the_workspace_tag_and_the_channel_with_a_colon() {
+    let t0 = Instant::now();
+    let at = |ms: u64| t0 + Duration::from_millis(ms);
+    let mut d = ChatDrawer::default();
+    d.on_connection(&host(), true, false, t0);
+    d.tick(wanted("R"), t0);
+    d.tick(wanted("R"), at(150));
+    let mut say = |d: &mut ChatDrawer, extra: serde_json::Value, ms: u64| {
+        let mut j = serde_json::json!({ "state": "mapped", "workspace": "T1", "channel": "C1", "delivers": false });
+        j.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        d.on_evt(&host(), answer("R", j), at(ms));
+    };
+    say(&mut d, serde_json::json!({ "name": "general", "workspace_tag": "acme" }), 160);
+    assert_eq!(d.title(), " chat · acme:general reading… ");
+    say(&mut d, serde_json::json!({ "channel": "C2", "workspace_tag": "acme" }), 170);
+    assert_eq!(d.title(), " chat · acme:C2 reading… ", "a channel with no name shows its id");
+    say(&mut d, serde_json::json!({ "name": "general", "workspace_tag": "acme", "workspace_name": "Acme Lab" }), 180);
+    assert_eq!(d.title(), " chat · acme:general reading… ", "the tag wins over the name");
+    say(&mut d, serde_json::json!({ "workspace": "T2", "name": "general", "workspace_name": "Acme Lab" }), 190);
+    assert_eq!(d.title(), " chat · Acme Lab · #general reading… ", "an older daemon's answer");
+    say(&mut d, serde_json::json!({ "name": "general", "workspace_tag": "a".repeat(100) }), 200);
+    assert_eq!(d.title(), format!(" chat · {}…:general reading… ", "a".repeat(23)), "the tag is cut to 24 cells");
+}
+
+/// An answer for the same workspace with no short name leaves the one held; another workspace's answer clears it.
+#[test]
+fn an_answer_with_no_tag_keeps_the_same_workspaces_tag_and_another_workspace_drops_it() {
+    let t0 = Instant::now();
+    let at = |ms: u64| t0 + Duration::from_millis(ms);
+    let mut d = ChatDrawer::default();
+    d.on_connection(&host(), true, false, t0);
+    d.tick(wanted("R"), t0);
+    d.tick(wanted("R"), at(150));
+    let say = |d: &mut ChatDrawer, extra: serde_json::Value, ms: u64| {
+        let mut j = serde_json::json!({ "state": "mapped", "workspace": "T1", "channel": "C1", "delivers": false, "name": "general" });
+        j.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        d.on_evt(&host(), answer("R", j), at(ms));
+    };
+    say(&mut d, serde_json::json!({ "workspace_tag": "acme" }), 160);
+    say(&mut d, serde_json::json!({}), 170);
+    assert_eq!(d.title(), " chat · acme:general reading… ", "the same workspace's untagged answer");
+    say(&mut d, serde_json::json!({ "workspace": "T2" }), 180);
+    assert_eq!(d.title(), " chat · #general reading… ", "no stale tag for another workspace");
+}
+
+/// A row left and come back to shows its short name before its resolve is answered.
+#[test]
+fn a_remembered_row_shows_its_tag_before_its_resolve_answers() {
+    let t0 = Instant::now();
+    let at = |ms: u64| t0 + Duration::from_millis(ms);
+    let mut d = ChatDrawer::default();
+    d.on_connection(&host(), true, false, t0);
+    d.tick(wanted("R"), t0);
+    d.tick(wanted("R"), at(150));
+    d.on_evt(&host(), answer("R", serde_json::json!({ "state": "mapped", "workspace": "T1", "channel": "C2", "delivers": false, "name": "general", "workspace_tag": "acme" })), at(160));
+    d.tick(wanted("S"), at(1000));
+    d.tick(wanted("R"), at(2000));
+    assert_eq!(d.title(), " chat · acme:general reading… ");
+}
+
 /// A workspace's name is free text up to the wire's 160 bytes and stands ahead of the channel: a long one is cut to a
 /// cell budget with a final `…`, and the title drawn at a narrow interior keeps the channel and writes nothing past the
 /// interior, whether the name is long, wide or made of characters that take no cell.

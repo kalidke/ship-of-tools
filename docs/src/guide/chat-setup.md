@@ -205,8 +205,7 @@ workspace's Slack ID), from the settings folder to make room.
 4. On the connected screen, Enter opens the new workspace's channels for the project you started from. Pick one to
    move that project there, or press Escape to leave its channel as it is.
 
-With more than one workspace connected, the panel's top line names the workspace before the channel
-(`chat · Alpha Lab · #lab-general`).
+The panel's top line names the workspace's short name, a colon and the channel (`chat · acme:lab-general`).
 
 ### Pick a channel in another workspace
 

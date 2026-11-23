@@ -982,10 +982,17 @@ impl ChatDrawer {
             (Stand::Mapped, Some(Fill::Gap(code))) => format!("not up to date: {}", code.map_or("no messages read yet", ChatCode::text)),
             (stand, _) => stand.words(host),
         };
-        let workspace = self.rows.workspace_label().map(|w| format!("{w} · ")).unwrap_or_default();
+        let workspace = self.rows.workspace_label();
         // The channel is the one the foot and a typed key use (`draft_target`): the watched one, or while a row that has come back
         // is not resolved the one it was drawn with, so a person never types where no word names the channel.
-        let channel = self.rows.row().and_then(|r| self.draft_target(r)).map(|t| format!("{workspace}{} ", self.rows.label(t.channel.as_str()))).unwrap_or_default();
+        let channel = self.rows.row().and_then(|r| self.draft_target(r)).map(|t| {
+            let label = self.rows.label(t.channel.as_str());
+            match &workspace {
+                Some((w, true)) => format!("{w}:{} ", label.trim_start_matches('#')),
+                Some((w, false)) => format!("{w} · {label} "),
+                None => format!("{label} "),
+            }
+        }).unwrap_or_default();
         // Each phrase is its own: the thread's, then the link's and the watch's.
         let phrases: Vec<String> = self.thread.iter().map(Thread::words).chain([words]).filter(|w| !w.is_empty()).collect();
         let thread = if self.thread.is_some() { "· thread " } else { "" };
@@ -1251,7 +1258,7 @@ impl ChatDrawer {
     /// What the compose rows are made of, while a channel is known to write to: the shown row's draft and where it goes
     /// (`reply in thread of h:mm AM`, the parent's time with its date before it for another day, `project::when`, then
     /// ` in <channel>` when the draft's channel is not the one the title names (`draft_target`), or
-    /// `to <channel>`, spelled as the title spells it), else where the next draft would go: the open thread, or the
+    /// `to <channel>`, the channel the title names, with no workspace before it), else where the next draft would go: the open thread, or the
     /// channel the title names. The foot is silent only when the destination is what the title shows: no thread in the draft,
     /// none open, and the draft's channel the one the title names.
     pub(in crate::ui) fn compose_text(&self, focused: bool) -> Option<ComposeText> {
