@@ -359,7 +359,10 @@ juliaup if missing, installs the agent comm resources with
 `ShipTools.update_comm()` (Claude/Codex skills and `~/.sot-comm/bin`), and, for
 backend roles, instantiates the Julia environments (`julia/kernel`,
 `julia/repl`, and `julia/pluto`; Pluto is also precompiled/loaded for
-first-open latency). It writes a `settings.toml` stub; `hosts.toml` is read,
+first-open latency). Julia skips personal startup files for these steps. The final Julia check verifies that the
+daemon's Julia can find each manifest package's source in the installer's environment. Set any custom depot,
+package server or proxy in the environment of both the installer and the daemon service. A repair fills missing
+packages when both Julias select the same environment and store. It writes a `settings.toml` stub; `hosts.toml` is read,
 or fetched with `--hub`, never written by the installer
 (never clobbering user edits on same-role re-runs), and wires a `sot-launch`
 wrapper + desktop entry (frontend roles) or a systemd user unit (backend

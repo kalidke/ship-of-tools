@@ -330,9 +330,13 @@ Guarantees, each with the mechanism it rests on. Install:
   Below it the run ends ONE STEP LEFT naming the fix; a PATH julia below it ends the run before a Julia step. Julia
   steps run with `TMPDIR` inside the run's scratch folder, which the run removes. The comm step runs with
   `--compiled-modules=no`, so a ShipTools cache compiled through `repo\current` cannot fail an elevated run on a
-  Windows 11 computer (`the_comm_step_reads_no_precompile_cache`).
+  Windows 11 computer (`the_comm_step_reads_no_precompile_cache`). Install and update Julia steps for the daemon
+  environments run with `--startup-file=no`, as the kernel does. A repair keeps the manifests and instantiates missing
+  packages in that store. The final check uses the daemon's Julia in the installer's environment to read each manifest
+  and locate every package's source entry file. It uses Julia Base alone, including on a cold start, and allows
+  120 s per project. It does not load, download or precompile packages.
 - What it left is checked. The verdict reads the disk and the processes: the binaries' versions, the record,
-  `repo/current`, no pointer armed again, the comm stamp, the Julia manifests of a daemon role, the state folder,
+  `repo/current`, no pointer armed again, the comm stamp, the Julia package sources of a daemon role, the state folder,
   Claude Code through agents' executable resolver with the installer's PATH and home, and the daemon's answer;
   missing Claude Code gives ONE STEP LEFT to install it on this computer;
   a step only a person takes (a window on the old version, a daemon a window holds) is ONE STEP LEFT.

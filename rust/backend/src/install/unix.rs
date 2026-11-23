@@ -742,7 +742,7 @@ fn julia_and_comm(plan: &Plan, found: &mut Found) -> Result<(), Stop> {
         prepend(&juliaup_bin);
     }
     let fresh_enough = julia::which("julia").is_some()
-        && cmd::output(Command::new("julia").args(["-e", "exit(VERSION >= v\"1.12\" ? 0 : 1)"])).ok();
+        && cmd::output(Command::new("julia").args(["--startup-file=no", "-e", "exit(VERSION >= v\"1.12\" ? 0 : 1)"])).ok();
     if !fresh_enough {
         if cmd::on_path("juliaup") {
             say(&format!("installing Julia channel {} with juliaup", julia::CHANNEL));
@@ -758,7 +758,7 @@ fn julia_and_comm(plan: &Plan, found: &mut Found) -> Result<(), Stop> {
         return Err(Stop::new(1, "Julia install failed; julia is still not on PATH"));
     }
     // The channel is chosen once, by a probe, never by running a step and rerunning it on failure.
-    let selected = cmd::output(Command::new("julia").args([&format!("+{}", julia::CHANNEL), "-e", "exit(0)"])).ok().then(|| julia::CHANNEL.to_string());
+    let selected = cmd::output(Command::new("julia").args([&format!("+{}", julia::CHANNEL), "--startup-file=no", "-e", "exit(0)"])).ok().then(|| julia::CHANNEL.to_string());
     let checkout = plan.checkout.clone();
     let facts = julia::facts(&checkout, selected.as_deref()).map_err(|why| Stop::new(1, why))?;
     match julia::judge(&facts) {

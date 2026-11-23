@@ -178,13 +178,13 @@ function Invoke-CommUpdate {
         Write-SupLog "freshness: no julia on PATH - skipping comm install (FE-client box, this is normal)"
         return
     }
-    Write-SupLog "freshness: julia -e ShipTools.update_comm()"
+    Write-SupLog "freshness: julia --startup-file=no -e ShipTools.update_comm()"
     # One fully-quoted argument, not an adjacent bare+quoted concatenation --
     # unambiguous if $repo.Path ever contains a space. $repo IS repo\current
     # on a pinned checkout (PSScriptRoot resolves through it), so comm
     # scripts and skills follow the installed tag with no separate wiring.
     $juliaProjectArg = "--project=$($repo.Path)"
-    $comm = Invoke-SotNative 'julia' @($juliaProjectArg, '-e', 'using ShipTools; ShipTools.update_comm()')
+    $comm = Invoke-SotNative 'julia' @('--startup-file=no', $juliaProjectArg, '-e', 'using ShipTools; ShipTools.update_comm()')
     $commOut = $comm.All
     if ($comm.Code -ne 0) {
         $commExcerpt = @(Get-FailureExcerpt -Output $commOut -Kind 'julia')

@@ -48,3 +48,49 @@ fn the_comm_step_reads_no_precompile_cache() {
     let want = [format!("--project={}", checkout.display()), "--compiled-modules=no".to_string(), "-e".to_string(), "using ShipTools; ShipTools.update_comm()".to_string()];
     assert_eq!(comm_args(checkout), want);
 }
+
+#[test]
+fn each_install_step_skips_startup_on_path_and_on_a_selected_channel() {
+    let dir = Path::new("checkout");
+    let mut steps = vec![comm_args(dir)];
+    for (env, code) in ENVS {
+        steps.push(vec![format!("--project=julia/{env}"), "-e".into(), code.into()]);
+    }
+    for args in steps {
+        let args: Vec<_> = args.iter().map(String::as_str).collect();
+        for selected in [None, Some(CHANNEL)] {
+            let command = step_command(selected, dir, &args);
+            let mut want = Vec::new();
+            if let Some(channel) = selected {
+                want.push(format!("+{channel}"));
+            }
+            want.push("--startup-file=no".into());
+            want.extend(args.iter().map(|arg| (*arg).to_string()));
+            assert_eq!(command.get_args().collect::<Vec<_>>(), want.iter().map(std::ffi::OsStr::new).collect::<Vec<_>>());
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn source_check_reports_the_package_after_julia_diagnostics() {
+    if !sot_platform::test_isolated::run_isolated("install::julia::tests::source_check_reports_the_package_after_julia_diagnostics") { return; }
+    let dir = tempfile::tempdir().unwrap();
+    let julia = dir.path().join("julia");
+    sot_platform::test_exec::write_executable(&julia, "#!/bin/sh\ncat \"${0%/*}/stderr\" >&2\nexit 1\n");
+    std::env::set_var("SOT_JULIA_BIN", &julia);
+    for (stderr, expected) in [
+        ("loading Pkg\nSOT-SOURCE-CHECK: missing source for Leaf\nanother diagnostic\n", "missing source for Leaf"),
+        ("\nfirst diagnostic\nsecond diagnostic\n", "first diagnostic"),
+        ("", "Julia did not confirm package sources"),
+    ] {
+        std::fs::write(dir.path().join("stderr"), stderr).unwrap();
+        let why = check_environments(dir.path()).unwrap_err();
+        assert_eq!(why, format!("julia/kernel: {expected}; rerun this installer to instantiate its packages"));
+    }
+}
+
+#[test]
+fn each_source_check_allows_two_minutes() {
+    assert_eq!(SOURCE_CHECK_BOUND, std::time::Duration::from_secs(120));
+}

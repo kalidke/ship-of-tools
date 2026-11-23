@@ -273,6 +273,7 @@ async fn prepare_locked(spawner: &dyn Spawner, spec: &PrepareSpec) -> Result<Pre
                 spawner,
                 julia,
                 &[
+                    "--startup-file=no",
                     &format!("--project={}", project.display()),
                     "-e",
                     "using Pkg; Pkg.instantiate()",
@@ -301,6 +302,7 @@ async fn prepare_locked(spawner: &dyn Spawner, spec: &PrepareSpec) -> Result<Pre
                 spawner,
                 julia,
                 &[
+                    "--startup-file=no",
                     &format!("--project={}", project.display()),
                     "-e",
                     &format!("using {module}"),

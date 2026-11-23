@@ -397,7 +397,7 @@ function Initialize-InstallLayout {
             # One fully-quoted argument, not a bare+quoted concatenation --
             # unambiguous when the prefix contains a space, which is normal here.
             $projectArg = "--project=$project"
-            $julOut = julia $projectArg -e $step.Code 2>&1
+            $julOut = julia --startup-file=no $projectArg -e $step.Code 2>&1
             $julExit = $LASTEXITCODE
             if ($julExit -ne 0) {
                 # Head-bounded, because Julia writes ERROR and the failing file

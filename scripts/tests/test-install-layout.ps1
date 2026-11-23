@@ -314,7 +314,11 @@ try {
         . (Join-Path $repoRoot 'scripts\sot-freshness.ps1')
         function Write-SupLog([string]$Message) { $script:comm5c += @($Message) }
         function Get-Command { param([string]$Name, $ErrorAction) if ($Name -eq 'julia') { return 'julia' }; Microsoft.PowerShell.Core\Get-Command -Name $Name -ErrorAction SilentlyContinue }
-        function Invoke-SotNative { param($Exe, $ArgList) [pscustomobject]@{ Code = 0; All = $script:out5c } }
+        function Invoke-SotNative {
+            param($Exe, $ArgList)
+            Check '5c: comm Julia skips startup before evaluating the update' ($Exe -eq 'julia' -and $ArgList[0] -eq '--startup-file=no' -and $ArgList[2] -eq '-e') ($ArgList -join ' ')
+            [pscustomobject]@{ Code = 0; All = $script:out5c }
+        }
         $repo = [pscustomobject]@{ Path = $root }
         $script:launchNotices = New-Object System.Collections.ArrayList
         # A Julia warning block starts at its "Warning:" line and ends at its "@ Module file:line" line.

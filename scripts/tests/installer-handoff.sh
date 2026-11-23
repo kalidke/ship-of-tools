@@ -122,8 +122,8 @@ for role in both be-only; do
     [ "$role" = both ] || printf '{\n  "tag": "v9.9.8",\n  "version": "9.9.8",\n  "commit": "aaa",\n  "daemon": true,\n  "frontend": false,\n  "service": "systemd"\n}\n' > "$d/prefix/install.json"
     run_handoff "$d"
     check "$role: the apply applied" "v9.9.9" "$(installed_tag "$d")"
-    check "$role: one update_comm, on the applied checkout" "1 1" \
-        "$(grep -c 'update_comm' "$d/julia.log" || true) $(grep -c -e "--project=$d/co " "$d/julia.log" || true)"
+    check "$role: one startup-disabled update_comm, on the applied checkout" "1 1" \
+        "$(grep -c 'update_comm' "$d/julia.log" || true) $(grep -c -e "--startup-file=no --project=$d/co " "$d/julia.log" || true)"
 done
 d="$WORK/ho-comm-current"; mk_apply_fixture "$d" 1 1; mk_julia "$d"; mkdir -p "$d/ch/bin"
 printf '%s\n' "$(cd "$d/co" && git rev-parse --short=9 HEAD)" > "$d/ch/VERSION"

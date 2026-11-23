@@ -116,8 +116,11 @@ fn a_repair_run_moves_nothing() {
             expect_daemon: false,
             repair: true,
         };
+        let kernel = ctx.version_dir.join("julia/kernel");
+        std::fs::create_dir_all(&kernel).unwrap();
+        std::fs::write(kernel.join("Manifest.toml"), "resolved\n").unwrap();
         let seen = std::cell::Cell::new(None);
-        windows::environments(&ctx, &mut Found::default(), &|_, _, repair| {
+        windows::environments(&ctx, &mut Found::default(), &|_| false, &|_, _, repair| {
             seen.set(Some(repair));
             Vec::new()
         });

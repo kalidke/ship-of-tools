@@ -220,6 +220,7 @@ async fn spawn_supervisor(
     let mut cmd = Command::new(julia_bin);
     tmp.apply(&mut cmd);
     cmd.arg(format!("--project={}", project_dir.display()))
+        .arg("--startup-file=no")
         .arg(start_script)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

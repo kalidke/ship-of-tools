@@ -57,15 +57,9 @@ pub(super) fn check(plan: &Plan, restarted: bool, state: Option<state::Choice>, 
         found.item(Mark::Ok, format!("comm and skills at {short} ({})", comm.display()));
     }
     if plan.role.daemon {
-        let mut whole = true;
-        for (env, _) in julia::ENVS {
-            if !checkout.join("julia").join(env).join("Manifest.toml").is_file() {
-                found.fail("julia", format!("julia/{env} has no Manifest.toml: its environment is not instantiated"));
-                whole = false;
-            }
-        }
-        if whole {
-            found.item(Mark::Ok, "Julia environments instantiated");
+        match julia::check_environments(&checkout) {
+            Ok(()) => found.item(Mark::Ok, "Julia environments instantiated"),
+            Err(why) => found.fail("julia", why),
         }
     }
     if let Some(state) = state {

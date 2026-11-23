@@ -36,7 +36,7 @@ of each.
    Julia source it runs. A kernel whose project folder is missing is dead without a spawn. Limits: the child still
    inherits the rest of the daemon's environment, so the depots and other `JULIA_*` variables are the daemon's; a root
    that is not UTF-8 is refused; the kernel loads the plugins its own project names, and what they do is the plugins'
-   (guarantee 19).
+   (guarantee 19). The Pluto server also starts with `--startup-file=no` so it sees the depot used to prepare its project.
 3. **A kernel caller waits at most `KERNEL_REQUEST_TIMEOUT` (10 s), its send included, and never spawns or kills.**
    `Kernel::request` bounds the whole call. A running kernel that does not answer is `KernelUnavailable::NoAnswer` ("the
    running kernel did not answer <op> within 10s"), a starting one `Starting` ("kernel still starting"), a dead one

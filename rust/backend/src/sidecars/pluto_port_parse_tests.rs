@@ -604,3 +604,23 @@ async fn flush_error_releases_grant_and_closes_requests() {
     within(REACT, "the grant is released", || !granted(port)).await;
     h.finish().await;
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn the_pluto_server_skips_startup_before_its_start_script() {
+    let dir = tempfile::tempdir().unwrap();
+    let stub = dir.path().join("julia");
+    let argv = dir.path().join("argv");
+    let script = dir.path().join("start.jl");
+    std::fs::write(&script, "").unwrap();
+    sot_platform::test_exec::write_executable(&stub, "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"${0%/*}/argv\"\nexit 1\n");
+    let sig = Box::leak(Box::new(Signal::new()));
+    // An immediate exit ends the READY wait after the child records the arguments it received.
+    let result = tokio::time::timeout(Duration::from_secs(5), served(stub.to_str().unwrap(), dir.path(), &script, sig)).await.unwrap();
+    assert!(result.is_err());
+    let recorded = std::fs::read_to_string(argv).unwrap();
+    let args: Vec<_> = recorded.lines().collect();
+    let (last, flags) = args.split_last().unwrap();
+    assert_eq!(*last, script.to_str().unwrap());
+    assert!(flags.contains(&"--startup-file=no"), "{args:?}");
+}

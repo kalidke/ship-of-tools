@@ -165,11 +165,12 @@ def main():
         else:
             julia = tools / "julia"
             julia.write_text(
-                "#!/bin/sh\ncase \"$*\" in *'print(VERSION)'*) printf 1.12.0; exit 0 ;; esac\n"
+                "#!/bin/sh\ncase \" $* \" in *' --startup-file=no '*) ;; *) exit 19 ;; esac\n"
+                "case \"$*\" in *'print(VERSION)'*) printf 1.12.0; exit 0 ;; esac\n"
                 "project=\nfor a do case \"$a\" in --project=*) project=${a#--project=} ;; esac; done\n"
                 "[ -n \"$project\" ] || exit 0\n"
                 "case \"$*\" in *ShipTools.update_comm*) mkdir -p \"$SOT_COMM_HOME\"; printf '%s\\n' " + shlex.quote(commit[:9]) +
-                " > \"$SOT_COMM_HOME/VERSION\" ;; *) mkdir -p \"$project\"; : > \"$project/Manifest.toml\" ;; esac\n",
+                " > \"$SOT_COMM_HOME/VERSION\" ;; *'SOT-SOURCE-CHECK: '*) printf 'sources present' ;; *) mkdir -p \"$project\"; : > \"$project/Manifest.toml\" ;; esac\n",
                 encoding="utf-8")
             julia.chmod(0o755)
         target = "windows-x86_64" if windows else ("macos-aarch64" if os.uname().sysname == "Darwin" else "linux-x86_64")

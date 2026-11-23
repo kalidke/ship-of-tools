@@ -195,18 +195,22 @@ pub(super) fn which(name: &str) -> Option<PathBuf> {
     std::env::split_paths(&std::env::var_os("PATH")?).find_map(|d| exts.iter().map(|e| d.join(format!("{name}{e}"))).find(|p| p.is_file()))
 }
 
-/// A Julia step: `julia [+channel] <args>`, with `TMPDIR` (and Windows' `TEMP` and `TMP`) in `scratch`, shown as it runs;
+/// A Julia step: `julia [+channel] --startup-file=no <args>`, with `TMPDIR` (and Windows' `TEMP` and `TMP`) in `scratch`, shown as it runs;
 /// whether it succeeded.
 pub(super) fn step(selected: Option<&str>, scratch: &Path, args: &[&str]) -> bool {
+    cmd::shown(&mut step_command(selected, scratch, args)) == Some(0)
+}
+
+fn step_command(selected: Option<&str>, scratch: &Path, args: &[&str]) -> Command {
     let mut c = Command::new("julia");
     if let Some(chan) = selected {
         c.arg(format!("+{chan}"));
     }
-    c.args(args).env("TMPDIR", scratch);
+    c.arg("--startup-file=no").args(args).env("TMPDIR", scratch);
     if cfg!(windows) {
         c.env("TEMP", scratch).env("TMP", scratch);
     }
-    cmd::shown(&mut c) == Some(0)
+    c
 }
 
 /// The environments a daemon's checkout instantiates, with the code each runs.
@@ -215,6 +219,28 @@ pub(super) const ENVS: [(&str, &str); 3] = [
     ("repl", "using Pkg; Pkg.instantiate()"),
     ("pluto", "using Pkg; Pkg.instantiate(); Pkg.precompile(); using Pluto"),
 ];
+
+const SOURCE_CHECK_BOUND: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Check the manifest and package entry files using the daemon's Julia, without loading the project.
+pub(super) fn check_environments(checkout: &Path) -> Result<(), String> {
+    let binary = crate::sidecars::julia::resolve_bin();
+    for (env, _) in ENVS {
+        let failure = |why: &str| format!("julia/{env}: {why}; rerun this installer to instantiate its packages");
+        let (julia, _) = binary.as_ref().map_err(|why| failure(&why.to_string()))?;
+        let mut check = Command::new(julia);
+        let project = checkout.join("julia").join(env);
+        check.args(["--startup-file=no", "--compiled-modules=existing"]).arg(format!("--project={}", project.display()))
+            .args(["-e", include_str!("check_sources.jl")]);
+        let ran = cmd::output_within(&mut check, SOURCE_CHECK_BOUND);
+        if !ran.ok() || ran.out.trim() != "sources present" {
+            let reason = ran.err.lines().find_map(|line| line.strip_prefix("SOT-SOURCE-CHECK: "))
+                .or_else(|| ran.err.lines().find(|line| !line.trim().is_empty()));
+            return Err(failure(reason.unwrap_or("Julia did not confirm package sources")));
+        }
+    }
+    Ok(())
+}
 
 /// Instantiate the checkout's Julia environments, a stale untracked `Manifest.toml` dropped first (one that predates a
 /// dependency the tag added fails instantiate; a manifest the tag tracks is never touched, which would dirty the

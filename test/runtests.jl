@@ -29,6 +29,7 @@ mktempdir() do suite_home
             include("publish_tests.jl")
             include("skills_tests.jl")
             include("install_tests.jl")
+            include("installer_sources_tests.jl")
             include("homes_tests.jl")
             include("claude_hooks_tests.jl")
             include("layer_tests.jl")

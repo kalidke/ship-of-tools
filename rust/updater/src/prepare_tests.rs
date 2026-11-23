@@ -66,10 +66,11 @@ impl Fixture {
         match bin {
             "git" => self.git(&args),
             "julia" => {
+                assert_eq!(args[0], "--startup-file=no");
                 let project =
-                    PathBuf::from(args[0].strip_prefix("--project=").expect("Julia project"));
-                assert_eq!(args[1], "-e");
-                let instantiate = args[2].contains("Pkg.instantiate");
+                    PathBuf::from(args[1].strip_prefix("--project=").expect("Julia project"));
+                assert_eq!(args[2], "-e");
+                let instantiate = args[3].contains("Pkg.instantiate");
                 if (self.mode == "instantiate" && instantiate)
                     || (self.mode == "load" && !instantiate)
                 {

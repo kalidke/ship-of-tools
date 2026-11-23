@@ -112,7 +112,10 @@ The checkout under the prefix is part of the installed product: a
 only that tag's files are downloaded. The runtime resources and the in-app
 manual resolve from it. For roles that run a backend on this machine (`--local`
 and `--be-only`), the installer instantiates the Julia environments inside the
-checkout (`julia/kernel`, `julia/repl`, `julia/pluto`). `--backend <ssh-alias>`
+checkout (`julia/kernel`, `julia/repl`, `julia/pluto`) with personal startup files disabled, as the kernel starts.
+The final check uses the daemon's Julia to look up each manifest package's source in the installer's environment.
+If you use a custom depot, package server or proxy, set it in the environment of both the installer and the daemon
+service so package installation and lookup use the same settings. `--backend <ssh-alias>`
 is a frontend-only install and uses Julia locally only to install the agent
 skills; install the remote machine as a backend role. Julia runs the
 installer's comm step on every role, which is why it is needed here too; the
@@ -512,9 +515,9 @@ Then the core library, kernel, REPL shim, and Pluto sidecar:
 
 ```bash
 julia --project=core            -e 'using Pkg; Pkg.instantiate()'
-julia --project=julia/kernel    -e 'using Pkg; Pkg.instantiate()'
-julia --project=julia/repl      -e 'using Pkg; Pkg.instantiate()'
-julia --project=julia/pluto     -e 'using Pkg; Pkg.instantiate()'
+julia --startup-file=no --project=julia/kernel    -e 'using Pkg; Pkg.instantiate()'
+julia --startup-file=no --project=julia/repl      -e 'using Pkg; Pkg.instantiate()'
+julia --startup-file=no --project=julia/pluto     -e 'using Pkg; Pkg.instantiate()'
 ```
 
 A checkout that was updated keeps the untracked `Manifest.toml` files of its earlier

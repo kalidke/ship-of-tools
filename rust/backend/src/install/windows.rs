@@ -516,7 +516,9 @@ fn layout_and_comm(ctx: &Ctx, found: &mut Found) -> Result<(), Stop> {
     if julia::which("julia").is_none() {
         return Ok(());
     }
-    environments(ctx, found, &|checkout, scratch, repair| julia::instantiate(checkout, None, scratch, repair, &|t| println!("  {t}")));
+    environments(ctx, found, &|checkout| julia::check_environments(checkout).is_ok(), &|checkout, scratch, repair| {
+        julia::instantiate(checkout, None, scratch, repair, &|t| println!("  {t}"))
+    });
     step("comm");
     let scratch = ctx.pack.dir.join("tmp");
     let _ = std::fs::create_dir_all(&scratch);
@@ -526,10 +528,10 @@ fn layout_and_comm(ctx: &Ctx, found: &mut Found) -> Result<(), Stop> {
     Ok(())
 }
 
-/// The Julia environments of a checkout whose kernel was never instantiated, by `instantiate(checkout, scratch, repair)`;
+/// Prepare the checkout's Julia environments when their package sources are missing, by `instantiate(checkout, scratch, repair)`;
 /// a repair keeps the environments' own manifests.
-pub(super) fn environments(ctx: &Ctx, found: &mut Found, instantiate: &dyn Fn(&Path, &Path, bool) -> Vec<String>) {
-    if ctx.version_dir.join("julia\\kernel\\Manifest.toml").is_file() {
+pub(super) fn environments(ctx: &Ctx, found: &mut Found, ready: &dyn Fn(&Path) -> bool, instantiate: &dyn Fn(&Path, &Path, bool) -> Vec<String>) {
+    if ctx.version_dir.join("julia/kernel/Manifest.toml").is_file() && ready(&ctx.version_dir) {
         return;
     }
     let scratch = ctx.pack.dir.join("tmp");
@@ -653,9 +655,8 @@ fn end_state(ctx: &Ctx, found: &mut Found) {
         if stamp != short {
             found.fail("comm", format!("agent comm is at '{stamp}', not {short}"));
         }
-        let manifest = ctx.version_dir.join("julia\\kernel\\Manifest.toml");
-        if !manifest.is_file() {
-            found.fail("julia", format!("the kernel environment was never instantiated ({} is missing)", manifest.display()));
+        if let Err(why) = julia::check_environments(&ctx.version_dir) {
+            found.fail("julia", why);
         }
     } else {
         found.step("install Julia (winget install --id Julialang.Juliaup -e); agent comm and local REPLs need it, then run this again");
