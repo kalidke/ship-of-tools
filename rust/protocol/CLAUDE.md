@@ -351,7 +351,8 @@ name is in this crate's one op table.
     five. A box is four integers 0 to 65535, the fractions of the page as drawn (the convention of a drawing's points,
     guarantee 13), ordered (`left <= right`, `top <= bottom`); a word's place in the document is its index over all
     lines in order, and a line is in the reading order the PDF tool guessed. The decoder reads the one object and nothing
-    else: a positional array, a value that is no object and a document with no `page`, `cut` or `lines` are refused (a
+    else: a positional array, a value that is no object, a field named twice (a second `cut` must not read a cut page as whole)
+    and a document with no `page`, `cut` or `lines` are refused (a
     missing `cut` read as false would show a cut page as whole), and a field it does not know is ignored. It refuses a page
     0, an empty line (the plugin leaves one out, so lines are at most words), more than `MAX_PAGE_WORDS` (16,384) words in
     all, a word of more than `MAX_PAGE_WORD_BYTES` (1,024) bytes, an empty word, a word holding a control character,

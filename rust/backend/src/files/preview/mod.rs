@@ -562,11 +562,17 @@ async fn words_answer(
     }
 }
 
+/// Whether the PDF plugin claims `path`, by its own rule (`matches` in the plugin): the path as the kernel is handed it,
+/// lowercased, ends in `.pdf`. A file whose whole name is `.pdf` is one, which `Path::extension` would not call one. The
+/// daemon's one test of it: the drawing's page read (`ink::page_png`) and the log of a plugin's note both ask it.
+pub(crate) fn is_pdf_path(path: &std::path::Path) -> bool {
+    path.to_string_lossy().to_lowercase().ends_with(".pdf")
+}
+
 /// The PDF plugin's note, when `mime` and `bytes` are one: its fixed words, the first line after the heading, at most 200
 /// characters. Another file's text answer is never logged.
 fn plugin_note(path: &std::path::Path, mime: &str, bytes: &[u8]) -> Option<String> {
-    let pdf = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("pdf"));
-    if !pdf || mime != "text/markdown" {
+    if !is_pdf_path(path) || mime != "text/markdown" {
         return None;
     }
     let text = String::from_utf8_lossy(bytes);

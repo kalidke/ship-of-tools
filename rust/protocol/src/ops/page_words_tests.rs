@@ -114,6 +114,17 @@ fn the_document_is_one_object_with_all_three_fields() {
     // Through the bytes the window reads, as the array was not refused before.
     assert!(serde_json::from_slice::<PageWords>(b"[2,false,[]]").is_err());
     assert!(serde_json::from_slice::<PageWords>(br#"{"lines":[],"cut":true,"page":2}"#).is_ok(), "any key order");
+    // A field named twice is refused, whichever value comes second: a second `cut` must not read a cut page as whole.
+    for twice in [
+        br#"{"page":2,"cut":true,"lines":[],"cut":false}"#.as_slice(),
+        br#"{"page":2,"cut":true,"lines":[],"cut":true}"#,
+        br#"{"page":2,"page":3,"cut":false,"lines":[]}"#,
+        br#"{"page":2,"cut":false,"lines":[],"lines":[[[1,2,3,4,"w"]]]}"#,
+        br#"{"lines":[],"page":2,"lines":[],"cut":false}"#,
+    ] {
+        assert!(serde_json::from_slice::<PageWords>(twice).is_err(), "{}", String::from_utf8_lossy(twice));
+    }
+    assert!(serde_json::from_slice::<PageWords>(br#"{"page":2,"cut":false,"lines":[],"later":1,"later":2}"#).is_ok(), "a field this reader does not know, twice");
 }
 
 /// The text of a range of words is the words of a line joined by one space and the lines by LF, numbered over all lines;

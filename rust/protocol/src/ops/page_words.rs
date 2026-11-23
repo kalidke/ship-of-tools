@@ -55,7 +55,7 @@ struct RawPageWords {
 }
 
 /// Read as the one object the document is: a derived reader would take `[2,false,[]]` for it too. Each of the three
-/// fields is required, and a field this reader does not know is ignored.
+/// fields is required and at most once, and a field this reader does not know is ignored.
 impl<'de> Deserialize<'de> for RawPageWords {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         use serde::de::{Error, IgnoredAny, MapAccess, Visitor};
@@ -67,11 +67,19 @@ impl<'de> Deserialize<'de> for RawPageWords {
             }
             fn visit_map<A: MapAccess<'de>>(self, mut m: A) -> Result<RawPageWords, A::Error> {
                 let (mut page, mut cut, mut lines) = (None, None, None);
+                // A field named twice is refused, as a derived reader would: the second must not quietly replace the first.
+                fn once<'de, T: Deserialize<'de>, A: MapAccess<'de>>(slot: &mut Option<T>, name: &'static str, m: &mut A) -> Result<(), A::Error> {
+                    if slot.is_some() {
+                        return Err(A::Error::duplicate_field(name));
+                    }
+                    *slot = Some(m.next_value()?);
+                    Ok(())
+                }
                 while let Some(key) = m.next_key::<String>()? {
                     match key.as_str() {
-                        "page" => page = Some(m.next_value()?),
-                        "cut" => cut = Some(m.next_value()?),
-                        "lines" => lines = Some(m.next_value()?),
+                        "page" => once(&mut page, "page", &mut m)?,
+                        "cut" => once(&mut cut, "cut", &mut m)?,
+                        "lines" => once(&mut lines, "lines", &mut m)?,
                         _ => drop(m.next_value::<IgnoredAny>()?),
                     }
                 }

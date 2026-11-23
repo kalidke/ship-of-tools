@@ -24,16 +24,23 @@ answer (PDF, HDF5 and video, `is_bounded_output_plugin`), as a page's is, and `n
 would answer a words request with the file's own bytes, which a window would read as no words at best, so it is never
 reached. When the PDF plugin answered a note (no `pdftotext`, a tool that failed or ran out of time, a page past the
 end), its fixed words are logged at info with the node, never the reply's: the window is told `no_words` alone, and the
-log tells a missing tool from a bad PDF (`plugin_note`). The words document is the plugin's and is not decoded here; the
+log tells a missing tool from a bad PDF (`plugin_note`; a PDF is told by the daemon's one rule for it, `is_pdf_path`, the
+plugin's own: the path, lowercased, ends in `.pdf`, so a file named exactly `.pdf` is one, and the drawing's page read
+asks the same function). The words document is the plugin's and is not decoded here; the
 window decodes it with wire's reader. The hello says the daemon does this (`serves_page_words`, server's contract).
 Tests, in `preview_gate_tests`: `a_words_request_reaches_the_plugin_with_the_parameter_and_a_page_request_without_it` (a
 stand-in kernel records the request it is sent),
 `a_words_request_is_answered_with_words_or_refused_never_with_a_picture_or_the_file` (eight plugin answers),
-`a_words_request_through_the_assembly_with_no_kernel_is_one_refusal_by_its_code` (a stand-in for the default kernel
-exits at once: a folder and a text file `no_words`, a PDF, an HDF5 file and a video `kernel_unavailable`),
-`a_words_request_through_the_assembly_is_answered_with_the_plugins_words` (the stand-in answers the words mime: the
-words ship as given, the kernel is asked the page and `words` alone, and for a folder not at all) and
-`the_pdf_plugins_note_is_logged_as_its_fixed_words_and_nothing_else_is`.
+`a_words_request_for_a_folder_is_no_words` (every platform),
+`a_words_request_through_the_assembly_with_no_kernel_is_one_refusal_by_its_code` (a kernel of the test's own, whose
+program exits at once: a folder and a text file `no_words`, a PDF, an HDF5 file and a video `kernel_unavailable`),
+`a_words_request_through_the_assembly_is_answered_with_the_plugins_words` (a kernel of the test's own answers the words
+mime: the words ship as given, the kernel is asked the page and `words` alone, and for a folder not at all),
+`a_plugins_note_is_logged_with_its_node_and_its_reason_through_words_answer` (an event captured through `words_answer`,
+for `a.pdf`, a file named `.pdf` and `A.PDF`; another file's answer and an answer of words log no reason) and
+`the_pdf_plugins_note_is_logged_as_its_fixed_words_and_nothing_else_is` (`plugin_note` alone). The assembly tests give
+the workspace a kernel of its own (`Workspace::set_kernel`) and register nothing for the default kernel project, which
+another test's workspace could pick up; a kernel stand-in is a shell script, so every test but the folder's runs on Unix.
 
 The bytes-level reader (`read_bytes_preview`) answers what no plugin answered. It looks the path up before it opens
 anything, following links as the read resolver does (`node_id_to_path`) and nothing more, and opens only a regular

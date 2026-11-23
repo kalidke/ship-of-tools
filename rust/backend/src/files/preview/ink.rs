@@ -30,10 +30,8 @@ pub(crate) type Refusal = (&'static str, String);
 pub(crate) async fn page_png(ws: &Workspace, node_id: &str, page: u32) -> Result<Vec<u8>, Refusal> {
     let files = ws.files_mode().map_err(|e| (BAD_NODE_ID, format!("{e:#}")))?;
     let path = files.node_id_to_path(node_id).map_err(|e| (BAD_NODE_ID, format!("{e:#}")))?;
-    // The plugin's own rule for a PDF (`matches` in the PDF plugin): the path as the kernel is handed it, lowercased,
-    // ends in `.pdf`. A file whose whole name is `.pdf` is one, which `Path::extension` would not call one.
-    let named = path.to_string_lossy().to_lowercase().ends_with(".pdf");
-    let pdf = named && std::fs::metadata(&path).is_ok_and(|m| m.is_file());
+    // The plugin's own rule for a PDF, the daemon's one (`is_pdf_path`).
+    let pdf = super::is_pdf_path(&path) && std::fs::metadata(&path).is_ok_and(|m| m.is_file());
     if page == 0 || !pdf {
         return Err((NOT_AN_IMAGE, format!("{path:?} page {page} is no page of a PDF file")));
     }
