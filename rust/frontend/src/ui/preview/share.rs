@@ -1,5 +1,5 @@
 //! The window's selection share: a reconcile that keeps the daemon's published selection for a row equal to what the
-//! view shows selected, the preview's released text or the drawing over the shown base. It holds privately the state it last asked for and the one request in flight, and returns the
+//! view shows selected, the preview's released text or the drawing over the shown base. It holds privately what the daemon holds for the row from this window, the wanted share that was refused, and the one request in flight, and returns the
 //! request to send; it sends nothing itself. The request is never replayed (fe-net), so a lost connection is answered by
 //! sending the state again after `Connected`.
 
@@ -44,27 +44,39 @@ impl Want {
 struct Flight {
     host: HostKey,
     req: SelectionSetReq,
-    /// What the daemon held for the row when this request went: what it still holds if the request is never written.
-    replaced: Option<Want>,
+    /// The share `req` asks the daemon to hold; none for a clear.
+    want: Option<Want>,
 }
+
+/// The refusal codes after which the daemon holds nothing for the row: `agents/selection.rs` answers each of them once
+/// the row has resolved, and withdraws the row's selection as it does (`publish_failed` after trying to). Any other
+/// refusal (not a window, an unknown row, a request it could not read) left the row as it was.
+const WITHDRAWN: [&str; 6] = [
+    selection_code::NOT_FILE_TEXT, selection_code::BAD_NODE_ID, selection_code::NO_AGENT, selection_code::NOT_AN_IMAGE,
+    selection_code::TOO_LARGE, selection_code::PUBLISH_FAILED,
+];
 
 #[derive(Default)]
 pub(in crate::ui) struct SelectionShare {
     /// Hosts whose connection is up; nothing is sent to another.
     up: HashSet<HostKey>,
-    /// What the daemon was last asked to hold; a refusal is not retried until the desired state changes.
-    sent: Option<Want>,
+    /// What the daemon holds for the row from this window, by its replies: the share of the last request it accepted;
+    /// none after a clear, a refusal that withdrew the row's selection (`WITHDRAWN`) or its link's end; unchanged by a
+    /// request it never took (one fe-net answered for, or a refusal that left the row as it was). A request in flight
+    /// has not changed it yet. A clear is taken as done whatever its answer (docs/defects.md:
+    /// SHARE-CLEAR-FAILURE-NOT-TOLD).
+    held: Option<Want>,
     flight: Option<Flight>,
-    /// The wanted share fe-net answered for and never wrote: while the view wants exactly it, the view wants nothing
-    /// the daemon can hold, and it is not asked again until it changes.
-    unsent: Option<Want>,
+    /// The wanted share that was refused, by the daemon or by fe-net: while the view wants exactly it, the view wants
+    /// nothing the daemon can hold, so it is not asked again. Dropped when the view wants anything else, or its link ends.
+    refused: Option<Want>,
 }
 
 impl SelectionShare {
     /// Hands `send` the next request toward `desired`; nothing when the daemon already holds it, a request waits for its
     /// reply or the host that must be told is down. A row switch is a clear to the row that held the share, then the new
     /// row's share. A send that fails is as a connection's end: the host reads as down and its share is forgotten. A
-    /// drawing that was never written (`unsent`) counts as nothing wanted, so what the row held before it is cleared
+    /// refused share (`refused`) counts as nothing wanted, so what the row still holds after the refusal is cleared
     /// once, as any share that stops being wanted.
     pub(in crate::ui) fn reconcile<E>(
         &mut self, desired: Option<Want>, strokes: &[Vec<[u16; 2]>], send: impl FnOnce(&HostKey, OutgoingReq) -> Result<(), E>,
@@ -72,14 +84,14 @@ impl SelectionShare {
         if self.flight.is_some() {
             return;
         }
-        self.unsent.take_if(|u| desired.as_ref() != Some(&*u));
-        let desired = desired.filter(|d| self.unsent.as_ref() != Some(d));
-        if self.sent == desired {
+        self.refused.take_if(|r| desired.as_ref() != Some(&*r));
+        let desired = desired.filter(|d| self.refused.as_ref() != Some(d));
+        if self.held == desired {
             return;
         }
         let same_row = |a: &Want, b: &Want| a.host == b.host && a.workspace_id == b.workspace_id;
         // The row to tell: the one that holds a share we will not replace in place, else the desired row.
-        let (host, workspace_id, next) = match (&self.sent, desired) {
+        let (host, workspace_id, next) = match (&self.held, desired) {
             (Some(held), want) if want.as_ref().is_none_or(|w| !same_row(held, w)) => (held.host.clone(), held.workspace_id.clone(), None),
             (_, Some(w)) => (w.host.clone(), w.workspace_id.clone(), Some(w)),
             (_, None) => return,
@@ -93,8 +105,7 @@ impl SelectionShare {
             None => (None, None),
         };
         let req = SelectionSetReq { workspace_id, selection, drawing };
-        let replaced = std::mem::replace(&mut self.sent, next);
-        self.flight = Some(Flight { host: host.clone(), req: req.clone(), replaced });
+        self.flight = Some(Flight { host: host.clone(), req: req.clone(), want: next });
         if send(&host, OutgoingReq::SelectionSet { req }).is_err() {
             self.on_connection(&host, false);
         }
@@ -108,33 +119,36 @@ impl SelectionShare {
             return;
         }
         self.up.remove(host);
-        if self.sent.as_ref().is_some_and(|w| &w.host == host) {
-            self.sent = None;
-        }
-        if self.flight.as_ref().is_some_and(|f| &f.host == host) {
-            self.flight = None;
-        }
-        self.unsent.take_if(|u| &u.host == host);
+        self.held.take_if(|w| &w.host == host);
+        self.flight.take_if(|f| &f.host == host);
+        self.refused.take_if(|w| &w.host == host);
     }
 
     /// A reply: the status line it earns, if any. A reply that does not answer the request in flight on that host (one from
     /// a connection that ended) is dropped. An ended reply shows nothing; the reconcile sends again after `Connected`.
+    /// The reply says what the daemon did with the request, which is what it now holds (`held`) and, for a share it did
+    /// not take, what is not asked again (`refused`).
     pub(in crate::ui) fn on_reply(&mut self, host: &HostKey, req: &SelectionSetReq, reply: SelectionReply) -> Option<String> {
         let flight = self.flight.take_if(|f| &f.host == host && &f.req == req)?;
+        match (&reply, flight.want) {
+            // The daemon withdrew everything at the connection's end; the host reads as down until `Connected`.
+            (SelectionReply::Ended, _) => self.held = None,
+            (_, None) => self.held = None,
+            (SelectionReply::Done(_), took) => self.held = took,
+            (SelectionReply::Refused { code: Some(code), .. }, want) if WITHDRAWN.contains(&code.as_str()) => {
+                (self.held, self.refused) = (None, want);
+            }
+            // Never taken: fe-net answered for it and wrote nothing, or the daemon left the row as it was.
+            (_, want) => self.refused = want,
+        }
         // A clear is not announced, and a refused one leaves nothing to retry.
         let share = req.selection.is_some();
         match reply {
             SelectionReply::Ended => {
-                // The daemon withdrew it at the connection's end; the host reads as down until `Connected`.
-                self.sent = None;
                 self.up.remove(host);
                 None
             }
             reply if req.drawing.is_some() => {
-                // fe-net answers a drawing as unsupported itself and writes nothing, so the daemon holds what it held.
-                if matches!(reply, SelectionReply::Unsupported) {
-                    self.unsent = std::mem::replace(&mut self.sent, flight.replaced);
-                }
                 drawing_line(reply, req.drawing.as_ref().is_some_and(|d| matches!(d.base, InkBase::Figure { page: Some(_), .. })))
             }
             SelectionReply::Done(SelectionState::Shared) => share.then(|| "selection shared: the agent sees it at its next prompt".into()),

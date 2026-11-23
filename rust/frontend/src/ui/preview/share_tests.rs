@@ -431,3 +431,141 @@ impl crate::ui::State {
         Ok(())
     }
 }
+
+/// One step of a scripted walk over the share.
+enum Step {
+    /// The view wants this (a drawing with this many strokes); the request it hands out, if any, is left in flight.
+    Want(Option<Want>, usize),
+    /// The request in flight is answered: the fake daemon does what its code does for that answer, then the share hears it.
+    Reply(SelectionReply),
+    /// A reply that answers no request in flight.
+    Stale,
+    Down,
+    Up,
+}
+
+/// A request as the table names it: its row, then `clear`, `text:<len>` or `ink:<node>:<strokes>`.
+fn named(req: &SelectionSetReq) -> String {
+    let what = match (&req.selection, &req.drawing) {
+        (Some(t), _) => format!("text:{}", t.len),
+        (_, Some(Drawing { base: InkBase::Figure { node_id, .. }, strokes })) => format!("ink:{node_id}:{}", strokes.len()),
+        (_, Some(d)) => format!("ink:canvas:{}", d.strokes.len()),
+        _ => "clear".into(),
+    };
+    format!("{} {what}", req.workspace_id)
+}
+
+/// Runs `steps` over a fresh share with its link up. Returns every request the share handed out, in order, and what the
+/// fake daemon holds at the end, a request per row. The fake does what `agents/selection.rs` does for each answer: an
+/// accepted request is held (a clear holds nothing), a refusal in `WITHDRAWN` removes the row's, any other refusal and a
+/// request fe-net answered for (`Unsupported`) change nothing, and the link's end removes everything.
+fn walk(steps: Vec<Step>) -> (Vec<String>, Vec<String>) {
+    let (mut s, mut asked, mut daemon) = (up(), Vec::new(), std::collections::BTreeMap::<String, String>::new());
+    for step in steps {
+        match step {
+            Step::Want(want, strokes) => {
+                if let Some(out) = go_ink(&mut s, want, strokes) {
+                    asked.push(named(&req(Some(out))));
+                }
+            }
+            Step::Reply(reply) => {
+                // A walk that answers a request the share never handed out says so in its list and goes on.
+                let Some(q) = s.flight.as_ref().map(|f| f.req.clone()) else {
+                    asked.push("an answer with nothing in flight".into());
+                    continue;
+                };
+                match &reply {
+                    SelectionReply::Done(_) if q.selection.is_some() || q.drawing.is_some() => drop(daemon.insert(q.workspace_id.clone(), named(&q))),
+                    SelectionReply::Done(_) => drop(daemon.remove(&q.workspace_id)),
+                    SelectionReply::Refused { code: Some(c), .. } if WITHDRAWN.contains(&c.as_str()) => drop(daemon.remove(&q.workspace_id)),
+                    SelectionReply::Ended => daemon.clear(),
+                    _ => {}
+                }
+                s.on_reply(&host(), &q, reply);
+            }
+            Step::Stale => {
+                let stale = SelectionSetReq { workspace_id: "nowhere".into(), selection: None, drawing: None };
+                assert!(s.on_reply(&host(), &stale, done()).is_none());
+            }
+            Step::Down => {
+                daemon.clear();
+                s.on_connection(&host(), false);
+            }
+            Step::Up => s.on_connection(&host(), true),
+        }
+    }
+    (asked, daemon.into_values().collect())
+}
+
+/// The share's model, walked: `held` is what the daemon holds for the row from this window, by what the daemon did with
+/// each request, and `refused` is the wanted share that was refused, by the daemon or by fe-net, which counts as
+/// nothing wanted while the view wants exactly it. Each row gives every request the share hands out and what the
+/// daemon holds at the end. No walk sends a row a clear for something the daemon does not hold from this window (it
+/// would remove what another window shared there since), and none leaves the daemon holding what the view stopped
+/// wanting or was told is not shared.
+#[test]
+fn every_walk_ends_with_the_daemon_holding_what_the_view_shows_and_no_clear_it_does_not_owe() {
+    use Step::{Down, Reply, Stale, Up};
+    let text = |row: &str, t: &str| Step::Want(want_in("h", row, "files:a.txt", t), 0);
+    let ink = |row: &str, rev: u64| Step::Want(ink_want(row, "files:doc.pdf", rev), rev as usize);
+    let hide = || Step::Want(None, 0);
+    let ok = || Reply(done());
+    let local = || Reply(SelectionReply::Unsupported);
+    let no = |code: &str| Reply(SelectionReply::Refused { code: Some(code.into()), error: "x".into() });
+    let table: Vec<(&str, Vec<Step>, &[&str], &[&str])> = vec![
+        // The drawing is one fe-net answers for itself (a page on a daemon that draws none) in the first seven.
+        ("shared text, a drawing answered locally, then hide",
+            vec![text("r1", "abc"), ok(), ink("r1", 1), local(), ink("r1", 1), ok(), hide()],
+            &["r1 text:3", "r1 ink:files:doc.pdf:1", "r1 clear"], &[]),
+        ("the same, then another session and back",
+            vec![text("r1", "abc"), ok(), ink("r1", 1), local(), ink("r1", 1), ok(), text("r2", "q"), ok(), ink("r1", 1), ok(), ink("r1", 1), local(), ink("r1", 1)],
+            &["r1 text:3", "r1 ink:files:doc.pdf:1", "r1 clear", "r2 text:1", "r2 clear", "r1 ink:files:doc.pdf:1"], &[]),
+        ("nothing held, a drawing answered locally, then text",
+            vec![ink("r1", 1), local(), ink("r1", 1), text("r1", "abc"), ok()],
+            &["r1 ink:files:doc.pdf:1", "r1 text:3"], &["r1 text:3"]),
+        ("a drawing answered locally, then another stroke",
+            vec![ink("r1", 1), local(), ink("r1", 1), ink("r1", 2), local(), ink("r1", 2)],
+            &["r1 ink:files:doc.pdf:1", "r1 ink:files:doc.pdf:2"], &[]),
+        ("a drawing answered locally, the link ends, and a daemon that takes it answers",
+            vec![ink("r1", 1), local(), Down, Up, ink("r1", 1), ok()],
+            &["r1 ink:files:doc.pdf:1", "r1 ink:files:doc.pdf:1"], &["r1 ink:files:doc.pdf:1"]),
+        ("shared text, a drawing answered locally, then another session's text",
+            vec![text("r1", "abc"), ok(), ink("r1", 1), local(), text("r2", "q"), ok(), text("r2", "q"), ok()],
+            &["r1 text:3", "r1 ink:files:doc.pdf:1", "r1 clear", "r2 text:1"], &["r2 text:1"]),
+        ("a reply that answers no request in flight changes nothing",
+            vec![text("r1", "abc"), Stale, text("r1", "abcd"), ok(), text("r1", "abcd"), ok()],
+            &["r1 text:3", "r1 text:4"], &["r1 text:4"]),
+        // A text the daemon refused is not held: no clear follows a drawing answered locally over it.
+        ("a refused text, then a drawing answered locally that stays shown",
+            vec![text("r1", "abc"), no("not_file_text"), ink("r1", 1), local(), ink("r1", 1), hide()],
+            &["r1 text:3", "r1 ink:files:doc.pdf:1"], &[]),
+        ("a refused text, a drawing answered locally over it, and the text wanted again",
+            vec![text("r1", "abc"), no("not_file_text"), ink("r1", 1), text("r1", "abc"), local(), text("r1", "abc"), ok()],
+            &["r1 text:3", "r1 ink:files:doc.pdf:1", "r1 text:3"], &["r1 text:3"]),
+        ("a refused text is not asked again, and a changed one is",
+            vec![text("r1", "abc"), no("not_file_text"), text("r1", "abc"), text("r1", "abcd"), ok()],
+            &["r1 text:3", "r1 text:4"], &["r1 text:4"]),
+        ("a refused text, then a drawing the daemon takes, then hide",
+            vec![text("r1", "abc"), no("no_agent"), ink("r1", 1), ok(), hide(), ok()],
+            &["r1 text:3", "r1 ink:files:doc.pdf:1", "r1 clear"], &[]),
+        ("a drawing the daemon refused, then hide",
+            vec![ink("r1", 1), no("not_an_image"), ink("r1", 1), hide()],
+            &["r1 ink:files:doc.pdf:1"], &[]),
+        ("shared text, a changed text the daemon refused and withdrew, then nothing selected",
+            vec![text("r1", "abc"), ok(), text("r1", "abcd"), no("not_file_text"), text("r1", "abcd"), hide()],
+            &["r1 text:3", "r1 text:4"], &[]),
+        // A refusal that left the row as it was: the old text is still held, and is cleared once.
+        ("shared text, a changed text refused with the row left as it was",
+            vec![text("r1", "abc"), ok(), text("r1", "abcd"), no("not_a_window"), text("r1", "abcd"), ok(), text("r1", "abcd"), hide()],
+            &["r1 text:3", "r1 text:4", "r1 clear"], &[]),
+    ];
+    // Every row runs, so one run names every walk that fails.
+    let mut failed = Vec::new();
+    for (name, steps, asked, holds) in table {
+        let got = walk(steps);
+        if got.0 != asked || got.1 != holds {
+            failed.push(format!("{name}: handed out {:?} and the daemon holds {:?}; wanted {asked:?} and {holds:?}", got.0, got.1));
+        }
+    }
+    assert!(failed.is_empty(), "{}", failed.join("\n"));
+}
