@@ -3363,9 +3363,10 @@ the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the sa
       and found the next sequence beside it; the reading that ended it was the one asked to check every reply
       against the daemon's own code, and the round that ended it was decided by a sort, not by a list. No person
       has drawn on a page, and nothing ran with the real plugin through a window.
-  - Selecting text on a PDF page, landings 2 to 5 of its plan, nine commits, 13:49 to 16:28, built by one builder
-    of the cheaper kind from the written plan and one brief a step. A person can drag over a page, see the words
-    marked and copy them; the agent does not see the selection until the plan's last two landings.
+- Selecting text on a PDF page, landings 2 to 5 of its plan: nine commits, 13:49 to 16:28 on 2026-11-23, in a push
+    of their own after the ten above, built by one builder of the cheaper kind from the written plan and one brief
+    a step. A person can drag over a page, see the words marked and copy them; the agent does not see the
+    selection until the plan's last two landings.
     - Landings 2 and 3 (the daemon forwards a words request and answers words or a refusal, never the picture or
       the file; the window's network side asks only a daemon that says it serves them): 141 and 99 product lines.
       Two reviews, no regression; nine fixes in 55 lines (the plugin keeps to the decoder's bounds; the decoder
