@@ -444,11 +444,13 @@ enum Step {
     Up,
 }
 
-/// A request as the table names it: its row, then `clear`, `text:<len>` or `ink:<node>:<strokes>`.
+/// A request as the table names it: its row, then `clear`, `text:<len>` or `ink:<node>[#<page>]:<strokes>`.
 fn named(req: &SelectionSetReq) -> String {
     let what = match (&req.selection, &req.drawing) {
         (Some(t), _) => format!("text:{}", t.len),
-        (_, Some(Drawing { base: InkBase::Figure { node_id, .. }, strokes })) => format!("ink:{node_id}:{}", strokes.len()),
+        (_, Some(Drawing { base: InkBase::Figure { node_id, page }, strokes })) => {
+            format!("ink:{node_id}{}:{}", page.map_or_else(String::new, |p| format!("#{p}")), strokes.len())
+        }
         (_, Some(d)) => format!("ink:canvas:{}", d.strokes.len()),
         _ => "clear".into(),
     };
@@ -456,9 +458,10 @@ fn named(req: &SelectionSetReq) -> String {
 }
 
 /// Runs `steps` over a fresh share with its link up. Returns every request the share handed out, in order, and what the
-/// fake daemon holds at the end, a request per row. The fake does what `agents/selection.rs` does for each answer: an
-/// accepted request is held (a clear holds nothing), a refusal in `WITHDRAWN` removes the row's, any other refusal and a
-/// request fe-net answered for (`Unsupported`) change nothing, and the link's end removes everything.
+/// fake daemon holds at the end, a request per row. The fake does what `agents/selection.rs` does for each answer: a
+/// request answered done is held (a clear holds nothing), a refusal it answers only after withdrawing the row's
+/// selection (the five codes written out below, not read from the product's list) removes the row's, any other refusal
+/// and a request fe-net answered for (`Unsupported`) change nothing, and the link's end removes everything.
 fn walk(steps: Vec<Step>) -> (Vec<String>, Vec<String>) {
     let (mut s, mut asked, mut daemon) = (up(), Vec::new(), std::collections::BTreeMap::<String, String>::new());
     for step in steps {
@@ -477,7 +480,11 @@ fn walk(steps: Vec<Step>) -> (Vec<String>, Vec<String>) {
                 match &reply {
                     SelectionReply::Done(_) if q.selection.is_some() || q.drawing.is_some() => drop(daemon.insert(q.workspace_id.clone(), named(&q))),
                     SelectionReply::Done(_) => drop(daemon.remove(&q.workspace_id)),
-                    SelectionReply::Refused { code: Some(c), .. } if WITHDRAWN.contains(&c.as_str()) => drop(daemon.remove(&q.workspace_id)),
+                    SelectionReply::Refused { code: Some(c), .. }
+                        if ["not_file_text", "bad_node_id", "no_agent", "not_an_image", "too_large"].contains(&c.as_str()) =>
+                    {
+                        drop(daemon.remove(&q.workspace_id));
+                    }
                     SelectionReply::Ended => daemon.clear(),
                     _ => {}
                 }
@@ -507,7 +514,11 @@ fn walk(steps: Vec<Step>) -> (Vec<String>, Vec<String>) {
 fn every_walk_ends_with_the_daemon_holding_what_the_view_shows_and_no_clear_it_does_not_owe() {
     use Step::{Down, Reply, Stale, Up};
     let text = |row: &str, t: &str| Step::Want(want_in("h", row, "files:a.txt", t), 0);
-    let ink = |row: &str, rev: u64| Step::Want(ink_want(row, "files:doc.pdf", rev), rev as usize);
+    // A drawing on page 2 of a PDF, which only a daemon that draws pages takes.
+    let ink = |row: &str, rev: u64| {
+        let base = InkBase::Figure { node_id: "files:doc.pdf".into(), page: Some(2) };
+        Step::Want(Some(Want { host: host(), workspace_id: row.into(), share: Share::Ink { base, revision: rev } }), rev as usize)
+    };
     let hide = || Step::Want(None, 0);
     let ok = || Reply(done());
     let local = || Reply(SelectionReply::Unsupported);
@@ -516,47 +527,60 @@ fn every_walk_ends_with_the_daemon_holding_what_the_view_shows_and_no_clear_it_d
         // The drawing is one fe-net answers for itself (a page on a daemon that draws none) in the first seven.
         ("shared text, a drawing answered locally, then hide",
             vec![text("r1", "abc"), ok(), ink("r1", 1), local(), ink("r1", 1), ok(), hide()],
-            &["r1 text:3", "r1 ink:files:doc.pdf:1", "r1 clear"], &[]),
+            &["r1 text:3", "r1 ink:files:doc.pdf#2:1", "r1 clear"], &[]),
         ("the same, then another session and back",
             vec![text("r1", "abc"), ok(), ink("r1", 1), local(), ink("r1", 1), ok(), text("r2", "q"), ok(), ink("r1", 1), ok(), ink("r1", 1), local(), ink("r1", 1)],
-            &["r1 text:3", "r1 ink:files:doc.pdf:1", "r1 clear", "r2 text:1", "r2 clear", "r1 ink:files:doc.pdf:1"], &[]),
+            &["r1 text:3", "r1 ink:files:doc.pdf#2:1", "r1 clear", "r2 text:1", "r2 clear", "r1 ink:files:doc.pdf#2:1"], &[]),
         ("nothing held, a drawing answered locally, then text",
             vec![ink("r1", 1), local(), ink("r1", 1), text("r1", "abc"), ok()],
-            &["r1 ink:files:doc.pdf:1", "r1 text:3"], &["r1 text:3"]),
+            &["r1 ink:files:doc.pdf#2:1", "r1 text:3"], &["r1 text:3"]),
         ("a drawing answered locally, then another stroke",
             vec![ink("r1", 1), local(), ink("r1", 1), ink("r1", 2), local(), ink("r1", 2)],
-            &["r1 ink:files:doc.pdf:1", "r1 ink:files:doc.pdf:2"], &[]),
+            &["r1 ink:files:doc.pdf#2:1", "r1 ink:files:doc.pdf#2:2"], &[]),
         ("a drawing answered locally, the link ends, and a daemon that takes it answers",
             vec![ink("r1", 1), local(), Down, Up, ink("r1", 1), ok()],
-            &["r1 ink:files:doc.pdf:1", "r1 ink:files:doc.pdf:1"], &["r1 ink:files:doc.pdf:1"]),
+            &["r1 ink:files:doc.pdf#2:1", "r1 ink:files:doc.pdf#2:1"], &["r1 ink:files:doc.pdf#2:1"]),
         ("shared text, a drawing answered locally, then another session's text",
             vec![text("r1", "abc"), ok(), ink("r1", 1), local(), text("r2", "q"), ok(), text("r2", "q"), ok()],
-            &["r1 text:3", "r1 ink:files:doc.pdf:1", "r1 clear", "r2 text:1"], &["r2 text:1"]),
+            &["r1 text:3", "r1 ink:files:doc.pdf#2:1", "r1 clear", "r2 text:1"], &["r2 text:1"]),
         ("a reply that answers no request in flight changes nothing",
             vec![text("r1", "abc"), Stale, text("r1", "abcd"), ok(), text("r1", "abcd"), ok()],
             &["r1 text:3", "r1 text:4"], &["r1 text:4"]),
         // A text the daemon refused is not held: no clear follows a drawing answered locally over it.
         ("a refused text, then a drawing answered locally that stays shown",
             vec![text("r1", "abc"), no("not_file_text"), ink("r1", 1), local(), ink("r1", 1), hide()],
-            &["r1 text:3", "r1 ink:files:doc.pdf:1"], &[]),
+            &["r1 text:3", "r1 ink:files:doc.pdf#2:1"], &[]),
         ("a refused text, a drawing answered locally over it, and the text wanted again",
             vec![text("r1", "abc"), no("not_file_text"), ink("r1", 1), text("r1", "abc"), local(), text("r1", "abc"), ok()],
-            &["r1 text:3", "r1 ink:files:doc.pdf:1", "r1 text:3"], &["r1 text:3"]),
+            &["r1 text:3", "r1 ink:files:doc.pdf#2:1", "r1 text:3"], &["r1 text:3"]),
         ("a refused text is not asked again, and a changed one is",
             vec![text("r1", "abc"), no("not_file_text"), text("r1", "abc"), text("r1", "abcd"), ok()],
             &["r1 text:3", "r1 text:4"], &["r1 text:4"]),
         ("a refused text, then a drawing the daemon takes, then hide",
             vec![text("r1", "abc"), no("no_agent"), ink("r1", 1), ok(), hide(), ok()],
-            &["r1 text:3", "r1 ink:files:doc.pdf:1", "r1 clear"], &[]),
+            &["r1 text:3", "r1 ink:files:doc.pdf#2:1", "r1 clear"], &[]),
         ("a drawing the daemon refused, then hide",
             vec![ink("r1", 1), no("not_an_image"), ink("r1", 1), hide()],
-            &["r1 ink:files:doc.pdf:1"], &[]),
+            &["r1 ink:files:doc.pdf#2:1"], &[]),
         ("shared text, a changed text the daemon refused and withdrew, then nothing selected",
             vec![text("r1", "abc"), ok(), text("r1", "abcd"), no("not_file_text"), text("r1", "abcd"), hide()],
             &["r1 text:3", "r1 text:4"], &[]),
-        // A refusal that left the row as it was: the old text is still held, and is cleared once.
+        // A refusal that left the row as it was (the daemon's answer to a request it could not read): the old text is
+        // still held, and is cleared once.
         ("shared text, a changed text refused with the row left as it was",
-            vec![text("r1", "abc"), ok(), text("r1", "abcd"), no("not_a_window"), text("r1", "abcd"), ok(), text("r1", "abcd"), hide()],
+            vec![text("r1", "abc"), ok(), text("r1", "abcd"), no("handler_error"), text("r1", "abcd"), ok(), text("r1", "abcd"), hide()],
+            &["r1 text:3", "r1 text:4", "r1 clear"], &[]),
+        // A refusal does not outlive a change of view, also one made while the owed clear is in flight.
+        ("the same, and the view wants something else and the refused text again before the clear's answer",
+            vec![text("r1", "abc"), ok(), text("r1", "abcd"), no("handler_error"), text("r1", "abcd"), hide(), text("r1", "abcd"), ok(), text("r1", "abcd"), ok()],
+            &["r1 text:3", "r1 text:4", "r1 clear", "r1 text:4"], &["r1 text:4"]),
+        // An answer that does not say what the row holds leaves `held` as it was, so the old share is cleared, never
+        // left: the stand-in keeps the old text at `publish_failed`, and takes the share it answers in an unknown state.
+        ("shared text, a changed text the daemon failed to publish",
+            vec![text("r1", "abc"), ok(), text("r1", "abcd"), no("publish_failed"), text("r1", "abcd"), ok(), hide()],
+            &["r1 text:3", "r1 text:4", "r1 clear"], &[]),
+        ("shared text, a changed text answered done in a state this window does not know",
+            vec![text("r1", "abc"), ok(), text("r1", "abcd"), Reply(SelectionReply::Done(SelectionState::Other)), text("r1", "abcd"), ok(), hide()],
             &["r1 text:3", "r1 text:4", "r1 clear"], &[]),
     ];
     // Every row runs, so one run names every walk that fails.

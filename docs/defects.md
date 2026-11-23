@@ -588,6 +588,16 @@ owned by `docs/CLAUDE.md`.
 
 ## agents
 
+- **CLEAR-REMOVES-ANOTHER-WINDOWS-SHARE** [note] From reading code, 2026-11-23; never seen. The daemon's clear
+  (`agents/selection.rs`, `apply` under `publish`) removes the row's selection whoever set it, and a window's share
+  (`rust/frontend/src/ui/preview/share.rs`) sends a clear by its own record of what the row holds from it. That record
+  goes stale when another window has since shared on the same session, and the first window then removes the other
+  window's share: when it deselects or hides its drawing, as before; and, since drawings on PDF pages, when its
+  drawing is answered for by its own network side (a daemon that takes none, an older one) and stays shown, where no
+  clear was sent before. Fix, decided and not built: a clear leaves a row whose selection another live connection
+  set, which only a daemon of that version does. The opposite miss, in the same record: an answer the window cannot
+  read (an unreadable reply, a done state it does not know) leaves the record as it was, so a share the daemon in
+  fact took, on a row the window held nothing for, is not cleared when it is hidden.
 - **CODEX-QUESTION-NOT-SHOWN** [note] A Codex session's question to its person is not shown as a Claude session's is
   (the row red, the question on the person's waiting page). Measured on Codex 0.171.0 on 2026-11-22, with no product
   change: its hooks cannot carry that state. A question that holds the turn is a request of Codex's app server,

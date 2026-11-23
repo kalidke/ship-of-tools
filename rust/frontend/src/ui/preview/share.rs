@@ -48,12 +48,12 @@ struct Flight {
     want: Option<Want>,
 }
 
-/// The refusal codes after which the daemon holds nothing for the row: `agents/selection.rs` answers each of them once
-/// the row has resolved, and withdraws the row's selection as it does (`publish_failed` after trying to). Any other
-/// refusal (not a window, an unknown row, a request it could not read) left the row as it was.
-const WITHDRAWN: [&str; 6] = [
+/// The refusal codes after which the daemon holds nothing for the row: `agents/selection.rs` answers each of them only
+/// after it has withdrawn the row's selection. Any other refusal left the row as it was (not a window, an unknown row,
+/// a request it could not read) or does not say what the row holds (`publish_failed`: the old file may be there still).
+const WITHDRAWN: [&str; 5] = [
     selection_code::NOT_FILE_TEXT, selection_code::BAD_NODE_ID, selection_code::NO_AGENT, selection_code::NOT_AN_IMAGE,
-    selection_code::TOO_LARGE, selection_code::PUBLISH_FAILED,
+    selection_code::TOO_LARGE,
 ];
 
 #[derive(Default)]
@@ -62,13 +62,15 @@ pub(in crate::ui) struct SelectionShare {
     up: HashSet<HostKey>,
     /// What the daemon holds for the row from this window, by its replies: the share of the last request it accepted;
     /// none after a clear, a refusal that withdrew the row's selection (`WITHDRAWN`) or its link's end; unchanged by a
-    /// request it never took (one fe-net answered for, or a refusal that left the row as it was). A request in flight
-    /// has not changed it yet. A clear is taken as done whatever its answer (docs/defects.md:
-    /// SHARE-CLEAR-FAILURE-NOT-TOLD).
+    /// request it never took (one fe-net answered for, or a refusal that left the row as it was) and by an answer that
+    /// does not say what the row holds (`publish_failed` to a share, a done state this window does not know, a reply
+    /// it cannot read), after which the row may hold this or nothing. A request in flight has not changed it yet. A
+    /// clear is taken as done whatever its answer (docs/defects.md: SHARE-CLEAR-FAILURE-NOT-TOLD).
     held: Option<Want>,
     flight: Option<Flight>,
     /// The wanted share that was refused, by the daemon or by fe-net: while the view wants exactly it, the view wants
-    /// nothing the daemon can hold, so it is not asked again. Dropped when the view wants anything else, or its link ends.
+    /// nothing the daemon can hold, so it is not asked again. Dropped as soon as the view wants anything else, also
+    /// while a request is in flight, or its link ends.
     refused: Option<Want>,
 }
 
@@ -81,10 +83,10 @@ impl SelectionShare {
     pub(in crate::ui) fn reconcile<E>(
         &mut self, desired: Option<Want>, strokes: &[Vec<[u16; 2]>], send: impl FnOnce(&HostKey, OutgoingReq) -> Result<(), E>,
     ) {
+        self.refused.take_if(|r| desired.as_ref() != Some(&*r));
         if self.flight.is_some() {
             return;
         }
-        self.refused.take_if(|r| desired.as_ref() != Some(&*r));
         let desired = desired.filter(|d| self.refused.as_ref() != Some(d));
         if self.held == desired {
             return;
@@ -134,11 +136,12 @@ impl SelectionShare {
             // The daemon withdrew everything at the connection's end; the host reads as down until `Connected`.
             (SelectionReply::Ended, _) => self.held = None,
             (_, None) => self.held = None,
-            (SelectionReply::Done(_), took) => self.held = took,
+            (SelectionReply::Done(SelectionState::Shared | SelectionState::Held), took) => self.held = took,
             (SelectionReply::Refused { code: Some(code), .. }, want) if WITHDRAWN.contains(&code.as_str()) => {
                 (self.held, self.refused) = (None, want);
             }
-            // Never taken: fe-net answered for it and wrote nothing, or the daemon left the row as it was.
+            // Never taken (fe-net answered for it and wrote nothing, or the daemon left the row as it was), or an
+            // answer that does not say what the row holds: `held` stays, so what it names is cleared.
             (_, want) => self.refused = want,
         }
         // A clear is not announced, and a refused one leaves nothing to retry.
