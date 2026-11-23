@@ -3363,3 +3363,30 @@ the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the sa
       and found the next sequence beside it; the reading that ended it was the one asked to check every reply
       against the daemon's own code, and the round that ended it was decided by a sort, not by a list. No person
       has drawn on a page, and nothing ran with the real plugin through a window.
+  - Selecting text on a PDF page, landings 2 to 5 of its plan, nine commits, 13:49 to 16:28, built by one builder
+    of the cheaper kind from the written plan and one brief a step. A person can drag over a page, see the words
+    marked and copy them; the agent does not see the selection until the plan's last two landings.
+    - Landings 2 and 3 (the daemon forwards a words request and answers words or a refusal, never the picture or
+      the file; the window's network side asks only a daemon that says it serves them): 141 and 99 product lines.
+      Two reviews, no regression; nine fixes in 55 lines (the plugin keeps to the decoder's bounds; the decoder
+      refuses control characters, a positional document and a missing field; each exit by its code). A second
+      reading found four more (a repeated field accepted, a test's stand-in kernel registered for the whole
+      process, a logged reason with no test), fixed in 16 lines after the branch was restacked on the drawing.
+    - Landing 4 (the window's pure owner of a page's words): 78 and 29 product lines, read by the maintaining
+      session; a third reading of the whole found three small faults in it (a tie at a tiny aspect, a line read
+      right to left with no band, a test with a subscriber of its own), fixed in 15 lines.
+    - Landing 5 (the press, the drag, the marks, copy): about 173 product lines, past its stop line of 160. Both
+      reviews found that the copy chord never copied on a PDF: the page is in the image context, where the chord
+      is the region capture, and the builder's test had called the copy function itself. With it: a drag released
+      before the words arrived was lost, a reply was matched by its page alone, presses reached the page through
+      boxes drawn over it, and the notice for a page with no words claimed a scan. Round 1, eleven items, 118
+      product lines added and 62 removed; a second reading found two regressions in it (a PDF's refusal shown on
+      the next file, since the request's number had replaced the check of the page shown, and a changed order of
+      the key catalog) and five smaller faults; round 2, about 55 lines. A third reading, asked only for
+      regressions and unfixed items, found none. Recorded and not built:
+      PREVIEW-PRESS-REACHES-UNDER-THE-REPLY-DIALOG, PDF-WORDS-REQUEST-WITHOUT-REPLY-WAITS and
+      FILES-SIZE-GATE-PDF-BY-EXTENSION.
+    - What it showed: the hosted run after the first landing read a page's words from Julia's copy of the tools on
+      Ubuntu, macOS and Windows, which the plan had left unmeasured; a test that calls the function a key should
+      reach proves nothing about the key; and a reading asked for regressions alone ended a lane that readings
+      asked for everything had each kept open. Nothing ran in a real window or through a real clipboard.

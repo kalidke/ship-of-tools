@@ -456,7 +456,13 @@ picture, a blank canvas and a markdown file, 2026-11-11, on a release candidate)
 since 2026-11-22, used by no person yet; and a drawing on a PDF page is on `main` since 2026-11-23, used by no person
 yet: the window takes the shown page as the base, the daemon has the row's kernel draw that page and puts the ink
 over it, and the agent is told the file and the page (one drawing per session, so a stroke on another page replaces
-it; `docs/defects.md`, DRAW-ON-PDF-PAGES, open). Also in
+it; `docs/defects.md`, DRAW-ON-PDF-PAGES, open); and, the same day, a person selects text on a PDF page: a drag over
+the shown page marks whole words and the pane's copy chord copies them, from the page's words and their boxes, which
+the kernel's PDF plugin reads with the text tool beside its page tool and the daemon serves only as words (five of
+the seven landings of a written plan; the hosted run fetched Julia's copy of the tools and read a page's words on
+Ubuntu, macOS and Windows; drawn in the window's fixtures under a virtual display only, used by no person, never run
+through a real clipboard). The agent does not see that selection yet: the last two landings, the share and the
+daemon's check of it, are unbuilt (`docs/defects.md`, PDF-TEXT-SELECTION, open). Also in
 progress: the daemon test run toward the maintainer's four minutes, and one shared test tool.
 The gate runs bash 3.2 per changed suite and its longest jobs first (a whole run about 4 minutes at 20 jobs), and
 platform's hold tool (its guarantee 16) works in one process and across processes; the chat watch's, the wake's and the
