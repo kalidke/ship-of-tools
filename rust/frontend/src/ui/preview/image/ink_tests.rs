@@ -5,7 +5,7 @@ const R: ScreenRect = ScreenRect { x: 100.0, y: 50.0, w: 400.0, h: 200.0 };
 const DIMS: (u32, u32) = (400, 200);
 
 fn fig(n: &str) -> InkBase {
-    InkBase::Figure { node_id: format!("files:{n}") }
+    InkBase::Figure { node_id: format!("files:{n}"), page: None }
 }
 
 fn on() -> InkLayer {
@@ -127,7 +127,7 @@ fn a_stroke_ends_at_its_release_a_new_press_or_a_lost_focus_and_is_dropped_with_
     assert_eq!(l.press(Some(&fig("b.png")), (210.0, 100.0), &R, &R, DIMS), None);
     l.release();
     assert_eq!(l.strokes().len(), 2);
-    let deep = InkBase::Figure { node_id: "files:dir/c.png".into() };
+    let deep = InkBase::Figure { node_id: "files:dir/c.png".into(), page: None };
     assert_eq!(l.press(Some(&deep), (200.0, 100.0), &R, &R, DIMS).as_deref(), Some("the drawing on b.png was replaced"));
     l.release();
     assert_eq!(l.press(Some(&fig("b.png")), (200.0, 100.0), &R, &R, DIMS).as_deref(), Some("the drawing on c.png was replaced"));
@@ -566,11 +566,16 @@ fn the_overlay_is_the_drawings_raster_after_every_edit() {
     assert_eq!(l.mask, sot_protocol::ink::mask(l.strokes(), l.dims));
 }
 
+fn page(n: &str, page: u32) -> InkBase {
+    InkBase::Figure { node_id: format!("files:{n}"), page: Some(page) }
+}
+
 #[test]
-fn the_shown_base_is_the_raster_node_only_for_an_image_outside_edit_and_the_refused_overlay() {
-    let shown = |node, editing, refused| InkLayer::default().shown_base(node, editing, refused);
+fn the_shown_base_is_the_raster_node_only_for_an_image_or_a_page_outside_edit_and_the_refused_overlay() {
+    let paged = |node, page, editing, refused| InkLayer::default().shown_base(node, page, editing, refused);
+    let shown = |node, editing, refused| paged(node, None, editing, refused);
     assert_eq!(shown(Some("files:a.png"), false, false), Some(fig("a.png")));
-    // a hidden raster has no node; PDF pages and plugin previews are no base
+    // a hidden raster has no node; a picture that is no image file and has no page (a plugin preview) is no base
     assert_eq!(shown(None, false, false), None);
     assert_eq!(shown(Some("files:doc.pdf"), false, false), None);
     assert_eq!(shown(Some("files:src/lib.jl"), false, false), None);
@@ -578,6 +583,33 @@ fn the_shown_base_is_the_raster_node_only_for_an_image_outside_edit_and_the_refu
     assert_eq!(shown(Some("files:a.svg"), false, false), None);
     assert_eq!(shown(Some("files:a.png"), true, false), None);
     assert_eq!(shown(Some("files:a.png"), false, true), None);
+    // the page a paged preview's raster is, is a base by its node and page; an image file's base never has a page
+    assert_eq!(paged(Some("files:doc.pdf"), Some(3), false, false), Some(page("doc.pdf", 3)));
+    assert_eq!(paged(Some("files:a.png"), Some(3), false, false), Some(fig("a.png")));
+    assert_eq!(paged(None, Some(3), false, false), None);
+    assert_eq!(paged(Some("files:doc.pdf"), Some(3), true, false), None);
+    assert_eq!(paged(Some("files:doc.pdf"), Some(3), false, true), None);
+}
+
+/// A drawing on one page of a file is that page's: another page of the file is another base, where it is neither
+/// drawn nor undone, it is the page's again when the page is shown again, and a stroke on another page replaces it
+/// with a line that names the file and the page.
+#[test]
+fn a_page_is_its_own_base_and_a_stroke_on_another_page_replaces_the_drawing() {
+    let (mut l, two, three) = (on(), page("dir/doc.pdf", 2), page("dir/doc.pdf", 3));
+    pt(&mut l, &two, (150.0, 100.0));
+    l.press(Some(&two), (200.0, 100.0), &R, &R, DIMS);
+    // the page turns: the live stroke is dropped, and undo and clear on the other page change nothing
+    l.sync(Some(&three), Some(DIMS));
+    assert!(l.live().is_none() && l.base() == Some(&two) && l.strokes().len() == 1);
+    assert_eq!(rev(&mut l, |l| { l.undo(Some(&three)); l.clear(Some(&three)) }), 0);
+    // back on its page, at another size (a zoom's sharper bitmap), the drawing is as it was
+    l.sync(Some(&two), Some((800, 400)));
+    assert!(l.base() == Some(&two) && l.strokes().len() == 1);
+    // a stroke on the other page replaces it and says which page's drawing went
+    assert_eq!(l.press(Some(&three), (200.0, 100.0), &R, &R, DIMS).as_deref(), Some("the drawing on doc.pdf page 2 was replaced"));
+    l.release();
+    assert_eq!((l.base(), l.strokes().len()), (Some(&three), 1));
 }
 
 #[test]
@@ -740,7 +772,7 @@ fn a_restored_drawing_keeps_its_own_mode() {
 
 #[test]
 fn the_canvas_is_a_base_like_a_figure_and_replaces_a_figures_drawing() {
-    let canvas = |l: &InkLayer, node, editing, refused| l.shown_base(node, editing, refused);
+    let canvas = |l: &InkLayer, node, editing, refused| l.shown_base(node, None, editing, refused);
     let mut l = on();
     l.set_canvas(true);
     // shown over a raster, with none, and not under edit mode or the refused-hello overlay

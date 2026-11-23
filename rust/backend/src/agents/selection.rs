@@ -15,7 +15,7 @@ use sot_protocol::reply::HandlerOutput;
 use sot_protocol::{selection_digest, Frame};
 
 use super::selection_check::{check_selection, render_drawing, render_selection};
-use crate::files::preview::ink::compose;
+use crate::files::preview::ink::{compose, page_png};
 use crate::files::preview::PREVIEW_BYTE_CAP;
 use crate::files::ID_PREFIX;
 use crate::rows::spawn::state_root::state_dir_for;
@@ -144,13 +144,18 @@ fn set_selection(
 
 /// Applies a drawing to its row's file. After the row's checks and its agent's, the composite and the publish run
 /// under `COMPOSE`, so after each publish the file names the picture on disk and the digest it holds. The composite runs on the blocking pool, off
-/// the connection's loop; the setter lock is taken only inside `publish`, after the await.
+/// the connection's loop; the setter lock is taken only inside `publish`, after the await. A base that names a page
+/// has the row's kernel draw it first, before the lock, so a wait for one row's kernel holds no other row's drawing.
 async fn set_drawing(
     state_root: Option<&Path>, workspaces: &Workspaces, window: bool, serial: u64, workspace: &str, drawing: &Drawing,
 ) -> Result<SelectionState, &'static str> {
     let (ws, folder) = row_of(state_root, workspaces, window, workspace)?;
+    let page = if takes_drawing(&ws.agent()) { page_of(&ws, drawing).await } else { Err(selection_code::NO_AGENT) };
     let _one_at_a_time = COMPOSE.lock().await;
-    let checked = if takes_drawing(&ws.agent()) { render_picture(&ws, drawing).await } else { Err(selection_code::NO_AGENT) };
+    let checked = match page {
+        Ok(page) => render_picture(&ws, drawing, page).await,
+        Err(code) => Err(code),
+    };
     sot_platform::hold_point_async!("agents.selection.publish", &ws.workspace_id);
     publish(&ws.workspace_id, &folder, serial, Some(checked))
 }
@@ -218,14 +223,23 @@ fn render(ws: &Workspace, sel: &SelectedText) -> Result<String, &'static str> {
     Ok(render_selection(&text, &absolute, relative))
 }
 
-/// The hook's output for `drawing`: its picture composed on the blocking pool, then named with the figure's paths and
-/// the digest of the drawing as the wire serializes it.
-async fn render_picture(ws: &Workspace, drawing: &Drawing) -> Result<String, &'static str> {
+/// The page under `drawing` as the row's kernel draws it, for a base that names one; none for any other base.
+async fn page_of(ws: &Workspace, drawing: &Drawing) -> Result<Option<Vec<u8>>, &'static str> {
+    let InkBase::Figure { node_id, page: Some(page) } = &drawing.base else { return Ok(None) };
+    page_png(ws, node_id, *page).await.map(Some).map_err(|(code, message)| {
+        tracing::debug!(row = %ws.workspace_id, code, %message, "a drawing's page was not drawn");
+        code
+    })
+}
+
+/// The hook's output for `drawing`: its picture composed on the blocking pool (over `page`, the base's page from
+/// `page_of`), then named with the figure's paths, its page and the digest of the drawing as the wire serializes it.
+async fn render_picture(ws: &Workspace, drawing: &Drawing, page: Option<Vec<u8>>) -> Result<String, &'static str> {
     let files = ws.files_mode().map_err(|_| selection_code::BAD_NODE_ID)?;
     let (row, owned) = (ws.workspace_id.clone(), drawing.clone());
     let composed = {
         let files = files.clone();
-        tokio::task::spawn_blocking(move || compose(&files, &row, &owned)).await
+        tokio::task::spawn_blocking(move || compose(&files, &row, &owned, page.as_deref())).await
     };
     let picture = match composed {
         Ok(Ok(picture)) => picture,
@@ -237,15 +251,15 @@ async fn render_picture(ws: &Workspace, drawing: &Drawing) -> Result<String, &'s
     };
     let figure = match &drawing.base {
         InkBase::Canvas => None,
-        InkBase::Figure { node_id } => {
+        InkBase::Figure { node_id, page } => {
             let path = files.node_id_to_path(node_id).map_err(|_| selection_code::BAD_NODE_ID)?;
             let id = files.path_to_node_id(&path).ok_or(selection_code::BAD_NODE_ID)?;
             let relative = id.strip_prefix(ID_PREFIX).ok_or(selection_code::BAD_NODE_ID)?.to_string();
-            Some((path.to_string_lossy().into_owned(), relative))
+            Some((path.to_string_lossy().into_owned(), relative, *page))
         }
     };
     let digest = selection_digest(&serde_json::to_string(drawing).map_err(|_| selection_code::PUBLISH_FAILED)?);
-    let figure = figure.as_ref().map(|(abs, rel)| (abs.as_str(), rel.as_str()));
+    let figure = figure.as_ref().map(|(abs, rel, page)| (abs.as_str(), rel.as_str(), *page));
     Ok(render_drawing(figure, &picture.to_string_lossy(), drawing.strokes.len(), digest))
 }
 

@@ -235,7 +235,11 @@ name is in this crate's one op table.
     `a_hello_reply_says_whether_the_daemon_takes_a_drawing_and_stays_additive`). The daemon's handler (`agents/selection.rs`) serves the op; a duplicate JSON
     key is not refused (the codec reads a `Value`, the last wins). The `drawing` field is defaulted (absent reads as none and
     is not written when none; a request without it decodes as before): a `Drawing { base, strokes }`, `base` `"canvas"` or
-    `{"figure": {"node_id"}}` (4096 bytes), each point `[x, y]` as `u16` fractions of the base's width and height
+    `{"figure": {"node_id"}}` (4096 bytes), with `page`, a 1-based `u32`, beside the node id when the drawing is on a page of
+    a paged node (a PDF); `page` is defaulted and not written when none, so an image's base and its digest are as before the
+    field, and a daemon built before it ignores it, reads the node alone and refuses it as no image, which withdraws the
+    row's selection (so the hello's `takes_drawing` is enough for pages and nothing new is said there; test
+    `a_figure_base_may_name_a_page_and_stays_additive`); each point `[x, y]` as `u16` fractions of the base's width and height
     (`/ 65535`). Decode refuses a request with both a selection and a drawing, no stroke, an empty stroke, or more than
     `MAX_INK_POINTS` (16384) points in all; each stroke has a point, so that one bound also bounds the strokes, and the
     largest drawing is far under the envelope. Two more refusal codes, `not_an_image` and `too_large`, are fixed for the daemon's use. Tests `ops/selection_tests.rs`:

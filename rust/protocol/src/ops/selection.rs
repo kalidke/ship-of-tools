@@ -97,7 +97,8 @@ impl TryFrom<RawSelectedText> for SelectedText {
     }
 }
 
-/// What a drawing is drawn on: the row's blank canvas, or an image node of the project.
+/// What a drawing is drawn on: the row's blank canvas, an image node of the project, or one page of a node the daemon's
+/// kernel previews in pages (a PDF).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InkBase {
@@ -105,6 +106,10 @@ pub enum InkBase {
     Figure {
         #[serde(deserialize_with = "within::<_, MAX_SELECTION_NODE>")]
         node_id: String,
+        /// The 1-based page drawn on; none for an image node. Left out when none, so an image's base is as it was, and
+        /// a daemon built before the field reads a page's base as its node alone, which is no image, and refuses it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        page: Option<u32>,
     },
 }
 

@@ -122,7 +122,7 @@ fn a_drawing_rides_selection_set_within_its_bounds() {
     let r = serde_json::from_value::<SelectionSetReq>(drawing_req(figure.clone())).unwrap();
     assert_eq!(r.selection, None);
     let d = r.drawing.clone().unwrap();
-    assert_eq!(d.base, InkBase::Figure { node_id: "plots/fit.png".into() });
+    assert_eq!(d.base, InkBase::Figure { node_id: "plots/fit.png".into(), page: None });
     assert_eq!(d.strokes, vec![vec![[0, 0], [65535, 65535]], vec![[7, 9]]]);
     assert_eq!(serde_json::to_value(&r).unwrap(), drawing_req(figure));
     let canvas = json!({"base": "canvas", "strokes": [[[1, 2]]]});
@@ -158,13 +158,31 @@ fn a_drawing_rides_selection_set_within_its_bounds() {
         workspace_id: "w".repeat(MAX_SELECTION_WORKSPACE),
         selection: None,
         drawing: Some(Drawing {
-            base: InkBase::Figure { node_id: "n".repeat(MAX_SELECTION_NODE) },
+            base: InkBase::Figure { node_id: "n".repeat(MAX_SELECTION_NODE), page: None },
             strokes: vec![vec![[65535, 65535]; per]; n],
         }),
     };
     let bytes = serde_json::to_vec(&widest).unwrap().len();
     assert!(bytes < crate::codec::MAX_ENVELOPE_BYTES / 2, "{bytes}");
     assert!(serde_json::from_slice::<SelectionSetReq>(&serde_json::to_vec(&widest).unwrap()).is_ok());
+}
+
+/// A figure base may name a page. Without one it is written and read as before the field, so an image's base and
+/// its digest do not change and an older window's request decodes; an older daemon ignores the field (an unknown
+/// field is ignored) and reads the node alone.
+#[test]
+fn a_figure_base_may_name_a_page_and_stays_additive() {
+    let paged = json!({"base": {"figure": {"node_id": "docs/paper.pdf", "page": 3}}, "strokes": [[[1, 2]]]});
+    let r = serde_json::from_value::<SelectionSetReq>(drawing_req(paged.clone())).unwrap();
+    assert_eq!(r.drawing.as_ref().unwrap().base, InkBase::Figure { node_id: "docs/paper.pdf".into(), page: Some(3) });
+    assert_eq!(serde_json::to_value(&r).unwrap(), drawing_req(paged));
+    let plain = InkBase::Figure { node_id: "plots/fit.png".into(), page: None };
+    assert_eq!(serde_json::to_value(&plain).unwrap(), json!({"figure": {"node_id": "plots/fit.png"}}));
+    assert_eq!(serde_json::from_value::<InkBase>(json!({"figure": {"node_id": "plots/fit.png"}})).unwrap(), plain);
+    // a page is a whole number that fits `u32`
+    for bad in [json!(-1), json!(1.5), json!("3"), json!(u64::from(u32::MAX) + 1)] {
+        assert!(refused(drawing_req(json!({"base": {"figure": {"node_id": "a.pdf", "page": bad}}, "strokes": [[[1, 2]]]}))), "{bad}");
+    }
 }
 
 #[test]

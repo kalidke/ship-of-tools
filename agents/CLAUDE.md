@@ -388,8 +388,8 @@ of each.
   share made before the walk reaches its row stays. Once the walk is done every file names a selection a live
   connection of this process set. A poisoned lock is taken as it is (each change to the map is one insert or remove).
   A drawing (`SelectionSetReq.drawing`) is the same slot: after the window check, the state root and the row, the handler
-  takes the process-wide compose lock (a `tokio::sync::Mutex`) and, under it, checks `takes_drawing` (Claude on all
-  supported hosts and Codex on Unix; other kinds answer `no_agent`), has files' `compose` write the picture on the blocking pool (off the connection's loop),
+  checks `takes_drawing` (Claude on all
+  supported hosts and Codex on Unix; other kinds answer `no_agent`, and their kernel is asked nothing), has files' `page_png` ask the row's kernel for the page when the base names one (a PDF's page; before the lock, so a wait for one row's kernel, at most its 10 s bound, holds no other row's drawing; a page not drawn is `not_an_image`), takes the process-wide compose lock (a `tokio::sync::Mutex`) and, under it, has files' `compose` write the picture on the blocking pool (off the connection's loop),
   renders it with `render_drawing` and publishes through the same `apply` under the setter lock. The compose lock spans
   the picture's write and the file's publish, so two drawings from two connections go one at a time and, after each
   drawing's publish, the file names the picture on disk and the digest it holds (the digest is `selection_digest` of
@@ -401,7 +401,10 @@ of each.
   its publish, and between a prompt and the model's read, the picture can hold a newer drawing than the digest the
   agent was given (also when a publish and its removal both fail); the next prompt carries the new digest. A drawing
   waits for the compose lock behind every other connection's composite, for any row, and its connection's loop waits
-  with it; a text selection never waits on it.
+  with it; a text selection never waits on it. A drawing on a page is composed over the page the kernel draws when the
+  share arrives (`selection::tests::a_page_drawing_is_composed_over_the_kernels_page`, Unix, a stand-in kernel: the
+  published file names the file and the page, a page the kernel did not draw withdraws it, and a row that takes no
+  drawing asks no kernel); no test runs it with the real PDF plugin, a real window or a real agent.
   Limits: a removal that fails at a connection's end or in the walk has nobody to answer: it is logged once, the
   entry is dropped, and the next walk removes the file; the startup Cleanup runs no walk, so a row it could not end
   keeps an earlier process's file until a later resume; on Windows a publish or removal that meets an open read can fail, which is
@@ -434,9 +437,9 @@ of each.
   from the left with `...`), and a compile-time assertion keeps the context under 9,000. The cut's suffix names the
   range's whole size in Unicode scalar values. A control character, U+2028 or U+2029 in a path is shown as `?`.
   `render_drawing` builds the same two-key object for a drawing: the context names the figure's path (none for the
-  canvas), the picture's path, the drawing's digest as 16 hex digits and asks the agent to read the picture; the message
-  is `Drawing: <path in the project or sketch> (<N> strokes)`; the same caps hold, by a compile-time assertion at two
-  4,096-unit paths. Tests: `a_drawing_renders_as_the_hook_output_within_the_caps`,
+  canvas; for a page, `page <n> of` the file's path), the picture's path, the drawing's digest as 16 hex digits and asks the agent to read the picture; the message
+  is `Drawing: <path in the project or sketch> (<N> strokes)`, with ` page <n>` after the path for a page; the same caps hold, by a compile-time assertion at two
+  4,096-unit paths and a ten-digit page. Tests: `a_drawing_renders_as_the_hook_output_within_the_caps`, `a_page_drawing_names_the_file_and_the_page`,
   `selection_check::tests::only_the_files_own_text_at_the_range_is_shared`,
   `selection_check::tests::a_whole_lines_range_is_the_files_own_lines`,
   `the_rendering_is_the_hook_output_both_agents_accept_within_the_caps`.

@@ -528,6 +528,12 @@ impl Workspace {
     /// spawned lazily by the Kernel itself on first `request` — this
     /// just constructs the handle (no child yet) so per-workspace
     /// kernel state is correctly isolated when ops start routing.
+    /// A test's stand-in kernel for this row, set before the first `kernel()` (the stand-in is a shell script).
+    #[cfg(all(test, unix))]
+    pub(crate) fn set_kernel(&self, kernel: Kernel) {
+        let _ = self.kernel.set(kernel);
+    }
+
     pub fn kernel(&self) -> Kernel {
         self.kernel
             .get_or_init(|| {

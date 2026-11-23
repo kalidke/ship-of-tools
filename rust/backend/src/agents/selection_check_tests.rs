@@ -134,7 +134,7 @@ fn a_drawing_renders_as_the_hook_output_within_the_caps() {
         k.sort();
         k
     };
-    let v = parse(&render_drawing(Some(("/p/fig.png", "fig.png")), "/p/.sot/captures/ink-r1.png", 3, 0xabc));
+    let v = parse(&render_drawing(Some(("/p/fig.png", "fig.png", None)), "/p/.sot/captures/ink-r1.png", 3, 0xabc));
     assert_eq!(keys(&v), ["hookSpecificOutput", "systemMessage"]);
     assert_eq!(keys(&v["hookSpecificOutput"]), ["additionalContext", "hookEventName"]);
     assert_eq!(v["hookSpecificOutput"]["hookEventName"], "UserPromptSubmit");
@@ -156,7 +156,7 @@ fn a_drawing_renders_as_the_hook_output_within_the_caps() {
     );
 
     // control characters in a path never reach the prompt or the status line
-    let v = parse(&render_drawing(Some(("/p/a\nb", "a\u{1b}b")), "/p/c\nd", 2, 1));
+    let v = parse(&render_drawing(Some(("/p/a\nb", "a\u{1b}b", None)), "/p/c\nd", 2, 1));
     assert_eq!(v["systemMessage"], "Drawing: a?b (2 strokes)");
     assert!(v["hookSpecificOutput"]["additionalContext"].as_str().unwrap().contains("/p/a?b in the"));
 
@@ -164,13 +164,32 @@ fn a_drawing_renders_as_the_hook_output_within_the_caps() {
     let long = format!("/{}", "\u{1F600}".repeat(2047));
     let longer = format!("/{}", "d".repeat(100_000));
     for (fig, pic) in [(long.as_str(), long.as_str()), (longer.as_str(), longer.as_str())] {
-        let v = parse(&render_drawing(Some((fig, fig)), pic, 16_384, u64::MAX));
+        let v = parse(&render_drawing(Some((fig, fig, None)), pic, 16_384, u64::MAX));
         let ctx = v["hookSpecificOutput"]["additionalContext"].as_str().unwrap();
         assert!(ctx.encode_utf16().count() <= 9_000, "{}", ctx.encode_utf16().count());
         let msg = v["systemMessage"].as_str().unwrap();
         assert!(msg.encode_utf16().count() <= 200, "{}", msg.encode_utf16().count());
         assert!(msg.starts_with("Drawing: ...") && msg.ends_with(" (16384 strokes)"), "{msg}");
     }
+}
+
+/// A drawing on a page of a paged file names the file and the page, in the context and in the message, within the
+/// same caps at the longest paths and the largest page.
+#[test]
+fn a_page_drawing_names_the_file_and_the_page() {
+    let v = parse(&render_drawing(Some(("/p/docs/paper.pdf", "docs/paper.pdf", Some(3))), "/p/.sot/captures/ink-r1.png", 2, 0xabc));
+    assert_eq!(v["systemMessage"], "Drawing: docs/paper.pdf page 3 (2 strokes)");
+    assert_eq!(
+        v["hookSpecificOutput"]["additionalContext"],
+        "The user drew over page 3 of /p/docs/paper.pdf in the Ship of Tools window. The image with the drawing over it is \
+         /p/.sot/captures/ink-r1.png (drawing 0000000000000abc); read that image to see what the user marked.\n\
+         This may or may not be related to the current task."
+    );
+    let long = format!("/{}", "d".repeat(100_000));
+    let v = parse(&render_drawing(Some((&long, &long, Some(u32::MAX))), &long, 16_384, u64::MAX));
+    assert!(v["hookSpecificOutput"]["additionalContext"].as_str().unwrap().encode_utf16().count() <= 9_000);
+    let msg = v["systemMessage"].as_str().unwrap();
+    assert!(msg.encode_utf16().count() <= 200 && msg.ends_with(" page 4294967295 (16384 strokes)"), "{msg}");
 }
 
 const MARKDOWN_FIXTURE: &str = r"---

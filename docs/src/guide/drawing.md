@@ -1,7 +1,7 @@
 # Drawing and selecting for the agent
 
-A session's agent can be given what you mark in the preview pane: a drawing over an image, a drawing on a blank
-canvas, or text you select. It goes to the selected session, the one the agent pane shows, with your next prompt, so
+A session's agent can be given what you mark in the preview pane: a drawing over an image or a page of a PDF, a
+drawing on a blank canvas, or text you select. It goes to the selected session, the one the agent pane shows, with your next prompt, so
 you can circle a peak in a figure and ask what it is, or select a paragraph and ask for a shorter one. This page calls
 a drawing or a selection *shared* while the agent is given it.
 
@@ -52,6 +52,24 @@ With the preview holding the keys:
 Nothing on screen marks that drawing is on once the box has faded. To check, drag on the image: a red line appears
 only while drawing is on, and `u` removes it.
 
+## Drawing on a page of a PDF
+
+Show a PDF in the preview and draw on the page it shows exactly as on an image: `d`, then drag. The keys and buttons
+of the table above work the same, and `n` and `p` still turn the page.
+
+- **The drawing belongs to its page.** Turn the page and the ink is not shown and no longer shared; turn back and it
+  is shown and shared again. The first stroke on another page replaces it, as described under
+  [One drawing for each session](#One-drawing-for-each-session), and the window says
+  `the drawing on <file> page <n> was replaced`.
+- **Zoom.** Zooming in shows the page sharper a moment later. The ink stays where you drew it on the page, also when
+  that happens in the middle of a stroke.
+- **What the agent gets.** A picture of that page with your ink on it, and the PDF's path and the page number. The
+  picture is drawn anew for the agent, 2000 pixels on its longer side whatever your zoom, so very small print can be
+  hard to read in it; the agent can also open the PDF itself.
+- **Where the session runs.** The computer that runs the session draws the page, with the same program that shows it
+  in the preview. If that computer's Ship of Tools is older than this window's, the window says
+  `drawing not shared: the daemon could not render this page (a daemon older than this window cannot draw on a PDF page; update it)`.
+
 ## The canvas
 
 With the preview holding the keys, `Shift+d` covers the preview with a blank white page, whatever file it showed. The
@@ -63,8 +81,8 @@ drawing is kept but not shared; showing the canvas again shares it again.
 
 ## One drawing for each session
 
-A session has one drawing, on one image or on the canvas. The first stroke anywhere else replaces it, a hidden
-canvas's drawing included, and the window says `the drawing on <name> was replaced`.
+A session has one drawing, on one image, on one page of a PDF or on the canvas. The first stroke anywhere else
+replaces it, a hidden canvas's drawing included, and the window says `the drawing on <name> was replaced`.
 
 Each session keeps its own drawing, and whether drawing is on, while you work in another session. Closing the window
 loses every session's drawing, and no agent is given one after that.
@@ -108,6 +126,7 @@ checking in a live Codex window.
 |---|---|---|
 | A selection | `Selection: <file> lines <a>-<b>` | The text of those lines that you selected (in a markdown preview, the lines listed under [Selecting text](#Selecting-text)), which the service reads from the file itself, labeled as your selection with the file and its line numbers. |
 | A drawing on an image | `Drawing: <file> (<n> strokes)` | The image's path and the path of a picture of the image with your ink on it, with the request to read the picture to see what you marked. |
+| A drawing on a page of a PDF | `Drawing: <file> page <p> (<n> strokes)` | The PDF's path, the page number and the path of a picture of that page with your ink on it, with the same request. |
 | A drawing on the canvas | `Drawing: sketch (<n> strokes)` | The path of a picture of the canvas, with the request to read it. |
 
 Every later prompt carries it again for as long as it is shared.
@@ -118,7 +137,8 @@ Every later prompt carries it again for as long as it is shared.
 - **The picture.** The service writes it under `.sot/captures/` in the project's folder, as one file per session
   named `ink-` and the session's internal id, and writes it again at each change to the drawing. The agent is told the
   path, so you never need the id. The picture is a PNG copy of the image with the ink on it, scaled down to 2000
-  pixels on its longer side when the image is larger. The image file itself is never changed. The picture stays in the
+  pixels on its longer side when the image is larger; for a page of a PDF it is that page drawn at 2000 pixels on
+  its longer side. The image or PDF file itself is never changed. The picture stays in the
   folder after the drawing stops being shared, until the session's next drawing writes over it; add `.sot/captures/`
   to the project's `.gitignore` if git should not see it.
 - **One thing at a time.** The agent is given a selection or a drawing, never both: the newest replaces the other.
@@ -127,8 +147,8 @@ Every later prompt carries it again for as long as it is shared.
 
 ## What stops the sharing
 
-A drawing or a selection is shared while it is on screen in the selected session's preview: the ink on the shown image
-or canvas, the highlight on the selected text. When it leaves the screen the agent is no longer given it, and the
+A drawing or a selection is shared while it is on screen in the selected session's preview: the ink on the shown image,
+page or canvas, the highlight on the selected text. When it leaves the screen the agent is no longer given it, and the
 window shows no message for that. To be sure of what the agent has, look at the preview before you send a prompt.
 
 - **To stop sharing a selection:** click in the preview, or press `Escape` with the preview holding the keys. That
@@ -144,10 +164,10 @@ These remove the highlight of a selection, and so stop sharing it; select again 
 - in a markdown preview, an equation, a figure or a code block's colors appearing, each of which lays the document
   out again. They appear a moment after the file is shown, so select once the document has settled.
 
-These hide a drawing, and so stop sharing it until its image or the canvas is shown again in that session, when it is
-shared again by itself:
+These hide a drawing, and so stop sharing it until its image, its page or the canvas is shown again in that session,
+when it is shared again by itself:
 
-- showing another file, or the canvas over the image;
+- showing another file, another page of the PDF, or the canvas over the image;
 - opening the editor (`e`);
 - switching to another session.
 
@@ -188,14 +208,17 @@ over a picture that is not an image file is under [What is not built](#What-is-n
 | `selection not shared: this host's daemon does not take selections`, `drawing not shared: this daemon cannot take a drawing; update it` | The computer that runs the session has an older Ship of Tools. Update it. |
 | `drawing not shared: the image is over 40 megapixels` | The image is too large to draw on. |
 | `drawing not shared: the daemon cannot read this image` | The service could not read the file as a picture. |
+| `drawing not shared: the daemon could not render this page (a daemon older than this window cannot draw on a PDF page; update it)` | The service did not draw the PDF page under your ink: its Ship of Tools is older than this window's, the file or the page is gone, or the program that draws pages did not answer in time. Draw another stroke to try again; if it stays, update the computer that runs the session. |
 | `selection not shared: <reason>`, `drawing not shared: <reason>` | Any other refusal, with the service's short word for the reason. Select or draw again; if it stays, that word is what to report. |
 
 ## What is not built
 
-- **Drawing over a PDF page, an SVG or a video's poster frame.** `d` works over image files only. Over any other
-  picture it draws nothing, and the box says, for a PDF page:
+- **Drawing over an SVG or a video's poster frame.** `d` works over image files and PDF pages only. Over any other
+  picture it draws nothing, and the box says, for an SVG:
 
-  `Can't draw on this PDF page. Drawing (d) marks up an image file (PNG, JPEG, TIFF and the like) for this row's agent, which sees your marks with your next prompt. To draw anyway, open a PNG of it, or press Shift+d for a blank canvas.`
+  `Can't draw on this SVG. Drawing (d) marks up an image file (PNG, JPEG, TIFF and the like) or a PDF page for this row's agent, which sees your marks with your next prompt. To draw anyway, open a PNG of it, or press Shift+d for a blank canvas.`
 
-  To draw on such a picture, save it as a PNG (plotting code can usually save one beside the PDF or SVG) and draw on
-  that, or draw on the canvas.
+  To draw on such a picture, save it as a PNG (plotting code can usually save one beside the SVG) and draw on that, or
+  draw on the canvas.
+- **A drawing kept for each page of a PDF.** A session has one drawing, so drawing on a second page replaces the
+  first page's.

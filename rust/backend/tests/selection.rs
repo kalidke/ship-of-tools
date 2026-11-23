@@ -155,7 +155,7 @@ async fn a_window_drawing_reaches_the_rows_prompt_hook_and_its_end_withdraws_it(
     let (mut window, window_id) = connect_as_window(&env).await;
 
     // a drawing over the figure is shared, and the hook names a picture that decodes
-    let drawing = Drawing { base: InkBase::Figure { node_id: "files:fig.png".to_string() }, strokes: vec![vec![[20_000, 20_000], [40_000, 40_000]]] };
+    let drawing = Drawing { base: InkBase::Figure { node_id: "files:fig.png".to_string(), page: None }, strokes: vec![vec![[20_000, 20_000], [40_000, 40_000]]] };
     let req = SelectionSetReq { workspace_id: ws.clone(), selection: None, drawing: Some(drawing) };
     let reply = call(&mut window, window_id, op::SELECTION_SET, serde_json::to_value(req).unwrap()).await.payload;
     assert_eq!(reply["state"], "shared", "{reply}");
@@ -282,7 +282,7 @@ async fn codex_selection_follows_the_launcher_across_resets() {
         workspace_id: ws.clone(),
         selection: None,
         drawing: Some(Drawing {
-            base: InkBase::Figure { node_id: "files:fig.png".into() },
+            base: InkBase::Figure { node_id: "files:fig.png".into(), page: None },
             strokes: vec![vec![[20_000, 20_000], [40_000, 40_000]]],
         }),
     };

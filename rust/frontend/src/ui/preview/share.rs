@@ -120,7 +120,9 @@ impl SelectionShare {
                 self.up.remove(host);
                 None
             }
-            reply if req.drawing.is_some() => drawing_line(reply),
+            reply if req.drawing.is_some() => {
+                drawing_line(reply, req.drawing.as_ref().is_some_and(|d| matches!(d.base, InkBase::Figure { page: Some(_), .. })))
+            }
             SelectionReply::Done(SelectionState::Shared) => share.then(|| "selection shared: the agent sees it at its next prompt".into()),
             SelectionReply::Done(SelectionState::Held) => {
                 share.then(|| "selection held: this row's agent started before it could take one; restart the row to share".into())
@@ -136,8 +138,9 @@ impl SelectionShare {
     }
 }
 
-/// The status line a reply to a shared drawing earns.
-fn drawing_line(reply: SelectionReply) -> Option<String> {
+/// The status line a reply to a shared drawing earns; `page` is whether it was drawn on a page. A daemon built before
+/// pages reads a page's base as its file, which is no image, so `not_an_image` there is also that daemon's answer.
+fn drawing_line(reply: SelectionReply, page: bool) -> Option<String> {
     Some(match reply {
         SelectionReply::Done(SelectionState::Shared) => "drawing shared: the agent sees it at its next prompt".into(),
         SelectionReply::Done(SelectionState::Held) => "drawing held: this row's agent started before it could take one; restart the row to share".into(),
@@ -145,6 +148,9 @@ fn drawing_line(reply: SelectionReply) -> Option<String> {
         SelectionReply::Unsupported => "drawing not shared: this daemon cannot take a drawing; update it".into(),
         SelectionReply::Refused { code, error } => match code.as_deref() {
             Some(selection_code::TOO_LARGE) => "drawing not shared: the image is over 40 megapixels".into(),
+            Some(selection_code::NOT_AN_IMAGE) if page => {
+                "drawing not shared: the daemon could not render this page (a daemon older than this window cannot draw on a PDF page; update it)".into()
+            }
             Some(selection_code::NOT_AN_IMAGE) => "drawing not shared: the daemon cannot read this image".into(),
             Some(selection_code::NO_AGENT) => "drawing not shared: this row's agent takes none".into(),
             _ => format!("drawing not shared: {}", code.as_deref().unwrap_or(&error)),

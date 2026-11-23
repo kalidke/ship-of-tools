@@ -6,7 +6,7 @@ use sot_protocol::ops::InkBase;
 
 /// `(png, edit, md, canvas)` of what the pane decides: the canvas comes from the one decider, `shown_base`.
 fn pane(ink: &InkLayer, raster_node: Option<&str>, edit: bool, refused: bool) -> (bool, bool, bool, bool) {
-    let canvas = ink.shown_base(raster_node, edit, refused) == Some(InkBase::Canvas);
+    let canvas = ink.shown_base(raster_node, None, edit, refused) == Some(InkBase::Canvas);
     let s = shows(refused, raster_node.is_some(), edit, canvas);
     (s.png, s.edit, s.md, s.canvas)
 }
@@ -41,7 +41,7 @@ fn the_canvas_takes_the_pane_and_leaves_the_preview_untouched() {
 fn the_canvas_has_its_own_source_size() {
     assert_eq!(source_dims(Some(&InkBase::Canvas), None), Some(CANVAS_DIMS));
     assert_eq!(source_dims(Some(&InkBase::Canvas), Some((5, 6))), Some(CANVAS_DIMS));
-    assert_eq!(source_dims(Some(&InkBase::Figure { node_id: "f".into() }), Some((5, 6))), Some((5, 6)));
+    assert_eq!(source_dims(Some(&InkBase::Figure { node_id: "f".into(), page: None }), Some((5, 6))), Some((5, 6)));
     assert_eq!(source_dims(None, None), None);
 }
 

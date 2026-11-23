@@ -194,7 +194,7 @@ fn wanted_needs_every_piece() {
 }
 
 fn ink_want(row: &str, node: &str, revision: u64) -> Option<Want> {
-    let base = InkBase::Figure { node_id: node.to_string() };
+    let base = InkBase::Figure { node_id: node.to_string(), page: None };
     Some(Want { host: host(), workspace_id: row.to_string(), share: Share::Ink { base, revision } })
 }
 
@@ -220,7 +220,7 @@ fn the_window_shares_its_drawing_and_withdraws_it() {
     // 1: a drawing sends with its strokes and no selection; the same revision sends nothing.
     let first = req(go_ink(&mut s, ink_want("r1", "files:a.png", 1), 2));
     assert!(first.selection.is_none() && first.drawing.as_ref().unwrap().strokes.len() == 2);
-    assert_eq!(first.drawing.as_ref().unwrap().base, InkBase::Figure { node_id: "files:a.png".into() });
+    assert_eq!(first.drawing.as_ref().unwrap().base, InkBase::Figure { node_id: "files:a.png".into(), page: None });
     assert!(go_ink(&mut s, ink_want("r1", "files:a.png", 1), 2).is_none(), "one request in flight");
     assert_eq!(s.on_reply(&host(), &first, done()).as_deref(), Some("drawing shared: the agent sees it at its next prompt"));
     assert!(go_ink(&mut s, ink_want("r1", "files:a.png", 1), 2).is_none());
@@ -258,6 +258,19 @@ fn the_window_shares_its_drawing_and_withdraws_it() {
     assert_eq!(line(refused("not_an_image")).as_deref(), Some("drawing not shared: the daemon cannot read this image"));
     assert_eq!(line(refused("no_agent")).as_deref(), Some("drawing not shared: this row's agent takes none"));
     assert_eq!(line(refused("boom")).as_deref(), Some("drawing not shared: boom"));
+    // a page's base travels with its page, and its `not_an_image` (also an older daemon's answer) has its own words
+    let page_line = |r: SelectionReply| {
+        let (mut s, base) = (up(), InkBase::Figure { node_id: "files:doc.pdf".into(), page: Some(3) });
+        let q = req(go_ink(&mut s, Some(Want { host: host(), workspace_id: "r1".into(), share: Share::Ink { base: base.clone(), revision: 1 } }), 1));
+        assert_eq!(q.drawing.as_ref().unwrap().base, base);
+        s.on_reply(&host(), &q, r)
+    };
+    assert_eq!(
+        page_line(refused("not_an_image")).as_deref(),
+        Some("drawing not shared: the daemon could not render this page (a daemon older than this window cannot draw on a PDF page; update it)")
+    );
+    assert_eq!(page_line(refused("too_large")).as_deref(), Some("drawing not shared: the image is over 40 megapixels"));
+    assert_eq!(page_line(done()).as_deref(), Some("drawing shared: the agent sees it at its next prompt"));
     assert_eq!(line(SelectionReply::Unsupported).as_deref(), Some("drawing not shared: this daemon cannot take a drawing; update it"));
     s.on_reply(&host(), &last, refused("no_agent"));
     assert!(go_ink(&mut s, ink_want("r2", "files:b.png", 5), 1).is_none());
@@ -296,7 +309,7 @@ fn the_drawing_is_wanted_from_the_owner_and_held_during_a_drag() {
     use crate::ui::preview::image::ink::InkLayer;
     use crate::ui::ScreenRect;
     const R: ScreenRect = ScreenRect { x: 100.0, y: 50.0, w: 400.0, h: 200.0 };
-    let (fig, canvas) = (InkBase::Figure { node_id: "files:a.png".into() }, InkBase::Canvas);
+    let (fig, canvas) = (InkBase::Figure { node_id: "files:a.png".into(), page: None }, InkBase::Canvas);
     let mut ink = InkLayer::default();
     ink.set_on(true);
     ink.set_frame(R, R);

@@ -323,7 +323,7 @@ impl State {
                 Ok((q, src_w, src_h)) => {
                     // Pre-downsample size for the ADR-0034 scalebar (see field
                     // docs). Same as the texture's unless the GPU-fit shrank it.
-                    self.raster.install(q, (src_w, src_h), self.preview_source.node_id());
+                    self.raster.install(q, (src_w, src_h), self.preview_source.node_id(), self.pages.page().map(|(page, _)| page));
                     if self.pages.take_keep_view() {
                         // Zoom re-raster of the same page (ADR 0021): the new
                         // bitmap is the same page at higher resolution. Fit-to-
@@ -475,7 +475,7 @@ impl State {
                 let (device, queue, pipeline) = (self.gpu.device(), self.gpu.queue(), self.brushes.pipeline());
                 match Quad::from_rgba8(device, queue, pipeline, &picture.rgba, picture.w, picture.h) {
                     Ok(quad) => {
-                        self.raster.install(quad, (picture.w, picture.h), self.preview_source.node_id());
+                        self.raster.install(quad, (picture.w, picture.h), self.preview_source.node_id(), None);
                         self.raster.reset_view(None);
                         self.window.request_redraw();
                         return true;

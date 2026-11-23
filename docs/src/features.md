@@ -138,9 +138,10 @@ workspace. See [Setting up Slack](guide/chat-setup.md) and
 
 ### A drawing on an image or a blank canvas
 
-With the preview focused (`Ctrl+Right`), `d` turns drawing on over an image:
-the left mouse button draws and the right one erases. The session's agent is
-given the image with the drawing on it at its next prompt. `Shift+d` shows a
+With the preview focused (`Ctrl+Right`), `d` turns drawing on over an image or
+a page of a PDF: the left mouse button draws and the right one erases. The
+session's agent is given the image or the page with the drawing on it at its
+next prompt. `Shift+d` shows a
 blank canvas to draw on, which the agent is given the same way. Drawings reach
 Claude Code sessions and, on Unix, Codex sessions. See [Drawing and selecting for the agent](guide/drawing.md).
 

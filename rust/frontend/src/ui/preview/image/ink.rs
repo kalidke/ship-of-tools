@@ -89,10 +89,13 @@ fn segs_dist(a: (f32, f32), b: (f32, f32), c: (f32, f32), d: (f32, f32)) -> f32 
     seg_dist(a, c, d).min(seg_dist(b, c, d)).min(seg_dist(c, a, b)).min(seg_dist(d, a, b))
 }
 
-fn name(base: &InkBase) -> &str {
+fn name(base: &InkBase) -> String {
     match base {
-        InkBase::Canvas => "the canvas",
-        InkBase::Figure { node_id } => node_id.rsplit(['/', ':']).next().unwrap_or(node_id),
+        InkBase::Canvas => "the canvas".to_string(),
+        InkBase::Figure { node_id, page } => {
+            let file = node_id.rsplit(['/', ':']).next().unwrap_or(node_id);
+            page.map_or_else(|| file.to_string(), |n| format!("{file} page {n}"))
+        }
     }
 }
 
@@ -202,14 +205,16 @@ impl InkLayer {
     }
 
     /// The base on show: none in edit mode or under the refused-hello overlay; else the canvas when it is shown; else the
-    /// figure the shown raster came from (`raster_node`), none when it is not an image node (a PDF page, an SVG
-    /// or a plugin preview is no base: the daemon cannot compose an SVG into the agent's picture).
-    pub(in crate::ui) fn shown_base(&self, raster_node: Option<&str>, editing: bool, refused: bool) -> Option<InkBase> {
+    /// figure the shown raster came from (`raster_node`): an image node, or the page of a paged preview the raster is
+    /// (`page`, a PDF's). None for any other picture (an SVG, a video's poster or a plugin preview with no page is no
+    /// base: the daemon cannot compose an SVG into the agent's picture).
+    pub(in crate::ui) fn shown_base(&self, raster_node: Option<&str>, page: Option<u32>, editing: bool, refused: bool) -> Option<InkBase> {
         if self.drawing.canvas && !editing && !refused {
             return Some(InkBase::Canvas);
         }
-        let node_id = raster_node.filter(|n| !editing && !refused && crate::ui::State::is_image_node_id(n))?;
-        Some(InkBase::Figure { node_id: node_id.to_string() })
+        let node_id = raster_node.filter(|_| !editing && !refused)?;
+        let page = page.filter(|_| !crate::ui::State::is_image_node_id(node_id));
+        (page.is_some() || crate::ui::State::is_image_node_id(node_id)).then(|| InkBase::Figure { node_id: node_id.to_string(), page })
     }
 
     pub(in crate::ui) fn overlay(&self) -> Option<&Quad> {

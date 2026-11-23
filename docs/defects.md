@@ -898,8 +898,11 @@ owned by `docs/CLAUDE.md`.
 - **DRAW-ON-PDF-PAGES** [feature] The person's drawing, shared with the agent, on a PDF page as on a picture. The
   maintainer, 2026-11-11, after using the drawing on a picture, a blank canvas and a markdown file, wanted it on PDFs
   as well, but not if it delays 0.7.1 significantly. He asked for it for 0.7.3 (2026-11-19, to draw on a PDF in the
-  preview pane), which is the go-ahead. A PDF page is not a drawing base today: the window would
-  take a shown page as one, keyed by its page, and the daemon would draw the ink over the page it renders.
+  preview pane), which is the go-ahead. Built 2026-11-23, with one drawing per session as for pictures: the window
+  takes a shown page as a base, keyed by its file and page, and the daemon has the row's kernel draw that page and
+  puts the ink over it (fe-ui's, files' and agents' contracts). Open until a person has drawn on a page through a
+  window: only unit tests with a stand-in kernel prove it, on Linux; macOS and Windows are unmeasured. Not built: a
+  drawing kept for each page of a file (a stroke on another page replaces the session's drawing).
 - **SELECT-MARKDOWN-PINS** [note] Rules of the rendered markdown selection that no test pins, found by its review by
   mutants that pass the whole suite: that the lines between a selection's two ends count (a drag from the blank line
   above a paragraph to the one below shares the paragraph), the preview pane's `maps_source` true in
@@ -1012,7 +1015,7 @@ owned by `docs/CLAUDE.md`.
   folders of one row, that name the same relative image share one picture. Known by reading only.
 - **SVG-DRAW** [feature] Drawing over an SVG file would need the daemon to render the SVG in a bounded child (as the
   window's drawing child does) before it composes the picture for the agent; not built, so the drawing key over an
-  picture the window shows (an SVG, a PDF page, a video poster) says it cannot be drawn on yet (`SVG-DRAW-SILENT`).
+  picture the window shows (an SVG, a video poster) says it cannot be drawn on yet (`SVG-DRAW-SILENT`).
   Over an SVG's text (before its picture is drawn, or after a refusal) `d` says nothing, since the `Image` scope needs
   a shown picture; a narrower route of about 10 lines exists (a `Context` flag and a scope for `PreviewDraw` alone),
   left because the state is transient or the refusal's own status line already says why. Drawing on a PDF page is

@@ -27,9 +27,11 @@ const FIGURE_WORDS: [&str; 4] = [
     " (drawing ",
     "); read that image to see what the user marked.",
 ];
+/// What stands in place of `FIGURE_WORDS[0]` for a page: these around its number (at most 10 digits).
+const PAGE_WORDS: [&str; 2] = ["The user drew over page ", " of "];
 const SKETCH_WORDS: [&str; 3] = ["The user drew a sketch in the Ship of Tools window. The sketch is the image ", " (drawing ", "); read that image to see it."];
 const _: () = assert!(
-    FIGURE_WORDS[0].len() + FIGURE_WORDS[1].len() + FIGURE_WORDS[2].len() + FIGURE_WORDS[3].len() + 2 * PATH_CAP + 16 + TAIL.len() <= CONTEXT_CAP
+    FIGURE_WORDS[0].len() + PAGE_WORDS[0].len() + PAGE_WORDS[1].len() + 10 + FIGURE_WORDS[1].len() + FIGURE_WORDS[2].len() + FIGURE_WORDS[3].len() + 2 * PATH_CAP + 16 + TAIL.len() <= CONTEXT_CAP
 );
 const _: () = assert!(SKETCH_WORDS[0].len() + SKETCH_WORDS[1].len() + SKETCH_WORDS[2].len() + PATH_CAP + 16 + TAIL.len() <= CONTEXT_CAP);
 
@@ -175,14 +177,15 @@ pub(crate) fn render_selection(f: &FileText, path: &str, rel: &str) -> String {
     .to_string()
 }
 
-/// The hook's output for a drawing, in `render_selection`'s shape and caps. `figure` is the base image's absolute path and
-/// its path in the project, or `None` for the canvas; `picture` is the picture's absolute path; `digest` names the
+/// The hook's output for a drawing, in `render_selection`'s shape and caps. `figure` is the base image's absolute path,
+/// its path in the project and, for a paged file, the page drawn on, or `None` for the canvas; `picture` is the picture's absolute path; `digest` names the
 /// drawing, so a changed drawing reads as a new picture.
-pub(crate) fn render_drawing(figure: Option<(&str, &str)>, picture: &str, strokes: usize, digest: u64) -> String {
+pub(crate) fn render_drawing(figure: Option<(&str, &str, Option<u32>)>, picture: &str, strokes: usize, digest: u64) -> String {
     let pic = left_cut(&plain(picture), PATH_CAP);
     let context = match figure {
-        Some((abs, _)) => {
+        Some((abs, _, page)) => {
             let [a, b, c, d] = FIGURE_WORDS;
+            let a = page.map_or_else(|| a.to_string(), |n| format!("{}{n}{}", PAGE_WORDS[0], PAGE_WORDS[1]));
             format!("{a}{}{b}{pic}{c}{digest:016x}{d}{TAIL}", left_cut(&plain(abs), PATH_CAP))
         }
         None => {
@@ -190,8 +193,9 @@ pub(crate) fn render_drawing(figure: Option<(&str, &str)>, picture: &str, stroke
             format!("{a}{pic}{b}{digest:016x}{c}{TAIL}")
         }
     };
-    let (pre, post) = ("Drawing: ", format!(" ({strokes} {})", if strokes == 1 { "stroke" } else { "strokes" }));
-    let name = figure.map_or_else(|| "sketch".to_string(), |(_, rel)| plain(rel));
+    let page = figure.and_then(|f| f.2).map_or_else(String::new, |n| format!(" page {n}"));
+    let (pre, post) = ("Drawing: ", format!("{page} ({strokes} {})", if strokes == 1 { "stroke" } else { "strokes" }));
+    let name = figure.map_or_else(|| "sketch".to_string(), |(_, rel, _)| plain(rel));
     let message = format!("{pre}{}{post}", left_cut(&name, MESSAGE_CAP.saturating_sub(units(pre) + units(&post))));
     serde_json::json!({
         "hookSpecificOutput": { "hookEventName": "UserPromptSubmit", "additionalContext": context },

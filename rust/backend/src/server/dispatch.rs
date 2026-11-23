@@ -61,7 +61,8 @@ pub(super) const INLINE: &[(&str, &str)] = &[
     (op::CHAT_UNWATCH, "a `chat.changed` sent after its reply would be one the window already unwatched"),
     (op::SELECTION_SET, "a later selection replaces an earlier one, so they apply in the order sent; it reads up to 2 MiB of the \
      project file or, for a drawing, decodes one image of at most 40 megapixels on the blocking pool while the loop waits \
-     (about half a second at that bound, measured), one drawing at a time in the daemon; run on the connection's own \
+     (about half a second at that bound, measured), one drawing at a time in the daemon, a drawing on a page first \
+     waiting on the row's kernel to draw the page, within the kernel's 10 s bound; run on the connection's own \
      loop it records its setter before the connection's end, so no job records an entry after `agents::selection::forget`"),
 ];
 

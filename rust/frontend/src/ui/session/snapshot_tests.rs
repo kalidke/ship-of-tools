@@ -78,7 +78,7 @@ fn drawn(layer: &mut InkLayer, base: &InkBase, x: f32) {
 fn a_rows_drawing_comes_back_with_its_view() {
     // Two rows show the same relative path and each draws: each comes back with its own strokes and mode, and a row
     // destroyed while parked leaves nothing for a same-slug successor.
-    let base = InkBase::Figure { node_id: "files:plots/fit.png".into() };
+    let base = InkBase::Figure { node_id: "files:plots/fit.png".into(), page: None };
     let (a, b): (WsKey, WsKey) = (("h".into(), "a".into()), ("h".into(), "b".into()));
     let mut parked = ParkedViews::default();
     let mut layer = InkLayer::default();

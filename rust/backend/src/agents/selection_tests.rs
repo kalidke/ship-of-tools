@@ -476,7 +476,7 @@ async fn a_drawing_is_the_rows_selection_until_it_is_withdrawn() {
 async fn check_drawing_lifetime(kind: &str) {
     let (state, project, workspaces, folder) = drawing_row(kind, "ws-dr-1");
     let file = folder.join(FILE_NAME);
-    let figure = || InkBase::Figure { node_id: "files:fig.png".to_string() };
+    let figure = || InkBase::Figure { node_id: "files:fig.png".to_string(), page: None };
     let draw = |serial: u64, id: &str, d: Drawing| {
         let (workspaces, root) = (workspaces.clone(), state.path().to_path_buf());
         let id = id.to_string();
@@ -505,11 +505,11 @@ async fn check_drawing_lifetime(kind: &str) {
     // 3. a refusal and a failed composite leave no file
     assert!(draw(9_003_001, "ws-dr-1", d.clone()).await.is_ok());
     std::fs::write(project.path().join("junk.png"), b"not a png").unwrap();
-    let junk = drawing(InkBase::Figure { node_id: "files:junk.png".into() }, 30_000);
+    let junk = drawing(InkBase::Figure { node_id: "files:junk.png".into(), page: None }, 30_000);
     assert_eq!(draw(9_003_001, "ws-dr-1", junk).await, Err(selection_code::NOT_AN_IMAGE), "row 3: not an image");
     assert!(!file.exists(), "row 3: the refusal removes the file");
     assert!(draw(9_003_001, "ws-dr-1", d.clone()).await.is_ok());
-    let gone = drawing(InkBase::Figure { node_id: "files:nope.png".into() }, 30_000);
+    let gone = drawing(InkBase::Figure { node_id: "files:nope.png".into(), page: None }, 30_000);
     assert_eq!(draw(9_003_001, "ws-dr-1", gone).await, Err(selection_code::NOT_AN_IMAGE), "row 3: a missing figure");
     assert!(!file.exists(), "row 3: a failed composite removes the file");
     assert!(picture.exists(), "row 3: the old picture stays, named by nothing");
@@ -540,6 +540,47 @@ async fn check_drawing_lifetime(kind: &str) {
     assert!(clear_unowned(state.path(), "ws-dr-1") && !file.exists(), "row 4: the walk removes an unowned file");
 }
 
+/// A drawing on a page of a paged file is composed over the page the row's kernel draws and published naming the
+/// file and the page; a page the kernel did not draw is refused and withdraws the row's file; and a row whose agent
+/// takes no drawing asks its kernel nothing.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_page_drawing_is_composed_over_the_kernels_page() {
+    use crate::files::preview::ink_tests::{drawn_page, row_with_kernel};
+    let (state, project, dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    std::fs::write(project.path().join("doc.pdf"), b"%PDF-1.4").unwrap();
+    let workspaces = Workspaces::new();
+    workspaces.insert(row_with_kernel(dir.path(), project.path(), "ws-pg-1", "claude", drawn_page(2)));
+    let folder = state_dir_for(state.path(), "ws-pg-1");
+    std::fs::create_dir_all(&folder).unwrap();
+    let file = folder.join(FILE_NAME);
+    let page = |page: u32| drawing(InkBase::Figure { node_id: "files:doc.pdf".into(), page: Some(page) }, 30_000);
+
+    let d = page(2);
+    assert_eq!(set_drawing(Some(state.path()), &workspaces, true, 9_005_001, "ws-pg-1", &d).await, Ok(SelectionState::Held));
+    let doc: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    assert_eq!(doc["systemMessage"], "Drawing: doc.pdf page 2 (1 stroke)");
+    let context = doc["hookSpecificOutput"]["additionalContext"].as_str().unwrap();
+    assert!(context.starts_with("The user drew over page 2 of ") && context.contains("doc.pdf in the Ship of Tools window"), "{context}");
+    assert_eq!(named_by(&file).1, digest_of(&d), "the digest is the page drawing's");
+    // the picture is the kernel's page (30 by 40, one color) with the ink on it
+    let picture = image::open(project.path().join(".sot/captures/ink-ws-pg-1.png")).unwrap().to_rgb8();
+    assert_eq!(picture.dimensions(), (30, 40));
+    assert_eq!(picture.get_pixel(2, 2).0, [20, 40, 220]);
+    assert_eq!(picture.get_pixel(13, 18).0, sot_protocol::ink::INK_RGB);
+
+    // the kernel says it drew page 2, so a drawing on page 7 is refused and the file goes
+    assert_eq!(set_drawing(Some(state.path()), &workspaces, true, 9_005_001, "ws-pg-1", &page(7)).await, Err(selection_code::NOT_AN_IMAGE));
+    assert!(!file.exists(), "the refusal removes the file");
+    forget(9_005_001);
+
+    // an agent that takes no drawing is refused before its kernel is asked anything
+    let quiet = tempfile::tempdir().unwrap();
+    workspaces.insert(row_with_kernel(quiet.path(), project.path(), "ws-pg-2", "none", drawn_page(2)));
+    assert_eq!(set_drawing(Some(state.path()), &workspaces, true, 9_005_002, "ws-pg-2", &page(2)).await, Err(selection_code::NO_AGENT));
+    assert!(!quiet.path().join("asked").exists(), "no kernel request for a row that takes no drawing");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn two_drawings_at_once_leave_the_file_naming_the_picture_it_holds() {
     use sot_platform::test_hold::Holds;
@@ -565,7 +606,7 @@ async fn two_drawings_at_once_leave_the_file_naming_the_picture_it_holds() {
     // The second drawing's picture is the one on disk, and the file names it.
     let apart = tempfile::tempdir().unwrap();
     let files = crate::files::tree::FilesMode::new(apart.path().to_path_buf()).unwrap();
-    let alone = crate::files::preview::ink::compose(&files, "alone", &b).unwrap();
+    let alone = crate::files::preview::ink::compose(&files, "alone", &b, None).unwrap();
     assert_eq!(std::fs::read(&picture).unwrap(), std::fs::read(alone).unwrap(), "the picture holds the second drawing");
     assert_eq!(named_by(&file).1, digest_of(&b), "the file names the picture it holds");
     forget(9_004_001);

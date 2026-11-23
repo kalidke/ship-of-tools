@@ -34,10 +34,20 @@ Per workspace row (built in `rows/workspace.rs`):
   `ink_tests::a_captures_folder_that_is_a_link_takes_no_write` and `a_crop_folder_that_is_a_link_takes_no_write`; a
   name the write refuses answers as a node id (`a_name_the_write_refuses_answers_as_a_node_id`).
 - A drawing's picture (`preview/ink.rs` `compose`, on the blocking pool) is the figure scaled to `raster_dims` with the
-  ink over it, or a white canvas with the ink, written whole (`FilesMode::write`) to `.sot/captures/ink-<row id>.png`. A
+  ink over it, or a page of a paged file with the ink over it, or a white canvas with the ink, written whole (`FilesMode::write`) to `.sot/captures/ink-<row id>.png`. A
   source over 40 megapixels is `too_large` by the header of the one decoder that then decodes, before it allocates; bytes that do not decode are
   `not_an_image`. A figure is a node `mime_for_path` calls `image/*` (png, jpg, jpeg, gif, webp, bmp; an svg passes the
-  name and fails the decode); TIFF is not one, so a `.tif` is `not_an_image`. Test: `ink_tests::the_picture_is_the_base_with_its_ink`. The figure's and the crop's source are opened through
+  name and fails the decode); TIFF is not one, so a `.tif` is `not_an_image`. Test: `ink_tests::the_picture_is_the_base_with_its_ink`. A page is never read from the file here: `page_png` asks the row's kernel for it as `preview.get` does
+  (`try_plugin_preview`, with the page and a fit of `INK_RASTER_MAX` each way, so the plugin draws the page's long side at
+  the wire's raster; within the kernel's 10 s request bound), and `compose` decodes those bytes under the figure's limits.
+  It is `not_an_image` when no plugin pages the node, the plugin answers a note or no page number, the kernel does not
+  answer, or the page drawn is not the page asked (the PDF plugin clamps a page past the file's end and says which it
+  drew, so ink is never put over another page); a page's base handed to `compose` with no page bytes is refused as its
+  node is. Tests: `ink_tests::a_page_is_drawn_by_the_kernel_and_a_page_it_did_not_draw_is_refused` (Unix, a stand-in
+  kernel), `a_pages_picture_is_the_page_with_its_ink`. Limits: the page is drawn at its own size for the picture (2000 px on
+  its long side, about 0.2 s for a text page, then kept in the plugin's page cache), not at the window's zoom, and the two
+  sizes round the short side apart by under a pixel; the file is read at each share, so a PDF rewritten since the
+  window drew it is shared as it is now. The figure's and the crop's source are opened through
   platform's `open_regular` (guarantee 15: no blocking, regular files only), so a FIFO named like an image answers at once
   (Unix; `ink_tests::a_fifo_named_like_an_image_answers_at_once`); the crop picks its decoder from the file's bytes, not its name (a file of
   an unsupported format answers `decode_failed`), and is a PNG of the clamped rect

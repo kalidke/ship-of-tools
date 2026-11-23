@@ -1634,7 +1634,7 @@ impl State {
             default.agent = "none".into();
             std::iter::once(default).chain(rows.iter().map(|(s, id)| probe_row(s, id, false))).collect::<Vec<_>>()
         };
-        let base = sot_protocol::ops::InkBase::Figure { node_id: "files:plots/fit.png".into() };
+        let base = sot_protocol::ops::InkBase::Figure { node_id: "files:plots/fit.png".into(), page: None };
         let r = crate::ui::render::quad::ScreenRect { x: 0.0, y: 0.0, w: 400.0, h: 200.0 };
         let draw = |state: &mut Self, x: f32| {
             state.ink.press(Some(&base), (x, 100.0), &r, &r, (400, 200));

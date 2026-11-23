@@ -332,7 +332,7 @@ under a title that says they are being read again, with typing taken at once and
 hub has confirmed the session's channel (`docs/defects.md`, CHAT-SWITCH-RELOAD-TAKES-A-SECOND, Closed). Of the four things the maintainer asked of 0.7.3,
 two are built and in the candidate: a drawer's own key cycles it open,
 full height and closed, with the status line on a full-height drawer's border, and Up and Down in edit mode move by
-the row on screen under a cursor drawn over the text; drawing on a PDF page and selecting its text are not started
+the row on screen under a cursor drawn over the text; drawing on a PDF page and selecting its text are not in it
 and wait for 0.7.4, on his word (`docs/defects.md`, fe-ui). Also in the candidate: a name after `@` in a chat post is a Slack mention, resolved by the daemon
 among the workspace's members and told back to the poster by name (the maintainer reported that an `@person` mention in Slack did not work; he posted one from the candidate and reported that it works, and that the name's exact spelling has to be remembered: nothing offers names as one is typed, `docs/defects.md`, chat); a skill that tells a session how to
 post to its project's channel; the REPL drawer in Julia's own colors, its long lines wrapped at the pane's width, and the escape sequences in text a
@@ -453,7 +453,10 @@ pane over the preview without touching it; the daemon's hello says it takes a dr
 sends one only on a connection whose hello did; and the window shares the drawing with the row's agent and withdraws it,
 each reply on the status line, which builds the drawing for Claude rows; a person has used it through a window (on a
 picture, a blank canvas and a markdown file, 2026-11-11, on a release candidate); a Codex row on Unix takes a drawing
-since 2026-11-22, used by no person yet, and PDF pages are unbuilt. Also in
+since 2026-11-22, used by no person yet; and a drawing on a PDF page is on `main` since 2026-11-23, used by no person
+yet: the window takes the shown page as the base, the daemon has the row's kernel draw that page and puts the ink
+over it, and the agent is told the file and the page (one drawing per session, so a stroke on another page replaces
+it; `docs/defects.md`, DRAW-ON-PDF-PAGES, open). Also in
 progress: the daemon test run toward the maintainer's four minutes, and one shared test tool.
 The gate runs bash 3.2 per changed suite and its longest jobs first (a whole run about 4 minutes at 20 jobs), and
 platform's hold tool (its guarantee 16) works in one process and across processes; the chat watch's, the wake's and the

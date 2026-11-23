@@ -13,6 +13,8 @@ pub(in crate::ui) struct RasterView {
     quad: Option<Quad>,
     /// The node the shown raster came from, set when it installs, and read only while a raster is shown.
     node: Option<String>,
+    /// The page of that node the shown raster is, for a paged preview (a PDF's); set and read as `node` is.
+    page: Option<u32>,
     /// Zoom multiplier for the PNG preview pane — 1.0 fits the image to
     /// the pane (current letterbox behaviour); >1.0 samples a 1/zoom-wide
     /// sub-rect of the texture so detail becomes legible.
@@ -92,6 +94,7 @@ impl RasterView {
         Self {
             quad,
             node: None,
+            page: None,
             zoom: 1.0,
             pan_px: (0.0, 0.0),
             dims: None,
@@ -106,15 +109,17 @@ impl RasterView {
     pub(in crate::ui) fn is_shown(&self) -> bool { self.quad.is_some() }
     pub(in crate::ui) fn quad_size(&self) -> Option<(u32, u32)> { self.quad.as_ref().map(|q| q.size_px) }
     pub(in crate::ui) fn node(&self) -> Option<&str> { self.quad.as_ref().and(self.node.as_deref()) }
+    pub(in crate::ui) fn page(&self) -> Option<u32> { self.quad.as_ref().and(self.page) }
     pub(in crate::ui) fn zoom(&self) -> f32 { self.zoom }
     pub(in crate::ui) fn roi(&self) -> Option<&PreviewRoi> { self.roi.as_ref() }
 
     /// The raster's dimensions as served (before any GPU-fit downsample), else as loaded.
     pub(in crate::ui) fn served_dims(&self) -> Option<(u32, u32)> { self.src_dims.or(self.dims) }
 
-    /// A decoded raster replaces the shown one, with its texture, served dimensions and node.
-    pub(in crate::ui) fn install(&mut self, quad: Quad, src_dims: (u32, u32), node: Option<&str>) {
+    /// A decoded raster replaces the shown one, with its texture, served dimensions, node and page.
+    pub(in crate::ui) fn install(&mut self, quad: Quad, src_dims: (u32, u32), node: Option<&str>, page: Option<u32>) {
         self.node = node.map(str::to_owned);
+        self.page = page;
         self.dims = Some(quad.size_px);
         self.quad = Some(quad);
         self.src_dims = Some(src_dims);

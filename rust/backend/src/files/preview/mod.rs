@@ -652,4 +652,4 @@ mod preview_downsample_tests;
 
 #[cfg(test)]
 #[path = "ink_tests.rs"]
-mod ink_tests;
+pub(crate) mod ink_tests;

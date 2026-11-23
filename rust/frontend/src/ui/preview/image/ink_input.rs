@@ -10,7 +10,7 @@ use std::ops::ControlFlow::{self, Break, Continue};
 
 impl State {
     pub(in crate::ui) fn shown_ink_base(&self) -> Option<InkBase> {
-        self.ink.shown_base(self.raster.node(), self.editor.is_editing(), self.hello_refused.refused(self.selected.host()))
+        self.ink.shown_base(self.raster.node(), self.raster.page(), self.editor.is_editing(), self.hello_refused.refused(self.selected.host()))
     }
 
     fn ink_src(&self, shown: Option<&InkBase>) -> Option<(u32, u32)> {
@@ -82,7 +82,7 @@ impl State {
 }
 
 /// Why `d` finds no base to draw on, in words for the person. The key resolves only while a picture is shown, so a
-/// picture whose node is not an image file (an SVG, a PDF page, a video poster, a plugin's picture) is one the daemon
+/// picture that is neither an image file nor a page (an SVG, a video poster, a plugin's picture) is one the daemon
 /// cannot compose into the agent's: the words say what drawing is for and the two ways to draw now; `canvas` is the
 /// bound label of `preview.canvas`. Under the refused-hello overlay the connection notice is why; otherwise (no picture
 /// shown, or one with no node) there is no image file to draw on.
@@ -90,7 +90,7 @@ fn no_base_line(refused: bool, raster_shown: bool, node: Option<&str>, canvas: &
     match node {
         _ if refused => "Can't draw while the connection notice covers the preview.".to_string(),
         Some(n) if raster_shown && !State::is_image_node_id(n) => format!(
-            "Can't draw on {}. Drawing (d) marks up an image file (PNG, JPEG, TIFF and the like) for this row's agent, \
+            "Can't draw on {}. Drawing (d) marks up an image file (PNG, JPEG, TIFF and the like) or a PDF page for this row's agent, \
              which sees your marks with your next prompt. To draw anyway, open a PNG of it, or press {canvas} for a blank canvas.",
             picture_name(n)),
         _ => "Can't draw here: there is no image file to draw on.".to_string(),
@@ -107,7 +107,6 @@ fn refusal_into(notice: &mut PreviewNotice, status: &mut StatusLine, words: Stri
 fn picture_name(node: &str) -> &'static str {
     let lower = node.to_ascii_lowercase();
     if lower.ends_with(".svg") { "this SVG" }
-    else if lower.ends_with(".pdf") { "this PDF page" }
     else if sot_protocol::video_path::video_mime(node).is_some() { "this video frame" }
     else { "this picture" }
 }
@@ -161,22 +160,22 @@ pub(in crate::ui) fn ink_key(state: &mut State, key: KeyPress<'_>, label: String
 mod tests {
     use super::*;
 
-    const TAIL: &str = ". Drawing (d) marks up an image file (PNG, JPEG, TIFF and the like) for this row's agent, which sees your marks with your next prompt. To draw anyway, open a PNG of it, or press Shift+d for a blank canvas.";
+    const TAIL: &str = ". Drawing (d) marks up an image file (PNG, JPEG, TIFF and the like) or a PDF page for this row's agent, which sees your marks with your next prompt. To draw anyway, open a PNG of it, or press Shift+d for a blank canvas.";
 
     #[test]
     fn drawing_over_a_picture_that_is_not_an_image_file_names_the_two_ways_to_draw() {
-        for (node, name) in [("files:fig/a.SVG", "this SVG"), ("files:doc.pdf", "this PDF page"), ("files:clip.mp4", "this video frame"),
+        for (node, name) in [("files:fig/a.SVG", "this SVG"), ("files:clip.mp4", "this video frame"),
             ("files:clip.M4V", "this video frame"), ("files:x.bin", "this picture")] {
             assert_eq!(no_base_line(false, true, Some(node), "Shift+d"), format!("Can't draw on {name}{TAIL}"), "{node}");
         }
         assert!(no_base_line(false, true, Some("files:a.svg"), "Ctrl+k").ends_with("press Ctrl+k for a blank canvas."));
     }
 
-    /// `d` over a picture that cannot be drawn on (a PDF page, an SVG, a video frame, no picture at all) and under the
+    /// `d` over a picture that cannot be drawn on (an SVG, a video frame, no picture at all) and under the
     /// connection notice: the box over the preview holds the words, and the status line keeps what it held.
     #[test]
     fn the_refusal_is_in_the_preview_box_and_the_status_line_keeps_what_it_held() {
-        for (refused, raster, node) in [(false, true, Some("files:doc.pdf")), (false, true, Some("files:a.svg")), (false, true, Some("files:clip.mp4")),
+        for (refused, raster, node) in [(false, true, Some("files:a.svg")), (false, true, Some("files:clip.mp4")),
             (false, false, None), (false, true, None), (true, true, Some("files:a.png"))] {
             let (mut notice, mut status) = (PreviewNotice::default(), StatusLine::new("held before the key"));
             let words = no_base_line(refused, raster, node, "Shift+d");
