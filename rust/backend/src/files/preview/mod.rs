@@ -235,6 +235,12 @@ async fn build_preview_payload(
         Err(e) => return Ok(Err(("bad_node_id".to_string(), format!("{e:#}")))),
     };
 
+    // A words request is answered with words or refused: never the page's picture, a folder's page, the file's bytes,
+    // and never a scale sidecar's merge, which is for pictures.
+    if req.words {
+        return Ok(if path.is_dir() { Err(no_words()) } else { words_answer(&kernel, &path, req).await });
+    }
+
     // A plugin match, resolved up front so the `is_dir`/plugin/fallback
     // three-way below can stay a plain `if`/`else if`/`else` — `Err` means
     // the kernel is unavailable for a file type with no sane bytes-level
@@ -242,7 +248,7 @@ async fn build_preview_payload(
     let plugin_matched = if path.is_dir() {
         None
     } else {
-        match try_plugin_preview(&kernel, &path, &req.node_id, req.page, req.fit_w, req.fit_h)
+        match try_plugin_preview(&kernel, &path, &req.node_id, req.page, req.fit_w, req.fit_h, false)
             .await
         {
             Ok(matched) => matched,
@@ -398,6 +404,7 @@ async fn try_plugin_preview(
     page: Option<u32>,
     fit_w: Option<u32>,
     fit_h: Option<u32>,
+    words: bool,
 ) -> std::result::Result<Option<(String, Vec<u8>, Option<serde_json::Value>)>, (String, String)> {
     // Gate on input size before invoking the plugin. Plugins for structured
     // mimes (e.g. `application/vnd.sot.tokens+json` from JuliaSource)
@@ -437,6 +444,9 @@ async fn try_plugin_preview(
     }
     if let Some(h) = fit_h {
         params.insert("fit_h".into(), h.into());
+    }
+    if words {
+        params.insert("words".into(), true.into());
     }
     let payload = if params.is_empty() {
         json!({ "path": path.to_string_lossy() })
@@ -522,6 +532,29 @@ async fn try_plugin_preview(
     // opaque here (ADR 0021).
     let extras = v.get("extras").cloned();
     Ok(Some((mime, bytes, extras)))
+}
+
+/// The refusal of a words request: its code, and words that say what a person can do about it.
+fn no_words() -> (String, String) {
+    ("no_words".to_string(), "this page's words cannot be read: the file is no PDF, or this computer's PDF tools cannot read its text".to_string())
+}
+
+/// A page's words from the kernel's plugin (`params.words`), the plugin's document as it answered, or `no_words`. Only the
+/// plugin's words mime is shipped: a note of the plugin's, a picture of a plugin that ignored the parameter, no plugin,
+/// and an output past the cap (which `try_plugin_preview` sends to the bytes-level reader) are each `no_words`, because
+/// that reader would answer with the file's own bytes. A kernel confirmed dead is the error `try_plugin_preview` gives.
+async fn words_answer(
+    kernel: &Kernel,
+    path: &std::path::Path,
+    req: &PreviewGetReq,
+) -> std::result::Result<(String, Vec<u8>, Option<serde_json::Value>), (String, String)> {
+    match try_plugin_preview(kernel, path, &req.node_id, req.page, req.fit_w, req.fit_h, true).await? {
+        Some((mime, bytes, extras)) if mime == sot_protocol::ops::PAGE_WORDS_MIME => Ok((mime, bytes, extras)),
+        other => {
+            tracing::info!(node_id = %req.node_id, answered = ?other.map(|(m, b, _)| (m, b.len())), "words request not answered with words");
+            Err(no_words())
+        }
+    }
 }
 
 /// The most a bounded-output plugin's picture ships: a 4096 x 4096 picture at four bytes a pixel, a bound chosen for

@@ -36,4 +36,5 @@ request's params hold `words` as `true`: MIME `application/vnd.sot.page-words+js
 `{"page": P, "cut": false, "lines": [[[x0, y0, x1, y1, "text"], ...], ...]}`. Each inner list is one word of one
 line, in the reading order poppler's `pdftotext` gives; a box is in 65535ths of the drawn page's width and height
 from its top left corner; `cut` is true when the page held more words than the 512 KiB the document may take. It
-is for selecting text on a PDF page, which the window does not do yet: nothing sends the request.
+is for selecting text on a PDF page, which the window does not do yet: the daemon forwards the request when a client's
+`preview.get` asks for `words`, and no window sends one.

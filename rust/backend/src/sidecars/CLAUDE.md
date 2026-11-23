@@ -225,8 +225,8 @@ of each.
     (64 MiB), evicting the least recently used page first; its keys include the absolute path, mtime, page and render
     size. It reads `pdfinfo` once per path and mtime and never prefetches.
     The PDF plugin answers a page's words, and draws nothing, when the request's `params` hold `words` as `true`
-    (nothing sends it yet: the daemon's `preview.get` forwards `page`, `fit_w` and `fit_h` alone, so every page
-    request runs what it ran): mime `application/vnd.sot.page-words+json`, one JSON document
+    (the daemon's `preview.get` forwards it when its request says `words`, files' contract, preview; the window sends
+    none yet, so every page request runs what it ran): mime `application/vnd.sot.page-words+json`, one JSON document
     `{"page":P,"cut":false,"lines":[[[x0,y0,x1,y1,"text"],...],...]}`. A line is one line of `pdftotext -bbox-layout`,
     in the reading order that tool guesses; a box is the word's rectangle as fractions of the page as `pdftoppm`
     draws it (the media box; the sides swapped for a page turned a quarter, which `pdfinfo -f P -l P` tells), each

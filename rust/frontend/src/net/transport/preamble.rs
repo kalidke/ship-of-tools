@@ -113,6 +113,7 @@ where
                 page: None,
                 fit_w: None,
                 fit_h: None,
+                words: false,
             })?,
         ),
         None,

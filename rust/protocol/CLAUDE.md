@@ -344,11 +344,31 @@ name is in this crate's one op table.
     `a_string_past_its_bound_keeps_both_ends_and_shows_the_cut`, `no_control_character_of_a_state_reaches_a_reader`,
     `every_phase_has_its_words_and_five_have_a_mark`, `the_update_state_evt_is_declared_in_the_one_table`;
     `ops/session_tests.rs`: `a_hello_and_a_version_answer_carry_the_update_state_and_stay_additive`.
+17. **A page's words are one document with one decoder, asked for by one defaulted field and offered by one hello flag.**
+    `ops/page_words.rs`: `PageWords { page, cut, lines }`, the document a `preview.get` with `words` true is answered
+    with, under the mime `PAGE_WORDS_MIME` (`application/vnd.sot.page-words+json`): `{"page":P,"cut":false,"lines":
+    [[[x0,y0,x1,y1,"text"],...],...]}`, each `PageWord { left, top, right, bottom, text }` written as the one array of
+    five. A box is four integers 0 to 65535, the fractions of the page as drawn (the convention of a drawing's points,
+    guarantee 13), ordered (`left <= right`, `top <= bottom`); a word's place in the document is its index over all
+    lines in order, and a line is in the reading order the PDF tool guessed. Decoding refuses a page 0, an empty line
+    (the plugin leaves one out, so lines are at most words), more than `MAX_PAGE_WORDS` (16,384) words in all, a word
+    of more than `MAX_PAGE_WORD_BYTES` (1,024) bytes, an unordered box and a number that is no `u16`; `cut` (the plugin
+    stopped at its own 512 KiB) is required and carried. The document's readers, the window and the daemon for a share,
+    are unbuilt; the daemon forwards it unread. `PreviewGetReq.words` is defaulted and left out when false, so an ordinary
+    request is the one an older daemon reads; `HelloRes.serves_page_words` is defaulted and left out when false, and
+    says the daemon answers `words` with the words or with an error, never the page's picture. A daemon built before
+    it answers a words request with the picture, so a window sends one only where the hello said it (fe-net's
+    contract). Mechanism: three defaulted fields and one new type, no new op, so `PROTOCOL_VERSION` stays 4. Limit: the
+    decoder does not check that the words lie inside the page beyond the `u16` range, or that they are in a reading
+    order; the plugin's test pins the same literal document (`julia/plugins/pdf-file/test/words.jl`). Tests
+    `ops/page_words_tests.rs`: `the_plugins_document_is_the_wires`, `page_words_are_bounded_at_decode`,
+    `a_words_request_is_the_ordinary_one_with_one_more_field`; `ops/session_tests.rs`:
+    `a_hello_says_it_serves_page_words_and_stays_additive`.
 
 ## Owns
 The frame, `Kind` and `PROTOCOL_VERSION` (`lib.rs`); the codec (`codec.rs`); child lines (`child_lines.rs`); the op
 names, declared once in `op_table!` (`ops/mod.rs`), which also gives `op::ALL`, so a declared op joins the server's first-frame test with no list to keep; and every op's payload type (`ops/`, its page lists the families; the link family's constants `LINK`, `CHUNK`,
-`WINDOW` and `MAX_CHANNELS` are in `ops/link.rs`); the chat record (`chat.rs`, with `TextSegment`, the Slack app manifest and its address) and the chat family (`ops/chat.rs`); the selection op, its payloads (the drawing too), `selection_digest` and `whole_lines` (`ops/selection.rs`); the update's state and its words (`ops/update.rs`: `UpdateState`, `UpdatePhase`); the drawing's raster (`ink.rs`); the tree and preview payloads and the binary
+`WINDOW` and `MAX_CHANNELS` are in `ops/link.rs`); the chat record (`chat.rs`, with `TextSegment`, the Slack app manifest and its address) and the chat family (`ops/chat.rs`); the selection op, its payloads (the drawing too), `selection_digest` and `whole_lines` (`ops/selection.rs`); a PDF page's words and their one decoder (`ops/page_words.rs`); the update's state and its words (`ops/update.rs`: `UpdateState`, `UpdatePhase`); the drawing's raster (`ink.rs`); the tree and preview payloads and the binary
 preview cap `PREVIEW_BINARY_CAP` (`ir.rs`); the version string and `is_release_build` (`version.rs`, `build.rs`); the
 annotation, physical-scale, page-URL, video-suffix, page-reply, terminal-escape and chat text grammars; the daemon's frame writes and byte pipe (`reply.rs`:
 `HandlerOutput`, `write_frame_to`, `write_frame_within`, `reject`; `pipe.rs`: `pipe_bidirectional`), which services take from
@@ -390,6 +410,7 @@ Same on all three; the blocking codec is the one the ssh bridge and shell wrappe
 | 14 | the drawing's raster | `ink_tests.rs` (the three tests under guarantee 14) |
 | 15 | terminal escapes | `escapes_tests.rs` (the five tests under guarantee 15) |
 | 16 | the update's state | `ops/update_tests.rs` (the five tests under guarantee 16); `ops/session_tests.rs`: `a_hello_and_a_version_answer_carry_the_update_state_and_stay_additive` |
+| 17 | a page's words | `ops/page_words_tests.rs` (the three tests under guarantee 17); `ops/session_tests.rs`: `a_hello_says_it_serves_page_words_and_stays_additive` |
 
 ## Files
 - `Cargo.toml`: the crate manifest (feature `test-support`, dev only); depends on platform alone of ours
@@ -402,7 +423,7 @@ Same on all three; the blocking codec is the one the ssh bridge and shell wrappe
 - `src/ink.rs`: the drawing's one raster (guarantee 14): `raster_dims`, `ink_radius`, `paint_segment`, `segments`, `mask`.
 - `src/ir.rs`: the wire's tree and preview payload types
 - `src/lib.rs`: `Frame`, `Kind`, `PROTOCOL_VERSION` and the crate's re-exports
-- `src/ops/`: the op names and payload types, one file per family; `ops/chat.rs` is the chat family (guarantee 12), `ops/selection.rs` the selection op (guarantee 13), `ops/update.rs` the update ops and the update's state (guarantee 16)
+- `src/ops/`: the op names and payload types, one file per family; `ops/chat.rs` is the chat family (guarantee 12), `ops/selection.rs` the selection op (guarantee 13), `ops/update.rs` the update ops and the update's state (guarantee 16), `ops/page_words.rs` a PDF page's words (guarantee 17)
 - `src/pipe.rs`: `pipe_bidirectional`, the raw byte pipe after a connect frame (the daemon's `proxy.connect` and `lane.connect`)
 - `src/reply.rs`: `HandlerOutput`, the bounded frame write and the error frame for a refused connect
 - `src/physical_scale.rs`: PhysicalScale, ScaleAxis and parse_physical_scale, shared by preview reads, writes and display.

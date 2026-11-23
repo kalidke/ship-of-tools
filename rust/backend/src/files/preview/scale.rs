@@ -163,6 +163,7 @@ pub async fn handle_preview_set_scale(
         page: None,
         fit_w: None,
         fit_h: None,
+        words: false,
     };
     match build_preview_payload(&ws, &get_req).await? {
         Ok((mime, bytes, extras)) => {

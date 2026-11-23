@@ -207,6 +207,8 @@ pub async fn handle_hello(
         posts_plain_text: true,
         // A person's chat post and file share go out under their own user token (chat guarantees 12 and 32).
         posts_as_person: true,
+        // `preview.get` answers `words` with a page's words, never its picture (the files contract, preview).
+        serves_page_words: true,
         // The state of this daemon's update, from memory (wire guarantee 16); each change after it is an
         // `update.state` event on this connection.
         update,

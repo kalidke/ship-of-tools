@@ -185,6 +185,11 @@ pub struct HelloRes {
     /// daemon built before the field posts it as the app, so a window tells the person which it is. Left out when false.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub posts_as_person: bool,
+    /// True when this daemon answers a `preview.get` with `words` as the page's words (`PageWords`). A daemon built
+    /// before the field answers such a request with the page's picture, so a window sends it only when this is true.
+    /// Left out when false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub serves_page_words: bool,
     /// The state of this daemon's update when it is the owner of one (wire guarantee 16), read from memory. Left out
     /// when none; absent from a daemon built before the field. A value that is not an update state reads as none and
     /// never refuses the reply.

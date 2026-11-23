@@ -103,6 +103,20 @@ mod hello_version_tests {
         assert_eq!(serde_json::to_value(&res).unwrap()["posts_as_person"], serde_json::json!(true));
     }
 
+    /// A hello reply says whether the daemon answers a words request with a page's words (`serves_page_words`), additive
+    /// both ways: the last release's whole reply, which a window must send no words request to, reads as false, and
+    /// false is not written.
+    #[test]
+    fn a_hello_says_it_serves_page_words_and_stays_additive() {
+        let old = r#"{"session_id":"s1","revision":3,"snapshot_pending":false,"host":"h","project_root":"/p","clients_connected":1,"protocol":4,"app_version":"0.7.3","proxy":true,"repl_running":[2],"takes_drawing":true,"posts_plain_text":true,"posts_as_person":true}"#;
+        let res: HelloRes = serde_json::from_str(old).expect("a reply without the field");
+        assert!(!res.serves_page_words, "an older daemon reads as not serving them");
+        assert_eq!(serde_json::to_value(&res).unwrap().get("serves_page_words"), None, "false is not written");
+        let says = r#"{"session_id":"s1","revision":3,"snapshot_pending":false,"serves_page_words":true}"#;
+        let res: HelloRes = serde_json::from_str(says).expect("a reply with the field");
+        assert_eq!(serde_json::to_value(&res).unwrap()["serves_page_words"], serde_json::json!(true));
+    }
+
     #[test]
     fn proxy_connect_req_round_trips_and_token_is_optional() {
         // ADR 0035 handshake shapes. `token` absent on the wire must parse

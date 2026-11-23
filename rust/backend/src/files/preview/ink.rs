@@ -38,7 +38,7 @@ pub(crate) async fn page_png(ws: &Workspace, node_id: &str, page: u32) -> Result
         return Err((NOT_AN_IMAGE, format!("{path:?} page {page} is no page of a PDF file")));
     }
     let fit = Some(ink::INK_RASTER_MAX);
-    match super::try_plugin_preview(&ws.kernel(), &path, node_id, Some(page), fit, fit).await {
+    match super::try_plugin_preview(&ws.kernel(), &path, node_id, Some(page), fit, fit, false).await {
         Ok(Some((mime, png, Some(extras)))) if mime.starts_with("image/") && extras["page"] == page => Ok(png),
         other => Err((NOT_AN_IMAGE, format!("{path:?} page {page} was not drawn: {:?}", other.map(|o| o.map(|p| (p.0, p.2)))))),
     }

@@ -11,6 +11,22 @@ non-text output goes to the reader as any other does, and a fallback is named by
 Behavior tests: `preview_gate_tests::a_bounded_plugins_picture_past_the_text_cap_ships_whole`
 (`fit_plugin_output`) and the two through `try_plugin_preview` over a stand-in kernel beside it.
 
+A request with `words` true (`PreviewGetReq::words`, wire's guarantee 17) asks for a page's words, not its picture.
+`build_preview_payload` answers it before the folder page, the plugin's picture, the bytes-level reader and the scale
+sidecar are reached, through `words_answer`: the plugin is asked with `params.words` beside `page` (a request without
+`words` carries no such key), and only an answer under `PAGE_WORDS_MIME` is shipped, as the plugin gave it. Every other
+outcome is the error `no_words`: a folder, a file no plugin claims, a plugin's note, the picture of a plugin that
+ignored the parameter, an answer with no blob or one that is not base64 or that passes `PREVIEW_BYTE_CAP` (each the
+reply of `try_plugin_preview` that sends any other request to the reader), and a kernel that cannot be asked is its
+`kernel_unavailable` for a PDF, as a page's is. The reader would answer a words request with the file's own bytes, which a
+window would read as no words at best, so it is never reached. The words document is the plugin's and is not decoded
+here; the window decodes it with wire's reader. The hello says the daemon does this (`serves_page_words`, server's
+contract). Tests, in `preview_gate_tests`:
+`a_words_request_reaches_the_plugin_with_the_parameter_and_a_page_request_without_it` (a stand-in kernel records the
+request it is sent), `a_words_request_is_answered_with_words_or_refused_never_with_a_picture_or_the_file` (seven plugin
+answers) and `a_words_request_through_the_assembly_never_reaches_the_pages_or_the_bytes_reader` (a folder and a file no
+plugin claims, with the kernel unable to start).
+
 The bytes-level reader (`read_bytes_preview`) answers what no plugin answered. It looks the path up before it opens
 anything, following links as the read resolver does (`node_id_to_path`) and nothing more, and opens only a regular
 file. A folder, a FIFO, a socket or a device is answered a short markdown note (`NOT_A_FILE_NOTE`) and is never opened,

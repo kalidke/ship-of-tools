@@ -595,6 +595,9 @@ pub use chat::*;
 mod selection;
 pub use selection::*;
 
+mod page_words;
+pub use page_words::*;
+
 mod update;
 pub use update::*;
 

@@ -75,6 +75,13 @@ pub struct PreviewGetReq {
     pub fit_w: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fit_h: Option<u32>,
+    /// Ask for the words of `page` and where they were drawn (`PageWords`) in place of its picture. The daemon
+    /// forwards it as `params.words`, answers the document under `PAGE_WORDS_MIME` or an error (`no_words`), and
+    /// never a picture or the file's bytes. Left out when false, so an ordinary request is the one an older daemon
+    /// reads; a daemon built before the field would answer it with the picture, so a window sends it only where the
+    /// hello said `HelloRes::serves_page_words`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub words: bool,
 }
 
 /// Mirrors `PreviewPayload` on the wire — the bytes follow the envelope and

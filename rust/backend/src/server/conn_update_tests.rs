@@ -1,5 +1,6 @@
 // The state of the daemon's update through a real served connection: the hello's field and the `update.state` event
-// read memory alone, and only a window's hello begins a reading of the disk.
+// read memory alone, and only a window's hello begins a reading of the disk. The hello's other words are asserted here
+// too, where a served hello is read: `serves_page_words`.
 use super::*;
 use crate::update::{Chase, Status};
 use serde_json::json;
@@ -151,4 +152,12 @@ async fn a_windows_hello_begins_a_reading_and_no_other_hello_does() {
     drop(release);
     let told = window.told().await;
     assert_eq!((&told["phase"], &told["version"], told.get("unread")), (&json!("ready"), &json!("9.9.9"), None), "{told}");
+}
+
+/// A served hello says the daemon answers `preview.get`'s `words` with a page's words (`HelloRes::serves_page_words`).
+#[tokio::test]
+async fn a_served_hello_says_the_daemon_serves_a_pages_words() {
+    let status = Status::new(Chase::None, false, || None);
+    let conn = serve(&status, "fe", Some("window")).await;
+    assert_eq!(conn.hello["serves_page_words"], json!(true), "{}", conn.hello);
 }
