@@ -697,14 +697,6 @@ owned by `docs/CLAUDE.md`.
   After PDF-ZOOM-PAGE-PAST-TEXT-CAP no path seen in use sends a PDF there, but a kernel reply that is unmatched or
   malformed, or a live kernel's wire error, or a bounded plugin's non-picture, non-text output past 2 MiB, still does (a
   bounded picture past 64 MiB is refused with `preview_too_large`, not sent there). A bounded-output type should answer a note there, as video does.
-- **FILES-BYTES-READER-READS-WHOLE** [note] The bytes-level reader (`read_bytes_preview`, `files/preview/mod.rs`) reads
-  the whole file into memory before it cuts text at 2 MiB or refuses a binary past its cap, and it opens whatever the
-  path names. So each read of a very large file holds all of it in the daemon's memory, and a path that names a FIFO
-  is opened and read: the read waits for a writer and takes bytes meant for another reader. Every `preview.get` that
-  no plugin answers goes there: a selection, the re-fetch after a told change, and since 2026-11-22 the window's check
-  at a return to a session, which makes a file that grew or was replaced while its session was off screen one more way
-  in. Found by a review reading the code; not seen. Fix: look the path up first, answer a note for anything but a
-  regular file, and read at most the cap and one byte more.
 - **WATCHER-DIRECTORY-ARRIVAL-GAPS** [note] Found in review. A child created before the manager installs its directory's nonrecursive watch may send no change. Walking the directory registers its subdirectories without replaying existing files. A directory arriving solely by rename may receive no registration hint. Both gaps predate burst coalescing.
 
 ## sidecars
@@ -1490,6 +1482,8 @@ owned by `docs/CLAUDE.md`.
   probe; installer hooks (superseded, check); stop commands that match only what they stop.
 
 ## Closed
+
+- **FILES-BYTES-READER-READS-WHOLE** (files) [note] Closed on 2026-11-23 by the landing that fixes it. Found by a review reading the code; not seen in use. The bytes-level reader (`read_bytes_preview`, `files/preview/mod.rs`) read the whole file into memory before it cut text at 2 MiB or refused a binary past its cap, and it opened whatever the path named, so a very large file was held whole in the daemon's memory at each read, and a FIFO at the path was opened and read: the read waited for a writer and took bytes meant for another reader. Every `preview.get` that no plugin answers goes there: a selection, the re-fetch after a told change, and the window's check at a return to a session. The reader now looks the path up first, following links as the read resolver does, and answers a short note, unopened, for a folder, a FIFO, a socket or a device; it refuses a binary past its cap by the lookup's size, unopened, in the words it had; and it reads a regular file to its cap and one byte more, never whole. Answers for regular files within the caps are unchanged. What remains is in the preview folder's contract: a FIFO planted between the lookup and the open is opened without a wait and refused, a binary that grows past its cap after the lookup is read to the cap and one byte, and on Windows a reserved device name or a named pipe's name is not promised refused. Not run: any test on macOS or Windows (the Windows test code was only type-checked from Linux), the backend's integration tests, a live daemon and a window. No person has used this change.
 
 - **PARKED-ROW-PREVIEW-STALE** (fe-ui) [note] Closed on 2026-11-22. Reading the code showed that returning to a parked row could leave an edited file stale. On 2026-11-22 a person saw a related miss on the shown file. The daemon's journal showed returns to the session without a new read of that file. The window now shows the parked file immediately and checks it once the return settles and the preview is idle. Equal MIME and bytes keep the render unless the reply supplies a calibration. Changed content takes the ordinary install path. A passing visit, a busy preview, a view without a file node, a folder page, a canvas, the editor or an undrawn pane skips the check. The active session, a PDF page, a picture with a scale, a pending or failed scale save and a pane covered by a dialog also skip it. A failed save waits for an ordinary read of that file. A reconnect preamble suppresses checks across hosts. A queued ordinary read survives a disconnect, and an outstanding check keeps its slot after leaving the row. A return check never replays. Uncovering does not trigger a read, and a skipped file can stay stale until a later eligible return or cursor move. A lost preview event still has no recovery. Each eligible return transfers a large picture again. Cost over a real link is unmeasured. No person has used this change.
 

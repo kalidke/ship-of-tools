@@ -217,8 +217,9 @@ exists, so a file replaced by a removal and a create is fetched again where the 
 (PREVIEW-REPLACED-FILE-TOLD-REMOVED, Closed; it takes effect when a computer's daemon runs it, the wire unchanged),
 and a return to a session sends one read of the file its preview shows and draws the reply only when it differs, so
 a file changed while its session was off screen is no longer left as it was parked (PARKED-ROW-PREVIEW-STALE, Closed;
-it takes effect when a window runs it; what a return does not check is listed in fe-ui's contract, and each such read
-goes through the daemon's reader, which reads a whole file before it cuts it, FILES-BYTES-READER-READS-WHOLE); and,
+it takes effect when a window runs it; what a return does not check is listed in fe-ui's contract; the daemon's
+reader that such a read reaches now opens only a regular file and reads to its cap, where it had read a whole file
+first, FILES-BYTES-READER-READS-WHOLE, Closed); and,
 since 2026-11-23, the fix for a person's report of 2026-11-22 that a kernel never started after an install whose
 checklist read ok: every Julia the daemon starts and every Julia step of an install or update runs without the
 person's startup file (the Pluto server too), and the checklist looks up each package's source under the kernel's

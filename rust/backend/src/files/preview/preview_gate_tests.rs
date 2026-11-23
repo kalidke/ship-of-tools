@@ -1,6 +1,6 @@
 use super::{
     build_preview_payload, fit_plugin_output, is_bounded_output_plugin, read_bytes_preview, try_plugin_preview, Unfit,
-    MAX_BOUNDED_PICTURE_BYTES, PREVIEW_BYTE_CAP,
+    MAX_BOUNDED_PICTURE_BYTES, NOT_A_FILE_NOTE, PREVIEW_BYTE_CAP,
 };
 use std::path::Path;
 
@@ -26,6 +26,145 @@ fn the_bytes_reader_answers_a_video_with_the_unavailable_note() {
     std::fs::write(&other, b"raw-bytes").unwrap();
     let (_, body) = read_bytes_preview(&other, "n2").unwrap();
     assert_eq!(body, b"raw-bytes");
+}
+
+/// Bytes that show where a cut fell.
+fn patterned(len: usize) -> Vec<u8> {
+    (0..len).map(|i| (i % 251) as u8).collect()
+}
+
+/// `f`'s answer, or a failure in place of a test that never ends.
+#[cfg(unix)]
+fn answered<T: Send + 'static>(what: &str, f: impl FnOnce() -> T + Send + 'static) -> T {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(f());
+    });
+    rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap_or_else(|_| panic!("{what} did not return"))
+}
+
+/// A FIFO with a writer waiting in its open: any reader's open lets the writer through, and its bytes go to that
+/// reader. The bytes-level reader answers its note, and the writer's bytes are all there for the reader they were
+/// meant for, here this test.
+#[cfg(unix)]
+#[test]
+fn the_bytes_reader_answers_a_fifo_with_a_note_and_never_opens_it() {
+    use std::os::unix::ffi::OsStrExt;
+    let dir = tempfile::tempdir().unwrap();
+    let fifo = dir.path().join("pipe.txt");
+    let c_path = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
+    // SAFETY: a plain mkfifo(3) of a path in this test's own folder.
+    assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
+    let writer = {
+        let fifo = fifo.clone();
+        std::thread::spawn(move || std::fs::write(fifo, b"meant for another reader"))
+    };
+    let asked = fifo.clone();
+    let (mime, body) = answered("the read of a FIFO", move || read_bytes_preview(&asked, "n")).unwrap();
+    assert_eq!((mime.as_str(), body.as_slice()), ("text/markdown", NOT_A_FILE_NOTE.as_bytes()));
+    let rest = answered("the other reader", move || std::fs::read(fifo)).unwrap();
+    assert_eq!(rest, b"meant for another reader");
+    writer.join().unwrap().unwrap();
+}
+
+/// Whatever else is no regular file gets the same note: a folder, and on Unix a socket and a device.
+#[test]
+fn the_bytes_reader_answers_a_folder_a_socket_and_a_device_with_the_note() {
+    let dir = tempfile::tempdir().unwrap();
+    #[allow(unused_mut)]
+    let mut cases = vec![dir.path().join("folder.png")];
+    std::fs::create_dir(&cases[0]).unwrap();
+    #[cfg(unix)]
+    let _listener = {
+        let socket = dir.path().join("s.json");
+        cases.push(socket.clone());
+        cases.push("/dev/null".into());
+        std::os::unix::net::UnixListener::bind(socket).unwrap()
+    };
+    for path in cases {
+        let (mime, body) = read_bytes_preview(&path, "n").unwrap_or_else(|e| panic!("{path:?}: {e}"));
+        assert_eq!((mime.as_str(), body.as_slice()), ("text/markdown", NOT_A_FILE_NOTE.as_bytes()), "{path:?}");
+    }
+}
+
+/// The bytes this thread has read from files so far, as the kernel counts them.
+#[cfg(target_os = "linux")]
+fn thread_bytes_read() -> u64 {
+    let io = std::fs::read_to_string("/proc/thread-self/io").expect("the kernel's per-thread I/O account");
+    let line = io.lines().find_map(|l| l.strip_prefix("rchar: ")).expect("an rchar line");
+    line.parse().unwrap()
+}
+
+/// A text file past the cap is answered cut at the cap, and the reader reads the cap and one byte of it, by the
+/// kernel's count of this thread's reads, which the two readings of the count themselves raise by under 4096.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_bytes_reader_reads_the_cap_and_one_byte_of_a_longer_text_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("long.txt");
+    let whole = patterned(PREVIEW_BYTE_CAP + 1024 * 1024);
+    std::fs::write(&path, &whole).unwrap();
+    let before = thread_bytes_read();
+    let (mime, body) = read_bytes_preview(&path, "n").unwrap();
+    let read = thread_bytes_read() - before;
+    assert_eq!(mime, "text/plain; charset=utf-8");
+    assert!(body == whole[..PREVIEW_BYTE_CAP], "cut at the cap: {} bytes", body.len());
+    let most = PREVIEW_BYTE_CAP as u64 + 1;
+    assert!((most..most + 4096).contains(&read), "read {read} bytes of a file of {}", whole.len());
+}
+
+/// A binary past its cap is refused by its size alone: the file here cannot be opened (Unix), and holds no data.
+#[test]
+fn the_bytes_reader_refuses_a_binary_past_its_cap_by_its_size_unread() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("huge.png");
+    let file = std::fs::File::create(&path).unwrap();
+    file.set_len(sot_protocol::ir::PREVIEW_BINARY_CAP as u64 + 1024 * 1024 + 512 * 1024).unwrap();
+    #[cfg(unix)]
+    std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o000)).unwrap();
+    let (mime, body) = read_bytes_preview(&path, "n").unwrap();
+    assert_eq!(mime, "text/markdown");
+    assert_eq!(
+        String::from_utf8(body).unwrap(),
+        "# preview too large\n\nfile is 513.5 MiB; binary preview cap is 512 MiB.\n\nbinary mimes can't be safely truncated — a partial PNG/JPEG won't decode.\n"
+    );
+}
+
+/// Every answer for a regular file within the caps, and the cut of a text file past its cap, as before the reader
+/// was bounded.
+#[test]
+fn the_bytes_reader_answers_regular_files_as_it_did() {
+    let dir = tempfile::tempdir().unwrap();
+    let text = "text/plain; charset=utf-8";
+    let cases: [(&str, &str, usize, usize); 9] = [
+        ("empty.txt", text, 0, 0),
+        ("notes.md", "text/markdown", 300, 300),
+        ("noext", text, 300, 300),
+        ("at.txt", text, PREVIEW_BYTE_CAP, PREVIEW_BYTE_CAP),
+        ("over.rs", "text/x-rust", PREVIEW_BYTE_CAP + 1, PREVIEW_BYTE_CAP),
+        ("far-over.toml", "text/x-toml", PREVIEW_BYTE_CAP + 70_000, PREVIEW_BYTE_CAP),
+        ("empty.png", "image/png", 0, 0),
+        ("pic.png", "image/png", 300, 300),
+        ("past-the-text-cap.json", "application/json", PREVIEW_BYTE_CAP + 70_000, PREVIEW_BYTE_CAP + 70_000),
+    ];
+    for (name, mime, len, kept) in cases {
+        let path = dir.path().join(name);
+        let whole = patterned(len);
+        std::fs::write(&path, &whole).unwrap();
+        let (got_mime, body) = read_bytes_preview(&path, "n").unwrap();
+        assert_eq!(got_mime, mime, "{name}");
+        assert!(body == whole[..kept], "{name}: {} bytes answered", body.len());
+        // A link to the file answers as the file does: the reader follows links, as the read resolver does.
+        #[cfg(unix)]
+        {
+            let link = dir.path().join(format!("link-{name}"));
+            std::os::unix::fs::symlink(&path, &link).unwrap();
+            let (link_mime, link_body) = read_bytes_preview(&link, "n").unwrap();
+            assert!(link_mime == mime && link_body == body, "{name} through a link");
+        }
+    }
+    let missing = read_bytes_preview(&dir.path().join("absent.txt"), "n").unwrap_err();
+    assert_eq!(missing.kind(), std::io::ErrorKind::NotFound);
 }
 
 #[test]

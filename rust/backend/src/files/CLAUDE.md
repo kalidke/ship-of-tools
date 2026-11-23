@@ -42,6 +42,9 @@ Per workspace row (built in `rows/workspace.rs`):
   (Unix; `ink_tests::a_fifo_named_like_an_image_answers_at_once`); the crop picks its decoder from the file's bytes, not its name (a file of
   an unsupported format answers `decode_failed`), and is a PNG of the clamped rect
   (`a_crop_is_a_png_of_the_rect_beneath_the_captures_folder`).
+- `preview.get`'s bytes-level reader, which answers what no plugin answered, opens only a regular file and reads it to
+  its cap and one byte more; anything else at the path is answered a note, unopened. The rule, its limits and its
+  tests are in `preview/CLAUDE.md`.
 - Delete is a trash, never an unlink (`trash_file`: `gio trash`, else `<root>/.sot-trash/`). `gio` runs through
   `Signal::spawn_std` with null standard handles (`trash_command`) and a `ContainedStd::wait_within(TRASH_WAIT)` wait
   budget of 5 s. Only a confirmed zero exit counts as system trash; an unconfirmed one after which the file is already

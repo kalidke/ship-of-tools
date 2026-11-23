@@ -11,6 +11,28 @@ non-text output goes to the reader as any other does, and a fallback is named by
 Behavior tests: `preview_gate_tests::a_bounded_plugins_picture_past_the_text_cap_ships_whole`
 (`fit_plugin_output`) and the two through `try_plugin_preview` over a stand-in kernel beside it.
 
+The bytes-level reader (`read_bytes_preview`) answers what no plugin answered. It looks the path up before it opens
+anything, following links as the read resolver does (`node_id_to_path`) and nothing more, and opens only a regular
+file. A folder, a FIFO, a socket or a device is answered a short markdown note (`NOT_A_FILE_NOTE`) and is never opened,
+so a FIFO's writer is not waited for and keeps its bytes for the reader they were meant for. A file whose mime is not
+`text/` and whose size at the lookup is past `PREVIEW_BINARY_CAP` (512 MiB) is refused with the note that names that
+size, unopened. Any other regular file is opened through platform's `open_regular` (guarantee 15) and read to its cap
+and one byte more, never whole: a text file past `PREVIEW_BYTE_CAP` (2 MiB) is cut at it, and every answer for a
+regular file within the caps is the file's bytes under the mime of its name. A missing path is `io_error`. A video is
+answered its own note before any lookup, and `preview.get` answers a folder with its folder page before the reader is
+reached. Limits: a path replaced between the lookup and the open is judged again on the open handle, so a FIFO planted
+in that instant is opened without a wait and refused as `io_error`; a binary that grows past its cap after the lookup
+is read to the cap and one byte, 512 MiB held, and refused with that size; a regular file on a hung network mount
+still blocks in the OS. On Windows the lookup and the handle check are std's: a folder is answered the note, and a
+reserved device name or a named pipe's name is not promised refused, since no test runs one there. Tests, in
+`preview_gate_tests`: `the_bytes_reader_answers_a_fifo_with_a_note_and_never_opens_it` (Unix: a writer waits in the
+FIFO's open and its bytes are all there afterward), `the_bytes_reader_answers_a_folder_a_socket_and_a_device_with_the_note`
+(the socket and `/dev/null` on Unix), `the_bytes_reader_reads_the_cap_and_one_byte_of_a_longer_text_file` (Linux: by
+the kernel's count of the bytes the thread read), `the_bytes_reader_refuses_a_binary_past_its_cap_by_its_size_unread`
+(the file cannot be opened on Unix; on Windows the test proves the words alone) and
+`the_bytes_reader_answers_regular_files_as_it_did` (a table of names and sizes on both sides of the text cap, each
+through a link too on Unix).
+
 PNG pHYs supplies a physical scale only for metre-unit densities of at least 100,000 pixels per metre on both axes;
 lower values are print density regardless of other chunks. A valid sidecar still takes priority, generated plugin
 bytes are excluded, and anisotropic pHYs is suppressed. Behavior test: `scale::phys_scale_tests::

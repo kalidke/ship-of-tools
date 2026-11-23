@@ -273,7 +273,7 @@ async fn build_preview_payload(
         // `try_plugin_preview`). Fall back to the bytes-level reader so
         // files outside any plugin's coverage still get served, with
         // mime inferred from extension. `read_bytes_preview` is a
-        // synchronous `std::fs::read` (up to `PREVIEW_BINARY_CAP` bytes) —
+        // synchronous read (up to `PREVIEW_BINARY_CAP` bytes and one more) —
         // real blocking I/O, so it runs via `spawn_blocking` rather than
         // inline on this async task.
         let path_for_blk = path.clone();
@@ -577,11 +577,20 @@ fn fit_plugin_output(path: &std::path::Path, node_id: &str, mime: &str, mut byte
     Err(Unfit::Reader)
 }
 
+/// The bytes-level reader's answer for a path that names no regular file.
+const NOT_A_FILE_NOTE: &str =
+    "# no preview\n\nThis is not a regular file (a folder, a pipe, a socket or a device), so it is not opened or read.\n";
+
 /// Bytes-level reader: read the file at `path`, infer mime from extension,
 /// truncate text mimes at PREVIEW_BYTE_CAP, refuse oversized binary mimes
 /// with a text/plain blurb (truncating a PNG/JPEG mid-stream produces an
 /// undecodable file, which is worse than not rendering at all). Used when
 /// no plugin claims the path.
+///
+/// The path is looked up before anything is opened, following links as the read resolver does (`node_id_to_path`):
+/// what is no regular file is answered `NOT_A_FILE_NOTE` unopened, and a binary past its cap is refused by the
+/// lookup's size, unread. A regular file is opened through platform's `open_regular` and read to its cap and one
+/// byte more, never whole.
 fn read_bytes_preview(path: &std::path::Path, node_id: &str) -> std::io::Result<(String, Vec<u8>)> {
     // A video reaching the bytes-level reader means no plugin claimed it —
     // the ShipToolsVideoFile kernel plugin isn't loaded (or the kernel is down).
@@ -593,25 +602,38 @@ fn read_bytes_preview(path: &std::path::Path, node_id: &str) -> std::io::Result<
         return Ok(("text/markdown".to_string(), msg.into_bytes()));
     }
     let mime = mime_for_path(path).to_string();
-    let mut bytes = std::fs::read(path)?;
+    let found = std::fs::metadata(path)?;
+    if !found.is_file() {
+        tracing::warn!(%node_id, "bytes-level reader: not a regular file; not opened");
+        return Ok(("text/markdown".to_string(), NOT_A_FILE_NOTE.into()));
+    }
     let is_text = mime.starts_with("text/");
+    let cap = if is_text { PREVIEW_BYTE_CAP } else { PREVIEW_BINARY_CAP };
+    let most = cap as u64 + 1;
+    let mut bytes = Vec::new();
+    if is_text || found.len() < most {
+        use std::io::Read as _;
+        bytes.try_reserve_exact(found.len().min(most) as usize)?;
+        sot_platform::host::open_regular(path)?.take(most).read_to_end(&mut bytes)?;
+    }
+    // The size told is the lookup's, or what was read of a file that grew past it since.
+    let size = found.len().max(bytes.len() as u64);
     if is_text && bytes.len() > PREVIEW_BYTE_CAP {
-        let orig = bytes.len();
         bytes.truncate(PREVIEW_BYTE_CAP);
         tracing::warn!(
             %node_id,
-            size = orig,
+            size,
             "text preview truncated at PREVIEW_BYTE_CAP"
         );
-    } else if !is_text && bytes.len() > PREVIEW_BINARY_CAP {
-        let mib = bytes.len() as f64 / (1024.0 * 1024.0);
+    } else if !is_text && size > PREVIEW_BINARY_CAP as u64 {
+        let mib = size as f64 / (1024.0 * 1024.0);
         let cap_mib = PREVIEW_BINARY_CAP / (1024 * 1024);
         let msg = format!(
             "# preview too large\n\nfile is {mib:.1} MiB; binary preview cap is {cap_mib} MiB.\n\nbinary mimes can't be safely truncated — a partial PNG/JPEG won't decode.\n",
         );
         tracing::warn!(
             %node_id,
-            size = bytes.len(),
+            size,
             mime = %mime,
             "binary preview refused: exceeds PREVIEW_BINARY_CAP"
         );
