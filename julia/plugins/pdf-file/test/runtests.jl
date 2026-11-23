@@ -348,6 +348,9 @@ const SYSTEM_POPPLER = Sys.which("pdftoppm") !== nothing && Sys.which("pdfinfo")
         end
     end
 
+    # A page's words, for the window's text selection.
+    include("words.jl")
+
     @testset "3-arg fallback exists for non-paged plugins" begin
         # Core's fallback drops params for plugins that only define 2-arg.
         @test hasmethod(ConceptExplorerCore.preview,

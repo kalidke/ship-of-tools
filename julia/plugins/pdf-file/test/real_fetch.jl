@@ -33,4 +33,10 @@ sample = joinpath(@__DIR__, "..", "..", "..", "..", "examples", "preview", "samp
     @test pp.data[1:8] == UInt8[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]
     @test pp.extras["page"] == 1 && pp.extras["page_count"] >= 1
     @test isfile(joinpath(dir, "copy.txt"))
+    # The copy's text tool, beside its `pdftoppm`: the page's words. Booleans first, so a failure prints no document.
+    words = CE.preview(ShipToolsPDFFile.PDFFile, sample, Dict{String,Any}("page" => 1, "words" => true))
+    is_words = words.mime == ShipToolsPDFFile.WORDS_MIME
+    has_title = occursin("\"Great-Circle\"]", String(copy(words.data)))
+    @test is_words
+    @test has_title
 end

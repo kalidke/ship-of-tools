@@ -19,7 +19,9 @@ export PDFFile
     PDFFile <: FileType
 
 Built-in plugin for `.pdf`. `preview` returns one page as `image/png` with
-`extras = {"page", "page_count"}` so the frontend can drive page turns.
+`extras = {"page", "page_count"}` so the frontend can drive page turns. With
+`params["words"] === true` it returns that page's words and their boxes instead
+(`WORDS_MIME`), and draws nothing.
 """
 struct PDFFile <: ConceptExplorerCore.FileType end
 
@@ -51,6 +53,8 @@ function ConceptExplorerCore.preview(::Type{PDFFile}, path::AbstractString,
     catch
         1
     end
+    # A request for the page's words draws nothing; every other request draws the page as before.
+    get(params, "words", false) === true && return _page_words(path, max(page, 1))
     asint(x) = try
         v = Int(x)
         v > 0 ? v : nothing
@@ -182,6 +186,80 @@ function _pdf_info(pdfinfo::Cmd, path::AbstractString, bound::Real)
     w = size === nothing ? 0.0 : something(tryparse(Float64, size.captures[1]), 0.0)
     h = size === nothing ? 0.0 : something(tryparse(Float64, size.captures[2]), 0.0)
     (parse(Int, pages.captures[1]), w, h)
+end
+
+# A page's words, for selecting text on the picture of it: asked for with `params["words"] === true`, answered as one
+# JSON document, `{"page":P,"cut":false,"lines":[[[x0,y0,x1,y1,"text"],...],...]}`. A line is one line of
+# `pdftotext -bbox-layout`, in the reading order that tool guesses; a box is the word's rectangle as fractions of the
+# page as `pdftoppm` draws it, each times 65535 and rounded (0 is the left or the top edge), clamped to the page.
+const WORDS_MIME = "application/vnd.sot.page-words+json"
+# The most bytes of the document: the words are cut before the one that would pass it, and `cut` says so.
+const MAX_WORDS_BYTES = 512 * 1024
+const WORD_OR_LINE = r"<line[ >]|<word xMin=\"([-\d.]+)\" yMin=\"([-\d.]+)\" xMax=\"([-\d.]+)\" yMax=\"([-\d.]+)\">([^<]*)</word>"
+
+function _page_words(path::AbstractString, page::Int;
+                     bound::Real=ConceptExplorerCore.TOOL_WAIT, limit::Int=MAX_WORDS_BYTES)
+    tools = ConceptExplorerCore.find_tools(POPPLER)
+    tools isa AbstractString && return _note(tools)
+    # The text tool is the file beside `pdftoppm` (one build holds both, on a computer and in Julia's copy), run with
+    # its environment. The tool set is not grown by it: a copy fetched before would then count as no copy.
+    render = tools["pdftoppm"].exec[1]
+    file = joinpath(dirname(render), replace(basename(render), "pdftoppm" => "pdftotext"))
+    isfile(file) || return _note("This computer's poppler has no `pdftotext`, so the text of page $page cannot be read.")
+    pdftotext = Cmd(Cmd([file]); env = tools["pdftoppm"].env)
+    deadline = time() + bound
+    left() = max(deadline - time(), 0.1)
+    path = abspath(path)
+    doc = try
+        # The tool gives a page turned a quarter its boxes in the turned page's space and its size unturned.
+        info = String(ConceptExplorerCore.read_within(`$(tools["pdfinfo"]) -f $page -l $page $path`, left()))
+        turn = match(r"^Page\s+\d+\s+rot:\s+(\d+)"m, info)
+        turned = turn !== nothing && turn.captures[1] in ("90", "270")
+        xhtml = String(ConceptExplorerCore.read_within(`$pdftotext -bbox-layout -f $page -l $page $path -`, left()))
+        _words_document(xhtml, page, turned, limit)
+    catch e
+        return _note("Couldn't read the text of page $page: $(ConceptExplorerCore.error_words(e))")
+    end
+    doc === nothing && return _note("Couldn't read the text of page $page: the answer of `pdftotext` was not understood.")
+    ConceptExplorerCore.PreviewPayload(WORDS_MIME, Vector{UInt8}(codeunits(doc)))
+end
+
+# The document for one page of `pdftotext -bbox-layout`'s output, or `nothing` when it names no page size. A word's
+# text has the tool's five entities decoded and every control character, U+2028 and U+2029 dropped, so no word breaks
+# a line or carries an escape; a word left empty and a line left empty are left out.
+function _words_document(xhtml::AbstractString, page::Int, turned::Bool, limit::Int)
+    isvalid(xhtml) || (xhtml = filter(isvalid, xhtml))   # bytes that are no character are dropped before anything is matched
+    size = match(r"<page width=\"([\d.]+)\" height=\"([\d.]+)\"", xhtml)
+    size === nothing && return nothing
+    w, h = something.(tryparse.(Float64, size.captures), 0.0)
+    turned && ((w, h) = (h, w))
+    (w > 0 && h > 0) || return nothing
+    at(v, of) = round(Int, clamp(something(tryparse(Float64, v), 0.0) / of, 0, 1) * 65535)
+    lines, line, cut = String[], String[], false
+    used = sizeof("{\"page\":$page,\"cut\":false,\"lines\":[]}")
+    for m in eachmatch(WORD_OR_LINE, xhtml)
+        if m.captures[1] === nothing   # a line begins
+            isempty(line) || push!(lines, "[" * join(line, ",") * "]")
+            line = String[]
+            continue
+        end
+        text = replace(m.captures[5], "&amp;" => "&", "&lt;" => "<", "&gt;" => ">", "&quot;" => "\"", "&apos;" => "'")
+        text = filter(c -> !iscntrl(c) && c != '\u2028' && c != '\u2029', text)
+        isempty(text) && continue
+        x0, x1 = minmax(at(m.captures[1], w), at(m.captures[3], w))
+        y0, y1 = minmax(at(m.captures[2], h), at(m.captures[4], h))
+        word = "[$x0,$y0,$x1,$y1,\"" * replace(text, "\\" => "\\\\", "\"" => "\\\"") * "\"]"
+        # A word after another costs a comma; a line's first costs the line's brackets, and a comma after another line.
+        cost = sizeof(word) + (isempty(line) ? 2 + !isempty(lines) : 1)
+        if used + cost > limit
+            cut = true
+            break
+        end
+        used += cost
+        push!(line, word)
+    end
+    isempty(line) || push!(lines, "[" * join(line, ",") * "]")
+    "{\"page\":$page,\"cut\":$cut,\"lines\":[" * join(lines, ",") * "]}"
 end
 
 _note(msg) = ConceptExplorerCore.PreviewPayload(
