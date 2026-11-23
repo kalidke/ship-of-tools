@@ -37,6 +37,9 @@ Each script runs `sotd comm`. A send appends the message to the recipient's
 inbox (`~/.sot-comm/inbox/<handle>.jsonl`), itself or through the Ship of Tools
 daemon that owns that folder, and says `filed` only once the line is there; a
 session that was busy or away reads it with `comm-poll.sh` when it gets to it.
+If directed mail is waiting when a Codex turn tries to finish, its Stop hook asks the session to poll.
+After the mail is read, the turn can finish. If a writer holds the inbox lock past the read timeout,
+the hook lets the turn finish and checks again at the next turn end.
 
 ## A message wakes the recipient
 

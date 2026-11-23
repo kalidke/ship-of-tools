@@ -193,7 +193,8 @@ enum LockWait {
 /// forked child shares until it execs, so the lock is held by an `InboxLock`,
 /// whose `Drop` unlocks it: the lock never outlives its holder's drop.
 fn take_lock(lock: File, own: &str, wait: Duration, shared: bool) -> Result<InboxLock, LockWait> {
-    if own.starts_with("nfs4 ") {
+    // A zero wait still gets one kernel lock attempt, before any helper-thread scheduling.
+    if wait.is_zero() || own.starts_with("nfs4 ") {
         let deadline = Instant::now() + wait;
         loop {
             #[allow(clippy::disallowed_methods, reason = "the InboxLock built from this lock unlocks it in its Drop")]

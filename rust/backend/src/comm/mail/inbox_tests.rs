@@ -269,6 +269,19 @@ fn both_waits_give_the_same_sentence_at_the_bound() {
     }
 }
 
+#[test]
+fn a_zero_wait_filing_tries_a_local_lock_once() {
+    let d = tempfile::tempdir().unwrap();
+    let file = |text| file_frame(d.path(), "a", "h", false, text, "t", Duration::ZERO, "local t");
+    file("first").unwrap();
+    let writer = sot_platform::host::lock_writer(&d.path().join("h.lock")).unwrap();
+    assert_eq!(file("busy").unwrap_err(), "the inbox lock for @h was held for 0s — nothing was appended");
+    drop(writer);
+    file("next").unwrap();
+    let lines = read_lines(&d.path().join("h.jsonl"));
+    assert_eq!((lines.len(), lines[0]["msg"].as_str(), lines[1]["msg"].as_str()), (2, Some("first"), Some("next")));
+}
+
 /// A forked child that has not exec'd yet shares the lock's open file description; a clone of the file is the same
 /// thing without a fork. The dropped guard must free the lock anyway.
 #[test]

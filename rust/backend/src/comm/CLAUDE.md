@@ -271,7 +271,8 @@ Waking:
   `comm.wake.codex.queue`).
 - A busy session needs no typing: its end-of-turn check (the Stop hook, through `sotd comm unread`) does not let a turn
   end while unread mail waits, once per remainder (Reading's tick rule). A busy Codex row is still asked through its
-  queue (the limit above).
+  queue (the limit above). The Linux `comm_cli` fixture runs the shipped Codex prompt and Stop commands around a
+  directed send and one poll. A writer holding the inbox lock lets the turn finish, and the next turn sees the unread mail.
 - A session outside any row, every server session included, has a handle and an inbox and is never woken; it sees mail
   at its next turn, and after ten idle minutes a send to it fails as "no live session". No per-session watcher,
   listener, bridge or Monitor exists.

@@ -69,15 +69,20 @@ impl Scratch {
     /// [`Scratch::session`] under the umask `umask` when one is named, else the runner's.
     #[cfg(unix)]
     fn session_under(&self, umask: Option<&str>, who: &str, script: &str, args: &[&str]) -> Command {
-        let project = self.root.join("projects").join(who);
-        std::fs::create_dir_all(&project).expect("project");
-        let mut c = bash();
+        let mut c = self.shell(who);
         if let Some(m) = umask {
             c.arg("-c").arg(format!(r#"umask {m}; exec bash "$0" "$@""#));
         }
-        c.arg(fwd(&self.bin.join(script)))
-            .args(args)
-            .current_dir(&project)
+        c.arg(fwd(&self.bin.join(script))).args(args);
+        c
+    }
+
+    #[cfg(unix)]
+    fn shell(&self, who: &str) -> Command {
+        let project = self.root.join("projects").join(who);
+        std::fs::create_dir_all(&project).expect("project");
+        let mut c = bash();
+        c.current_dir(&project)
             .env_clear()
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
             .env("HOME", self.root.join("home"))
@@ -151,6 +156,92 @@ fn a_join_a_send_and_a_poll_through_the_wrappers() {
     let unknown = b.run("beta", "comm-send.sh", &["@nobody", "x"]);
     assert_eq!(unknown.status.code(), Some(1));
     assert!(unknown.stderr.starts_with("FAILED -> @nobody: "), "{unknown}");
+}
+
+/// Drive the shipped Codex hooks around a real send and poll. The writer lock is the one the reader actually takes.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_installed_codex_stop_holds_for_mail_and_releases_after_one_poll() {
+    check_codex_stop_mail(None);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn the_installed_codex_stop_with_zero_wait_distinguishes_a_free_inbox_from_a_busy_one() {
+    check_codex_stop_mail(Some("0"));
+}
+
+#[cfg(target_os = "linux")]
+fn check_codex_stop_mail(read_wait: Option<&str>) {
+    use serde_json::{json, Value};
+    use std::{fs, os::unix::{fs::symlink, process::CommandExt}};
+    let b = Scratch::new();
+    b.run("alpha", "comm-join.sh", &[]).ok();
+    b.run("beta", "comm-join.sh", &[]).ok();
+    b.own_lock_record();
+    fs::create_dir_all(b.root.join("home")).unwrap();
+    symlink(b.comm(), b.root.join("home/.sot-comm")).unwrap();
+    symlink(&b.bin, b.comm().join("bin")).unwrap();
+    let hooks: Value = serde_json::from_str(include_str!("../../../comm/adapters/codex/hooks.json")).unwrap();
+    let session = "11111111-1111-4111-8111-111111111111";
+    let binding = b.root.join("codex-thread");
+    fs::write(&binding, session).unwrap();
+    let in_row = |command: &str, input: Value| {
+        let mut c = b.shell("alpha");
+        if let Some(wait) = read_wait { c.env("SOT_INBOX_READ_WAIT_SECS", wait); }
+        c.env("SOT_AGENT_KIND", "codex").env("SOT_WORKSPACE_ID", "alpha")
+            .env("SOT_CODEX_THREAD_FILE", &binding)
+            .arg0("sot-capsule")
+            .args(["-c", r#"bash -c "$2" <<< "$3"; exit $?"#, "_", "/fixture/state/workspaces/alpha", command, &input.to_string()]);
+        run_within(&mut c, BOUND).ok()
+    };
+    let hook = |event: &str, turn: &str, fields: Value| {
+        let mut input = json!({"hook_event_name":event, "session_id":session, "turn_id":turn,
+            "cwd":b.root.join("projects/alpha"), "model":"fixture", "permission_mode":"default", "transcript_path":null});
+        input.as_object_mut().unwrap().extend(fields.as_object().unwrap().clone());
+        in_row(hooks["hooks"][event][0]["hooks"][0]["command"].as_str().unwrap(), input)
+    };
+    let entry = || {
+        let registry: Value = serde_json::from_slice(&fs::read(b.comm().join("registry.json")).unwrap()).unwrap();
+        registry["agents"]["alpha-box1"].clone()
+    };
+    let prompt = |turn: &str| {
+        hook("UserPromptSubmit", turn, json!({"prompt":"check the build"}));
+        assert_eq!(entry()["floor"], "user");
+    };
+    let stop = |turn: &str, active: bool| hook("Stop", turn, json!({"stop_hook_active":active,"last_assistant_message":"Finished."}));
+    let send = |body: &str| {
+        assert_eq!(b.run("beta", "comm-send.sh", &["@alpha-box1", body]).ok().stdout.trim(), "filed -> @alpha-box1");
+    };
+    let require_poll = |ran: Ran| {
+        let output: Value = serde_json::from_str(&ran.stdout).unwrap_or_else(|_| panic!("expected a Stop decision: {ran}"));
+        assert_eq!(output["decision"], "block");
+        assert!(output["reason"].as_str().unwrap().contains("mail for @alpha-box1 — run comm-poll.sh"), "{ran}");
+        assert_eq!(entry()["floor"], "user");
+    };
+    prompt("one");
+    send("first delivery");
+    require_poll(stop("one", false));
+    let poll = in_row("$HOME/.sot-comm/bin/comm-poll.sh", Value::Null);
+    assert_eq!(poll.stdout.lines().count(), 1, "{poll}");
+    assert!(poll.stdout.trim_end().ends_with("] [beta-box1:beta] first delivery"), "{poll}");
+    assert!(stop("one", true).stdout.is_empty());
+    assert_eq!(entry()["state"], "done");
+
+    prompt("two");
+    assert!(stop("two", false).stdout.is_empty());
+    assert_eq!(entry()["state"], "done");
+
+    prompt("three");
+    send("second delivery");
+    let lock = sot_platform::host::lock_writer(&b.comm().join("inbox/alpha-box1.lock")).unwrap();
+    let busy = stop("three", false);
+    assert!(busy.stdout.is_empty() && busy.stderr.contains("is being written"), "{busy}");
+    assert_eq!(entry()["state"], "done");
+    assert!(stop("three", true).stdout.is_empty());
+    drop(lock);
+    prompt("four");
+    require_poll(stop("four", false));
 }
 
 /// Everything a session's commands write in the comm folder is its user's alone, under any umask the caller has.

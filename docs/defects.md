@@ -560,7 +560,10 @@ owned by `docs/CLAUDE.md`.
   approval question is open, and one to a conversation that is then resumed by its id. Codex's own refusals of a
   queue request have not been seen, so the wake reads every one as unclear and asks no more for that mail. Also to
   see live: the extra turn a request costs a row that was at work when its mail came, and, after the first wake, what
-  processes the daemon has under it (whether Codex's queue command leaves anything running).
+  processes the daemon has under it (whether Codex's queue command leaves anything running). The installed-hook
+  fixture covers a busy turn that receives mail, polls after a Stop hold and then finishes, including recovery after
+  a writer releases the inbox lock. In that fixture a zero read wait reported a free local inbox busy while the
+  lock helper was starting. The reader now tries the lock directly at zero. Confirm the sequence with a live Codex session.
 
 - **CODEX-SELECTION-WINDOW** [note] A Linux stub verifies the selection hook, marked PNG and withdrawal across Codex launches.
   To close, select plain text and rendered Markdown in fresh and resumed Codex rows in a real window. At the next

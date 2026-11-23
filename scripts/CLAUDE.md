@@ -58,7 +58,7 @@ Guarantees, each with the mechanism it rests on:
   guards, which read every crate), and the non-Rust files the tests read (`docs-keybindings`, `docs-config`,
   `docs-install` for the docs pages the window's, the chat's and the daemon's pins quote; `comm-lib` and `stage-bin`
   for the comm library and the folders `comm/tests/stage-bin.sh` lays out, which the protocol's and the daemon's comm
-  tests run; `selection-hook`, `ccx`, `julia-repl`, `local-daemon`, and `logo` for `logo-wordmark-dark.png`). Such a path,
+  tests run; `selection-hook`, `codex-hooks` for the installed Stop mail fixture, `ccx`, `julia-repl`, `local-daemon`, and `logo` for `logo-wordmark-dark.png`). Such a path,
   markdown aside, selected only its own shell or Julia piece before. A row with filters runs each listed test that
   contains a filter, one job per test by exact name, less the ignored tests and the ones only a `gate-*` shard runs
   (`shards.py gated`, the cut the whole run makes), so a scoped run never runs more than the whole run does. Every run,

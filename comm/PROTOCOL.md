@@ -137,7 +137,8 @@ count one past it is the end. A count without a hash, and the old timestamp form
 stamped later), are read as before. Only `sotd comm poll` writes a cursor, after it has shown the batch, from the bytes
 it read, and only over the lines it printed: one poll prints at most 16,000 bytes of messages (a longer line alone,
 whole), then says how many more remain and that another poll shows them. A reader on a box that appends itself counts and reads under a shared
-lock, bounded at `SOT_INBOX_READ_WAIT_SECS`, 3 s (a held lock is "try again", exit 75).
+lock, bounded at `SOT_INBOX_READ_WAIT_SECS`, 3 s (a held lock is "try again", exit 75). Zero makes one
+nonblocking attempt. A free inbox is still read.
 
 ## The self file
 

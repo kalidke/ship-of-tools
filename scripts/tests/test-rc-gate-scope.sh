@@ -276,6 +276,7 @@ tree_cases=(
     "comm/mail/x|tree stage-bin;"
     "comm/bin-folders.txt|tree stage-bin;"
     "comm/tests/stage-bin.sh|tree stage-bin;"
+    "comm/adapters/codex/hooks.json|tree codex-hooks;"
     "comm/tests/test-x.sh|"
     "agents/sot-fe/x|tree stage-bin;"
     "agents/spawn/x|tree stage-bin;"

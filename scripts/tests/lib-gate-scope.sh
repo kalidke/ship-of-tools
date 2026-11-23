@@ -47,6 +47,7 @@ gate_tree_pieces() {
     esac
     case $1 in
         agents/sot-selection-hook.sh) echo "tree selection-hook" ;;
+        comm/adapters/codex/hooks.json) echo "tree codex-hooks" ;;
         agents/codex/bin/ccx) echo "tree ccx" ;;
         julia/repl/*) echo "tree julia-repl" ;;
         scripts/sot-local-daemon.ps1) echo "tree local-daemon" ;;
@@ -74,6 +75,7 @@ gate_tree_tests() {
     echo "stage-bin rust/backend/tests/comm_send.rs comm_send"
     echo "stage-bin rust/backend/tests/comm_file.rs comm_file"
     echo "selection-hook rust/backend/tests/selection.rs selection"
+    echo "codex-hooks rust/backend/tests/comm_cli.rs comm_cli the_installed_codex_stop"
     echo "ccx rust/backend/src/agents/env_tests.rs sotd agents::env::tests::ccx_unsets_the_nesting_markers"
     echo "ccx rust/backend/src/comm/wake/codex_tests.rs sotd comm::wake::codex::tests::"
     echo "ccx rust/backend/tests/comm_wake.rs comm_wake codex"
