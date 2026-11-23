@@ -186,8 +186,9 @@ where
             _ = ping_interval.tick() => ping_due = true,
             req = out_rx.recv(), if slot.is_idle() && !closed => match req {
                 None => closed = true,
-                Some(OutgoingReq::SelectionSet { req }) if req.drawing.is_some() && !session.takes_drawing => {
-                    // This daemon's hello did not say it reads a drawing; it would read the request as a clear.
+                Some(OutgoingReq::SelectionSet { req }) if untaken(&req, session.takes_drawing, session.draws_pages) => {
+                    // This daemon's hello did not say it reads a drawing (it would read the request as a clear), or
+                    // not one on a page (it would read the page's file as the figure and refuse it as no image).
                     answer_locally(evt_tx, &host, window, IncomingEvt::Selection { req, reply: SelectionReply::Unsupported });
                 }
                 Some(OutgoingReq::ChatPost { req }) if !session.posts_plain_text => {
@@ -221,6 +222,13 @@ where
             }
         }
     }
+}
+
+/// Whether `req` holds a drawing this connection's daemon does not take: any, when its hello did not say it reads one;
+/// one on a page, when its hello did not say it draws pages.
+fn untaken(req: &sot_protocol::ops::SelectionSetReq, takes_drawing: bool, draws_pages: bool) -> bool {
+    let paged = |d: &sot_protocol::ops::Drawing| matches!(d.base, sot_protocol::ops::InkBase::Figure { page: Some(_), .. });
+    req.drawing.as_ref().is_some_and(|d| !takes_drawing || !draws_pages && paged(d))
 }
 
 /// A request this connection's daemon cannot take (a drawing it does not read, a post it would send unescaped), ended here

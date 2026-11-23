@@ -62,7 +62,7 @@ of each.
    admitted. The first OS account a host says hello as holds it: a hello for that host as any other account is
    refused until the daemon restarts, the first account is still served, and a refusal changes no record, so one
    stray hello never locks a computer out (`Clients::admit_account`); connections already open are left alone. The accepted hello's reply (`handle_hello`)
-   carries the session id and revision, `snapshot_pending`, `posts_plain_text: true` (chat's door escapes a post's text), `posts_as_person: true` (a person's chat post goes out under their own user token; `tests/selection.rs` asserts it), `takes_drawing: true` (this daemon reads a drawing in `selection.set`; `tests/selection.rs`, which asserts the flag where it connects as a window and shows a drawing read) and any replay: a client with no session id gets no replay;
+   carries the session id and revision, `snapshot_pending`, `posts_plain_text: true` (chat's door escapes a post's text), `posts_as_person: true` (a person's chat post goes out under their own user token; `tests/selection.rs` asserts it), `takes_drawing: true` (this daemon reads a drawing in `selection.set`; `tests/selection.rs`, which asserts the flag where it connects as a window and shows a drawing read), `draws_pages: true` (it draws one over a page of a PDF; asserted in the same place) and any replay: a client with no session id gets no replay;
    one whose session id matches gets every ring entry newer than its `last_seen_revision`; a mismatched session id (a
    daemon restart) or a revision older than the ring's low watermark gets `snapshot_pending`, and refetches. Limits:
    the declared host and account are not authenticated (guarantee 3); after a restart the first hello holds its host,
@@ -109,6 +109,7 @@ of each.
     8); the loop answers other requests after it. `selection.set` is inline because a later selection replaces an earlier
     one, so they apply in the order sent; it reads up to 2 MiB of the project file or, for a drawing, decodes one image of at most 40 megapixels on the blocking pool while the loop waits (about half a second at that bound for a PNG, measured), one drawing at a time in the daemon; a drawing on a page first waits on the row's kernel to draw the page, a kernel step within its 10 s bound. Limit: a local disk that stalls (a
     network filesystem) or a download to a slow peer holds the loop for that long, and with it the ping and the reaper;
+    a drawing on a page holds its window's connection while the kernel draws the page, up to the kernel's 10 s bound (the kernel serves one request at a time, so a share waits behind a preview in flight in the same row), and for that long the loop reads nothing else of that window, the keys typed to a row's agent included (a letter page drawn at the picture's size took about a quarter of a second, measured on a generated page, and is then in the plugin's cache);
     a `selection.set` whose project folder stalls holds the window's connection as `file.write` does, and for a drawing every connection's drawing queued behind it. The three `POOLED` ops hold one
     of 4 permits per connection; a job that waits 10 s for one is answered with a timeout and never runs
     (`spawn_job`); a pooled job's workspace hint is resolved to the canonical id before it queues, or answered

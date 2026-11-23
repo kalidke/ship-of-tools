@@ -67,8 +67,11 @@ of the table above work the same, and `n` and `p` still turn the page.
   picture is drawn anew for the agent, 2000 pixels on its longer side whatever your zoom, so very small print can be
   hard to read in it; the agent can also open the PDF itself.
 - **Where the session runs.** The computer that runs the session draws the page, with the same program that shows it
-  in the preview. If that computer's Ship of Tools is older than this window's, the window says
-  `drawing not shared: the daemon could not render this page (a daemon older than this window cannot draw on a PDF page; update it)`.
+  in the preview. If that computer's Ship of Tools is too old to draw on a PDF page, the window says
+  `drawing not shared: this daemon cannot draw on a PDF page; update it`, and nothing of that session stays shared.
+- **A PDF that is rebuilt.** When the PDF is written again while you have a drawing on one of its pages, the preview
+  shows the new page with your ink in the same place, but the agent still has the picture of the old page. Draw
+  another stroke, or undo one, to share the page as it is now.
 
 ## The canvas
 
@@ -171,6 +174,10 @@ when it is shared again by itself:
 - opening the editor (`e`);
 - switching to another session.
 
+A file written again while its drawing is on screen does not stop the sharing, and does not renew it: the ink stays
+over the new image or page, and the agent keeps the picture made when the drawing was last shared, of the file as it
+was then, until you change the drawing or hide it and show it again.
+
 A selection under the canvas is kept, and is shared again when the canvas is hidden.
 
 Two more things stop the sharing whatever is on screen. When the window loses its connection to the computer that runs
@@ -208,7 +215,8 @@ over a picture that is not an image file is under [What is not built](#What-is-n
 | `selection not shared: this host's daemon does not take selections`, `drawing not shared: this daemon cannot take a drawing; update it` | The computer that runs the session has an older Ship of Tools. Update it. |
 | `drawing not shared: the image is over 40 megapixels` | The image is too large to draw on. |
 | `drawing not shared: the daemon cannot read this image` | The service could not read the file as a picture. |
-| `drawing not shared: the daemon could not render this page (a daemon older than this window cannot draw on a PDF page; update it)` | The service did not draw the PDF page under your ink: its Ship of Tools is older than this window's, the file or the page is gone, or the program that draws pages did not answer in time. Draw another stroke to try again; if it stays, update the computer that runs the session. |
+| `drawing not shared: this daemon cannot draw on a PDF page; update it` | The computer that runs the session has a Ship of Tools that draws on images only. Update it. |
+| `drawing not shared: the daemon could not render this page` | The service did not draw the PDF page under your ink: the file or the page is gone, or the program that draws pages did not answer in time. Draw another stroke to try again. |
 | `selection not shared: <reason>`, `drawing not shared: <reason>` | Any other refusal, with the service's short word for the reason. Select or draw again; if it stays, that word is what to report. |
 
 ## What is not built

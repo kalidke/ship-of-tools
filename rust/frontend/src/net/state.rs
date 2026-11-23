@@ -283,6 +283,8 @@ pub(super) struct SessionState {
     pub(super) gate: StateSaveGate,
     /// This connection's hello said the daemon reads a drawing (`HelloRes::takes_drawing`); false until it is accepted.
     pub(super) takes_drawing: bool,
+    /// This connection's hello said the daemon draws a drawing over a page (`HelloRes::draws_pages`); false until then.
+    pub(super) draws_pages: bool,
     /// This connection's hello said the daemon's chat door escapes a post's text (`HelloRes::posts_plain_text`); false until
     /// it is accepted. A window never posts to a daemon that does not: it would send `<!channel>` as a ping.
     pub(super) posts_plain_text: bool,

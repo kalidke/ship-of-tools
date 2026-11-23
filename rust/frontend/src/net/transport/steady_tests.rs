@@ -25,8 +25,13 @@ fn rig(capacity: usize, ping_every: Duration, first_id: u64) -> Rig {
     rig_taking(capacity, ping_every, first_id, (false, true))
 }
 
-/// `rig` whose connection's hello said whether the daemon reads a drawing.
+/// `rig` whose connection's hello said whether the daemon reads a drawing (and with it, one on a page).
 fn rig_taking(capacity: usize, ping_every: Duration, first_id: u64, (takes_drawing, posts_plain_text): (bool, bool)) -> Rig {
+    rig_saying(capacity, ping_every, first_id, (takes_drawing, takes_drawing, posts_plain_text))
+}
+
+/// `rig` whose connection's hello said each of: the daemon reads a drawing, draws one on a page, posts plain text.
+fn rig_saying(capacity: usize, ping_every: Duration, first_id: u64, (takes_drawing, draws_pages, posts_plain_text): (bool, bool, bool)) -> Rig {
     let env = crate::net::state::test_env::set_test_env();
     let (near, far) = tokio::io::duplex(capacity);
     let (events_tx, events) = std::sync::mpsc::channel();
@@ -39,6 +44,7 @@ fn rig_taking(capacity: usize, ping_every: Duration, first_id: u64, (takes_drawi
             memory: crate::net::state::SessionMemory::fresh(),
             gate: StateSaveGate::new(),
             takes_drawing,
+            draws_pages,
             posts_plain_text,
         };
         let (rx, tx) = tokio::io::split(near);
@@ -398,6 +404,7 @@ async fn a_frame_ready_as_the_silence_deadline_passes_is_read_not_cut() {
                 memory: crate::net::state::SessionMemory::fresh(),
                 gate: StateSaveGate::new(),
                 takes_drawing: false,
+                draws_pages: false,
                 posts_plain_text: false,
             };
             steady::steady_loop(
@@ -497,6 +504,25 @@ async fn a_drawing_is_written_only_on_a_connection_whose_hello_took_one() {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
         assert_eq!(unsupported, !takes, "takes={takes}: the unsupported answer");
+    }
+}
+
+/// A drawing on a page goes only to a connection whose hello said the daemon draws pages; a daemon that reads drawings
+/// and said nothing of pages is answered for here and never written to (it would read the page's file as the figure),
+/// while a picture's drawing still goes to it.
+#[tokio::test]
+async fn a_page_drawing_is_written_only_on_a_connection_whose_hello_draws_pages() {
+    let sel = |v: serde_json::Value| -> OutgoingReq { OutgoingReq::SelectionSet { req: serde_json::from_value(v).unwrap() } };
+    let on = |base: serde_json::Value| sel(serde_json::json!({ "workspace_id": "w", "selection": null, "drawing": { "base": base, "strokes": [[[1, 2]]] } }));
+    for pages in [false, true] {
+        let mut rig = rig_saying(1 << 16, NEVER, 1, (true, pages, true));
+        rig.out_tx.as_ref().unwrap().send(on(serde_json::json!({ "figure": { "node_id": "files:doc.pdf", "page": 2 } }))).unwrap();
+        rig.out_tx.as_ref().unwrap().send(on(serde_json::json!({ "figure": { "node_id": "files:a.png" } }))).unwrap();
+        let (req, _) = tokio::time::timeout(WAIT, codec::read_frame(&mut rig.far_rd)).await.expect("a request reaches the daemon").unwrap();
+        let written = req.payload["drawing"]["base"]["figure"]["node_id"].as_str().unwrap().to_string();
+        assert_eq!(written, if pages { "files:doc.pdf" } else { "files:a.png" }, "pages={pages}: the first frame written");
+        let unsupported = rig.events.try_iter().any(|(_, e)| matches!(e, IncomingEvt::Selection { reply: SelectionReply::Unsupported, .. }));
+        assert_eq!(unsupported, !pages, "pages={pages}: the unsupported answer");
     }
 }
 

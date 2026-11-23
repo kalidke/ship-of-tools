@@ -587,6 +587,8 @@ fn the_shown_base_is_the_raster_node_only_for_an_image_or_a_page_outside_edit_an
     assert_eq!(paged(Some("files:doc.pdf"), Some(3), false, false), Some(page("doc.pdf", 3)));
     assert_eq!(paged(Some("files:a.png"), Some(3), false, false), Some(fig("a.png")));
     assert_eq!(paged(None, Some(3), false, false), None);
+    // pages count from 1: a page 0 is no base and is never sent
+    assert_eq!(paged(Some("files:doc.pdf"), Some(0), false, false), None);
     assert_eq!(paged(Some("files:doc.pdf"), Some(3), true, false), None);
     assert_eq!(paged(Some("files:doc.pdf"), Some(3), false, true), None);
 }

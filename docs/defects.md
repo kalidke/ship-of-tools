@@ -701,6 +701,14 @@ owned by `docs/CLAUDE.md`.
 
 ## sidecars
 
+- **PDF-PAGE-FIT-AXIS-FROM-FIRST-PAGE** [note] The PDF plugin (`julia/plugins/pdf-file`, `_preview_page`) chooses
+  which axis a fit bounds from the page size `pdfinfo` reports, which is the first page's, not the page asked for. A
+  page of another shape is then drawn past the fit on its other axis, in the preview at the pane's size and in a
+  drawing's picture at 2000 px. Measured with the plugin's own flags on generated two-page files behind a portrait
+  first page: a second page of 792 x 300 pt came out 5280 x 2000 px, and one of 7200 x 200 pt came out 72000 x 2000 px
+  in 3.7 s with 574 MB resident in the tool, which the daemon then refuses as over 40 megapixels. The cost is the
+  kernel's child's; the daemon's own bounds hold. Fix: choose the axis from the size of the page asked for
+  (`pdfinfo -f N -l N`). Found by the review of the landing that built drawing on a PDF page; not seen in use.
 - **TEST-CHILD-OUTLIVES-TEST** [session] Julia children that `sotd` unit tests start (a kernel's `start.jl` and two REPL
   shims in a project named with spaces) outlived their tests by five hours, two of them at full CPU, reparented and
   still in the row's cgroup, after a run that started each unit test in its own process with a scratch home
@@ -902,7 +910,11 @@ owned by `docs/CLAUDE.md`.
   takes a shown page as a base, keyed by its file and page, and the daemon has the row's kernel draw that page and
   puts the ink over it (fe-ui's, files' and agents' contracts). Open until a person has drawn on a page through a
   window: only unit tests with a stand-in kernel prove it, on Linux; macOS and Windows are unmeasured. Not built: a
-  drawing kept for each page of a file (a stroke on another page replaces the session's drawing).
+  drawing kept for each page of a file (a stroke on another page replaces the session's drawing). A limit, from
+  reading: a PDF rebuilt in place while one of its pages holds a drawing is shown again with the ink over the new
+  page at the same place, and nothing is shared again, so the agent holds the picture of the old page until the next
+  stroke, undo or erase (the same holds for an image file replaced in place); hiding the drawing when a page's bytes
+  change is not built.
 - **SELECT-MARKDOWN-PINS** [note] Rules of the rendered markdown selection that no test pins, found by its review by
   mutants that pass the whole suite: that the lines between a selection's two ends count (a drag from the blank line
   above a paragraph to the one below shares the paragraph), the preview pane's `maps_source` true in

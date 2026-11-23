@@ -44,6 +44,7 @@ async fn the_windows_hello_says_it_reads_terminal_color() {
         memory: crate::net::state::SessionMemory::fresh(),
         gate: super::StateSaveGate::new(),
         takes_drawing: false,
+        draws_pages: false,
         posts_plain_text: false,
     };
     let mut wire = Vec::new();

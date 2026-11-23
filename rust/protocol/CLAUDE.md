@@ -237,9 +237,13 @@ name is in this crate's one op table.
     is not written when none; a request without it decodes as before): a `Drawing { base, strokes }`, `base` `"canvas"` or
     `{"figure": {"node_id"}}` (4096 bytes), with `page`, a 1-based `u32`, beside the node id when the drawing is on a page of
     a paged node (a PDF); `page` is defaulted and not written when none, so an image's base and its digest are as before the
-    field, and a daemon built before it ignores it, reads the node alone and refuses it as no image, which withdraws the
-    row's selection (so the hello's `takes_drawing` is enough for pages and nothing new is said there; test
-    `a_figure_base_may_name_a_page_and_stays_additive`); each point `[x, y]` as `u16` fractions of the base's width and height
+    field (the test pins the bytes), and a daemon built before it ignores it, reads the node alone and refuses it as no image, which withdraws the
+    row's selection (the test reads the new JSON with a copy of that daemon's type; test
+    `a_figure_base_may_name_a_page_and_stays_additive`). `takes_drawing` does not say a daemon draws pages, so the hello
+    has a word of its own: `HelloRes.draws_pages`, defaulted and left out when false as `takes_drawing` is, and the window
+    sends a page's base only to a daemon that said it (fe-net's contract; test
+    `a_hello_reply_says_whether_the_daemon_draws_pages_and_stays_additive`, where the last release's whole reply reads as
+    drawing none). Page 0 decodes; the daemon refuses it (files' contract). Each point `[x, y]` as `u16` fractions of the base's width and height
     (`/ 65535`). Decode refuses a request with both a selection and a drawing, no stroke, an empty stroke, or more than
     `MAX_INK_POINTS` (16384) points in all; each stroke has a point, so that one bound also bounds the strokes, and the
     largest drawing is far under the envelope. Two more refusal codes, `not_an_image` and `too_large`, are fixed for the daemon's use. Tests `ops/selection_tests.rs`:

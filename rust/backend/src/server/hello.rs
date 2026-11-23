@@ -201,6 +201,8 @@ pub async fn handle_hello(
         repl_running,
         // This daemon's `selection.set` reads a drawing (wire guarantee 13).
         takes_drawing: true,
+        // It draws one over a page of a paged file (the same guarantee).
+        draws_pages: true,
         // Chat's door escapes a post's text (chat guarantee 12).
         posts_plain_text: true,
         // A person's chat post and file share go out under their own user token (chat guarantees 12 and 32).

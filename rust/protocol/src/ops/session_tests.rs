@@ -63,6 +63,20 @@ mod hello_version_tests {
         assert_eq!(serde_json::to_value(&res).unwrap()["takes_drawing"], serde_json::json!(true));
     }
 
+    /// A hello reply says whether the daemon draws a drawing over a page (`draws_pages`), additive both ways: the last
+    /// release's reply, which reads drawings, reads as drawing no pages, and false is not written.
+    #[test]
+    fn a_hello_reply_says_whether_the_daemon_draws_pages_and_stays_additive() {
+        // The last release's whole reply (a v0.7.3 daemon's), as it writes one.
+        let old = r#"{"session_id":"s1","revision":3,"snapshot_pending":false,"host":"h","project_root":"/p","clients_connected":1,"protocol":4,"app_version":"0.7.3","proxy":true,"repl_running":[2],"takes_drawing":true,"posts_plain_text":true,"posts_as_person":true}"#;
+        let res: HelloRes = serde_json::from_str(old).expect("a reply without the field");
+        assert!(res.takes_drawing && !res.draws_pages, "an older daemon reads drawings and draws no pages");
+        assert_eq!(serde_json::to_value(&res).unwrap().get("draws_pages"), None, "false is not written");
+        let says = r#"{"session_id":"s1","revision":3,"snapshot_pending":false,"draws_pages":true}"#;
+        let res: HelloRes = serde_json::from_str(says).expect("a reply with the field");
+        assert_eq!(serde_json::to_value(&res).unwrap()["draws_pages"], serde_json::json!(true));
+    }
+
     /// A hello reply says whether the daemon's chat door escapes a post's text (`posts_plain_text`), additive both
     /// ways: the last release's reply reads as false, and false is not written.
     #[test]

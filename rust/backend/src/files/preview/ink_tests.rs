@@ -104,6 +104,10 @@ fn a_pages_picture_is_the_page_with_its_ink() {
     assert_eq!(pixel(&out, 0.1, 0.1), PAGE);
     assert_eq!(compose(&files, "p2", &stroke(base()), None).unwrap_err().0, NOT_AN_IMAGE);
     assert_eq!(compose(&files, "p2", &stroke(base()), Some(b"not a png".as_slice())).unwrap_err().0, NOT_AN_IMAGE);
+    // by a rule, not by the node's name: an image file named as a page's base is never read as the picture
+    figure_png(dir.path(), "a.png", 40, 20);
+    let named = InkBase::Figure { node_id: "files:a.png".into(), page: Some(2) };
+    assert_eq!(compose(&files, "p2", &stroke(named), None).unwrap_err().0, NOT_AN_IMAGE);
     assert!(!dir.path().join(".sot/captures/ink-p2.png").exists(), "a refused page writes no picture");
 }
 
@@ -161,6 +165,30 @@ async fn a_page_is_drawn_by_the_kernel_and_a_page_it_did_not_draw_is_refused() {
         let ws = row_with_kernel(dir.path(), project.path(), "ws-page", "claude", payload);
         assert_eq!(page_png(&ws, "files:doc.pdf", 2).await.unwrap_err().0, NOT_AN_IMAGE, "{name}");
     }
+}
+
+/// The kernel is asked only for a page from 1 of a regular file named `.pdf`: a text file with a page (its own plugin
+/// would read it), a FIFO and a folder named `.pdf` (the kernel's tool would open the first and wait) and page 0 are
+/// each refused with the kernel never asked, though this kernel would answer any request with a picture.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_base_that_is_no_page_of_a_pdf_file_never_reaches_the_kernel() {
+    use super::ink::page_png;
+    let project = tempfile::tempdir().unwrap();
+    std::fs::write(project.path().join("doc.PDF"), b"%PDF-1.4").unwrap();
+    std::fs::write(project.path().join("notes.txt"), b"words").unwrap();
+    std::fs::create_dir(project.path().join("dir.pdf")).unwrap();
+    let fifo = std::ffi::CString::new(project.path().join("pipe.pdf").to_str().unwrap()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+    let dir = tempfile::tempdir().unwrap();
+    let ws = row_with_kernel(dir.path(), project.path(), "ws-nopage", "claude", drawn_page(2));
+    for (node, page) in [("files:notes.txt", 2), ("files:pipe.pdf", 2), ("files:dir.pdf", 2), ("files:gone.pdf", 2), ("files:doc.PDF", 0)] {
+        assert_eq!(page_png(&ws, node, page).await.unwrap_err().0, NOT_AN_IMAGE, "{node} page {page}");
+        assert!(!dir.path().join("asked").exists(), "{node} page {page}: the kernel was asked");
+    }
+    // the same kernel draws the page of the file itself, whatever the case of its extension
+    assert!(page_png(&ws, "files:doc.PDF", 2).await.is_ok());
+    assert!(dir.path().join("asked").exists());
 }
 
 /// A link (a junction on Windows) at `at` to the folder `target`.

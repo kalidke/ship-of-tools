@@ -506,6 +506,7 @@ where
         memory: crate::net::state::load(&host),
         gate: StateSaveGate::new(),
         takes_drawing: false,
+        draws_pages: false,
         posts_plain_text: false,
     };
     tracing::info!(
@@ -592,6 +593,7 @@ where
         memory: crate::net::state::SessionMemory::fresh(),
         gate: StateSaveGate::new(),
         takes_drawing: false,
+        draws_pages: false,
         posts_plain_text: false,
     };
     steady::steady_loop(

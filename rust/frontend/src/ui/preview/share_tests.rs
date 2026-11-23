@@ -265,10 +265,9 @@ fn the_window_shares_its_drawing_and_withdraws_it() {
         assert_eq!(q.drawing.as_ref().unwrap().base, base);
         s.on_reply(&host(), &q, r)
     };
-    assert_eq!(
-        page_line(refused("not_an_image")).as_deref(),
-        Some("drawing not shared: the daemon could not render this page (a daemon older than this window cannot draw on a PDF page; update it)")
-    );
+    // a current daemon's refusal says nothing of an update; the word for a daemon that draws no pages is fe-net's answer
+    assert_eq!(page_line(refused("not_an_image")).as_deref(), Some("drawing not shared: the daemon could not render this page"));
+    assert_eq!(page_line(SelectionReply::Unsupported).as_deref(), Some("drawing not shared: this daemon cannot draw on a PDF page; update it"));
     assert_eq!(page_line(refused("too_large")).as_deref(), Some("drawing not shared: the image is over 40 megapixels"));
     assert_eq!(page_line(done()).as_deref(), Some("drawing shared: the agent sees it at its next prompt"));
     assert_eq!(line(SelectionReply::Unsupported).as_deref(), Some("drawing not shared: this daemon cannot take a drawing; update it"));
@@ -300,6 +299,30 @@ fn the_window_shares_its_drawing_and_withdraws_it() {
         line(SelectionReply::Refused { code: None, error: "bad".into() }).as_deref(),
         Some("drawing not shared: bad")
     );
+}
+
+/// A drawing fe-net answered for was never sent, so the daemon still holds what the row shared before it (a text
+/// selection replaced in place by a page's drawing on a daemon that draws no pages, or by any drawing on one that reads
+/// none): the row is told to hold nothing, and the drawing is not asked again until it changes.
+#[test]
+fn a_drawing_answered_here_leaves_nothing_shared() {
+    let mut s = up();
+    let text = req(go(&mut s, want("abc")));
+    s.on_reply(&host(), &text, done());
+    let drawing = req(go_ink(&mut s, ink_want("r1", "files:doc.pdf", 1), 1));
+    assert!(drawing.drawing.is_some() && drawing.workspace_id == "r1", "the drawing replaces the text in place");
+    assert!(s.on_reply(&host(), &drawing, SelectionReply::Unsupported).unwrap().starts_with("drawing not shared: "));
+    let clear = req(go_ink(&mut s, ink_want("r1", "files:doc.pdf", 1), 1));
+    assert_eq!(clear, SelectionSetReq { workspace_id: "r1".into(), selection: None, drawing: None }, "the row is cleared");
+    assert_eq!(s.on_reply(&host(), &clear, done()), None, "a clear is not announced");
+    assert!(go_ink(&mut s, ink_want("r1", "files:doc.pdf", 1), 1).is_none(), "the same drawing is not asked again");
+    assert!(req(go_ink(&mut s, ink_want("r1", "files:doc.pdf", 2), 1)).drawing.is_some(), "a changed drawing is");
+    // a link that goes before the clear is sent owes none: the daemon withdrew everything at the connection's end
+    let q = s.flight.as_ref().unwrap().req.clone();
+    s.on_reply(&host(), &q, SelectionReply::Unsupported);
+    s.on_connection(&host(), false);
+    s.on_connection(&host(), true);
+    assert!(req(go_ink(&mut s, ink_want("r1", "files:doc.pdf", 2), 1)).drawing.is_some(), "after a reconnect the drawing goes, no clear first");
 }
 
 /// R-D17, orderings 3, 11 and 12, on a real owner: the shown base and the committed strokes decide, a drag sends nothing

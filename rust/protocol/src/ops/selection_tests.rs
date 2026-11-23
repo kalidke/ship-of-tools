@@ -179,6 +179,19 @@ fn a_figure_base_may_name_a_page_and_stays_additive() {
     let plain = InkBase::Figure { node_id: "plots/fit.png".into(), page: None };
     assert_eq!(serde_json::to_value(&plain).unwrap(), json!({"figure": {"node_id": "plots/fit.png"}}));
     assert_eq!(serde_json::from_value::<InkBase>(json!({"figure": {"node_id": "plots/fit.png"}})).unwrap(), plain);
+    // an image's base is written byte for byte as before the field: these bytes are the input of its drawing's digest
+    let image = Drawing { base: plain, strokes: vec![vec![[1, 2]]] };
+    assert_eq!(serde_json::to_string(&image).unwrap(), r#"{"base":{"figure":{"node_id":"plots/fit.png"}},"strokes":[[[1,2]]]}"#);
+    // the reader of a daemon built before the field (its type, copied here) reads a page's base as the node alone
+    #[derive(Debug, PartialEq, serde::Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    enum OldInkBase {
+        Canvas,
+        Figure { node_id: String },
+    }
+    let old: OldInkBase = serde_json::from_value(json!({"figure": {"node_id": "docs/paper.pdf", "page": 3}})).unwrap();
+    assert_eq!(old, OldInkBase::Figure { node_id: "docs/paper.pdf".into() });
+    assert_eq!(serde_json::from_value::<OldInkBase>(json!("canvas")).unwrap(), OldInkBase::Canvas);
     // a page is a whole number that fits `u32`
     for bad in [json!(-1), json!(1.5), json!("3"), json!(u64::from(u32::MAX) + 1)] {
         assert!(refused(drawing_req(json!({"base": {"figure": {"node_id": "a.pdf", "page": bad}}, "strokes": [[[1, 2]]]}))), "{bad}");

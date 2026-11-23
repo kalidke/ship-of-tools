@@ -25,7 +25,7 @@ pub(super) enum Place {
 
 /// The ops a control session runs in its loop, each with its reason. An op is here only if it uses the loop's own
 /// state or writer, or must keep its order on the connection, and it waits only on memory, the local disk, a capsule
-/// op (5 s), the registry lock (1 s), a REPL slot settle (5 s), a kernel call made by `preview.set_scale` (10 s) or,
+/// op (5 s), the registry lock (1 s), a REPL slot settle (5 s), a kernel call made by `preview.set_scale` or by `selection.set` for a drawing on a page (10 s) or,
 /// for `workspace.reauth` (sent only by a row's own client), a row's start lock: nothing that outlasts the window's
 /// 90 s silence rule.
 pub(super) const INLINE: &[(&str, &str)] = &[

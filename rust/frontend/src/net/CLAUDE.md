@@ -18,7 +18,12 @@ through the channel types below.
 - A drawing sent only to a daemon that reads one: each connection keeps its own hello's `HelloRes::takes_drawing`
   (`SessionState`), and a `selection.set` that carries a drawing, on a connection whose hello did not say it, is answered
   `SelectionReply::Unsupported` and never written (an older daemon would read it as a clear); a clear and a text selection
-  still go. Tests: `a_drawing_is_written_only_on_a_connection_whose_hello_took_one`,
+  still go. A drawing on a page (`InkBase::Figure` with a `page`) goes only on a connection whose hello also said
+  `HelloRes::draws_pages`, and is answered the same way on any other (a daemon that reads drawings and draws no pages
+  would read the page's file as the figure, refuse it and withdraw the row's selection); a picture's drawing still goes
+  to that daemon. Nothing is written for a drawing answered here, so the daemon holds what it held: fe-ui clears the
+  row. Tests: `a_drawing_is_written_only_on_a_connection_whose_hello_took_one`,
+  `a_page_drawing_is_written_only_on_a_connection_whose_hello_draws_pages`,
   `the_accepted_hello_sets_whether_the_connection_takes_a_drawing_and_posts_plain_text`.
 - A post sent only to a daemon whose door posts plain text: each connection keeps its own hello's
   `HelloRes::posts_plain_text` (`SessionState`), and a `chat.post`, on a connection whose hello did not say it, is answered

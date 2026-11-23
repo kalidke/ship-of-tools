@@ -352,9 +352,10 @@ async fn a_hello_with_an_update_state_emits_it_after_connected_and_an_old_daemon
     assert_eq!(seen, [("update-state", vec![(1, true)]), ("update-old-daemon", vec![]), ("update-garbled", vec![])]);
 }
 
-/// The accepted hello sets the connection's `takes_drawing` and `posts_plain_text` each from what the daemon said; a hello
-/// without a field leaves it false. An earlier release's hello (a drawing taken, no word on plain text) tells the two
-/// apart: the window may send it a drawing and must not post to it.
+/// The accepted hello sets the connection's `takes_drawing`, `draws_pages` and `posts_plain_text` each from what the
+/// daemon said; a hello without a field leaves it false. An earlier release's hello (a drawing taken, no word on plain
+/// text or on pages) tells them apart: the window may send it a picture's drawing and must not post to it or send it a
+/// page's.
 #[test]
 fn the_accepted_hello_sets_whether_the_connection_takes_a_drawing_and_posts_plain_text() {
     let _env = crate::net::state::test_env::set_test_env();
@@ -366,13 +367,17 @@ fn the_accepted_hello_sets_whether_the_connection_takes_a_drawing_and_posts_plai
         if plain {
             says["posts_plain_text"] = serde_json::json!(true);
         }
+        // the word on pages is told apart from both: it is said exactly when the two others differ
+        if drawing != plain {
+            says["draws_pages"] = serde_json::json!(true);
+        }
         says
     };
     for (reply, want) in [(with(true, true), (true, true)), (with(false, false), (false, false)), (with(true, false), (true, false)), (with(false, true), (false, true))] {
         let host: HostKey = "takes-drawing".to_string();
-        let mut session = SessionState { host: host.clone(), memory: crate::net::state::SessionMemory::fresh(), gate: StateSaveGate::new(), takes_drawing: !want.0, posts_plain_text: !want.1 };
+        let mut session = SessionState { host: host.clone(), memory: crate::net::state::SessionMemory::fresh(), gate: StateSaveGate::new(), takes_drawing: !want.0, draws_pages: want.0 == want.1, posts_plain_text: !want.1 };
         accept_hello(Frame::res(1, op::HELLO, reply), &host, &mut session, ResolvedDial::Local, &|_| {}, &NoWindow).unwrap();
-        assert_eq!((session.takes_drawing, session.posts_plain_text), want);
+        assert_eq!((session.takes_drawing, session.posts_plain_text, session.draws_pages), (want.0, want.1, want.0 != want.1));
     }
 }
 

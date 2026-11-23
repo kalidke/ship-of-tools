@@ -53,16 +53,26 @@ pub(in crate::ui) struct SelectionShare {
     /// What the daemon was last asked to hold; a refusal is not retried until the desired state changes.
     sent: Option<Want>,
     flight: Option<Flight>,
+    /// A row whose drawing fe-net answered for and never sent: its daemon still holds what it held before, so the row
+    /// is owed a clear.
+    unsent: Option<(HostKey, String)>,
 }
 
 impl SelectionShare {
     /// Hands `send` the next request toward `desired`; nothing when the daemon already holds it, a request waits for its
     /// reply or the host that must be told is down. A row switch is a clear to the row that held the share, then the new
-    /// row's share. A send that fails is as a connection's end: the host reads as down and its share is forgotten.
+    /// row's share. A send that fails is as a connection's end: the host reads as down and its share is forgotten. A row
+    /// whose drawing was never sent is cleared first, and that drawing is not asked again until it changes.
     pub(in crate::ui) fn reconcile<E>(
         &mut self, desired: Option<Want>, strokes: &[Vec<[u16; 2]>], send: impl FnOnce(&HostKey, OutgoingReq) -> Result<(), E>,
     ) {
-        if self.flight.is_some() || self.sent == desired {
+        if self.flight.is_some() {
+            return;
+        }
+        if let Some((host, workspace_id)) = self.unsent.take() {
+            return self.put(host, SelectionSetReq { workspace_id, selection: None, drawing: None }, send);
+        }
+        if self.sent == desired {
             return;
         }
         let same_row = |a: &Want, b: &Want| a.host == b.host && a.workspace_id == b.workspace_id;
@@ -72,16 +82,22 @@ impl SelectionShare {
             (_, Some(w)) => (w.host.clone(), w.workspace_id.clone(), Some(w)),
             (_, None) => return,
         };
-        if !self.up.contains(&host) {
-            return;
-        }
         let (selection, drawing) = match next.as_ref().map(|w| &w.share) {
             Some(Share::Text(t)) => (Some(t.clone()), None),
             Some(Share::Ink { base, .. }) => (None, Some(Drawing { base: base.clone(), strokes: strokes.to_vec() })),
             None => (None, None),
         };
-        let req = SelectionSetReq { workspace_id, selection, drawing };
-        self.sent = next;
+        if self.up.contains(&host) {
+            self.sent = next;
+            self.put(host, SelectionSetReq { workspace_id, selection, drawing }, send);
+        }
+    }
+
+    /// Sends `req` to `host` as the one request in flight; nothing to a host that is down.
+    fn put<E>(&mut self, host: HostKey, req: SelectionSetReq, send: impl FnOnce(&HostKey, OutgoingReq) -> Result<(), E>) {
+        if !self.up.contains(&host) {
+            return;
+        }
         self.flight = Some(Flight { host: host.clone(), req: req.clone() });
         if send(&host, OutgoingReq::SelectionSet { req }).is_err() {
             self.on_connection(&host, false);
@@ -102,6 +118,7 @@ impl SelectionShare {
         if self.flight.as_ref().is_some_and(|f| &f.host == host) {
             self.flight = None;
         }
+        self.unsent.take_if(|(h, _)| h == host);
     }
 
     /// A reply: the status line it earns, if any. A reply that does not answer the request in flight on that host (one from
@@ -121,6 +138,10 @@ impl SelectionShare {
                 None
             }
             reply if req.drawing.is_some() => {
+                // fe-net answers a drawing as unsupported itself and writes nothing, so the daemon holds what it held.
+                if matches!(reply, SelectionReply::Unsupported) {
+                    self.unsent = Some((host.clone(), req.workspace_id.clone()));
+                }
                 drawing_line(reply, req.drawing.as_ref().is_some_and(|d| matches!(d.base, InkBase::Figure { page: Some(_), .. })))
             }
             SelectionReply::Done(SelectionState::Shared) => share.then(|| "selection shared: the agent sees it at its next prompt".into()),
@@ -138,19 +159,19 @@ impl SelectionShare {
     }
 }
 
-/// The status line a reply to a shared drawing earns; `page` is whether it was drawn on a page. A daemon built before
-/// pages reads a page's base as its file, which is no image, so `not_an_image` there is also that daemon's answer.
+/// The status line a reply to a shared drawing earns; `page` is whether it was drawn on a page. A daemon that draws no
+/// pages is never sent one (fe-net answers unsupported), so `not_an_image` on a page is a current daemon's answer: its
+/// kernel did not draw the page, or the file or the page is gone.
 fn drawing_line(reply: SelectionReply, page: bool) -> Option<String> {
     Some(match reply {
         SelectionReply::Done(SelectionState::Shared) => "drawing shared: the agent sees it at its next prompt".into(),
         SelectionReply::Done(SelectionState::Held) => "drawing held: this row's agent started before it could take one; restart the row to share".into(),
         SelectionReply::Done(SelectionState::Other) => "drawing not shared: unknown answer".into(),
+        SelectionReply::Unsupported if page => "drawing not shared: this daemon cannot draw on a PDF page; update it".into(),
         SelectionReply::Unsupported => "drawing not shared: this daemon cannot take a drawing; update it".into(),
         SelectionReply::Refused { code, error } => match code.as_deref() {
             Some(selection_code::TOO_LARGE) => "drawing not shared: the image is over 40 megapixels".into(),
-            Some(selection_code::NOT_AN_IMAGE) if page => {
-                "drawing not shared: the daemon could not render this page (a daemon older than this window cannot draw on a PDF page; update it)".into()
-            }
+            Some(selection_code::NOT_AN_IMAGE) if page => "drawing not shared: the daemon could not render this page".into(),
             Some(selection_code::NOT_AN_IMAGE) => "drawing not shared: the daemon cannot read this image".into(),
             Some(selection_code::NO_AGENT) => "drawing not shared: this row's agent takes none".into(),
             _ => format!("drawing not shared: {}", code.as_deref().unwrap_or(&error)),

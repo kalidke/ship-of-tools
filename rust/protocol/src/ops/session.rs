@@ -172,6 +172,11 @@ pub struct HelloRes {
     /// when false.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub takes_drawing: bool,
+    /// True when this daemon draws a drawing over a page of a paged file (`InkBase::Figure`'s `page`, wire guarantee
+    /// 13). A daemon built before the field ignores the page and refuses the file as no image: the window sends no
+    /// page's drawing to it. Left out when false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub draws_pages: bool,
     /// True when this daemon's chat door escapes a post's text (`chat.post` carries plain text). A daemon built before
     /// the field sends the text as given, so a window posts to it only when this is true. Left out when false.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
