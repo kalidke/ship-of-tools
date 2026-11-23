@@ -8,10 +8,12 @@
 // repl_frame_tx fan-in pattern); events carry the owning workspace's slug so
 // the FE can ignore other workspaces' traffic (node ids like
 // `files:README.md` collide across repos). notify reports raw OS events; a
-// small async dispatcher debounces per-path bursts (editors typically save 2–4
-// events for one logical save) and fans out to per-connection subscribers via
-// a broadcast channel — each connection filters to what ITS active workspace
-// can use before writing a frame (`preview_changed_visible`, `server/events.rs`).
+// small async dispatcher gathers each path's burst (editors typically save 2–4
+// events for one logical save; git replaces a file by unlink and create) and
+// tells it once, after the burst (`BURST`, `ChangeKind::merge`), then fans out to
+// per-connection subscribers via a broadcast channel — each connection filters
+// to what ITS active workspace can use before writing a frame
+// (`preview_changed_visible`, `server/events.rs`).
 //
 // NOT bumped onto the session ring (2026-09 rework): a reconnecting client
 // already unconditionally re-fetches tree.root + preview.get for whatever
@@ -58,15 +60,17 @@
 // `node_modules`, …) — skipped at registration now, so they never consume a
 // watch descriptor OR fire preview events during a rust build / git op.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::{future::Future, io};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use notify::{RecursiveMode, Watcher as NotifyWatcher};
 use tokio::sync::{broadcast, mpsc};
+use tokio::{sync::mpsc::error::TryRecvError, time::Instant};
 
 use crate::files::tree::FilesMode;
 
@@ -77,7 +81,25 @@ pub enum ChangeKind {
     Removed,
 }
 
+/// How long a path's burst gathers changes before it is told, from its first change.
+const BURST: Duration = Duration::from_millis(200);
+/// Closed bursts awaiting publication, including the lookup being polled.
+const MAX_CLOSED: usize = 64;
+
 impl ChangeKind {
+    /// What a burst held before checking its path at close, in whichever order the system reported them (FSEvents
+    /// gives one record's flags in a fixed order, create before removal, not the order they happened): a create,
+    /// on which a client lists the folder again and fetches the file, stands over a removal, and either over a
+    /// write. So a file replaced by unlink and create is told `created`.
+    fn merge(self, next: ChangeKind) -> ChangeKind {
+        use ChangeKind::{Created, Modified, Removed};
+        match (self, next) {
+            (Created, _) | (_, Created) => Created,
+            (Removed, _) | (_, Removed) => Removed,
+            (Modified, Modified) => Modified,
+        }
+    }
+
     pub fn as_str(&self) -> &'static str {
         match self {
             ChangeKind::Modified => "modified",
@@ -149,7 +171,7 @@ impl Watcher {
         // Unbounded is fine — bursts are short, and the dispatcher empties
         // it as fast as it can read; if it can't, the backend has bigger
         // problems than memory pressure.
-        let (raw_tx, mut raw_rx) = mpsc::unbounded_channel::<(PathBuf, ChangeKind)>();
+        let (raw_tx, raw_rx) = mpsc::unbounded_channel::<(PathBuf, ChangeKind)>();
 
         // The notify callback is the ONLY thing on notify's internal event
         // thread. It just filters (`should_skip`) and forwards — it never calls
@@ -202,62 +224,126 @@ impl Watcher {
                 .context("spawn watch-manage thread")?;
         }
 
-        // Dispatcher: forward dir lifecycle hints to the manager, then
-        // debounce per-path and broadcast (NOT the session ring — see this
-        // module's header comment).
-        let bus = broadcast_tx.clone();
-        let fm = files_mode.clone();
-        let slug = workspace_slug;
-        tokio::spawn(async move {
-            let mut last_emit: HashMap<PathBuf, Instant> = HashMap::new();
-            let window = Duration::from_millis(200);
-            while let Some((path, kind)) = raw_rx.recv().await {
-                // Watch-management hints go out BEFORE the debounce `continue`, so
-                // a freshly created directory always reaches the manager even when
-                // its preview event is debounced. The manager re-validates the
-                // path (is it a dir on our filesystem, not a symlink?) itself.
-                match kind {
-                    ChangeKind::Created => {
-                        let _ = ctrl_tx.send(WatchCtrl::MaybeAdd(path.clone()));
-                    }
-                    ChangeKind::Removed => {
-                        let _ = ctrl_tx.send(WatchCtrl::MaybeRemove(path.clone()));
-                    }
-                    ChangeKind::Modified => {}
-                }
-
-                let now = Instant::now();
-                if let Some(t) = last_emit.get(&path) {
-                    if now.duration_since(*t) < window {
-                        continue;
-                    }
-                }
-                last_emit.insert(path.clone(), now);
-                // Periodically prune the dedup map so a long-running daemon
-                // touching many files doesn't grow it unboundedly. Cheap
-                // walk: drop entries older than 10 * window.
-                if last_emit.len() > 4096 {
-                    let cutoff = Duration::from_millis(2_000);
-                    last_emit.retain(|_, t| now.duration_since(*t) < cutoff);
-                }
-
-                let node_id = fm.path_to_node_id(&path);
-
-                // `send` only errors when there are zero subscribers — fine,
-                // there's simply nobody live to tell right now (and, per this
-                // module's header comment, deliberately nobody to catch up
-                // later either).
-                let _ = bus.send(PreviewChanged {
-                    path,
-                    node_id,
-                    kind,
-                    workspace_id: slug.clone(),
-                });
-            }
-        });
-
+        // Dispatcher: forward dir lifecycle hints to the manager, then gather
+        // each path's burst and broadcast it once it closes (NOT the session
+        // ring — see this module's header comment). A burst opens at a path's
+        // first processed change. Presence when the metadata lookup runs
+        // and the kinds observed decide the notification.
+        tokio::spawn(dispatch_changes(raw_rx, ctrl_tx, files_mode, broadcast_tx, workspace_slug, probe_path));
         Ok(Self { shutdown })
     }
+}
+
+/// The front's lookup is polled alongside intake. Its budget includes time spent behind earlier publications.
+type Publication<F> = (PreviewChanged, Option<std::pin::Pin<Box<F>>>, Instant);
+
+async fn resolve<F: Future<Output = io::Result<()>>>((change, lookup, by): &mut Publication<F>) {
+    let Some(probe) = lookup else { return };
+    if Instant::now() >= *by {
+        tracing::warn!(path = ?change.path, "watcher lookup budget elapsed; telling a possible change");
+        return;
+    }
+    match tokio::time::timeout_at(*by, probe.as_mut()).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) if matches!(e.kind(), io::ErrorKind::NotFound | io::ErrorKind::NotADirectory) => change.kind = ChangeKind::Removed,
+        other => tracing::warn!(path = ?change.path, ?other, "watcher metadata unavailable; telling a possible change"),
+    }
+}
+
+async fn dispatch_changes<F: Future<Output = io::Result<()>>>(
+    mut raw_rx: mpsc::UnboundedReceiver<(PathBuf, ChangeKind)>, ctrl_tx: std::sync::mpsc::Sender<WatchCtrl>,
+    fm: Arc<FilesMode>, bus: broadcast::Sender<PreviewChanged>, slug: Option<String>,
+    probe: impl Fn(PathBuf) -> F,
+) {
+    let mut closed = VecDeque::<Publication<F>>::new();
+    let mut eof = None;
+    // Absolute FIFO positions let a path start a successor while its expired burst is still behind other paths.
+    let mut front = 0usize;
+    let mut newest = HashMap::<PathBuf, usize>::new();
+    let mut deadlines = VecDeque::<(Instant, PathBuf, ChangeKind)>::new();
+    while eof.is_none() || !deadlines.is_empty() || !closed.is_empty() {
+        #[cfg(test)]
+        tests::DEADLINES_READ.set(tests::DEADLINES_READ.get() + 1);
+        let raw = tokio::select! {
+            biased;
+            () = async { resolve(closed.front_mut().expect("nonempty publication queue")).await }, if !closed.is_empty() => {
+                let (change, _, _) = closed.pop_front().expect("completed front");
+                let _ = bus.send(change);
+                tokio::task::yield_now().await;
+                raw_rx.try_recv() // Give intake a turn between ready publications.
+            }
+            raw = raw_rx.recv(), if eof.is_none() => raw.ok_or(TryRecvError::Disconnected),
+            () = async {
+                match deadlines.front() {
+                    Some(_) if eof.is_some() => (),
+                    Some((at, ..)) => tokio::time::sleep_until(*at).await,
+                    None => std::future::pending().await,
+                }
+            } => Err(TryRecvError::Empty),
+        };
+        let now = Instant::now();
+        if matches!(raw, Err(TryRecvError::Disconnected)) { eof.get_or_insert(now); }
+        if let Ok((path, kind)) = raw {
+            // Watch-management hints go out on dequeue, never held with
+            // the burst, so a freshly created directory reaches the
+            // manager without waiting. The manager re-validates the
+            // path (is it a dir on our filesystem, not a symlink?) itself.
+            match kind {
+                ChangeKind::Created => { let _ = ctrl_tx.send(WatchCtrl::MaybeAdd(path.clone())); }
+                ChangeKind::Removed => { let _ = ctrl_tx.send(WatchCtrl::MaybeRemove(path.clone())); }
+                ChangeKind::Modified => {}
+            }
+            let tail = front.wrapping_add(deadlines.len());
+            let slot = newest.entry(path.clone()).or_insert(tail);
+            if let Some((_, _, held)) = deadlines.get_mut(slot.wrapping_sub(front)).filter(|(at, ..)| *at > now) {
+                *held = held.merge(kind);
+            } else {
+                *slot = tail;
+                deadlines.push_back((now + BURST, path, kind));
+            }
+        }
+        if deadlines.front().is_some_and(|(at, ..)| {
+            #[cfg(test)]
+            tests::DEADLINES_READ.set(tests::DEADLINES_READ.get() + 1);
+            eof.is_some() || *at <= now
+        }) {
+            let (at, path, held) = deadlines.pop_front().expect("front checked");
+            if newest.get(&path) == Some(&front) { newest.remove(&path); }
+            front = front.wrapping_add(1);
+            let lookup = if closed.len() == MAX_CLOSED {
+                // Keep publication in order under pressure. Both the displaced head and this arrival use their
+                // possible change. Dropping a pending lookup never frees the OS worker's permit early.
+                if closed.back().is_some_and(|(_, lookup, _)| lookup.is_some()) {
+                    tracing::warn!("watcher publication queue full; telling possible changes");
+                }
+                let (oldest, _, _) = closed.pop_front().expect("full publication queue");
+                let _ = bus.send(oldest);
+                tokio::task::yield_now().await;
+                None
+            } else {
+                Some(Box::pin(probe(path.clone())))
+            };
+            let node_id = fm.path_to_node_id(&path);
+            // `send` only errors when there are zero subscribers —
+            // fine, there's simply nobody live to tell right now
+            // (and, per this module's header comment,
+            // deliberately nobody to catch up later either).
+            let kind = if held == ChangeKind::Modified { held } else { ChangeKind::Created };
+            let change = PreviewChanged { path, node_id, kind, workspace_id: slug.clone() };
+            closed.push_back((change, lookup, eof.map_or(at, |end| at.min(end)) + BURST));
+        }
+    }
+}
+
+/// At most eight metadata lookups across all watchers, including any kernel call still stuck after its caller timed out.
+static PROBES: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(8);
+
+async fn probe_path(path: PathBuf) -> io::Result<()> {
+    let slot = PROBES.try_acquire().map_err(io::Error::other)?;
+    tokio::task::spawn_blocking(move || {
+        let _slot = slot;
+        std::fs::symlink_metadata(path).map(drop)
+    }).await?
 }
 
 /// Management thread body: owns the notify::Watcher for the workspace's lifetime,

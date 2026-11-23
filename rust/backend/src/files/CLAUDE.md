@@ -60,6 +60,29 @@ Per workspace row (built in `rows/workspace.rs`):
 - The watcher never watches the daemon's own state, install or updates trees (`self_owned_roots`, `should_skip`), never
   crosses a filesystem (`device_of`) and never exceeds its budget (`watch_budget`, `SOT_WATCH_BUDGET`).
 - `preview.changed` is live-only and carries no revision.
+- A path's first dequeued event schedules its close 200 ms later. Further events before that deadline join the same
+  burst. An event dequeued at or after it starts another burst. The dispatcher forwards directory hints on dequeue
+  and keeps accepting raw events while metadata is pending. A FIFO holds bursts in deadline order. A map locates
+  the latest burst of each path. Each intake and each handoff from the FIFO takes constant expected work. The raw
+  queue and the number of bursts awaiting handoff have no fixed numerical cap.
+- Each watcher holds at most 64 closed bursts for publication, including one active lookup. If a close finds all
+  64 slots occupied, the oldest is published as a possible change and the new close takes its place at the back
+  without a lookup. Earlier bursts of a path are always published first. The dispatcher yields after each send.
+  Queueing and lookup share 200 ms from the scheduled close. On raw EOF the dispatcher closes all remaining bursts
+  for subscribers that may still view an overlapping root. All lookup waits end within 200 ms of observing EOF.
+  Processing and sending queued events and runtime scheduling add latency. Daemon shutdown has no delivery barrier.
+- Presence is sampled when the metadata lookup runs. A missing path or a parent that has become a regular file
+  gives `removed`. A present path gives `created` if the burst held a create or removal, otherwise `modified`.
+  An unlink followed by a rename therefore refreshes the file. A create followed by deletion leaves the folder
+  eligible for a re-list. An in-place truncate and a write in a later burst can show the empty or partial file first.
+  At most eight metadata calls occupy the blocking pool across all watchers, including calls still running after
+  timeout. Saturation, timeout and other lookup errors are logged and yield the kind for a possibly present path
+  so the window can fetch it.
+- The shared preview bus holds 256 events. A lagging connection receives `bus.lost` with the skipped count. The
+  signal carries no list of the missed paths, and no window acts on it for the preview yet, so a change lost
+  that way reaches a shown file only at its next change, a cursor move or a reconnect (`docs/defects.md`, BUS-LOST-NO-RECOVERY).
+  The controlled-clock tests in `watcher_tests.rs` drive the dispatcher's raw channel. Its native smoke checks OS
+  delivery separately, with repeated writes and a 20-second bound for registration and delivery.
 - Annotation headers are parsed only by sot_protocol::annotation; the on-disk stale-write guard and window drift hash use the same grammar.
 
 ## Connections
