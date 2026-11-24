@@ -3436,3 +3436,24 @@ the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the sa
       cannot be undone and rests on an unmeasured call was cheaper to leave out than to repair; and every claim
       about Slack in it is from Slack's documentation, so its checks on a live hub are owed before a release
       (CHAT-DELETE-UNMEASURED).
+- A session unpairs a project's Slack channel, 2026-11-24: two commits, the first landing of a written plan of
+    three by which a session pairs a project folder with a Slack channel (asked at 11:31, planned by 12:05, built
+    from 14:25 to 15:39 by one builder of the cheaper kind, on top of the two landings above).
+    - The plan closed the question of who may pair what before any code: any session may change the folder of any
+      session of its own daemon, the asker named and logged, and only in the two ways that cannot quietly undo
+      another project's setup, pairing a folder that has no channel with a channel no mapping holds, and
+      unpairing; moving a paired folder and taking a missing folder's channel stay refused for a session.
+    - The first build was one commit of 208 product lines without comments where the plan had said about 110 (the
+      daemon's part 104 where it had said 40). It was split for its reading: the window's pairing moved into one
+      core with a log line that says who paired (56 lines), and the wire op, the handler, the verb and the skill
+      (105 after the split and the round).
+    - One reading found no regression and nothing a window or the hub's files can observe changed by the first
+      commit, and five small faults: log lines printed a client's text as given (the delete's log line on main
+      too), three rules had no test that failed without them, three of the verb's refusals described a pairing,
+      and a count in the wire's contract was stale. One round answered them; the maintaining session read it and
+      asked no second reading. A simplification the reading offered (the edit handing back the mapping it
+      dropped, which deletes a second parse under the setup lock) was not taken: it added lines.
+    - What it cost and showed: 74 minutes from the brief to the last commit, one reading, two gates; the plan's
+      estimate of the daemon's lines was off by more than two, which a plan that names its functions did not
+      prevent. Nothing ran on a live hub. Beside it, a hosted job failed once in its own setup and passed at its
+      second run (HOSTED-RENDERER-CHECK-SILENT-ONCE).

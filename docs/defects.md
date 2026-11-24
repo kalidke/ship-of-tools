@@ -1124,6 +1124,12 @@ owned by `docs/CLAUDE.md`.
   the page is shown again (a page turn, another file or session, a read of the file) or the connection ends. A request
   queued while its computer is down waits the same way until a hello. `rust/frontend/src/ui/CLAUDE.md` states it as a limit.
   Fix not decided: a bound on the wait in `PdfSelect`, which would end it as `Ended` and ask at the next press.
+- **HOSTED-RENDERER-CHECK-SILENT-ONCE** [note] A red in one hosted run, 2026-11-24, with no use behind it: on the
+  Ubuntu job that runs the window's fixtures under a virtual display, the step that installs the software renderer
+  ended with its check (`xvfb-run -a vulkaninfo --summary` piped to a search for the device lines, in
+  `.github/workflows/rust.yml`) printing nothing, so the step failed before any test ran. A run that morning had
+  installed the same package versions and printed the device; a second run of the job passed. Cause not found. When
+  it is seen again: have the step print the checker's own output and exit code before the search.
 
 ## distribution
 

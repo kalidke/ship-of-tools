@@ -458,7 +458,13 @@ deletes a message its project's Slack app posted in its own project's channel, w
 asked it to; the daemon admits a delete only for the asking session's own channel, Slack lets the app remove
 only its own posts, and the owner's permission is a rule of the session's skill, which the daemon cannot check;
 the files a message shared are not deleted, CHAT-DELETE-FILES-STAY; nothing of it has run against Slack, and its
-checks are owed on the first candidate that carries it, CHAT-DELETE-UNMEASURED);
+checks are owed on the first candidate that carries it, CHAT-DELETE-UNMEASURED); and, the same day and used by no
+person, a session unpairs a project's Slack channel, with `sot-fe chat unpair <session>`, and the daemon's log says
+who made each pairing, a window or a session by its handle (the maintainer asked that day that a session can pair
+a project folder with a Slack channel itself, and unpair it, without a person at a window; this is the first of
+three landings of a written plan, and a session cannot pair yet: pairing by a channel's name or id, and a window
+that shows a session's pairing within a minute, are unbuilt; the window's own pairing runs through the same core
+as a session's and behaves as it did);
 SlackClaw's pause switch (its PR 18) merges on his word when the
 first channel moves. Also in progress: the agent sees what the user draws (`requirements.md`); the wire's drawing has
 landed, and so has the daemon's picture (the figure with the person's ink, inside the project), written through
