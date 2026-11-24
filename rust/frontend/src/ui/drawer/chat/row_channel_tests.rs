@@ -894,3 +894,57 @@ fn a_sentence_names_the_local_a_named_and_an_unnamed_computer() {
     assert_eq!(computer("box-a"), "box-a");
     assert_eq!(computer(""), "the computer that runs your sessions");
 }
+
+/// An `unmapped` answer of the shown row is resolved again `GAP_PACE` (a minute) after it, the answer standing meanwhile, and
+/// the window is woken for that instant; a session's pairing of the project then shows at that answer, with the watch. A row with
+/// a channel, a hub that says `unconfigured` and a hidden chat (no tick) ask nothing more.
+#[test]
+fn an_unmapped_row_is_asked_again_each_minute_and_its_title_holds() {
+    use super::row_channel::{RowChannel, Stand};
+    use super::owner::GAP_PACE;
+    let t0 = Instant::now();
+    let at = |ms: u64| t0 + Duration::from_millis(ms);
+    let pace = GAP_PACE.as_millis() as u64;
+    let asked = |rows: &mut RowChannel, ms: u64| rows.tick(wanted("R"), at(ms)).resolve.is_some();
+    let mut rows = RowChannel::default();
+    rows.on_connection(&host(), true);
+    rows.tick(wanted("R"), t0);
+    assert!(asked(&mut rows, 150));
+    assert_eq!(rows.next_ask(), None, "nothing is owed before the answer");
+    rows.answered(&ChatReply::Done(ChatResolveRes::Unmapped), at(160));
+    assert_eq!((rows.stand(), rows.next_ask()), (Stand::Unmapped, Some(at(160 + pace))), "the next ask is a minute after the answer");
+    assert!(!asked(&mut rows, 160 + pace - 1), "nothing before it");
+    // The ask goes out once, the answer standing while it is out; an answer that is still unmapped is asked again a minute on.
+    assert!(asked(&mut rows, 160 + pace));
+    assert_eq!(rows.stand(), Stand::Unmapped, "the title holds while the ask is out");
+    assert!(!asked(&mut rows, 161 + pace), "asked once");
+    rows.answered(&ChatReply::Done(ChatResolveRes::Unmapped), at(200 + pace));
+    assert_eq!(rows.next_ask(), Some(at(200 + 2 * pace)));
+    // The answer that maps the row ends the asking.
+    assert!(asked(&mut rows, 200 + 2 * pace));
+    rows.answered(&reply("C1", Some("general")), at(210 + 2 * pace));
+    assert_eq!((rows.stand(), rows.next_ask()), (Stand::Mapped, None));
+    assert!(!asked(&mut rows, 100 * pace), "a row with a channel is not asked again");
+    // A hub that says `unconfigured` is not asked on this pace.
+    let mut off = RowChannel::default();
+    off.on_connection(&host(), true);
+    off.tick(wanted("R"), t0);
+    assert!(off.tick(wanted("R"), at(150)).resolve.is_some());
+    off.answered(&ChatReply::Done(ChatResolveRes::Unconfigured { reason: sot_protocol::ops::ChatUnconfigured::NotConnected, workspace: None }), at(160));
+    assert_eq!(off.next_ask(), None);
+    assert!(off.tick(wanted("R"), at(160 + 10 * pace)).resolve.is_none());
+
+    // Through the drawer: the pairing a session made shows within the minute, with its watch, and the title read `no channel`
+    // until then.
+    let mut d = ChatDrawer::default();
+    d.on_connection(&host(), true, false, t0);
+    d.tick(wanted("R"), t0);
+    assert_eq!(resolves(&d.tick(wanted("R"), at(150)).0), 1);
+    d.on_evt(&host(), answer("R", serde_json::json!({ "state": "unmapped" })), at(160));
+    assert_eq!(d.title(), " chat · no channel ");
+    assert!(d.next_ask().is_some_and(|t| t <= at(160 + pace)), "the window is woken for the ask");
+    assert!(d.tick(wanted("R"), at(pace)).0.is_empty(), "a frame before it asks nothing");
+    assert_eq!(resolves(&d.tick(wanted("R"), at(160 + pace)).0), 1);
+    assert_eq!(d.title(), " chat · no channel ", "the title holds while it is out");
+    assert_eq!(watches(&d.on_evt(&host(), mapped("R"), at(170 + pace))), 1, "the pairing's channel is watched");
+}

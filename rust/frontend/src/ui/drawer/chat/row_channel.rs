@@ -220,7 +220,7 @@ impl RowChannel {
         self.wanted.iter_mut().filter(|w| &w.id.host == host && w.id.workspace_id == row).for_each(ask_again);
     }
 
-    /// When the wanted row is next resolved for its name, so the window can draw a frame at that moment.
+    /// When the wanted row is next resolved again (for its name, or as a row with no channel), so the window can draw a frame at that moment.
     pub(super) fn next_ask(&self) -> Option<Instant> {
         self.wanted.as_ref().and_then(|w| w.retry_at)
     }
@@ -272,7 +272,9 @@ impl RowChannel {
             w.unconfirmed = None;
             (w.answer, w.name, w.workspace, w.workspace_name, w.workspace_tag) = (Some((stand, now)), name.clone(), workspace.clone(), workspace_name.clone(), workspace_tag.clone());
             w.nameless = if nameless { w.nameless + 1 } else { 0 };
-            w.retry_at = nameless.then(|| NAME_RETRIES.get(w.nameless - 1).map(|d| now + *d)).flatten();
+            // A mapped answer with no name is asked again on its tries; a row with no channel each `GAP_PACE`, since a session may
+            // pair it and no watch would tell the window.
+            w.retry_at = if stand == Stand::Unmapped { Some(now + GAP_PACE) } else { nameless.then(|| NAME_RETRIES.get(w.nameless - 1).map(|d| now + *d)).flatten() };
         }
     }
 

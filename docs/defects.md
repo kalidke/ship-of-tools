@@ -876,11 +876,6 @@ owned by `docs/CLAUDE.md`.
 
 ## fe-ui
 
-- **CHAT-UNMAPPED-ROW-MISSES-A-PAIRING** [note] From reading the code of a session's pairing, not seen in use: a window showing a
-  project with no channel has no watch, so no event tells it when a session pairs that project, and its Chat drawer title
-  stays `no channel` until the person switches sessions or closes and reopens the drawer (an unmapped answer is never asked
-  again on a pace; only a failed one is). A session can pair and unpair, so the miss shows after a session's pairing.
-  Fix: ask an unmapped answer of the shown row again each `GAP_PACE`, the title standing meanwhile.
 - **SHARE-CLEAR-FAILURE-NOT-TOLD** [note] From reading code, 2026-11-23; never seen. A withdrawal the daemon fails is
   not told and not tried again: `SelectionShare::on_reply` (`rust/frontend/src/ui/preview/share.rs`) gives a clear's
   reply no status line whatever it says, and by then the share holds that nothing is wanted and nothing is held, so
@@ -1604,6 +1599,8 @@ owned by `docs/CLAUDE.md`.
   probe; installer hooks (superseded, check); stop commands that match only what they stop.
 
 ## Closed
+
+- **CHAT-UNMAPPED-ROW-MISSES-A-PAIRING** (fe-ui) [note] Closed on 2026-11-24 by the landing that fixes it. Reading the code showed that a window showing a project with no channel has no watch, so nothing told it when a session paired that project, and its Chat drawer title stayed `no channel` until the person switched sessions or reopened the drawer. An `unmapped` answer of the shown row is now asked again each `GAP_PACE`, the title standing meanwhile (`row_channel_tests::an_unmapped_row_is_asked_again_each_minute_and_its_title_holds`).
 
 - **FILES-BYTES-READER-READS-WHOLE** (files) [note] Closed on 2026-11-23 by the landing that fixes it. Found by a review reading the code; not seen in use. The bytes-level reader (`read_bytes_preview`, `files/preview/mod.rs`) read the whole file into memory before it cut text at 2 MiB or refused a binary past its cap, and it opened whatever the path named, so a very large file was held whole in the daemon's memory at each read, and a FIFO at the path was opened and read: the read waited for a writer and took bytes meant for another reader. Every `preview.get` that no plugin answers goes there: a selection, the re-fetch after a told change, and the window's check at a return to a session. The reader now looks the path up first, following links as the read resolver does, and answers a short note, unopened, for a folder, a FIFO, a socket or a device; it refuses a binary past its cap by the lookup's size, unopened, in the words it had; and it reads a regular file to its cap and one byte more, never whole. Answers for regular files within the caps are unchanged. What remains is in the preview folder's contract: a FIFO planted between the lookup and the open is opened without a wait and refused, a binary that grows past its cap after the lookup is read to the cap and one byte, and on Windows a reserved device name or a named pipe's name is not promised refused. Not run: any test on macOS or Windows (the Windows test code was only type-checked from Linux), the backend's integration tests, a live daemon and a window. No person has used this change.
 

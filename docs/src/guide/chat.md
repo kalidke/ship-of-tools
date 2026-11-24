@@ -342,7 +342,7 @@ takes a channel another project has, nor one a project has whose folder is gone:
 move a project the agent unpairs it and then pairs it, when you ask for that; taking over a gone folder's channel is yours,
 in the channel list, since an agent cannot tell a folder that is gone from a disk that is not mounted. Each change restarts
 that Slack workspace's chat for a moment, so every window watching it shows the chat catching up, and a window showing a
-project that has no channel keeps saying `no channel` until you switch sessions or reopen the Chat panel. The agent changes
+project that has no channel says `no channel` for up to a minute after the pairing, then shows the channel. The agent changes
 only the projects and channels you named, and tells you what it changed. The command prints `paired <folder> with
 #<channel> (<id>) in <workspace>`, `unpaired <folder> from #<channel> (<id>) in <workspace>` or `unchanged: ...`, and exits
 0; it exits 2 with `refused` and a reason when nothing was changed, and 3 with `unknown` or `no answer` when the change may
@@ -386,7 +386,7 @@ computer's name, `this computer`, or `the computer that runs your sessions`.
 |---|---|---|
 | (nothing after the channel) | The channel was read whole. | |
 | `reading…` | The channel is being read. | Wait. |
-| `no channel` | The project has no channel. | Press Enter, or `Ctrl+Shift+k`, to pick one ([Setting up Slack](chat-setup.md)). |
+| `no channel` | The project has no channel. The panel looks again each minute while it is shown, so a channel a session pairs appears within a minute. | Press Enter, or `Ctrl+Shift+k`, to pick one ([Setting up Slack](chat-setup.md)). |
 | `set up Slack`, then a step's name | Slack is not connected, its saved codes are refused, or its chat did not start. | Follow the screens ([Setting up Slack](chat-setup.md)). |
 | `post as you` | Your post was refused: no Slack code that posts as you is saved. | Give the workspace new codes, keeping its Slack app ([Setting up Slack](chat-setup.md#Give-a-connected-workspace-new-Slack-codes)). |
 | `connecting…`, `connected` | The setup's codes are being checked; they were accepted. | |
