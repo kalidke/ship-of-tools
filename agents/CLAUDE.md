@@ -201,7 +201,7 @@ of each.
    Their route is one of three, and none opens a file the daemon owns, with one named exception: the prompt hook `sot-selection-hook.sh` opens the one file whose path the daemon gives the leg in `SOT_SELECTION_FILE`, which holds exactly the hook's output, and guesses no daemon layout (as the pinned self file is also named to the leg by the daemon). (a) A framed op over an endpoint, through
    comm-lib's `sot_oneshot_request`, which says hello first (the daemon admits nothing before it): `sot-fe`
    (`fe.command.send`, `repl.execute`, `repl.run_file`, `repl.interrupt`, `pty.input`, `pty.screen`,
-   `workspace.reauth`, `chat.resolve`, `chat.post`, `chat.post_file`, `chat.delete`, `version.query`, `workspace.list`), `comm-spawn.sh` and `comm-despawn.sh` (`workspace.create`,
+   `workspace.reauth`, `chat.resolve`, `chat.post`, `chat.post_file`, `chat.delete`, `chat.row_pair`, `version.query`, `workspace.list`), `comm-spawn.sh` and `comm-despawn.sh` (`workspace.create`,
    `workspace.list`, `workspace.destroy`, `version.query`), `comm-bootstrap.sh` and `comm-probe.sh` (`workspace.list`,
    `workspace.create`, `pty.input`, and for probe shutdown `workspace.destroy`), `sot-nav.sh` (`agent.send`, to the hub's relay endpoint). (b) A `sotd` subcommand:
    `sotd comm VERB` through `sot_comm` (the registry, unread counts, identity, a handoff line), `sotd agent-exec`
@@ -445,7 +445,7 @@ of each.
   `the_rendering_is_the_hook_output_both_agents_accept_within_the_caps`.
 - The layer: `<comm home>/claude-layer/` (written by the installer from `agents/claude/` and `comm/adapters/claude/`,
   read by the recipe) and the table of hooks in `layer.rs`.
-- The non-messaging Claude skills (the four onboarding ones global, the rest the layer's; `julia-repl`, `project-log`, `reauth`, `show-result`, `sitrep`, `sot-chat-post`, `sot-gh-auth`,
+- The non-messaging Claude skills (the four onboarding ones global, the rest the layer's; `julia-repl`, `project-log`, `reauth`, `show-result`, `sitrep`, `sot-chat-pair`, `sot-chat-post`, `sot-gh-auth`,
   `sot-install`, `sot-setup`, `sot-status`, `sot-statusline-setup`, `worktree`) and the Claude launcher `ccb` live in
   `claude/`. The shared install stage takes its three PATH wrappers from `claude/bin/`. The Codex launcher `ccx` lives in `codex/`.
 - The row CLIs `spawn/`, the /worktree scripts `worktree/`, the frontend CLI and nav broadcast `sot-fe/`,
@@ -517,8 +517,33 @@ of each.
   among one account's programs, not a security boundary (chat guarantee 36). `tests/test-sot-fe-chat.sh`'s delete cases:
   outside a row and with no handle refused before an endpoint, one resolve then one delete of that `ts` in the resolved
   channel with exactly `name`, `target` and `ts`, each outcome's words and code, an unmapped or refused resolve
-  deleting nothing, no answer as one request, usage errors sending nothing, and the wait. Lines the chat verbs share and
-  that name project words: the refusals of `_chat_identity` (the unset `SOT_WORKSPACE_ID`, "comm handle") and the line
+  deleting nothing, no answer as one request, usage errors sending nothing, and the wait.
+- `sot-fe chat unpair <session>` (`sot-fe/sot-fe-chat.sh`, `send_chat_unpair`) removes the Slack channel of a project's
+  folder, for this session's own project (`.`, which is `$SOT_WORKSPACE_ID`) or another session's, named by its slug as
+  `sot-fe version` lists it (`row <slug>`) or by its id, through the same edit, write and reload of `chat.toml` as the
+  Chat drawer's channel list (chat guarantee 30). It needs the row and the handle as a post does (none of either
+  refused before an endpoint is found), sends no `chat.resolve` and ONE `chat.row_pair` with `by` (this session's row
+  and handle), the session as typed and `channel: null`, never a second, and waits 150 s (`--timeout` changes it): past a
+  reload under the setup lock in the ordinary case and not the worst case (chat guarantee 21's limit), so a no-answer is
+  exit 3, and an unpairing is idempotent, so the same command again is safe. `sot-fe` refuses `--thread`, `--file` and
+  `--stdin` (`ERROR: --thread, --file and --stdin are only for chat post`) and any count of arguments but one (a usage
+  line) with exit 1, and an unknown flag (`--slack-workspace` is not built) as it refuses any, before anything is sent.
+  Exit 0 with `unpaired <folder> from <chan> in <at>` (`<chan>` is `#<name> (<id>)` when the daemon's cache knew the
+  name, else the id; `<at>` is `<tag> (<workspace id>)` when the workspace's short name is known, else `Slack workspace
+  <id>`) or `unchanged: <folder> has no channel`; 2, nothing changed for certain, with `refused <code> <words>`
+  (`stale_row` (also a row whose folder cannot be reached), `unmapped`, `unavailable` (not the hub, or no `chat.toml`), `not_saved` and `bad_request` in the verb's own words, `<session>` as
+  typed and `this session's project` for `.`; any other code in the daemon's text) or `refused unsupported ...` for an
+  older daemon's unknown-op answer (it lets only a person pair or unpair, in the Chat drawer's channel list); 3, it may have been
+  made, with `no answer: ...` or `unknown: ...` (a `handler_error` reply, or an outcome added later), which end "running
+  the same command again is safe and says what is there now". Pairing a project with a channel is not built for a
+  session yet. Who may ask a session to unpair is the person's, not the daemon's: it lives in the
+  skill `sot-chat-pair` (`claude/sot-chat-pair/` and, byte-identical, `comm/adapters/codex/skills/sot-chat-pair/`, pinned
+  as `sot-chat-post`'s are): unpair only the projects the person named, report each change, and never in a loop. The
+  daemon checks `by` as a row's post is checked (attribution among one account's programs, not a security boundary) and
+  logs each changed pairing and each refusal with who asked. The 150 s default wait has no case that pins it past the daemon's bounds, as the post's and the delete's have (the harness always passes `--timeout`). `tests/test-sot-fe-chat.sh`'s unpair cases:
+  `case_unpair_sends_one_row_pair_with_the_handle_and_prints_what_it_removed`, `case_each_unpair_answer_has_its_words_and_exit_code`,
+  `case_an_older_daemon_is_refused_unsupported`, `case_no_answer_to_a_pairing_is_one_request_and_exit_3` and
+  `case_pair_verbs_refuse_the_post_flags`. Lines the chat verbs share and that name project words: the refusals of `_chat_identity` (the unset `SOT_WORKSPACE_ID`, "comm handle") and the line
   `_need_endpoint` prints when no daemon is found, which every `sot-fe` verb prints.
 - `show-result` opens no `.html` or `.htm` page (the maintainer, 2026-10-31: pages went to the browser, not to the
   Queue): for a page under the calling row's project folder (`SOT_WORKSPACE_ROOT`) it prints the line that offers it,

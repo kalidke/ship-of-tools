@@ -11,6 +11,8 @@
 # Exit codes: 0 posted; 1 usage; 2 nothing was posted (refused, limited); 3 the post may exist (unknown, no answer).
 # `sot-fe chat delete <ts>` is one `chat.resolve`, then ONE `chat.delete` for that ts with the row's handle and the
 # resolved channel, never a second; its exit codes are a post's (0 deleted or gone, 1 usage, 2 refused, 3 unknown).
+# `sot-fe chat unpair <session>` is ONE `chat.row_pair` with the row, the handle and a null channel and no resolve, never a
+# second; its exit codes are 0 unpaired or unchanged, 1 usage, 2 refused (nothing changed), 3 no answer (it may have been made).
 #
 # No real daemon: a STUB unix-socket daemon (the harness of
 # test-sot-fe-reauth.sh) answers `chat.resolve` and `chat.post` with canned
@@ -583,6 +585,100 @@ case_the_delete_wait_is_past_the_daemons_own_bounds() {
         || { echo "post=$post wait=$wait"; return 1; }
 }
 
+# --- chat unpair -----------------------------------------------------------
+
+# The row_pair answered with the JSON object $1; `unpair .` run as the row, the handle alpha-h.
+PAIRING='{"workspace":"T0AAAA","channel":"C0AAAA","name":"general","workspace_tag":"lab"}'
+unpair_answered() {
+    stage_reply chat.row_pair "{\"v\":1,\"id\":3,\"kind\":\"res\",\"op\":\"chat.row_pair\",\"payload\":$1}"
+    start_stub_daemon
+    CH_VERB=unpair run_chat "" SOT_WORKSPACE_ID=$ROW STUB_NAME=alpha-h -- "${UNPAIR_SESSION:-.}"
+}
+paired_field() { jq -r "select(.op==\"chat.row_pair\") | $1" "$WORK/req-$STUBN.log"; }
+
+case_unpair_sends_one_row_pair_with_the_handle_and_prints_what_it_removed() {
+    local bad="" session want_row r any by_row by_name row ch keys
+    for session in . alpha ws-other-3c4d; do
+        UNPAIR_SESSION="$session" unpair_answered "{\"outcome\":\"unpaired\",\"folder\":\"/p/alpha\",\"pairing\":$PAIRING}"
+        r="$(sent chat.row_pair)"; any="$(sent chat.resolve)"
+        by_row="$(paired_field .payload.by.row)"; by_name="$(paired_field .payload.by.name)"; row="$(paired_field .payload.row)"
+        ch="$(paired_field '.payload.channel')"; keys="$(paired_field '.payload | keys | join(",")')"
+        stop_stub_daemon
+        want_row="$session"; [ "$session" != . ] || want_row="$ROW"
+        { [ "$CH_RC" = 0 ] && [ "$CH_OUT" = "unpaired /p/alpha from #general (C0AAAA) in lab (T0AAAA)" ] && [ "$r" = 1 ] && [ "$any" = 0 ] \
+            && [ "$by_row" = "$ROW" ] && [ "$by_name" = alpha-h ] && [ "$row" = "$want_row" ] && [ "$ch" = null ] && [ "$keys" = "by,channel,row" ]; } \
+            || bad="$bad [$session: rc=$CH_RC out=$CH_OUT row_pair=$r resolves=$any by=$by_row/$by_name row=$row channel=$ch keys=$keys]"
+    done
+    [ -z "$bad" ] || { echo "$bad"; return 1; }
+}
+
+# Each answer, the words and the code. `<session>` is as typed, and `this session's project` for `.`.
+case_each_unpair_answer_has_its_words_and_exit_code() {
+    local bad="" want_rc want_text payload session
+    while IFS='|' read -r session payload want_rc want_text; do
+        UNPAIR_SESSION="$session" unpair_answered "$payload"
+        stop_stub_daemon
+        { [ "$CH_RC" = "$want_rc" ] && [ "$CH_OUT" = "$want_text" ]; } \
+            || bad="$bad [$session $payload: rc=$CH_RC out=$CH_OUT]"
+    done <<'EOF2'
+alpha|{"outcome":"unpaired","folder":"/p/alpha","pairing":{"workspace":"T0AAAA","channel":"C0AAAA"}}|0|unpaired /p/alpha from C0AAAA in Slack workspace T0AAAA
+alpha|{"outcome":"unpaired","folder":"/p/alpha","pairing":{"workspace":"T0AAAA","channel":"C0AAAA","name":"general"}}|0|unpaired /p/alpha from #general (C0AAAA) in Slack workspace T0AAAA
+alpha|{"outcome":"unchanged","folder":"/p/alpha"}|0|unchanged: /p/alpha has no channel
+alpha|{"outcome":"moved","folder":"/p/alpha"}|3|unknown: the pairing may have been made; running the same command again is safe and says what is there now
+alpha|{"error":"the chat request failed","code":"handler_error"}|3|unknown: the pairing may have been made; running the same command again is safe and says what is there now
+alpha|{"error":"unknown op: chat.row_pair"}|2|refused unsupported the computer that runs your sessions runs an older Ship of Tools, which lets only a person pair or unpair a project, in the Chat drawer's channel list (Ctrl+Shift+k, Cmd+Shift+k on a Mac); nothing was changed
+alpha|{"error":"x","code":"stale_row"}|2|refused stale_row no session of the computer that runs your sessions is alpha, or its project folder cannot be reached (sot-fe version lists them as row <slug>)
+.|{"error":"x","code":"stale_row"}|2|refused stale_row no session of the computer that runs your sessions is this session's project, or its project folder cannot be reached (sot-fe version lists them as row <slug>)
+alpha|{"error":"x","code":"unmapped"}|2|refused unmapped alpha is the default session, which has no project folder
+.|{"error":"x","code":"unmapped"}|2|refused unmapped this session's project is the default session, which has no project folder
+alpha|{"error":"x","code":"unavailable"}|2|refused unavailable no chat is set up on the computer that runs your sessions: it is not the hub for the chat, or no Slack workspace is connected
+alpha|{"error":"x","code":"not_saved"}|2|refused not_saved the chat's settings file chat.toml could not be written, or is refused as it stands; the log of Ship of Tools' service says why (sotd log-path prints where it is)
+alpha|{"error":"x","code":"bad_request"}|2|refused bad_request the request is not valid (this session's handle is not its row's, its row is no longer there, or the session is named in over 256 bytes)
+alpha|{"error":"the chat is busy","code":"busy"}|2|refused busy the chat is busy
+alpha|{"error":"the chat request failed","code":"failed"}|2|refused failed the chat request failed
+alpha|{"error":"words of a code added later","code":"other"}|2|refused other words of a code added later
+EOF2
+    [ -z "$bad" ] || { echo "$bad"; return 1; }
+}
+
+case_an_older_daemon_is_refused_unsupported() {
+    UNPAIR_SESSION=alpha unpair_answered '{"error":"unknown op: chat.row_pair"}'
+    local r; r="$(sent chat.row_pair)"; stop_stub_daemon
+    [ "$CH_RC" = 2 ] && contains "$CH_OUT" "refused unsupported " && [ "$r" = 1 ] || { echo "rc=$CH_RC requests=$r out=$CH_OUT"; return 1; }
+}
+
+case_no_answer_to_a_pairing_is_one_request_and_exit_3() {
+    start_stub_daemon
+    CH_VERB=unpair run_chat "" SOT_WORKSPACE_ID=$ROW STUB_NAME=alpha-h -- alpha
+    local r; r="$(sent chat.row_pair)"; stop_stub_daemon
+    [ "$CH_RC" = 3 ] && contains "$CH_OUT" "no answer: the pairing may have been made; running the same command again is safe and says what is there now" && [ "$r" = 1 ] \
+        || { echo "rc=$CH_RC requests=$r out=$CH_OUT"; return 1; }
+}
+
+# Outside a row or with no handle nothing is sent, and the post verb's flags, a missing or extra session and a flag
+# of the pair verb that is not built here are usage errors that send nothing.
+case_pair_verbs_refuse_the_post_flags() {
+    local bad="" args envs n
+    stage_reply chat.row_pair '{}'; start_stub_daemon
+    for envs in "STUB_NAME=alpha-h" "SOT_WORKSPACE_ID=$ROW"; do
+        # shellcheck disable=SC2086
+        CH_VERB=unpair run_chat "" $envs -- alpha
+        [ "$CH_RC" = 2 ] && contains "$CH_OUT" "Nothing was sent" || bad="$bad [$envs: rc=$CH_RC out=$CH_OUT]"
+    done
+    for args in "alpha --thread $TS" "alpha --stdin" "alpha --file x.png" "--file x.png alpha"; do
+        # shellcheck disable=SC2086
+        CH_VERB=unpair run_chat "text" SOT_WORKSPACE_ID=$ROW STUB_NAME=alpha-h -- $args
+        [ "$CH_RC" = 1 ] && contains "$CH_OUT" "ERROR: --thread, --file and --stdin are only for chat post" || bad="$bad [$args: rc=$CH_RC out=$CH_OUT]"
+    done
+    for args in "" "alpha beta" "alpha --slack-workspace T0AAAA"; do
+        # shellcheck disable=SC2086
+        CH_VERB=unpair run_chat "" SOT_WORKSPACE_ID=$ROW STUB_NAME=alpha-h -- $args
+        [ "$CH_RC" = 1 ] || bad="$bad [$args: rc=$CH_RC out=$CH_OUT]"
+    done
+    n="$(sent_any)"; stop_stub_daemon
+    [ -z "$bad" ] && [ "$n" = 0 ] || { echo "$bad sent=$n"; return 1; }
+}
+
 check "outside a row the verb is refused before an endpoint is found"                       case_outside_a_row_is_refused_before_an_endpoint
 check "a session with no comm handle is refused before an endpoint is found"                case_no_handle_is_refused_before_an_endpoint
 check "one chat.resolve, then one chat.post of kind row with the handle and the thread"     case_one_resolve_then_one_row_post_with_handle_and_thread
@@ -610,6 +706,12 @@ check "no answer to the delete is one request, never two, and exit 3"           
 check "no answer to the resolve deletes nothing, in plain words"                            case_no_answer_to_the_resolve_deletes_nothing
 check "a delete usage error sends nothing and exits 1"                                      case_a_delete_usage_error_sends_nothing_and_exits_1
 check "the delete's wait is past the daemon's own bounds, with a margin"                    case_the_delete_wait_is_past_the_daemons_own_bounds
+
+check "an unpair is one chat.row_pair with the row, the handle and a null channel, and prints what it removed" case_unpair_sends_one_row_pair_with_the_handle_and_prints_what_it_removed
+check "each unpair answer prints its words and exits with its code"                         case_each_unpair_answer_has_its_words_and_exit_code
+check "an older daemon's unknown op is refused as unsupported, with exit 2"                  case_an_older_daemon_is_refused_unsupported
+check "no answer to a pairing is one request, never two, and exit 3"                        case_no_answer_to_a_pairing_is_one_request_and_exit_3
+check "the pairing verbs refuse the post flags and a missing row or handle, sending nothing" case_pair_verbs_refuse_the_post_flags
 
 echo ""
 echo "$PASS passed, $FAIL failed, $SKIP skipped"

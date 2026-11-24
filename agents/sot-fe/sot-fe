@@ -33,6 +33,7 @@
 #   sot-fe chat post [--thread <ts>] (<text> | --stdin) [--timeout <s>]
 #   sot-fe chat post [--thread <ts>] --file <path> [<comment> | --stdin] [--timeout <s>]
 #   sot-fe chat delete <ts> [--timeout <s>]
+#   sot-fe chat unpair <session> [--timeout <s>]
 #
 #   preview  — preview <path> and expand the file tree to it. If the FE is
 #              already on <workspace> it happens at once; otherwise it is
@@ -183,6 +184,13 @@
 #              own person has asked for it (the sot-chat-post skill says how). Prints `deleted <ts>` or `gone <ts>: ...`
 #              and exits 0; 1 for usage; 2 with `refused <code> <words>` or `limited, ...` (nothing changed); 3 with
 #              `unknown: ...` or `no answer: ...` (the message may be deleted: run it again, which asks Slack again).
+#              `chat unpair <session>` removes the Slack channel of a project's folder, for this session's own project (`.`)
+#              or another session's (its slug as `version` lists it, `row <slug>`, or its id), through the same edit of
+#              the hub's chat.toml as the Chat drawer's channel list: ONE `chat.row_pair` naming this session's row and
+#              handle, never sent twice, waiting 150 s. Only when the person asked for it (the sot-chat-pair skill says
+#              how). Prints `unpaired <folder> from <channel> in <workspace>` or `unchanged: <folder> has no channel` and
+#              exits 0; 1 for usage; 2 with `refused <code> <words>` (nothing changed); 3 with `unknown: ...` or
+#              `no answer: ...` (it may have been made: run it again, which says what is there now).
 #   version  — what build the daemon at --endpoint is, plus every attached
 #              frontend and every capsule row's own PHASE, verbatim (ADR
 #              0030 §8 decision 31, ADR 0043 decision 31). One
@@ -572,7 +580,15 @@ case "$CMD" in
             send_chat_delete "${POS[1]}"
             exit
         fi
-        [ "${POS[0]:-}" = post ] || { echo "usage: sot-fe chat post [--thread <ts>] (<text> | --stdin) [--timeout <s>]  or  sot-fe chat post [--thread <ts>] --file <path> [<comment> | --stdin] [--timeout <s>]  or  sot-fe chat delete <ts> [--timeout <s>]" >&2; exit 1; }
+        if [ "${POS[0]:-}" = unpair ]; then
+            if [ -n "$THREAD" ] || [ "$FILE_SET" = true ] || [ "$READ_STDIN" = true ]; then
+                echo "ERROR: --thread, --file and --stdin are only for chat post" >&2; exit 1
+            fi
+            [ "${#POS[@]}" -eq 2 ] || { echo "usage: sot-fe chat unpair <session> [--timeout <s>]  — <session> is . for this session's own project, or a row's slug or id" >&2; exit 1; }
+            send_chat_unpair "${POS[1]}"
+            exit
+        fi
+        [ "${POS[0]:-}" = post ] || { echo "usage: sot-fe chat post [--thread <ts>] (<text> | --stdin) [--timeout <s>]  or  sot-fe chat post [--thread <ts>] --file <path> [<comment> | --stdin] [--timeout <s>]  or  sot-fe chat delete <ts> [--timeout <s>]  or  sot-fe chat unpair <session> [--timeout <s>]" >&2; exit 1; }
         if [ "$FILE_SET" = true ]; then
             [ -n "$FILE" ] || { echo "usage: sot-fe chat post [--thread <ts>] --file <path> [<comment> | --stdin] [--timeout <s>]  — name the file" >&2; exit 1; }
             if [ "$READ_STDIN" = true ]; then

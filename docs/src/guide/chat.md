@@ -324,6 +324,22 @@ does not defend the channel limit against another program running under your own
 project's session. If the computer that runs your sessions runs an older Ship of Tools, the command says so and deletes
 nothing. The window has no command for deleting: delete a message you posted yourself in Slack.
 
+### Unpairing a project's channel
+
+If you ask a session's agent to unpair a project from its Slack channel, it runs `sot-fe chat unpair <session>` in the
+session, where `<session>` is `.` for the agent's own project or another session's name or id (the names `sot-fe version`
+lists as `row <name>`). The command removes that project's channel from the chat's settings file, as the channel list
+does ([Change or remove a project's channel](chat-setup.md#Change-or-remove-a-project's-channel)): the project's sessions
+can no longer post to the channel, and its posts no longer reach them as mail. Each change restarts that Slack workspace's
+chat for a moment, so every window watching it shows the chat catching up, and a window showing the project's channel
+then says `no channel`. The agent unpairs only the projects you named, and tells you what it removed. The command prints
+`unpaired <folder> from #<channel> (<id>) in <workspace>`, or `unchanged: <folder> has no channel`, and exits 0; it exits
+2 with `refused` and a reason when nothing was changed, and 3 with `unknown` or `no answer` when the change may have been
+made, in which case running the same command again is safe and says what is there now. If the computer that runs your
+sessions runs an older Ship of Tools, the command says so and changes nothing. Pairing a project with a channel is still
+yours to do in the channel list: an agent cannot yet. As with deleting, Ship of Tools does not defend this against
+another program running under your own account, which can name another project's session.
+
 ## Mail to the session
 
 Posts in a project's channel can reach the session's agent as mail (the messages sessions receive from each other), so

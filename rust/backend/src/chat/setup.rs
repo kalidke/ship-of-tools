@@ -1,13 +1,13 @@
-//! The window's setup ops: `chat.connect`, which checks three tokens with Slack, saves them as their workspace's secrets
+//! The setup ops: `chat.connect`, which checks three tokens with Slack, saves them as their workspace's secrets
 //! (adding a workspace, or giving one new tokens) and reloads the chat from its files with no daemon restart;
 //! `chat.channels`, the picker's list of one workspace; `chat.pair`, which maps a row's folder to a channel of one
-//! workspace or unmaps it, rewrites `chat.toml` and reloads; and `chat.workspaces`, the connected workspaces. The first
+//! workspace or unmaps it, rewrites `chat.toml` and reloads; `chat.row_pair`, a session's own pairing of a folder, which
+//! makes the same edit, write and reload through the same core; and `chat.workspaces`, the connected workspaces. The first
 //! three are jobs taken from a window's connection only (a row's agent has no use for them, and no token goes on a
-//! command line); `chat.workspaces` is a read any connection may make. The edit of a file and the reload that follows
-//! it hold the setup lock together, so two windows' pairings and a connect never lose one another's change, and one core (`edit_and_reload`) makes the edit,
-//! the write and the reload and logs each changed pairing. A token is a
-//! `Secret` from its decode on: no log line, reply or error here carries a byte of one, and no request payload is
-//! logged.
+//! command line); `chat.row_pair` is any connection's, attributed by its `by`; `chat.workspaces` is a read any connection
+//! may make. The edit of a file and the reload that follows it hold the setup lock together, so two pairings and a connect
+//! never lose one another's change. A token is a `Secret` from its decode on: no log line, reply or error here carries a
+//! byte of one, and no request payload is logged.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -23,12 +23,13 @@ use sot_platform::host::env::Env;
 use sot_protocol::chat::Ts;
 use sot_protocol::ops::{
     op, ChatChannel, ChatChannelInfo, ChatChannelsReq, ChatChannelsRes, ChatCode, ChatConnectReq, ChatConnectRes, ChatOtherApp,
-    ChatPairReq, ChatPairRes, ChatUnconfigured, ChatUnread, ChatWorkspacesReq, ChatWorkspacesRes, MAX_WATCHED, MAX_WORKSPACES,
+    ChatPairOutcome, ChatPairReq, ChatPairRes, ChatPairing, ChatRowPairReq, ChatRowPairRes, ChatUnconfigured, ChatUnread, ChatWorkspacesReq,
+    ChatWorkspacesRes, MAX_WATCHED, MAX_WORKSPACES,
 };
 use sot_protocol::reply::HandlerOutput;
 
-use super::ops::{code_of, decode, refuse, refuse_with, reply};
-use super::{canon_of, is_hub, Chat, Status};
+use super::ops::{code_of, decode, is_bound, refuse, refuse_with, reply};
+use super::{canon_of, current_row, is_hub, Chat, Status};
 use crate::rows::Workspaces;
 
 type Checked<T, E> = Pin<Box<dyn Future<Output = Result<T, E>> + Send>>;
@@ -384,44 +385,104 @@ async fn paired(payload: serde_json::Value, chat: &Arc<Chat>, rows: &Workspaces,
         in_channel(&service, channel.as_str()).await?;
     }
     let target = req.channel.as_ref().map(|c| (workspace.clone(), c.as_str().to_string()));
-    edit_and_reload(chat, rows, &req.row, fact.canonical.to_string_lossy().into_owned(), target, &workspace, "window").await?;
+    edit_and_reload(chat, rows, &req.row, fact.canonical.to_string_lossy().into_owned(), target, Some(&workspace), "window").await?;
     Ok(())
 }
 
-/// What a pairing's edit found: whether the file changed, and the folder's mapping the text held before it.
+/// What a pairing's edit found: whether the file changed, and the folder's pairing the file held before it, its channel's
+/// name read from the workspace's running cache before the reload that stops it.
 struct Edited {
     changed: bool,
-    before: Resolution,
+    before: Option<ChatPairing>,
 }
 
-/// The one pairing core: under the setup lock, the edit and write of `chat.toml` ([`save`]) and, only when the file
-/// changed, one info line naming `who` (`window`) and the reload. `wait_on` is the workspace the reply waits for. The
-/// caller's checks and Slack calls come before the lock, so a slow one never holds up another's setup.
+/// The one pairing core, window's and session's alike: under the setup lock, the edit and write of `chat.toml` ([`save`])
+/// and, only when the file changed, one info line naming `who` (`window`, or `session <handle> (row <id>)`) and the reload.
+/// `wait_on` is the workspace the reply waits for; none means the workspace the folder's old mapping named. The caller's
+/// checks and Slack calls come before the lock, so a slow one never holds up another's setup.
 async fn edit_and_reload(
     chat: &Arc<Chat>,
     rows: &Workspaces,
     row: &str,
     folder: String,
     target: Option<(String, String)>,
-    wait_on: &str,
+    wait_on: Option<&str>,
     who: &str,
 ) -> Result<Edited, ChatCode> {
     let setup = chat.setup().await;
     let (env, to) = (chat.env.clone(), target.clone());
     let saved = tokio::task::spawn_blocking(move || save(&env, &folder, to.as_ref().map(|(w, c)| (w.as_str(), c.as_str())))).await;
     let (changed, before) = saved.unwrap_or(Err(ChatCode::Failed))?;
+    let before = pairing_of(chat, &before);
     if changed {
         let (workspace, channel) = match (&target, &before) {
             (Some((w, c)), _) => (w.as_str(), c.as_str()),
-            (None, Resolution::Mapped { workspace, channel, .. }) => (workspace.as_str(), channel.as_str()),
-            (None, _) => ("", ""),
+            (None, Some(b)) => (b.workspace.as_str(), b.channel.as_str()),
+            (None, None) => ("", ""),
         };
         let outcome = if target.is_some() { "paired" } else { "unpaired" };
         // Every field is a quoted, escaped string: text a client chose (a row as typed) never ends or forges a line.
         tracing::info!(by = who, row, workspace, channel, outcome, "project chat: a pairing changed");
-        chat.reload_for(&setup, rows, wait_on).await;
+        let on = wait_on.map(str::to_string).or_else(|| before.as_ref().map(|b| b.workspace.clone())).or_else(|| chat.default_workspace());
+        chat.reload_for(&setup, rows, on.as_deref().unwrap_or_default()).await;
     }
     Ok(Edited { changed, before })
+}
+
+/// The pairing a resolution holds as the wire tells it, as `chat.resolve` does: the workspace's short name, the channel's name
+/// from its running service's cache, and whether mail is delivered.
+fn pairing_of(chat: &Arc<Chat>, resolution: &Resolution) -> Option<ChatPairing> {
+    let Resolution::Mapped { workspace, channel, .. } = resolution else { return None };
+    let name = chat.service_of(workspace).and_then(|s| s.api().ok()).and_then(|api| api.cached_name(channel));
+    let delivers = resolution.delivers() && chat.status_of(workspace) == Status::Running;
+    Some(ChatPairing { workspace: workspace.clone(), workspace_tag: chat.tag_of(workspace), channel: ChatChannel::try_from(channel.clone()).ok()?, name, delivers })
+}
+
+/// `chat.row_pair`: a session unpairs the folder of any row of this daemon (named by id or slug), through the same core as
+/// the window's pairing. In order, each refusal before anything is read past it: `by` (its handle bound to its row, as a
+/// row's post's is; attribution among one account's programs, not a security boundary) and a null `channel` (pairing a
+/// channel is not built yet), both `bad_request`; the target row (`stale_row`); a daemon that is not the hub
+/// (`unavailable`); the inert anchor (`unmapped`). No running service is needed, since an unpairing calls no Slack. Every
+/// changed pairing is logged by the core, and every refusal here in one line with who asked and its code, never a path.
+pub(crate) async fn row_pair(req_id: u64, payload: serde_json::Value, chat: &Arc<Chat>, rows: &Workspaces) -> Result<HandlerOutput> {
+    const NAME: &str = op::CHAT_ROW_PAIR;
+    let req = match decode::<ChatRowPairReq>(payload) {
+        Ok(r) => r,
+        Err(code) => {
+            tracing::info!(?code, "project chat: a session's pairing was not a request");
+            return Ok(refuse(req_id, NAME, code));
+        }
+    };
+    let who = format!("session {} (row {})", req.by.name, req.by.row);
+    match row_paired(&req, &who, chat, rows).await {
+        Ok(res) => reply(req_id, NAME, &res),
+        Err(code) => {
+            tracing::info!(by = who.as_str(), row = req.row.as_str(), workspace = ?req.workspace, ?code, "project chat: a session's pairing was refused");
+            Ok(refuse(req_id, NAME, code))
+        }
+    }
+}
+
+async fn row_paired(req: &ChatRowPairReq, who: &str, chat: &Arc<Chat>, rows: &Workspaces) -> Result<ChatRowPairRes, ChatCode> {
+    // The wire refuses an empty handle, which a row with none would otherwise bind.
+    if !is_bound(&req.by.name, &req.by.row, rows) || req.channel.is_some() {
+        return Err(ChatCode::BadRequest);
+    }
+    // A slug names a row, but only its id is the registry's current entry (`current_row`).
+    let id = rows.resolve(Some(&req.row)).ok_or(ChatCode::StaleRow)?.workspace_id.clone();
+    // No chat configuration is held: not the hub at its boot, or no `chat.toml` (a connect makes one). Nothing is read or written.
+    if matches!(chat.config().as_ref(), None | Some(Err(ConfigError::Missing))) {
+        return Err(ChatCode::Unavailable);
+    }
+    let (held, at) = (rows.clone(), id.clone());
+    let fact = tokio::task::spawn_blocking(move || current_row(&held, &at)).await.unwrap_or(None).ok_or(ChatCode::StaleRow)?;
+    if fact.inert {
+        return Err(ChatCode::Unmapped);
+    }
+    let folder = fact.canonical.to_string_lossy().into_owned();
+    let edited = edit_and_reload(chat, rows, &id, folder.clone(), None, None, who).await?;
+    let outcome = if edited.changed { ChatPairOutcome::Unpaired } else { ChatPairOutcome::Unchanged };
+    Ok(ChatRowPairRes { outcome, folder, pairing: edited.before.filter(|_| edited.changed) })
 }
 
 /// That the app is in the channel, from one read of its facts: a member passes, a private channel it is not in is

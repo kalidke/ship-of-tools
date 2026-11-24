@@ -24,7 +24,7 @@ adds the row skills and work-state hooks. The four onboarding skills also load g
   session's REPL ([How agents use the REPL](@ref agents-repl)), `show-result`
   puts a file in your preview pane or opens a page in your browser, and
   `sot-comm` sends messages to other sessions. Claude Code gets all of them;
-  every Codex session gets `sot-comm`, `sot-session-start` and `sot-chat-post`.
+  every Codex session gets `sot-comm`, `sot-session-start`, `sot-chat-post` and `sot-chat-pair`.
   A `ccx` launch also enables the `sot-row` plugin, which includes the REPL and preview skills.
 - **Hooks** that report the session's work state (working, blocked, done),
   which is what colours its row. See [Work-state colours](../concepts/work-state.md).

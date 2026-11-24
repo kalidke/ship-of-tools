@@ -58,6 +58,7 @@ fn the_chat_ops_are_declared_in_the_one_table() {
         "chat.connect",
         "chat.channels",
         "chat.pair",
+        "chat.row_pair",
         "chat.workspaces",
     ] {
         assert!(op::ALL.contains(&name), "{name} is not in op::ALL");
@@ -913,5 +914,67 @@ fn the_delete_pair_keeps_its_shape_and_reads_what_is_added_later_as_not_known() 
         assert!(serde_json::from_value::<ChatDeleteReq>(v).is_err());
     }
     let r: ChatRefusal = serde_json::from_value(json!({"error": "unknown op: chat.delete"})).unwrap();
+    assert_eq!(r.code, None);
+}
+
+fn asker() -> Value {
+    json!({"row": "ws-a-1", "name": "alpha-h"})
+}
+
+/// `chat.row_pair` keeps its shape and bounds: the asker's row and handle, the row, the optional workspace and a channel
+/// that is a required key (null unpairs, a missing one is refused, so an older daemon's dropped field is never read as
+/// an unpairing); an outcome added later reads `other`, and a reply with no `pairing` reads as none.
+#[test]
+fn a_row_pairing_names_who_asks_and_never_reads_a_lost_channel_as_an_unpairing() {
+    let req = |channel: Option<&str>, workspace: Option<&str>| ChatRowPairReq {
+        by: ChatAsker { row: "ws-a-1".into(), name: "alpha-h".into() },
+        row: "alpha".into(),
+        workspace: workspace.map(Into::into),
+        channel: channel.map(Into::into),
+    };
+    pinned(req(None, None), json!({"by": asker(), "row": "alpha", "channel": null}));
+    pinned(req(Some("#general"), Some("T1")), json!({"by": asker(), "row": "alpha", "workspace": "T1", "channel": "#general"}));
+    // A lost channel, a workspace that is no id, a channel or name out of bounds and a control character are refused.
+    let valid = json!({"by": asker(), "row": "alpha", "channel": null});
+    let without = |key: &str| {
+        let mut v = valid.clone();
+        v.as_object_mut().unwrap().remove(key);
+        v
+    };
+    assert!(serde_json::from_value::<ChatRowPairReq>(without("channel")).is_err(), "a lost channel is no unpairing");
+    for key in ["by", "row"] {
+        assert!(serde_json::from_value::<ChatRowPairReq>(without(key)).is_err(), "{key} is required");
+    }
+    let bad = [
+        json!({"channel": ""}),
+        json!({"channel": "c".repeat(MAX_NAME + 1)}),
+        json!({"channel": "gen\neral"}),
+        json!({"channel": 7}),
+        json!({"workspace": "T 1"}),
+        json!({"row": "r".repeat(MAX_ROW + 1)}),
+        json!({"by": {"row": "ws-a-1", "name": ""}}),
+        json!({"by": {"row": "ws-a-1", "name": "n".repeat(MAX_NAME + 1)}}),
+        json!({"by": {"row": "r".repeat(MAX_ROW + 1), "name": "alpha-h"}}),
+    ];
+    for fields in bad {
+        let mut v = valid.clone();
+        v.as_object_mut().unwrap().extend(fields.as_object().unwrap().clone());
+        assert!(serde_json::from_value::<ChatRowPairReq>(v.clone()).is_err(), "{v}");
+    }
+    let pairing = ChatPairing { workspace: "T1".into(), workspace_tag: Some("lab".into()), channel: channel("C1"), name: Some("general".into()), delivers: true };
+    let pairing_json = json!({"workspace": "T1", "workspace_tag": "lab", "channel": "C1", "name": "general", "delivers": true});
+    pinned(pairing.clone(), pairing_json.clone());
+    pinned(ChatPairing { workspace_tag: None, name: None, delivers: false, ..pairing.clone() }, json!({"workspace": "T1", "channel": "C1"}));
+    pinned(ChatRowPairRes { outcome: ChatPairOutcome::Unpaired, folder: "/p/a".into(), pairing: Some(pairing) }, json!({"outcome": "unpaired", "folder": "/p/a", "pairing": pairing_json}));
+    pinned(ChatRowPairRes { outcome: ChatPairOutcome::Unchanged, folder: "/p/a".into(), pairing: None }, json!({"outcome": "unchanged", "folder": "/p/a"}));
+    pinned(ChatRowPairRes { outcome: ChatPairOutcome::Paired, folder: "/p/a".into(), pairing: None }, json!({"outcome": "paired", "folder": "/p/a"}));
+    let later: ChatRowPairRes = serde_json::from_value(json!({"outcome": "moved", "folder": "/p/a"})).unwrap();
+    assert_eq!((later.outcome, later.pairing), (ChatPairOutcome::Other, None));
+    // A name that is no name is none, as a resolve's is; a folder past its bound refuses the reply.
+    let odd: ChatPairing = serde_json::from_value(json!({"workspace": "T1", "channel": "C1", "name": "", "workspace_tag": 5})).unwrap();
+    assert_eq!((odd.name, odd.workspace_tag), (None, None));
+    assert!(serde_json::from_value::<ChatRowPairRes>(json!({"outcome": "paired", "folder": "f".repeat(MAX_NODE_ID + 1)})).is_err());
+    // An older daemon answers the op as an unknown op, a refusal with no code.
+    let r: ChatRefusal = serde_json::from_value(json!({"error": "unknown op: chat.row_pair"})).unwrap();
     assert_eq!(r.code, None);
 }

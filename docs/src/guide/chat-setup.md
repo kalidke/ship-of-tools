@@ -190,6 +190,10 @@ Select the project's session, open the Chat panel and press `Ctrl+Shift+k`. The 
 chat's settings file on the computer that runs your sessions. If you edited that file by hand, a pick from the panel
 rewrites it whole: its comments and the order of its keys are not kept.
 
+A session's agent can remove a project's channel when you ask it to, with `sot-fe chat unpair`
+([Unpairing a project's channel](chat.md#Unpairing-a-project's-channel)). Choosing a channel for a project, and a
+change from one channel to another, stay yours to do here.
+
 ## Connect another Slack workspace
 
 The computer that runs your sessions can connect up to 8 Slack workspaces, a fixed limit of Ship of Tools, each with

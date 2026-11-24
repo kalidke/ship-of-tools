@@ -753,6 +753,85 @@ pub enum ChatDeleteRes {
     Unknown,
 }
 
+/// The session a `chat.row_pair` comes from: the row it runs in and the handle bound to that row, checked as a row post's
+/// name is (attribution among one account's programs, not authentication).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChatAsker {
+    #[serde(deserialize_with = "within::<_, MAX_ROW>")]
+    pub row: String,
+    #[serde(deserialize_with = "some_within::<_, MAX_NAME>")]
+    pub name: String,
+}
+
+/// `chat.row_pair`: pair the folder of `row` (an id or a slug) with `channel`, an id or a name, in `workspace` (absent:
+/// `chat.toml`'s), or, with `channel` null, unpair it. `channel` is a required key: a request that lost it is refused,
+/// never read as an unpairing, since an older daemon that drops a field it does not know would read it so.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChatRowPairReq {
+    pub by: ChatAsker,
+    #[serde(deserialize_with = "within::<_, MAX_ROW>")]
+    pub row: String,
+    #[serde(default, deserialize_with = "workspace_id", skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
+    #[serde(deserialize_with = "channel_given")]
+    pub channel: Option<String>,
+}
+
+/// A string of 1 to `N` bytes.
+fn some_within<'de, D: serde::Deserializer<'de>, const N: usize>(d: D) -> Result<String, D::Error> {
+    let s = within::<_, N>(d)?;
+    if s.is_empty() {
+        return Err(serde::de::Error::custom("empty"));
+    }
+    Ok(s)
+}
+
+/// A channel as a session gives it: null is none, else 1 to `MAX_NAME` bytes with no control character.
+fn channel_given<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    match Option::<String>::deserialize(d)? {
+        Some(s) if s.is_empty() || s.len() > MAX_NAME || s.chars().any(char::is_control) => Err(serde::de::Error::custom("not a channel")),
+        given => Ok(given),
+    }
+}
+
+/// How a `chat.row_pair` ended: `paired` and `unpaired` changed the file, `unchanged` left it as it was. A reader takes an
+/// outcome added later for `other`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatPairOutcome {
+    Paired,
+    Unpaired,
+    Unchanged,
+    #[serde(other)]
+    Other,
+}
+
+/// A folder's pairing: its workspace and that workspace's short name, the channel and its name as the daemon's cache holds
+/// them (each read as a resolve's is: one that is no name is none), and whether new posts there are mail.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChatPairing {
+    #[serde(deserialize_with = "within::<_, MAX_ID>")]
+    pub workspace: String,
+    #[serde(default, deserialize_with = "channel_name", skip_serializing_if = "Option::is_none")]
+    pub workspace_tag: Option<String>,
+    pub channel: ChatChannel,
+    #[serde(default, deserialize_with = "channel_name", skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub delivers: bool,
+}
+
+/// Reply to `chat.row_pair`: the folder (the hub's canonical spelling, for the asking session alone), and its pairing now
+/// (`paired`, `unchanged`) or the one removed (`unpaired`); none for an `unchanged` unpairing of a folder with no channel.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChatRowPairRes {
+    pub outcome: ChatPairOutcome,
+    #[serde(deserialize_with = "within::<_, MAX_NODE_ID>")]
+    pub folder: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pairing: Option<ChatPairing>,
+}
+
 /// Which bytes of a channel's picture `chat.file` reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

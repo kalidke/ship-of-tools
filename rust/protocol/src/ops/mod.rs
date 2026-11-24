@@ -526,6 +526,9 @@ pub mod op {
     pub const CHAT_CHANNELS: &str = "chat.channels";
     /// Map a row's folder to a channel, or unmap it: [`crate::ops::ChatPairReq`], reply [`crate::ops::ChatPairRes`].
     pub const CHAT_PAIR: &str = "chat.pair";
+    /// A session pairs the folder of a row with a channel, or unpairs it: [`crate::ops::ChatRowPairReq`], reply
+    /// [`crate::ops::ChatRowPairRes`].
+    pub const CHAT_ROW_PAIR: &str = "chat.row_pair";
     /// The Slack workspaces the hub is connected to: [`crate::ops::ChatWorkspacesReq`], reply
     /// [`crate::ops::ChatWorkspacesRes`].
     pub const CHAT_WORKSPACES: &str = "chat.workspaces";

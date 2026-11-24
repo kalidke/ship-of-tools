@@ -102,7 +102,7 @@ page_misses() {
     return "$bad"
 }
 check "lint: the install page names every skill and its uninstall line removes every Codex skill" page_misses "$ROOT" "$ROOT/docs/src/start/install.md"
-sed 's/,sot-chat-post}/}/' "$ROOT/docs/src/start/install.md" > "$WORK/page-no-codex.md"
+sed 's/,sot-chat-pair}/}/' "$ROOT/docs/src/start/install.md" > "$WORK/page-no-codex.md"
 sed 's/`sot-chat-post`/`x`/g' "$ROOT/docs/src/start/install.md" > "$WORK/page-no-name.md"
 sed '/^[|] .*sot-row@sot-local/s/`worktree`/`other`/' "$ROOT/docs/src/start/install.md" > "$WORK/page-row.md"
 sed '/^- .*sot-row@sot-local/s/`worktree`/`other`/' "$ROOT/docs/src/start/install.md" > "$WORK/page-uninstall.md"

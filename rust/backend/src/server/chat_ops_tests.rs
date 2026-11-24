@@ -40,6 +40,7 @@ const OPS: &[(&str, Answer)] = &[
     (op::CHAT_CONNECT, Answer::Handled),
     (op::CHAT_CHANNELS, Answer::Handled),
     (op::CHAT_PAIR, Answer::Handled),
+    (op::CHAT_ROW_PAIR, Answer::Handled),
     (op::CHAT_WORKSPACES, Answer::Handled),
 ];
 

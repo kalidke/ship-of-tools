@@ -876,6 +876,11 @@ owned by `docs/CLAUDE.md`.
 
 ## fe-ui
 
+- **CHAT-UNMAPPED-ROW-MISSES-A-PAIRING** [note] From reading the code of a session's pairing, not seen in use: a window showing a
+  project with no channel has no watch, so no event tells it when a session pairs that project, and its Chat drawer title
+  stays `no channel` until the person switches sessions or closes and reopens the drawer (an unmapped answer is never asked
+  again on a pace; only a failed one is). A session cannot pair yet and can unpair today; the miss shows once it can pair.
+  Fix: ask an unmapped answer of the shown row again each `GAP_PACE`, the title standing meanwhile.
 - **SHARE-CLEAR-FAILURE-NOT-TOLD** [note] From reading code, 2026-11-23; never seen. A withdrawal the daemon fails is
   not told and not tried again: `SelectionShare::on_reply` (`rust/frontend/src/ui/preview/share.rs`) gives a clear's
   reply no status line whatever it says, and by then the share holds that nothing is wanted and nothing is held, so
@@ -1344,10 +1349,16 @@ owned by `docs/CLAUDE.md`.
 
 ## chat
 
-- **CHAT-WINDOW-UNPAIR-WAITS-ON-ITS-REQUEST** [note] From reading the code, not seen in use: a window's `chat.pair` waits for the
-  reload of the workspace its request names (`chat.toml`'s when it names none), not for the workspace whose plan changed, so a
-  window's unpairing of a folder mapped in another workspace replies before that workspace's restart ends. Left as it is: the
-  window's own behavior does not change.
+- **CHAT-SESSION-PAIRING-CHURN** [note] From reading the code of a session's pairing, not seen in use: each changed pairing, a
+  window's or a session's (`chat.row_pair`, `rust/backend/src/chat/setup.rs`), restarts its Slack workspace, so every window
+  watching a channel of it resyncs and each of its delivering channels owes a pass, and nothing bounds how often a session
+  may ask. An agent that unpairs in a loop churns the workspace. The session skill `sot-chat-pair` tells an agent not to; no
+  limit is built.
+- **CHAT-WINDOW-UNPAIR-WAITS-ON-ITS-REQUEST** [note] From reading the code of a session's pairing, not seen in use: a window's `chat.pair`
+  waits for the reload of the workspace its request names (`chat.toml`'s when it names none), not for the workspace whose
+  plan changed, so a window's unpairing of a folder mapped in another workspace replies before that workspace's restart ends.
+  A session's `chat.row_pair` waits on the workspace the removed mapping named. Left as it is: the window's own behavior
+  does not change.
 - **CHAT-DELETE-UNMEASURED** [note] A session's delete of a message its project's Slack app posted (`sot-fe chat delete <ts>`,
   `Api::delete_message`, chat guarantee 36), asked by the maintainer on 2026-11-24, is proved against the fake Slack only: no real
   Slack message has been deleted by it. The checks are made on the first release candidate that carries the command, on a live hub

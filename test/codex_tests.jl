@@ -177,7 +177,7 @@ end
             @test !ispath(joinpath(marketplace, name))
             @test !occursin(name, read(joinpath(marketplace, "marketplace.json"), String))
             @test !ispath(cfg)
-            @test readdir(joinpath(ShipTools.codex_home(), "skills")) == ["sot-chat-post", "sot-comm", "sot-session-start"]
+            @test readdir(joinpath(ShipTools.codex_home(), "skills")) == ["sot-chat-pair", "sot-chat-post", "sot-comm", "sot-session-start"]
             if Sys.iswindows()
                 @test !ispath(cache) && !ispath(joinpath(dirname(cache), ".sot-row.install"))
                 return

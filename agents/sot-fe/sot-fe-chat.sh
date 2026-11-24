@@ -1,5 +1,6 @@
 # sot-fe's reply in the row's channel: `chat post`, one `chat.post` (or, with --file, one `chat.post_file`) of kind `row`
-# into the current thread; and `chat delete`, one `chat.delete` of a message the hub's Slack app posted there.
+# into the current thread; `chat delete`, one `chat.delete` of a message the hub's Slack app posted there; and
+# `chat unpair`, one `chat.row_pair` that removes the channel of a project folder.
 # Sourced by sot-fe; defines functions only.
 
 # The row's own handle, as comm-context.sh gives it ("" when the session has not joined). In its own subshell, never
@@ -242,6 +243,69 @@ _chat_deleted() {
             printf '%s' "$resp" | jq -r 'if .payload.assumed then "limited, try again later: Slack asked for a pause, and nothing was deleted"
                 else "limited, wait \(.payload.retry_after_secs) s: Slack asked to wait, and nothing was deleted" end' >&2
             exit 2
+            ;;
+        *)
+            echo "unknown: $maybe" >&2
+            exit 3
+            ;;
+    esac
+}
+
+# $1=a session as typed: `.` for the row this session runs in, else another row's slug or id. Unpairs that row's project
+# folder from its Slack channel: ONE `chat.row_pair` with a null channel, never sent again. The request carries who asks (this
+# session's row and handle, checked by the daemon). Exits 0 with `unpaired <folder> from <chan> in <at>` or `unchanged: <folder>
+# has no channel`; 2 when nothing was changed; 3 when it may have been (no answer, unknown).
+send_chat_unpair() {
+    local session="$1" row req
+    _chat_identity
+    row="$session"
+    [ "$session" != . ] || row="$CHAT_ROW"
+    _need_endpoint
+    # The session as typed and the handle are free text and reach jq on stdin, as JSON strings.
+    req="$({ sot_json_escape "$CHAT_ROW"; sot_json_escape "$CHAT_HANDLE"; sot_json_escape "$row"; } \
+        | jq -cn 'input as $by | input as $name | input as $row
+            | {v:1, id:3, kind:"req", op:"chat.row_pair", payload: {by:{row:$by, name:$name}, row:$row, channel:null}}')"
+    # Past a reload under the setup lock and its wait for a start (a pairing is idempotent, so a no-answer is exit 3).
+    export SEND_TIMEOUT="${TIMEOUT:-150}"
+    _chat_paired "$(_chat_ask chat.row_pair "$req")" "$session"
+}
+
+# The pairing's reply $1 (empty for none) for the session $2 as typed, as `_chat_deleted` reads a delete's.
+_chat_paired() {
+    local resp="$1" session="$2" err code say="$2" words
+    local maybe="the pairing may have been made; running the same command again is safe and says what is there now"
+    [ "$session" != . ] || say="this session's project"
+    if [ -z "$resp" ]; then
+        echo "no answer: $maybe" >&2
+        exit 3
+    fi
+    err="$(printf '%s' "$resp" | jq -r '.payload.error // empty')"
+    if [ -n "$err" ]; then
+        case "$err" in
+            "unknown op"*)
+                echo "refused unsupported the computer that runs your sessions runs an older Ship of Tools, which lets only a person pair or unpair a project, in the Chat drawer's channel list (Ctrl+Shift+k, Cmd+Shift+k on a Mac); nothing was changed" >&2
+                exit 2 ;;
+        esac
+        code="$(printf '%s' "$resp" | jq -r '.payload.code // "?"')"
+        # A panic in the daemon's job after the send began is an error reply too: the pairing may have been made.
+        [ "$code" != handler_error ] || { echo "unknown: $maybe" >&2; exit 3; }
+        case "$code" in
+            stale_row)   words="no session of the computer that runs your sessions is $say, or its project folder cannot be reached (sot-fe version lists them as row <slug>)" ;;
+            unmapped)    words="$say is the default session, which has no project folder" ;;
+            unavailable) words="no chat is set up on the computer that runs your sessions: it is not the hub for the chat, or no Slack workspace is connected" ;;
+            not_saved)   words="the chat's settings file chat.toml could not be written, or is refused as it stands; the log of Ship of Tools' service says why (sotd log-path prints where it is)" ;;
+            bad_request) words="the request is not valid (this session's handle is not its row's, its row is no longer there, or the session is named in over 256 bytes)" ;;
+            *)           words="$err" ;;
+        esac
+        _chat_refused "$code" "$words"
+    fi
+    case "$(printf '%s' "$resp" | jq -r '.payload.outcome // empty')" in
+        unpaired)
+            printf '%s' "$resp" | jq -r '.payload | "unpaired \(.folder)" + (.pairing | if . then
+                " from \(if .name then "#\(.name) (\(.channel))" else .channel end) in \(if .workspace_tag then "\(.workspace_tag) (\(.workspace))" else "Slack workspace \(.workspace)" end)" else "" end)'
+            ;;
+        unchanged)
+            printf '%s' "$resp" | jq -r '"unchanged: \(.payload.folder) has no channel"'
             ;;
         *)
             echo "unknown: $maybe" >&2
