@@ -323,6 +323,17 @@ own queue and takes the request when it is free; [messaging](messaging.md#A-mess
 that request cannot be made. An agent's own reply is not mail and does not come
 back to it. A post missed while the computer was down is filed later, once; the configuration page says how.
 
+A post made by the Slack account of the person who set the chat up on that computer (the one whose user token it holds,
+see [Setting up Slack](chat-setup.md)) reaches the agent marked as that person's own words, so the agent can tell it
+from any other member's. The agent treats a marked post as your own request, and acts on it as on the same words typed in
+the session, with four exceptions that still need your word in the session's own pane and never a post: anything that
+cannot be undone (a push to the main branch, a release, a deletion), reading a token or credential file, changing
+settings or permissions, and reopening an action you refused in the pane. The mark follows the Slack account
+alone: a member who shows the same name is not marked. It says which account posted, not who was at the keyboard, so
+anything your Slack account can post from, on any device or in any app you let post as you, can direct your sessions
+this way. On a computer connected to several Slack workspaces, the mark in each workspace follows the account whose
+token that workspace holds.
+
 ## What the top line says
 
 After the channel, the top line says what the panel is waiting for or why it shows nothing. `<computer>` is a

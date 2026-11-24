@@ -88,6 +88,10 @@ pub(super) async fn live() -> (FakeSlack, Levers) {
     let fake = FakeSlack::start(Identity::Trusted, move |seen, port| {
         let path = seen.path();
         if path.ends_with("/auth.test") {
+            // Under the user token the account is the person's, who has no bot.
+            if seen.authorization.as_deref() == Some(format!("Bearer {}", crate::chat::tests::USER).as_str()) {
+                return Reply::json(&json!({"ok": true, "team_id": "T0AAAA", "user_id": "U0OWNER"}));
+            }
             return Reply::json(&json!({"ok": true, "team_id": "T0AAAA", "user_id": "U0BOT", "bot_id": "B0BOT"}));
         }
         if let Some(r) = upload.reply(seen, port) {
@@ -105,6 +109,10 @@ pub(super) async fn live() -> (FakeSlack, Levers) {
             return Reply::json(&json!({"ok": true, "url": url}));
         }
         if path.ends_with("/chat.postMessage") {
+            // A post to this channel is refused as lacking the scope, so a test can make the client forget a user token.
+            if seen.json().is_some_and(|b| b["channel"] == "C0REFUSED") {
+                return Reply::json(&json!({"ok": false, "error": "missing_scope"}));
+            }
             return Reply::json(&json!({"ok": true, "ts": "1700000250.000100"}));
         }
         if path.ends_with("/conversations.info") && names_hang.load(Ordering::SeqCst) {

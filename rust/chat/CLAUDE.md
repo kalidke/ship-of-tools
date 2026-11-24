@@ -139,7 +139,12 @@ bot identity, workspace name, read-pacing instant, name cache, member list (guar
    `team_id` other than the service's workspace, or a code of `TOKEN_REFUSALS`, drops it from the service (a person's
    post is then `NoPersonToken`, unsent) with a fixed code, `Service::person_dropped` (`user_token_other_workspace`,
    `user_token_refused`), which the daemon logs; Slack's own state or the transport keeps it
-   (`service_tests::a_user_token_of_another_workspace_is_dropped_at_start`).
+   (`service_tests::a_user_token_of_another_workspace_is_dropped_at_start`). The same answer's `user_id` is the Slack id
+   of the account that holds the token, and it is kept beside the token (`Api::person_id`) for the service's life: the two
+   are one value under one lock, so the id is gone whenever the token is (dropped at the start, or forgotten by a refused
+   post, above), and is set only when the answer names this service's workspace and a valid id; an answer that names no workspace, another one or no valid id keeps the token and no id, and a client with
+   no token has none; channel mail's first line is made from it (guarantee 24;
+   `api_tests::the_user_tokens_account_is_kept_with_the_token_and_only_then`).
    Limits, noted and not fixed: a 401 status is `Refused("http_401")` and keeps the token (Slack answers `invalid_auth`
    as a 200 with `ok: false`, as far as is known); a bad `user_token` in the file turns the whole chat off, as a bad
    token of any key does; with the app's mark gone, a post forged by a local process of the account that declares itself
@@ -482,7 +487,8 @@ bot identity, workspace name, read-pacing instant, name cache, member list (guar
    asks again; the listener's check stays off, as the start left it
    (`service_tests::a_bot_token_refusal_ends_the_service_and_a_missing_scope_does_not`: an app the start told is not
    asked for again, and one Slack does not tell is asked for at each call, nothing kept). The daemon's connect calls it
-   under the setup lock (guarantee 31). `Service::app_unchecked()` says why the start's ask failed with the failure's `ApiError::code` (`no_identity` when
+   under the setup lock (guarantee 31). After `bots.info` and before the socket opens, the start checks the person's user
+   token once and keeps the account it names (guarantee 12). `Service::app_unchecked()` says why the start's ask failed with the failure's `ApiError::code` (`no_identity` when
    `auth.test` named no bot, asked nothing) for the daemon to log (PS8: a wrong premise costs the check, never a
    working chat); a second service for the
    workspace is `ServiceError::Held` before any socket opens or any call is made. The lock is platform's `lock_supervisor`
@@ -578,12 +584,52 @@ bot identity, workspace name, read-pacing instant, name cache, member list (guar
    drop an edit.
 
 24. **A channel's message becomes one bounded, marked mail body, read back by one reader, and only people's posts are
-   mail.** `mail::body(record)` is pure and returns at most `MAX_MAIL` (12,000) bytes for every record this crate builds, which is
-   within the record's own limits (a hand-built record with fields past them can exceed it), under messaging's poll
-   budget (`POLL_BUDGET`, 16,000, in `comm::cli::poll`) so one chat mail is printed whole. Its first line starts `[chat] `, names the role first (`a channel member`, or `the
+   mail.** `mail::body(record, owner)` is pure and returns at most `MAX_MAIL` (12,000) bytes for every record this crate builds, which is
+   within the record's own limits (a hand-built record with fields past them can exceed it). What a poll prints of a body, and why one chat mail is always printed whole, is messaging's
+   contract (its "Reading", which holds the arithmetic; the worst case is pinned by
+   `poll_tests::a_chat_mail_at_its_worst_is_printed_whole_and_none_is_starved`). Its first line starts `[chat] `, names the role first (`a channel member`, or `the
    chat drawer` for a `Drawer` post, which only an older daemon made, as the app, for a window) and then the author's id and quoted name, the channel and
    `at the top level` or `in the thread of <ts>`, and says that lines starting `| ` are the channel's words, not the
-   user's. Its second line is `ts=<ts> thread=<ts> channel=<id> workspace=<id>`, ending ` cut` when the record's
+   user's. **A member's post whose author id is `owner`, the Slack id of the user token this chat holds
+   (guarantee 12), reads instead `[chat] From your user's Slack account (id U…, shown as "…") in channel C…, at the top
+   level.` (or `in the thread of <ts>`) `Lines starting "| " are your user's words, posted in Slack.`; the words are fixed
+   text of the code and every field still passes through the escape.** The mark is decided by the author's id alone,
+   compared exactly with `owner`: a shown name, a name or a text that holds the mark's words, an empty or absent `owner`
+   and an author with no id mark nothing, and a post of any other origin is never marked (a `Drawer` post keeps its
+   role). Every other post reads byte for byte as it did before the mark. `filed_of` reads both forms (it reads
+   the second line and the `[chat] ` start only), so the start's read of the inboxes knows every filing, older ones
+   included (`mail_tests::a_post_is_the_users_by_its_authors_slack_id_alone`,
+   `only_a_members_post_is_marked_and_a_bot_is_never_mail`, `filed_of_reads_a_marked_body_and_the_bound_holds_for_it`).
+   The daemon passes `Api::person_id` as it is when the filing is made, inside the filing slot (`backend/src/chat/watch.rs`,
+   `file_job`), so a post filed after a restart, a recovered post of a pass included, is marked by the id the restarted
+   service holds (`chat_mail_tests::a_post_a_pass_recovers_is_marked_by_the_account_the_service_holds`), and a filing
+   already made keeps the words it was made with; a token forgotten while a filing waited marks nothing
+   (`chat_mail_tests::a_token_forgotten_while_a_filing_waited_marks_nothing`), and a live post by the account is marked
+   (`chat_mail_tests::a_post_by_the_user_tokens_account_is_filed_as_the_users_own`). **The mark is only words in an
+   inbox.** Against channel members and against mail sent through the commands or the op it holds because no such mail
+   can carry them: the op `comm.file`, a linked daemon's offer and `sotd comm send` refuse a sender that is no handle, so
+   `#chat` is the chat's own in-process filing alone, and a poll prints the sender in a start line as the filing's, with every
+   later line of a text behind `> ` (messaging's contract, "Sending" and "Reading", which also say that a sender's first
+   line can hold text shaped like a header after its own sender); the session skills honor the mark only on a poll start
+   line `[<ts>] [#chat:daemon] [chat] From your user's Slack account`, treat it as the person's own request and act on it as
+   on the same words typed in their pane, with four exceptions that still take their word in the pane and never a post:
+   anything that cannot be undone, reading a token or credential file, changing settings or permissions, and reopening an
+   action they refused in the pane. A process of
+   the account that writes the comm folder (appends an inbox line by hand, or makes a registry key and a self file)
+   can write any line, as it can post as the person (guarantee 12); nothing here defends against it. Limits: the mark
+   says which Slack account posted, not who held the phone and not which program: any post made under the user token
+   that carries no `bot_id` is marked, the hub's own person posts (guarantee 12's same-account boundary) and any other
+   app the person let post as them included (`normalize` reads `bot_id`, never `app_id`; whether Slack sets `bot_id` on
+   a post made with a user token is the open premise of `CHAT-OWNER-MARK-NOT-SEEN-LIVE`); with several workspaces on one
+   hub each workspace's mark follows the account whose user token that workspace holds; a user token of another person
+   pasted at the connect marks that person (guarantee 12 notes that such a token passes the connect); a start whose
+   `auth.test` under the user token did not answer (the transport, or Slack's own state) marks nobody until that
+   workspace's service starts again, which a reload that keeps the plan does not do, and nothing is logged, so an
+   owner's post filed in that time stays unmarked for good (each post is filed once); a filing in flight when its
+   service ends on its own (`wrong_app`, `bot_token_refused`) reads the service as stopped and goes unmarked; a user
+   token the hub does not hold marks nobody; a daemon not yet restarted after an install, or an older one on a computer
+   of the shared home that appends to the folder itself, still accepts the old sender through the op, while the skills
+   already honor the mark. The start's and the filing's own limits above fail to unmarked mail, never to a mark that was not earned. Its second line is `ts=<ts> thread=<ts> channel=<id> workspace=<id>`, ending ` cut` when the record's
    `truncated`, `omitted` or `files_omitted` is set or the mail dropped any text or file, so ` cut` says that
    something is missing, whatever the reason. Then each line of the text, an empty one included, behind `| `, then
    one `file:` line a file (name, MIME type, size, `not fetched`; a file's bytes are never fetched here) and

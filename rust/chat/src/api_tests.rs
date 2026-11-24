@@ -3301,3 +3301,58 @@ fn the_workspace_tag_is_the_first_label_of_its_slack_address() {
     }
     assert_eq!(tag_of(&serde_json::json!({ "team": "Acme Lab" })).as_deref(), Some("Acme Lab"), "no address");
 }
+
+/// The Slack id of the user token's account is kept only when the start's `auth.test` under that token
+/// answers this workspace with a valid `user_id`, and it goes with the token: a token of another workspace, one Slack
+/// refuses and one a refused post made the client forget keep no id; an answer that names none, or none for this
+/// workspace, keeps the token and no id; no token at all has none.
+#[tokio::test]
+async fn the_user_tokens_account_is_kept_with_the_token_and_only_then() {
+    bounded(async {
+        let fake = FakeSlack::start(Identity::Trusted, |seen, _| {
+            let mode = seen.path().split('/').nth(2).unwrap_or_default().to_string();
+            if seen.path().ends_with("/chat.postMessage") {
+                return Reply::json(&json!({"ok": false, "error": "token_revoked"}));
+            }
+            let id = |team: &str, user: &str| Reply::json(&json!({"ok": true, "team_id": team, "user_id": user}));
+            match mode.as_str() {
+                "ok" => id(WS, "U0ADA"),
+                "nouser" => Reply::json(&json!({"ok": true, "team_id": WS})),
+                "baduser" => id(WS, "not an id"),
+                "noteam" => Reply::json(&json!({"ok": true, "user_id": "U0ADA"})),
+                "other" => id("T0OTHER", "U0ADA"),
+                "refused" => Reply::json(&json!({"ok": false, "error": "invalid_auth"})),
+                _ => status(500, &[], &json!({})),
+            }
+        })
+        .await;
+        let api_in = |mode: &str, person: Option<&str>| {
+            Api::new(fake.http(), Secret::new(TOKEN), WS).unwrap().with_person(person.map(Secret::new)).with_base(fake.url("slack.com", &format!("/api/{mode}/")))
+        };
+        for (mode, dropped, held, id) in [
+            ("ok", None, true, Some("U0ADA")),
+            ("nouser", None, true, None),
+            ("baduser", None, true, None),
+            ("noteam", None, true, None),
+            ("down", None, true, None),
+            ("other", Some("user_token_other_workspace"), false, None),
+            ("refused", Some("user_token_refused"), false, None),
+        ] {
+            let api = api_in(mode, Some(PERSON));
+            assert_eq!(api.person_id(), None, "{mode}: nothing is kept before the check");
+            assert_eq!(api.check_person().await, dropped, "{mode}");
+            assert_eq!((api.holds_person_token(), api.person_id().as_deref()), (held, id), "{mode}");
+        }
+        // No token: the check asks nothing and there is no id.
+        let bare = api_in("ok", None);
+        assert_eq!(bare.check_person().await, None);
+        assert_eq!(bare.person_id(), None);
+        // The token a refused post made the client forget takes its id with it; a row's refused post leaves both.
+        let api = api_in("ok", Some(PERSON));
+        api.check_person().await;
+        assert_eq!(api.post("C0CHAN", None, PostKind::Person, "tester", "hi").await, Ok(PostOutcome::Refused("token_revoked".into())));
+        assert_eq!((api.holds_person_token(), api.person_id()), (false, None));
+        fake.shutdown().await;
+    })
+    .await;
+}

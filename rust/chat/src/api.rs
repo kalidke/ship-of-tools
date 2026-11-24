@@ -558,8 +558,10 @@ struct Names {
 pub struct Api {
     http: Http,
     token: Secret,
-    /// The user token a person's post goes out under. Forgotten when Slack refuses it; never replaced by `token`.
-    person: Mutex<Option<Secret>>,
+    /// The user token a person's post goes out under, and beside it the Slack id of the account that holds it, as the
+    /// start's `auth.test` under it named it (`None` until then). Forgotten when Slack refuses the token, the id with it
+    /// under the one lock; never replaced by `token`.
+    person: Mutex<Option<(Secret, Option<String>)>>,
     workspace: String,
     base: String,
     deadlines: Deadlines,
@@ -722,7 +724,7 @@ impl Api {
 
     /// This client with the person's user token (`None`: a person's post is refused unsent).
     pub fn with_person(mut self, token: Option<Secret>) -> Api {
-        self.person = Mutex::new(token);
+        self.person = Mutex::new(token.map(|t| (t, None)));
         self
     }
 
@@ -731,12 +733,18 @@ impl Api {
         self.person.lock().unwrap().is_some()
     }
 
+    /// The Slack id of the account whose user token is held now, as the start's check read it; `None` when no token is
+    /// held or the check did not name one.
+    pub fn person_id(&self) -> Option<String> {
+        self.person.lock().unwrap().as_ref().and_then(|(_, id)| id.clone())
+    }
+
     /// The token a post of `kind` goes out under: the bot's for a row, the person's for a person, and never the bot's in
     /// its place.
     fn poster(&self, kind: PostKind) -> Result<Secret, ApiError> {
         match kind {
             PostKind::Row => Ok(self.token.clone()),
-            PostKind::Person => self.person.lock().unwrap().clone().ok_or(ApiError::NoPersonToken),
+            PostKind::Person => self.person.lock().unwrap().as_ref().map(|(t, _)| t.clone()).ok_or(ApiError::NoPersonToken),
         }
     }
 
@@ -802,11 +810,19 @@ impl Api {
     /// The person's user token checked once, at the service's start: one `auth.test` under it. A `team_id` other than this
     /// client's workspace, or a code of `TOKEN_REFUSALS`, drops the token (a person's post is then refused unsent,
     /// `NoPersonToken`) and answers why, a fixed code (`user_token_other_workspace`, `user_token_refused`); Slack's own
-    /// state or the transport keeps it, and so does a client that holds none (`None`).
+    /// state or the transport keeps it, and so does a client that holds none (`None`). An answer for this workspace that
+    /// names a valid `user_id` keeps that id beside the token (`person_id`); any other answer keeps none.
     pub(crate) async fn check_person(&self) -> Option<&'static str> {
-        let token = self.person.lock().unwrap().clone()?;
+        let token = self.person.lock().unwrap().as_ref().map(|(t, _)| t.clone())?;
         let dropped = match self.read_as(token, "auth.test", &[], MAX_BODY).await {
             Ok(v) if workspace_of(&v).is_ok_and(|w| w != self.workspace) => "user_token_other_workspace",
+            Ok(v) => {
+                // From an answer that names this workspace only.
+                if let (Some((_, id)), true) = (self.person.lock().unwrap().as_mut(), workspace_of(&v).is_ok()) {
+                    *id = answered_id(&v, "user_id").map(String::from);
+                }
+                return None;
+            }
             Err(ApiError::Slack(code)) if TOKEN_REFUSALS.contains(&code.as_str()) => "user_token_refused",
             _ => return None,
         };

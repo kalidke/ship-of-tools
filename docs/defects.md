@@ -1503,6 +1503,13 @@ owned by `docs/CLAUDE.md`.
   `bots.info` under a new app's bot token names that app. Check them at a person's first use of either screen; close this
   item when a person keeps the connected app through one.
 - **CHAT-STATUS-READS-STOPPING-AFTER-AN-END** [note] From a review, not seen in use: after a service ends on its own, `Chat::status()` reads `Stopping` until the stop it began returns, so two readers depend on timing: the owner waits a bounded time for `Off(Failed(code))` before it tells its watchers (CHAT-WATCHERS-TOLD-BEFORE-THE-CHAT-IS-OFF), and a watch refused by `Hub::ensure_owner` can make a window resolve the row while the chat still reads `Stopping`. Letting the status read `Failed(code)` from `service_ended` on, whatever the stop still does, would close both and delete the owner's wait.
+- **CHAT-OWNER-MARK-NOT-SEEN-LIVE** [note] Built on 2026-11-24 at the maintainer's ask that a session can tell a channel post
+  by the owner of its sessions from any other member's: channel mail whose author's Slack id is the id the start's
+  `auth.test` named under the held user token reads `[chat] From your user's Slack account ...` (`rust/chat/CLAUDE.md`,
+  guarantees 12 and 24). Not seen live: no hub has filed marked mail, so that Slack's `auth.test` under a real user token
+  names the account's `user_id` and that the same id is a post's `user` is measured only against the fake. Check at a
+  person's first post from Slack on a delivering hub; close this item when the mail reads marked there and a member's
+  post beside it does not. The limits are the contract's, guarantee 24.
 
 ## records
 

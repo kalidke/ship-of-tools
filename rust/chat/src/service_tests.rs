@@ -913,6 +913,7 @@ async fn a_user_token_of_another_workspace_is_dropped_at_start() {
         let own = team_service(&teams, "T0AAAA", &teams.user("T0AAAA"), &dir.0, Transfers::new()).await;
         assert_eq!(own.person_dropped(), None);
         assert!(own.api().unwrap().holds_person_token());
+        assert_eq!(own.api().unwrap().person_id().as_deref(), Some("U0PERSON"), "the start kept the token's account");
         own.stop(Duration::from_secs(3)).await;
         let unknown = ["xoxp", "-", "T0ZZZZ", "-", "1234"].concat();
         for (user, code) in [(teams.user("T0BBBB"), "user_token_other_workspace"), (unknown, "user_token_refused")] {
@@ -920,6 +921,7 @@ async fn a_user_token_of_another_workspace_is_dropped_at_start() {
             assert_eq!(service.person_dropped(), Some(code));
             let api = service.api().unwrap();
             assert!(!api.holds_person_token());
+            assert_eq!(api.person_id(), None, "{code}: a dropped token keeps no account");
             assert_eq!(api.post("C0AAAA01", None, PostKind::Person, "tester", "hi").await, Err(ApiError::NoPersonToken));
             service.stop(Duration::from_secs(3)).await;
         }

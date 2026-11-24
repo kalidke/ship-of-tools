@@ -206,6 +206,76 @@ async fn a_live_member_post_is_marked_mail_for_the_row_and_nothing_else_is() {
     assert!(first.contains(&format!("ts={} thread={} channel=C0AAAA workspace=T0AAAA", stamp(1), stamp(1))), "{first}");
 }
 
+/// On a hub whose secrets hold a user token, a post by that token's account is filed with the first line that
+/// says it is the user's own, and another member's reads as it always did.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_post_by_the_user_tokens_account_is_filed_as_the_users_own() {
+    let w = world(true).await;
+    let _chat = w.start(&w.fake).await;
+    let by = |n: u32, user: &str| {
+        let mut event = message("C0AAAA", n);
+        event["envelope_id"] = json!(format!("e{n}"));
+        event["payload"]["event"]["user"] = json!(user);
+        w.lv.feed.send(event).unwrap();
+    };
+    by(1, "U0OWNER");
+    by(2, "U0MEMBER");
+    // A bot's post carrying the account's id is not mail at all.
+    let mut bot = message("C0AAAA", 3);
+    bot["payload"]["event"]["user"] = json!("U0OWNER");
+    bot["payload"]["event"]["bot_id"] = json!("B0OTHER");
+    w.lv.feed.send(bot).unwrap();
+    by(4, "U0OWNER");
+    w.filed_count(3).await;
+    assert_eq!(w.filed(), vec![stamp(1), stamp(2), stamp(4)]);
+    let inbox = w.inbox();
+    assert!(
+        inbox[0].starts_with("[chat] From your user's Slack account (id U0OWNER, shown as \"Name-U0OWNER\") in channel C0AAAA, at the top level. Lines starting \"| \" are your user's words, posted in Slack.\n"),
+        "{}",
+        inbox[0]
+    );
+    assert!(inbox[1].starts_with("[chat] From a channel member (id U0MEMBER, shown as \"Name-U0MEMBER\") in channel C0AAAA, at the top level. Lines starting \"| \" are the channel's words, not your user's.\n"), "{}", inbox[1]);
+    assert!(inbox[2].starts_with("[chat] From your user's Slack account (id U0OWNER"), "{}", inbox[2]);
+}
+
+/// The user token's account is read at the filing, inside the filing slot: a token the client forgot while the owner's post
+/// waited for the slot marks nothing, so the post is filed as a member's.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_token_forgotten_while_a_filing_waited_marks_nothing() {
+    let w = world(true).await;
+    let chat = w.start(&w.fake).await;
+    let arm = Holds::here().arm("chat.mail.filing").key(&w.folder).hold(1);
+    let service = w.service(&chat);
+    let mut event = message("C0AAAA", 1);
+    event["payload"]["event"]["user"] = json!("U0OWNER");
+    w.lv.feed.send(event).unwrap();
+    arm.reached_async(0).await;
+    let api = service.api().unwrap();
+    assert_eq!(api.person_id().as_deref(), Some("U0OWNER"), "the start kept the account");
+    // Slack refuses the person's token while the filing is held: the client forgets it, and the id with it.
+    let refused = api.post("C0REFUSED", None, sot_chat::api::PostKind::Person, "n", "hi").await;
+    assert_eq!(refused, Ok(sot_chat::api::PostOutcome::Refused("missing_scope".into())));
+    assert_eq!(api.person_id(), None);
+    arm.release(0);
+    w.filed_count(1).await;
+    let first = &w.inbox()[0];
+    assert!(first.starts_with("[chat] From a channel member (id U0OWNER,"), "{first}");
+}
+
+/// A post a pass recovers, one the socket never sent, is marked as a live one is: the filing reads the account the same way.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_post_a_pass_recovers_is_marked_by_the_account_the_service_holds() {
+    let w = world(true).await;
+    serve(&w.lv, History::new().raw(json!({"ts": stamp(2), "user": "U0OWNER", "text": "recovered"})).post(&stamp(3)));
+    let _chat = w.start(&w.fake).await;
+    w.filed_count(2).await;
+    let inbox = w.inbox();
+    let mine = inbox.iter().find(|m| m.contains(&format!("ts={} ", stamp(2)))).expect("the owner's post is filed");
+    assert!(mine.starts_with("[chat] From your user's Slack account (id U0OWNER,"), "{mine}");
+    let other = inbox.iter().find(|m| m.contains(&format!("ts={} ", stamp(3)))).expect("the member's post is filed");
+    assert!(other.starts_with("[chat] From a channel member (id U0MEM,"), "{other}");
+}
+
 /// A file without `mail_after` opens no delivery: the trap (an inbox that cannot be read, which makes any read of the
 /// inboxes log its name) is read by a delivering file and by none other, and nothing is filed.
 #[tokio::test(flavor = "current_thread")]
@@ -265,7 +335,7 @@ async fn an_unreadable_inbox_at_start_files_nothing_until_it_reads() {
     // first absent, still fails whole, and one removal of the second makes every inbox readable at once.
     serve(&w.lv, posts(&[1, 2]));
     let inbox = w.th.home.join("inbox").join("b.jsonl");
-    let before = sot_chat::mail::body(&post_record(1));
+    let before = sot_chat::mail::body(&post_record(1), None);
     std::fs::write(&inbox, format!("{}\n", json!({"from": "#chat", "to": "b", "repo": "daemon", "msg": before, "ts": "2026-01-01T00:00:00Z"}))).unwrap();
     let kept = std::fs::read(&inbox).unwrap();
     std::fs::remove_file(&inbox).unwrap();
