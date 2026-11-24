@@ -441,8 +441,11 @@ and filed once, the boundary written after), and the delivery's end before a ste
 flight returned, its pass and read stopped), which completes the daemon's delivery, and the row replies (a row's agent
 answers in its channel, in the mail's thread, through `sot-fe chat post`, one post per call, exit 3 when the post may
 exist; the daemon refuses a person's post from anything but a named window and a row's under any name but its own
-handle), so a channel post becomes mail and the row's answer reaches its thread with no window open; nothing runs it
-until a person maps a delivering channel on the hub, which no hub does yet;
+handle), so a channel post becomes mail and the row's answer reaches its thread with no window open; it is off
+until a hub's `chat.toml` is made delivering, as the manual's configuration page says how (seen once on a live
+hub, 2026-11-24: a person's post filed as mail within a second, an idle Claude session woken by it, and the
+session's answer in the post's thread; a post missed while the hub was down and a Codex session's mail are not
+seen live);
 SlackClaw's pause switch (its PR 18) merges on his word when the
 first channel moves. Also in progress: the agent sees what the user draws (`requirements.md`); the wire's drawing has
 landed, and so has the daemon's picture (the figure with the person's ink, inside the project), written through

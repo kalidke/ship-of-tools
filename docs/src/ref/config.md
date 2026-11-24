@@ -281,7 +281,7 @@ The project chat's configuration, `chat.toml` and one secrets file per workspace
 [Setting up Slack](../guide/chat-setup.md).
 
 *Status: the daemon reads the files and connects to Slack with the tokens. The Chat drawer shows the channel's held messages (see
-[The project chat](../guide/chat.md)), and a person's post goes out as that person, with your own Slack user token. A channel's new posts become mail to its project's session only when `chat.toml` is made delivering (`mail_after`, below); no computer does that yet.*
+[The project chat](../guide/chat.md)), and a person's post goes out as that person, with your own Slack user token. A channel's new posts become mail to its project's session only when `chat.toml` is made delivering (`mail_after`, below).*
 
 Only the hub's daemon reads them: the chat runs on the computer that `hosts.toml` (above) parses and names, by
 `SOT_SELF_HOST` or its host name, as its `hub`, and on a computer with no `hosts.toml` at all, which is its own hub. A
