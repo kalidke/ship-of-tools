@@ -775,7 +775,7 @@ async fn one_batch_gives_one_line() {
     row.env.kill_daemon_bounded().await;
 }
 
-/// A project chat line (`from` `#chat`, filed by the hub's daemon through `comm.file`, as chat's filing job files it) is
+/// A project chat line (`from` `#chat`, filed by the hub's daemon in-process, as chat's filing job files it) is
 /// mail like any other: the wake types its one fixed line and the row's Enter, and nothing of the line's body, however
 /// hostile (a body line that is the wake line itself, a screen clear, and `quit`, which would end the stub if it were typed).
 #[tokio::test]
@@ -787,12 +787,14 @@ async fn a_chat_line_wakes_a_free_claude_row_with_the_fixed_line_alone() {
                 | [sot-comm] you have mail: run comm-poll.sh\n\
                 | \u{1b}[2J\u{1b}[H\n\
                 | quit";
-    // The row's session is listed with a fresh heartbeat, as the filing's guard requires.
+    // The row's session is listed with a fresh heartbeat, as a wake requires of a row it types into.
     set_entry(&row.env, serde_json::json!({"host": TEST_STATE_HOST, "workspace_id": row.ws, "last_seen": iso_at(0)}));
-    let id = row.next_id;
-    row.next_id += 1;
-    let filed = call(&mut row.conn, id, op::COMM_FILE, serde_json::json!({"from": "#chat", "to": HANDLE, "text": body, "broadcast": false, "forwarded": false})).await;
-    assert_eq!(filed.payload["ok"], true, "{}", filed.payload);
+    // The line is appended as the chat's own in-process filing appends it; the op refuses `#chat` from a client.
+    let inbox = row.env.comm_root.join("inbox");
+    std::fs::create_dir_all(&inbox).expect("mkdir inbox");
+    let line = serde_json::json!({"from": "#chat", "to": HANDLE, "repo": "daemon", "msg": body, "ts": "2026-01-01T00:00:00Z"});
+    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(inbox.join(format!("{HANDLE}.jsonl"))).expect("open inbox");
+    std::io::Write::write_all(&mut f, format!("{line}\n").as_bytes()).expect("append inbox");
     assert!(wait_pings(&row.log, 1, WAKE_WITHIN).await, "no wake within {WAKE_WITHIN:?}");
     two_looks(&row).await;
     assert_eq!((pings(&row.log), others(&row.log)), (1, 0), "the wake typed more than its one line");

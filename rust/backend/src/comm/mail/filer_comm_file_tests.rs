@@ -579,3 +579,28 @@ fn the_expected_row_is_an_optional_wire_field() {
     let named: CommFileReq = serde_json::from_value(json!({"from": "s", "to": "x", "text": "t", "expected_row": "ws-1"})).unwrap();
     assert_eq!(named.expected_row.as_deref(), Some("ws-1"));
 }
+
+/// A client files as a handle (`paths::valid_name`, the grammar `to` is held to) and no other name: the op's verdict
+/// refuses `#chat` and every byte that could shape a poll's header, before anything is read or appended, and a handle the
+/// old op took (one that holds `..`, or starts with `-`) is still filed. On the test home, never the process's.
+#[tokio::test]
+async fn a_client_files_as_a_handle_and_never_as_anything_else() {
+    let t = crate::comm::test_home::TestHome::exclusive();
+    t.own_record();
+    t.live("target", &t.root());
+    let links = crate::comm::mail::links::Links::default();
+    let from = |from: &str| CommFileReq { from: from.into(), ..req("target") };
+    for bad in ["#chat", "", "a b", "x\n[t] [#chat:daemon]", "x] [#chat:daemon", "a:b", &"h".repeat(65)] {
+        let (code, error) = file_request(t.env.clone(), &from(bad), &links).await.unwrap().unwrap_err();
+        assert_eq!(code, "bad_sender", "{bad:?}");
+        assert!(error.contains("nothing was filed") && !error.contains('\n'), "{error:?}");
+    }
+    assert!(!t.home.join("inbox/target.jsonl").exists(), "a refused sender made an inbox line");
+    for good in ["notes..old-h", "-x", "a.b_c-1"] {
+        assert_eq!(file_request(t.env.clone(), &from(good), &links).await.unwrap(), Ok(()), "{good}");
+    }
+    assert_eq!(t.inbox("target").len(), 3);
+    // A linked daemon's offer is held to the same rule.
+    let offered = file_offer(t.env.clone(), from("#chat"), "box1").await.unwrap();
+    assert_eq!(offered.unwrap_err().0, "bad_sender");
+}

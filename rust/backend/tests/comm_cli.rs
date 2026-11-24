@@ -149,7 +149,8 @@ fn a_join_a_send_and_a_poll_through_the_wrappers() {
     assert!(status.success() && out.contains("filed -> @alpha-box1"), "{status} {out} {err}");
     let polled = b.run("alpha", "comm-poll.sh", &[]).ok();
     let lines: Vec<&str> = polled.stdout.lines().collect();
-    assert_eq!(lines.len(), 3, "{polled}");
+    // A body that ends in a line break prints no line of its own after it.
+    assert_eq!(lines.len(), 2, "{polled}");
     assert!(lines[0].ends_with("] [beta-box1:beta] it's here"), "{polled}");
     assert!(lines[1].ends_with("] [beta-box1:beta] a body with `backquotes`, $(no command) and 'quotes'"), "{polled}");
     assert_eq!(b.run("alpha", "comm-poll.sh", &[]).ok().stdout, "No new messages.\n");

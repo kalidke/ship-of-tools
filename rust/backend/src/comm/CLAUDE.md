@@ -66,6 +66,21 @@ Sending:
   (`comm.file` to this box's daemon, else the hub), and a handle its folder does not list goes to the hub, which files
   it or offers it to the daemons linked to it (`mail::links`, `mail::hub_link`). The answer decides, never a transport's
   exit status.
+- A client files only as a handle: the filing's verdict (`filer::file_request`, the op `comm.file`, and `file_offer`,
+  a linked daemon's offer) refuses a `from` that is not a name a handle can be (`paths::valid_name`, the grammar `to` is
+  held to, so a derived handle such as `notes..old-h` still files; code `bad_sender`) before it reads or appends anything,
+  and `sotd comm send` refuses to send as an identity that is not one (`cli::unroutable`, which both of its routes
+  pass), so `#chat`, the name of the chat's own filing, which the hub's daemon makes in-process (`file_comm`, never
+  through the op), is never a command's or a client's, so no supported writer files a `from` that could shape a poll's start line (`repo`
+  is a project's folder name as the writer found it, and is covered by what follows it on that line being the sender's
+  own). The boundary: a process of the account that appends to the inbox file by hand, or puts a
+  registry key and a self file of its own, can write any line, as it can post as the person (the chat's guarantee 12);
+  nothing here defends against it. The refusal logs `from`, `to` and the error escaped, so a name with a line break is
+  one log line. Limits: a daemon not yet restarted after an install, and an older daemon on a computer of the shared
+  home that appends to the folder itself, still accept the old sender; the sessions' skills (`comm/adapters/claude/sot-comm/SKILL.md`,
+  `comm/adapters/codex/skills/sot-comm/SKILL.md`) read the mark on the install's version alone. Tests:
+  `filer_comm_file_tests::a_client_files_as_a_handle_and_never_as_anything_else`,
+  `start_tests::an_identity_that_is_no_handle_cannot_send`.
 - A filing may name the row it expects (`CommFileReq.expected_row`, defaulted; wire's), and then only a daemon that appends to
   the folder itself admits it: it is never forwarded to a hub and never offered to a linked daemon, so no peer, of any version,
   reads or drops the expectation. A guest that cannot append for the folder, and a handle this folder does not list,
@@ -92,11 +107,25 @@ Sending:
   as the message), so a sender who chooses a file or stdin never passes it through a shell's quoting.
 
 Reading:
+- A poll prints a message as a start line, `[ts] [from:repo] <text>`: the sender in it is the filing's, whatever follows
+  it on that line is that sender's own text, and every later line of the text, wherever it breaks a line (LF, CR,
+  vertical tab, form feed, NEL, U+2028 and U+2029; CR LF as one), is behind the continuation prefix `> `
+  (`poll::CONTINUATION`); one final break ends the message with no line of its own. So a printed line that starts `[`
+  is always a message's own start, and no text can pose as another message; the `<n> more messages` line cannot be
+  forged either. The prefix is `> `, not whitespace, so a reader sees at once that a line is continued text, and not
+  `| `, which chat mail's own lines already start with (`> | words`, `> ts=...`). The stored line is unchanged. Limits:
+  a sender's first line can hold text shaped like a header after its own sender (a forwarded poll's output, or a tag),
+  so a reader that acts on a header (the session skills do, for the chat's) takes it only where the line begins with
+  it; an escape byte or a backspace in a text is not a line break and reaches a terminal as it is, so a person who reads
+  a poll in a terminal (a session reads the bytes) can see the prefix erased; and `repo` of a line a box appended itself
+  is the folder's name, brackets included, so two folders can print alike (their handles still differ). Tests:
+  `poll_tests::a_bodys_later_lines_never_print_as_the_start_of_a_message`,
+  `a_peers_first_line_stays_on_its_senders_start_line`.
 - Only `sotd comm poll` moves a read cursor. The cursor is `read/<h>.cursor`, `<count> <crc>-<len>`: the inbox lines
   shown and the POSIX `cksum` of the last one; a cursor whose last line no longer hashes so steps back one line, and the
   count-only and the old timestamp forms are read as before (`mail::cursor`). Every reader counts newline-terminated
   lines only, so a cut-back tail is never counted.
-- One poll prints at most `POLL_BUDGET`, 16,000 bytes of messages, under the 30,000 characters after which Claude Code
+- One poll prints at most `POLL_BUDGET`, 16,000 bytes of messages counted as printed, the prefixes and line ends included, under the 30,000 characters after which Claude Code
   cuts a tool's output (bytes bound characters from above); a line cut off there would be marked read and never seen. It
   always prints at least one line, so a line over the budget is printed alone and whole. The cursor moves only over
   what was printed (lines it cannot show among them, which cost nothing), and when shown lines remain the poll ends with
@@ -107,8 +136,16 @@ Reading:
   addressed to another handle, broadcast copies, own lines), so a directed line those lines push past the budget, about
   16,000 bytes, can let one Stop pass with it unread. Nothing is lost: the cursor stands behind it and the poll's last
   line says more remain. Only a Claude Code row in a Ship of Tools row is woken again, after 600 s; a Codex row is asked
-  once for the same mail and never again (Waking), and a server session is not woken. One line over 30,000 characters is
-  still printed whole and cut by the harness. Tests: `poll_tests.rs`, and the hook's in
+  once for the same mail and never again (Waking), and a server session is not woken. A message that is first in its batch is
+  printed whole, so none is starved, and a poll prints more than the budget only for that one: a message that does not
+  fit beside the ones before it is the first of the next poll. This is the one place the arithmetic is written: the
+  prefix costs 2 bytes a line, so a message of B bytes and L line breaks prints B + 2L, and a message that printed beside
+  others before the prefix can now wait one poll. A chat mail (at most `MAX_MAIL`, 12,000 bytes stored; a body of empty
+  text lines holds about 4,000 lines of `\n| `) prints at most about 20,000 bytes, whole as a batch's first and under the
+  30,000-character cut (`poll_tests::a_chat_mail_at_its_worst_is_printed_whole_and_none_is_starved`). Limits: a message
+  with B under 30,000 and B + 2L over it was whole and is now cut by the harness (a message of about 28,000 bytes in
+  several hundred lines, sent with `--file`), and a message over 30,000 was cut already; Codex cuts a tool's output under
+  its own limit (`tool_output_token_limit`), which has not been measured against a poll. Tests: `poll_tests.rs`, and the hook's in
   `comm/tests/test-status-floor.sh`.
 - A reader on a box that appends itself reads under a shared lock on `inbox/<h>.lock`, bounded at 3 s: a held lock is
   "try again" (poll exits 75 and moves nothing); any other lock fault is named and the read runs unlocked, covered by

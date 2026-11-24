@@ -7,9 +7,11 @@ use crate::comm::mail::cursor::{complete, counts, offset, write};
 use crate::comm::mail::inbox::{appends_here, lock_identity, read_lock, ReadLock};
 use crate::comm::registry::registry::{binding, touch, Binding};
 
-/// The most message bytes one poll prints, newlines included. Claude Code cuts a tool's output past 30,000 characters
-/// (bytes bound characters from above), and a line cut off there is marked read and never seen; the count line that
-/// ends a cut batch is not a message and is not counted.
+/// The most message bytes one poll prints, as printed: the continuation prefixes and line ends counted. Claude Code cuts
+/// a tool's output past 30,000 characters (bytes bound characters from above), and a line cut off there is marked read
+/// and never seen; the count line that ends a cut batch is not a message and is not counted. A batch's first message is
+/// always printed whole, so none is starved: a message that does not fit beside the ones before it is the first of the
+/// next poll.
 const POLL_BUDGET: usize = 16_000;
 
 /// A JSON value as `jq -r` prints it: a string raw, `null` and `false` as missing, anything else as JSON.
@@ -21,14 +23,33 @@ fn raw(v: Option<&serde_json::Value>) -> Option<String> {
     }
 }
 
+/// What every printed line after a message's first starts with, so a line starting `[` is always a message's own start:
+/// no body, whatever it holds, can print a line that poses as the start of another message.
+const CONTINUATION: &str = "> ";
+
+/// The line breaks a printed message breaks at: LF, CR, vertical tab, form feed, NEL, line and paragraph separators.
+const BREAKS: [char; 7] = ['\n', '\r', '\u{b}', '\u{c}', '\u{85}', '\u{2028}', '\u{2029}'];
+
 /// One inbox line as poll shows it, `[ts] [from:repo] msg`, or `None` for a line that is not a JSON object (still
-/// read: one bad line cannot pin the cursor).
+/// read: one bad line cannot pin the cursor). The sender in the start line is the filing's; whatever follows it on that
+/// line is that sender's own text. Each later line, wherever the text breaks one (`BREAKS`, `\r\n` as one), is behind
+/// `CONTINUATION`, and a final break ends the message without a line of its own. The stored line is not changed.
 pub(crate) fn shown(line: &[u8]) -> Option<String> {
     let v: serde_json::Value = serde_json::from_slice(line).ok()?;
     let o = v.as_object()?;
     let f = |k: &str| raw(o.get(k)).unwrap_or_default();
     let msg = raw(o.get("msg")).or_else(|| raw(o.get("message"))).or_else(|| raw(o.get("text"))).unwrap_or_default();
-    Some(format!("[{}] [{}:{}] {msg}", f("ts"), f("from"), f("repo")))
+    let whole = format!("[{}] [{}:{}] {msg}", f("ts"), f("from"), f("repo")).replace("\r\n", "\n");
+    let whole = whole.strip_suffix(BREAKS).unwrap_or(&whole);
+    let mut out = String::with_capacity(whole.len());
+    for (i, line) in whole.split(BREAKS).enumerate() {
+        if i > 0 {
+            out.push('\n');
+            out.push_str(CONTINUATION);
+        }
+        out.push_str(line);
+    }
+    Some(out)
 }
 
 pub(crate) fn poll(env: &Env, _args: &[String]) -> Out {

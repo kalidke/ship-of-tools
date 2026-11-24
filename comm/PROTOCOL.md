@@ -112,13 +112,19 @@ A line whose `to` is missing, not a string or another handle's, or whose `from` 
 counted. A line a daemon files for another sender carries `"repo": "daemon"`. Only newline-terminated lines are ever
 counted or read.
 
+**What a poll prints.** A message is printed as a start line, `[<ts>] [<from>:<repo>] <text>`: the sender in it is the
+filing's, and whatever follows it on that line is that sender's own text. Every later line of the text (wherever it breaks
+a line: LF, CR, vertical tab, form feed, NEL, U+2028, U+2029; CR LF as one) is behind the prefix `> `, and one final break
+ends the message with no line of its own. So a printed line that starts `[` is always a message's own start. The inbox
+line is stored as it was filed; only the printing changes.
+
 **The append** takes the kernel's file lock on `inbox/<name>.lock` (opened read-write), opens the inbox under it, cuts
 an unterminated tail back to the last newline (a dead writer's partial; logged), writes the line whole, syncs it, and on
 any failure cuts the file back to its length before the line. The wait is bounded at `SOT_INBOX_LOCK_WAIT_SECS`, 2 s:
 under an `nfs4` manager a non-blocking try every 15 to 25 ms, under any other a blocking wait; past the bound nothing is
 appended and the answer is `the inbox lock for @<name> was held for 2s — nothing was appended`.
 
-**Channel mail.** A line whose `from` is `#chat` (no handle can be it) and whose `repo` is `daemon` is a project chat message the hub's daemon filed to the row mapped to the channel's folder; its `msg` starts `[chat] ` and its second line is `ts=<ts> thread=<ts> channel=<id> workspace=<id>`. It is read like any other line. The daemon's chat also reads these lines back at every start, from every inbox (`lines_from`), as its record of what it filed, so a restart files no post twice; editing or clearing an inbox by hand makes the posts it held eligible again.
+**Channel mail.** A line whose `from` is `#chat` (no handle can be it: the op `comm.file`, a linked daemon's offer and a send refuse a sender that is no handle, `bad_sender`, so the hub's daemon files it, in-process; a process of the account that appends to the file by hand can write any line) and whose `repo` is `daemon` is a project chat message the hub's daemon filed to the row mapped to the channel's folder; its `msg` starts `[chat] ` and its second line is `ts=<ts> thread=<ts> channel=<id> workspace=<id>`. It is read like any other line. The daemon's chat also reads these lines back at every start, from every inbox (`lines_from`), as its record of what it filed, so a restart files no post twice; editing or clearing an inbox by hand makes the posts it held eligible again.
 
 **The lock manager.** A lock excludes only writers that share one lock manager, so the folder's hub records its own
 in `inbox-lock-manager` at its start: line 1 `nfs4 <server>:<export>` (an NFS v4 mount with `local_lock=none`), `local

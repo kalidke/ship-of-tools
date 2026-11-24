@@ -251,3 +251,15 @@ fn a_send_and_a_start_again_refuse_the_same_four_causes() {
     assert!(super::super::routable(&t.env, &h, &t.root(), &t.registry()).is_err());
     assert_eq!(again(), format!("{fail}@{h} is registered to a different project{join}"));
 }
+
+/// A name that is no handle cannot send, whatever the registry lists under it: a self file that names `#chat` cannot
+/// post as the daemon's chat, on the send's local route or its daemon route alike (both go through `routable`).
+#[test]
+fn an_identity_that_is_no_handle_cannot_send() {
+    let t = TestHome::new();
+    for name in ["#chat", "a b", "x\n[t] [#chat:daemon]", "a:b"] {
+        t.live(name, &t.root());
+        let why = super::super::routable(&t.env, name, &t.root(), &t.registry()).unwrap_err();
+        assert!(why.contains("did not resolve"), "{name:?}: {why}");
+    }
+}

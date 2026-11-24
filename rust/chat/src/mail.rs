@@ -14,8 +14,8 @@ use crate::normalize::ts_key;
 /// The `from` of every chat filing: no row's handle can be it.
 pub const SENDER: &str = "#chat";
 
-/// The most bytes of a body as a poll prints it, under messaging's poll budget (`POLL_BUDGET`, 16,000 in
-/// `comm::cli::poll`), so one chat mail is always printed whole.
+/// The most bytes of a body as it is stored. What a poll prints of it, and why one chat mail is always printed whole, is
+/// messaging's contract (`rust/backend/src/comm/CLAUDE.md`, "Reading").
 pub const MAX_MAIL: usize = 12_000;
 
 /// What `filed_of` reads back from a body: the message's identity.

@@ -19,7 +19,9 @@ use sot_protocol::reply::HandlerOutput;
 /// (`Links::offer`), and the answer is theirs; a `not_here` names the boxes that
 /// should hold a link and hold none (`hub_link::unlinked`). The response is `{ok:true}` only
 /// when the line is in a file; every refusal is `{error, code}` and nothing was
-/// appended. The file work runs off the reactor, like the registry helpers.
+/// appended. A `from` that is not a handle is refused before anything else (`bad_sender`). The file work runs off the
+/// reactor, like the registry helpers. The log shows `from`, `to` and the refusal escaped, so a name with a line break
+/// is one log line.
 pub async fn handle_comm_file(
     req_id: u64,
     payload_json: serde_json::Value,
@@ -31,21 +33,31 @@ pub async fn handle_comm_file(
     let verdict = file_request(crate::comm::Env::process(), &req, links).await?;
     let payload = match verdict {
         Ok(()) => {
-            tracing::info!(%from, %to, "comm.file filed");
+            tracing::info!(?from, ?to, "comm.file filed");
             serde_json::to_value(CommFileRes { ok: true })?
         }
         Err((code, error)) => {
-            tracing::info!(%from, %to, code, %error, "comm.file refused");
+            tracing::info!(?from, ?to, code, ?error, "comm.file refused");
             json!({ "error": error, "code": code })
         }
     };
     Ok(vec![(Frame::res(req_id, op::COMM_FILE, payload), None)])
 }
 
+/// The refusal for a `from` that is not a handle (`paths::valid_name`, the grammar `to` is held to): a client files as
+/// its own handle and no other name, so `#chat`, the daemon's own chat filing (`file_comm`, in-process), is never a
+/// client's, and no byte that could shape a poll's header reaches an inbox through the op.
+fn bad_sender(from: &str) -> Option<(String, String)> {
+    (!valid_name(from)).then(|| ("bad_sender".to_string(), format!("not a handle: {from:?}; nothing was filed")))
+}
+
 /// The verdict for one request: filed here, else offered to the linked daemons. A request that names its expected row is
 /// admitted by a daemon that appends to the folder itself, never by a forward or an offer: it is never offered, so no other daemon, of any version,
 /// reads or drops the expectation.
 async fn file_request(env: Env, req: &CommFileReq, links: &crate::comm::mail::links::Links) -> Result<std::result::Result<(), (String, String)>> {
+    if let Some(refused) = bad_sender(&req.from) {
+        return Ok(Err(refused));
+    }
     let mut verdict = file_comm(env.clone(), req.clone()).await?;
     // A forwarded request has had its one hop; a link's own request is one.
     if !req.forwarded && req.expected_row.is_none() && matches!(&verdict, Err((code, _)) if code == "not_here") {
@@ -79,6 +91,9 @@ async fn file_request(env: Env, req: &CommFileReq, links: &crate::comm::mail::li
 /// request marked `forwarded`). A box that does not hold the handle never answers with a refusal of its own, so the
 /// first refusal the hub reads is the holder's.
 pub(crate) async fn file_offer(env: Env, req: CommFileReq, self_host: &str) -> Result<std::result::Result<(), (String, String)>> {
+    if let Some(refused) = bad_sender(&req.from) {
+        return Ok(Err(refused));
+    }
     let (home, to, host) = (crate::comm::sot_comm_home_in(&env), req.to.clone(), self_host.to_string());
     let holds = tokio::task::spawn_blocking(move || home.is_some_and(|h| lists_under(&h.join("registry.json"), &to, &host)))
         .await

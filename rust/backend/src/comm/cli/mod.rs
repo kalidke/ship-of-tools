@@ -127,7 +127,8 @@ pub(crate) fn context_with(env: &Env, rebind: bool, may_write: bool, notes: &mut
 
 /// Why an identity may not be used: the one classification a send and a session start each word for themselves.
 pub(crate) enum Unroutable {
-    /// The identity did not resolve to a handle.
+    /// The identity did not resolve to a handle: empty, or not a name a handle can be (`paths::valid_name`), so a
+    /// self file or a registry key that names `#chat` sends nothing.
     NoIdentity,
     /// The handle has no registry entry.
     Absent,
@@ -140,7 +141,7 @@ pub(crate) enum Unroutable {
 /// `None` when `name` is a handle with an entry whose root is this project's (or none, an entry older than roots).
 pub(crate) fn unroutable(name: &str, project_root: &str, registry: &std::path::Path) -> Option<Unroutable> {
     use crate::comm::registry::registry::{entry, Entry};
-    if name.is_empty() {
+    if !crate::paths::valid_name(name) {
         return Some(Unroutable::NoIdentity);
     }
     match entry(registry, name) {
