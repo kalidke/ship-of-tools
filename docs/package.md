@@ -452,7 +452,13 @@ session's rules; the session skills say what such a post may direct and the four
 person's word in the session's pane; CHAT-OWNER-MARK-NOT-SEEN-LIVE, open), which rests on two rules for all mail
 that landed with it: a client files only under a valid name, so only the daemon's chat files as `#chat`, and a
 poll prints every line of a message after its first behind `> `, so no message's text can pose as the start of
-another (messaging's contract has the rules and their limits);
+another (messaging's contract has the rules and their limits); and, the same day and used by no person, a session
+deletes a message its project's Slack app posted in its own project's channel, with `sot-fe chat delete <ts>`
+(the maintainer asked that day that a session may delete messages in its channel when its owner has explicitly
+asked it to; the daemon admits a delete only for the asking session's own channel, Slack lets the app remove
+only its own posts, and the owner's permission is a rule of the session's skill, which the daemon cannot check;
+the files a message shared are not deleted, CHAT-DELETE-FILES-STAY; nothing of it has run against Slack, and its
+checks are owed on the first candidate that carries it, CHAT-DELETE-UNMEASURED);
 SlackClaw's pause switch (its PR 18) merges on his word when the
 first channel moves. Also in progress: the agent sees what the user draws (`requirements.md`); the wire's drawing has
 landed, and so has the daemon's picture (the figure with the person's ink, inside the project), written through

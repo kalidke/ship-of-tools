@@ -3417,3 +3417,22 @@ the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the sa
       person's authority is a change to everything that can print text where the mark is read, and the brief had
       not asked who else can write there; and a fix round's own additions were where the next reading found its
       faults, twice. Nothing ran on a live hub: no marked mail has been filed.
+- A session deletes a message its project's Slack app posted, 2026-11-24: one commit, asked at 13:12 and built by
+    14:38, by one builder of the cheaper kind from a brief, beside the landing above and then restacked on it.
+    - The first build took 16 minutes and came to 166 product lines without comments, past its stop line of 130:
+      the message's delete and, with it, the files the message shared. It was split in two for its reading.
+    - The first reading stopped the files half on two faults: Slack's file delete removes a file everywhere it is
+      shared, so a figure forwarded to another channel would have gone there too, and a message the daemon could
+      not read back was reported deleted with no word of its files. The maintaining session dropped that half
+      from the landing, where a repair would have added calls and premises nothing here can prove
+      (CHAT-DELETE-FILES-STAY). The same reading asked that a delete be refused once its service has begun to
+      stop, and that the records say the check of who asks is attribution, not a boundary.
+    - A second reading, of the one commit that remained, found no way for a delete to reach a channel other than
+      the asking session's own and three faults of words: five records said as a fact what Slack does with a
+      deleted message's file, which nobody has measured, four places said in four ways which posts may be
+      deleted, and one new line had no test. A third round answered them in 147 changed lines, nearly all words;
+      the maintaining session read it and asked no third reading. 161 product lines without comments in the end.
+    - What it cost and showed: 86 minutes from the ask to the last commit, two readings, one gate. A half that
+      cannot be undone and rests on an unmeasured call was cheaper to leave out than to repair; and every claim
+      about Slack in it is from Slack's documentation, so its checks on a live hub are owed before a release
+      (CHAT-DELETE-UNMEASURED).
