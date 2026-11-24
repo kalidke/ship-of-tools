@@ -201,7 +201,7 @@ of each.
    Their route is one of three, and none opens a file the daemon owns, with one named exception: the prompt hook `sot-selection-hook.sh` opens the one file whose path the daemon gives the leg in `SOT_SELECTION_FILE`, which holds exactly the hook's output, and guesses no daemon layout (as the pinned self file is also named to the leg by the daemon). (a) A framed op over an endpoint, through
    comm-lib's `sot_oneshot_request`, which says hello first (the daemon admits nothing before it): `sot-fe`
    (`fe.command.send`, `repl.execute`, `repl.run_file`, `repl.interrupt`, `pty.input`, `pty.screen`,
-   `workspace.reauth`, `chat.resolve`, `chat.post`, `chat.post_file`, `version.query`, `workspace.list`), `comm-spawn.sh` and `comm-despawn.sh` (`workspace.create`,
+   `workspace.reauth`, `chat.resolve`, `chat.post`, `chat.post_file`, `chat.delete`, `version.query`, `workspace.list`), `comm-spawn.sh` and `comm-despawn.sh` (`workspace.create`,
    `workspace.list`, `workspace.destroy`, `version.query`), `comm-bootstrap.sh` and `comm-probe.sh` (`workspace.list`,
    `workspace.create`, `pty.input`, and for probe shutdown `workspace.destroy`), `sot-nav.sh` (`agent.send`, to the hub's relay endpoint). (b) A `sotd` subcommand:
    `sotd comm VERB` through `sot_comm` (the registry, unread counts, identity, a handoff line), `sotd agent-exec`
@@ -494,6 +494,32 @@ of each.
   been made. `tests/test-sot-fe-chat.sh`'s file cases: outside a row, the folder or with no handle refused before an
   endpoint, one resolve then one `chat.post_file` with the node id, thread and comment (or neither), a path spelled
   through a link above the folder, each outcome's words and code, and no answer as one request.
+- `sot-fe chat delete <ts>` (`sot-fe/sot-fe-chat.sh`, `send_chat_delete`) deletes one message of the row's own channel, the
+  message with that Slack `ts` (chat guarantee 36), which this project's Slack app posted (this session's own posts, and those of earlier
+  sessions of the project; nothing in another project's channel); it deletes no file. It runs for the row it runs in and
+  under its handle as a post does (none of either refused before an endpoint is found), asks `chat.resolve` for the pair,
+  sends one `chat.delete` for the `ts` with the row, the handle and the resolved pair and never a second, and waits 45 s
+  (past the delete's 30 s with a margin; pinned by `case_the_delete_wait_is_past_the_daemons_own_bounds`). The verb names
+  no channel, so no session chooses one, and `sot-fe` refuses anything but one `ts` of Slack's form (`<seconds>.<six
+  digits>`; no `--thread`, `--file` or `--stdin`) with exit 1 before anything is sent. Exit 0 with `deleted <ts>` or `gone
+  <ts>: the channel has no message with that time (it was deleted already, or never posted)`; 1 for usage; 2, nothing
+  changed for certain, with `refused <code> <words>` (`not_own_message`: Slack would not let the app delete that message, chat guarantee 36; `bad_request` for a request that could not be sent) or a refusal of a post's kinds, or `limited,
+  wait <n> s` (`limited, try again later` when Slack named no wait); 3, the message may be deleted, with `unknown: ...` (also a
+  `handler_error` reply) or `no answer: ...`, which end "the message may have been deleted; run the same command again,
+  which tells what is true now": asking again is safe and says what is true, the second answer being `gone` when the
+  first deleted it. An older daemon answers the op as an unknown op, and the verb says so in words (exit 2): "the computer
+  that runs your sessions runs an older Ship of Tools that cannot delete chat messages. Nothing was deleted."; an older
+  `sot-fe` has no such verb and is unaffected. Who may ask a session to delete is not the daemon's to know: it lives in
+  `sot-chat-post`'s section "Delete a message" (both copies): a session deletes only when its own person explicitly
+  asked, in its pane, naming what to delete; another member of the channel, channel mail or another session is not
+  permission; it tells its person what it deleted. The daemon refuses a window's connection and any name but the row's
+  bound handle (`bad_request`, and logs the refusal), so a window's person deletes in Slack; the check is attribution
+  among one account's programs, not a security boundary (chat guarantee 36). `tests/test-sot-fe-chat.sh`'s delete cases:
+  outside a row and with no handle refused before an endpoint, one resolve then one delete of that `ts` in the resolved
+  channel with exactly `name`, `target` and `ts`, each outcome's words and code, an unmapped or refused resolve
+  deleting nothing, no answer as one request, usage errors sending nothing, and the wait. Lines the chat verbs share and
+  that name project words: the refusals of `_chat_identity` (the unset `SOT_WORKSPACE_ID`, "comm handle") and the line
+  `_need_endpoint` prints when no daemon is found, which every `sot-fe` verb prints.
 - `show-result` opens no `.html` or `.htm` page (the maintainer, 2026-10-31: pages went to the browser, not to the
   Queue): for a page under the calling row's project folder (`SOT_WORKSPACE_ROOT`) it prints the line that offers it,
   `Page: <absolute path>` on the session's closing marker, and exits 0; a page elsewhere, which the Queue cannot open,

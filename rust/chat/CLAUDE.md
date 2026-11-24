@@ -165,7 +165,7 @@ bot identity, workspace name, read-pacing instant, name cache, member list (guar
    (capped at one hour), makes every read refuse as `Limited` without a request until it passes; a missing or invalid
    header is an assumed 30 s (`assumed: true`). A post that is limited is returned with its wait and is not gated by the
    reads' wait.
-14. **Every operation has a stated deadline.** Reads 15 s, a post, a join and a file's share 30 s (none is resent, so an
+14. **Every operation has a stated deadline.** Reads 15 s, a post, a join, a file's share and a delete 30 s (none is resent, so an
    early give-up only makes `Unknown`), a file's upload and a fetch's original 60 s (`TRANSFER_DEADLINE`), a fetch's thumbnail 15 s, all of a page's name lookups together 10 s; each through `Http`'s owner-held deadline.
 15. **Slack's text reaches no caller.** `ApiError` is a fixed code; Slack's `error` is carried only when it is
    `[a-z0-9_.]{1,64}`, else `unknown_error`; bodies and URLs are dropped; `auth.test` for another workspace is
@@ -501,7 +501,7 @@ bot identity, workspace name, read-pacing instant, name cache, member list (guar
    abort, not an await). A killed holder releases it with its descriptor, a child born later does not inherit it, and
    `start` after `stop` in one process is admitted. **A service ends on its own, for good**, at the first of: its
    listener's `wrong_app` (guarantee 17) or `app_token_refused` (guarantee 20), or a bot-token call (a read, a row's post,
-   a join, a row's file step) Slack answers with a code of `api::TOKEN_REFUSALS` in its body (`bot_token_refused`, premise
+   a join, a delete, a row's file step) Slack answers with a code of `api::TOKEN_REFUSALS` in its body (`bot_token_refused`, premise
    PS11, guarantee 20; `missing_scope`, every other code, a bare HTTP status such as 401 or 403, a person's token refused
    (guarantee 12) and `bots.info` end nothing). `Service::ended()` is that
    first code. An ended service answers as a stopped one: `api()` is `Stopped`, every handle `Closed`, its `Watches`
@@ -1072,6 +1072,44 @@ bot identity, workspace name, read-pacing instant, name cache, member list (guar
    Slack's tier-2 `users.list`; a name is not matched by the account's handle (`name`); that Slack notifies on `<@U…>`
    and `<!here>` in a post sent with no `parse` or `link_names`, under a user token and under the bot's, is Slack's
    documented behavior, not yet seen in this product.
+36. **A session deletes a message of the app's own once.** `Api::delete_message(channel, ts)` is one `chat.delete` under the
+   bot's token alone (never the person's), a mutation sent once and never again, and, like every call of this client,
+   never sent once a stop has begun (`mutate` refuses a closed client `Closed`, guarantee 22:
+   `a_delete_is_made_once_under_the_bots_token_and_each_answer_has_its_outcome`). A delete Slack refuses with a code of
+   `TOKEN_REFUSALS` ends the workspace's service, as every bot-token call does (`mutate`'s `refused`, guarantee 22:
+   `a_delete_the_bot_token_refuses_ends_the_service`). The outcome is `Deleted`, `Gone` (`message_not_found`: the answer
+   to a message already removed, so asking again after an `Unknown` asks Slack again), `Refused(code)` (Slack's rejection,
+   or a request that never left; `cant_delete_message` is the daemon's `not_own_message`, whose words say only that Slack
+   would not let the app delete that message), `Limited` (a 429 or `ratelimited`, with Slack's wait or a guess flagged
+   `assumed`, as a post's; `chat_ops_tests::a_row_delete_is_made_once_and_every_outcome_is_told_as_it_is`) or `Unknown`,
+   and nothing resends: a caller that stops waiting repeats nothing. **Whether the message is the app's is Slack's check,
+   not this crate's or the daemon's:** there is no author test before the call. **The first premise, unmeasured and the one
+   whose failure is unsafe:** that Slack refuses the app's bot token a delete of a person's message, a person's post from
+   the window's drawer included, which goes out under that person's own user token though through this same Slack app
+   (guarantee 12); if Slack let the bot token delete it, a session could delete a person's words. The others, also
+   unmeasured: that the bot token's `chat:write` scope is enough to delete the app's own message, one posted with a
+   custom `username` included; that another app's message is answered `cant_delete_message` (the documented code); and
+   that a message already removed is answered `message_not_found`. These are checked on the first release candidate that
+   carries the command, on a live hub, before a release is published, in the order `docs/defects.md`
+   CHAT-DELETE-UNMEASURED lists; no gate enforces that. No real Slack message has been deleted by this code. **This
+   command deletes the message and no file:** what Slack then does with a file the message shared is not measured (it may
+   remove it, even from another channel where it is also shared, or leave it), and a delete of the files themselves is not
+   built (`docs/defects.md`, CHAT-DELETE-FILES-STAY). Input the delete cannot carry (a channel that is no id, a `ts` that is
+   not wire's form) is `Err` unsent. The daemon's `chat.delete` (`rust/backend/src/chat/ops.rs`) admits it as a row's post
+   (`Chat::admit`, then `may_post` for kind row) and refuses a window's connection, all before any Slack call, and names
+   no channel but the row's mapped one. What it checks of the asker is the row's id and the handle bound to that row,
+   which any program of the same account can read: among one account's programs this is attribution and
+   accident-proofing, not a security boundary (as for posts, `may_post`), so a program of the account can name another
+   folder's row and delete the app's messages in that folder's channel. It logs one line a delete (channel, `ts`, handle,
+   row, outcome; never text), and one for a delete refused before it reaches Slack (a request that is no request, a
+   refused admission, a window, a wrong handle); that these lines are written rests on review, no test reads the log.
+   Limits, noted and not fixed: an unknown field of a request is ignored, as for every chat request (`ChatDeleteReq` has
+   no `deny_unknown_fields`, so a later option would be dropped by this daemon); what Slack answers a second delete of a
+   thread's parent that has replies (it may keep the parent as a placeholder) is not measured, and `cant_delete_message`
+   there would be told `not_own_message` of the app's own message; `cant_delete_message` may also be Slack's answer for the
+   app's own post that shares a file, or in a workspace whose administrators restrict who may delete, and the words then
+   say only that Slack would not let the app do it; deleting a thread's parent may leave its replies.
+   Tests: `api_tests.rs`, `a_delete_is_made_once_under_the_bots_token_and_each_answer_has_its_outcome`.
 
 The timestamp rule (exactly `<seconds>.<six digits>`) is wire's `Ts`; this crate builds only `Ts` values, so a record
 never holds another form.

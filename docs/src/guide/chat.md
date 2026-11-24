@@ -307,6 +307,23 @@ posted; Slack shows it under
 channel instead, Slack did not take the thread. The command prints `posted <ts>`, or `posted file <id>` when Slack names
 no message, with the same exit codes as a reply.
 
+### Deleting a message from the project's channel
+
+If you ask the session's agent to delete a message, it runs `sot-fe chat delete <ts>` in the session. A session may
+delete a message its project's Slack app posted in its own project's channel (its own posts, and those of earlier
+sessions of the same project), and nothing in another project's channel. The message with that timestamp goes from the
+channel, and a deleted message cannot be brought back. The command deletes the message and no file: what Slack then does
+with a file the message shared is not yet checked. The agent deletes only when you have asked it to, in the session's own
+pane, and named the message; a request from someone else in the channel or from another session does not count, and it
+tells you what it deleted. A message a person typed, or another app posted, is refused and stays; Slack makes that
+decision, and it is not yet checked against a real Slack workspace, a message you posted from the Chat drawer included. The
+command prints `deleted <ts>`, or `gone <ts>` when the channel has no message with that timestamp, and exits 0; it exits 2
+with `refused` and a reason, or `limited` and Slack's wait, when nothing was deleted, and 3 with `unknown` or `no answer`
+when the message may be deleted, in which case running the same command again is safe and asks Slack again. Ship of Tools
+does not defend the channel limit against another program running under your own account, which can name another
+project's session. If the computer that runs your sessions runs an older Ship of Tools, the command says so and deletes
+nothing. The window has no command for deleting: delete a message you posted yourself in Slack.
+
 ## Mail to the session
 
 Posts in a project's channel can reach the session's agent as mail (the messages sessions receive from each other), so

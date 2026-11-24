@@ -1,5 +1,5 @@
 # sot-fe's reply in the row's channel: `chat post`, one `chat.post` (or, with --file, one `chat.post_file`) of kind `row`
-# into the current thread.
+# into the current thread; and `chat delete`, one `chat.delete` of a message the hub's Slack app posted there.
 # Sourced by sot-fe; defines functions only.
 
 # The row's own handle, as comm-context.sh gives it ("" when the session has not joined). In its own subshell, never
@@ -15,6 +15,8 @@ _chat_refused() {
     if [ -z "$words" ]; then
         case "$code" in
             busy)        words="the chat is busy; try again in a moment" ;;
+            not_own_message) words="Slack would not let this project's Slack app delete that message (a person's or another app's message stays)" ;;
+            unavailable) words="the chat is not available here; nothing was sent" ;;
             bad_request) words="the request is not valid (empty or over-long text, or a name that is not this session's)" ;;
             failed)      words="the chat request failed" ;;
         esac
@@ -52,7 +54,7 @@ _chat_identity() {
 }
 
 # One `chat.resolve` for $CHAT_ROW, its mapped pair into CHAT_PAIR (the reply's payload); any other answer is refused
-# (exit 2), and nothing is posted.
+# (exit 2), and nothing is posted (nothing is "$CHAT_DONE" when a verb sets it).
 _chat_resolve() {
     local req resp err state
     _need_endpoint
@@ -61,7 +63,7 @@ _chat_resolve() {
     req="$(jq -nc --arg w "$CHAT_ROW" '{v:1, id:2, kind:"req", op:"chat.resolve", payload:{row:$w}}')"
     resp="$(_chat_ask chat.resolve "$req")"
     if [ -z "$resp" ]; then
-        echo "refused: no answer to chat.resolve within ${SEND_TIMEOUT}s via $ENDPOINT. Nothing was posted." >&2
+        echo "refused: no answer from the computer that runs your sessions within ${SEND_TIMEOUT}s (via $ENDPOINT). Nothing was ${CHAT_DONE:-posted}." >&2
         exit 2
     fi
     err="$(printf '%s' "$resp" | jq -r '.payload.error // empty')"
@@ -183,4 +185,67 @@ send_chat_post_file() {
     # 15 s, the upload's 60 s and the share's 30 s (sot-chat's NAMES_, READ_, TRANSFER_ and POST_DEADLINE), 115 s.
     export SEND_TIMEOUT="${TIMEOUT:-130}"
     _chat_posted "$(_chat_ask chat.post_file "$req")"
+}
+
+# $1=the message's ts, which sot-fe has checked is `<seconds>.<six digits>`. Deletes that message of the channel mapped to
+# the row this session runs in, under its comm handle: ONE `chat.delete`, never sent again. Exits 0 with `deleted <ts>`
+# or `gone <ts>: ...` (the channel has no such message); 2 when nothing was deleted; 3 when the message may be deleted (no answer, unknown).
+send_chat_delete() {
+    local ts="$1" req
+    CHAT_DONE=deleted
+    _chat_identity
+    _chat_resolve
+    req="$({ printf '%s\n' "$CHAT_PAIR"; sot_json_escape "$CHAT_ROW"; sot_json_escape "$CHAT_HANDLE"; } \
+        | jq -cn --arg ts "$ts" 'input as $r | input as $row | input as $name
+            | {v:1, id:3, kind:"req", op:"chat.delete",
+               payload: {target:{row:$row, workspace:$r.workspace, channel:$r.channel}, name:$name, ts:$ts}}')"
+    # Past the daemon's own bound with a margin: the delete's 30 s (sot-chat's POST_DEADLINE).
+    export SEND_TIMEOUT="${TIMEOUT:-45}"
+    _chat_deleted "$(_chat_ask chat.delete "$req")" "$ts"
+}
+
+# The delete's reply $1 (empty for none) for the message $2, as `_chat_posted` reads a post's.
+_chat_deleted() {
+    local resp="$1" ts="$2" err code
+    local maybe="the message may have been deleted; run the same command again, which tells what is true now"
+    if [ -z "$resp" ]; then
+        echo "no answer: $maybe" >&2
+        exit 3
+    fi
+    err="$(printf '%s' "$resp" | jq -r '.payload.error // empty')"
+    if [ -n "$err" ]; then
+        case "$err" in
+            "unknown op"*)
+                echo "refused: the computer that runs your sessions runs an older Ship of Tools that cannot delete chat messages. Nothing was deleted." >&2
+                exit 2 ;;
+        esac
+        code="$(printf '%s' "$resp" | jq -r '.payload.code // "?"')"
+        # A panic in the daemon's job after the send began is an error reply too: the message may be deleted.
+        [ "$code" != handler_error ] || { echo "unknown: $maybe" >&2; exit 3; }
+        _chat_refused "$code" "$err"
+    fi
+    case "$(printf '%s' "$resp" | jq -r '.payload.outcome // empty')" in
+        deleted)
+            echo "deleted $ts"
+            ;;
+        gone)
+            echo "gone $ts: the channel has no message with that time (it was deleted already, or never posted)"
+            ;;
+        refused)
+            code="$(printf '%s' "$resp" | jq -r '.payload.code // "?"')"
+            if [ "$code" = bad_request ]; then
+                _chat_refused bad_request "the request could not be sent; nothing was deleted"
+            fi
+            _chat_refused "$code"
+            ;;
+        limited)
+            printf '%s' "$resp" | jq -r 'if .payload.assumed then "limited, try again later: Slack asked for a pause, and nothing was deleted"
+                else "limited, wait \(.payload.retry_after_secs) s: Slack asked to wait, and nothing was deleted" end' >&2
+            exit 2
+            ;;
+        *)
+            echo "unknown: $maybe" >&2
+            exit 3
+            ;;
+    esac
 }

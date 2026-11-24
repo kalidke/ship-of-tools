@@ -118,6 +118,9 @@ pub enum ChatCode {
     /// nothing was saved. A window sends the person back to the app-level token's step, the other two kept, and shows the
     /// text there and on its status line.
     MixedApps,
+    /// A `chat.delete` Slack refused with `cant_delete_message`: it would not let the hub's Slack app delete that message
+    /// (the app's own, or not: the words claim no more).
+    NotOwnMessage,
     Failed,
     #[serde(other)]
     Other,
@@ -151,6 +154,7 @@ impl ChatCode {
             ChatCode::NotAnImage => "that file is not a picture the chat can show",
             ChatCode::OtherApp => "these Slack codes may belong to a different Slack app than the one this Slack workspace is connected with now; nothing was changed",
             ChatCode::MixedApps => "the \"App-Level Token\" belongs to a different Slack app than the \"Bot User OAuth Token\", so nothing was changed; all three codes must come from one Slack app",
+            ChatCode::NotOwnMessage => "Slack would not let this project's Slack app delete that message (a person's or another app's message stays)",
             ChatCode::Failed | ChatCode::Other => "the chat request failed",
         }
     }
@@ -713,6 +717,38 @@ pub enum ChatPostFileRes {
         assumed: bool,
     },
     /// Also what a reader takes an outcome added later for: the share may exist, so it is never resent.
+    #[serde(other)]
+    Unknown,
+}
+
+/// `chat.delete`: the message `ts` of the row's own channel, deleted once under the Slack app's own token and never
+/// resent. A row's request only (a window's is `bad_request`): `name` is the row's bound handle, checked as a row's post's
+/// is. There is no kind and no channel but the target's, which the daemon rechecks against the row's mapping.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChatDeleteReq {
+    pub target: ChatTarget,
+    #[serde(deserialize_with = "within::<_, MAX_NAME>")]
+    pub name: String,
+    pub ts: Ts,
+}
+
+/// Reply to `chat.delete`, by `outcome`. `deleted`: the message is gone (a file it shared is not touched). `gone`: Slack
+/// has no such message (also what a second ask after a delete reads). `refused`: definitely nothing changed
+/// (`not_own_message`: Slack would not let the app delete that message). `limited`: nothing was deleted, and `retry_after_secs` is how
+/// long Slack asked to wait (`assumed` when the wait is a guess). `unknown`: the message may be deleted, so ask again,
+/// which says what is true now.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum ChatDeleteRes {
+    Deleted,
+    Gone,
+    Refused { code: ChatCode },
+    Limited {
+        #[serde(deserialize_with = "retry_wait")]
+        retry_after_secs: u64,
+        assumed: bool,
+    },
+    /// Also what a reader takes an outcome added later for.
     #[serde(other)]
     Unknown,
 }

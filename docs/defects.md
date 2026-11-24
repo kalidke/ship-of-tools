@@ -1344,6 +1344,32 @@ owned by `docs/CLAUDE.md`.
 
 ## chat
 
+- **CHAT-DELETE-UNMEASURED** [note] A session's delete of a message its project's Slack app posted (`sot-fe chat delete <ts>`,
+  `Api::delete_message`, chat guarantee 36), asked by the maintainer on 2026-11-24, is proved against the fake Slack only: no real
+  Slack message has been deleted by it. The checks are made on the first release candidate that carries the command, on a live hub
+  and in a throwaway channel, before a release is published (nothing in the build or the release gate enforces it). In order:
+  (1) a session's delete of a message the app posted, with a custom `username`, is deleted; (2) a session's delete of a message a
+  person posted from the window's Chat drawer, which goes out under that person's own user token though through the same Slack
+  app, is refused (`not_own_message`), and so is a message a person typed in Slack and one another app posted: if Slack lets the
+  bot token delete a person's message, a session can delete a person's words, and the command is changed before a release; (3) a
+  second delete of a deleted message answers `message_not_found` (`gone`), and what a delete of a thread parent that has replies
+  answers, and a second delete of it (`cant_delete_message` there would be told `not_own_message` of the app's own message);
+  (4) a post that shared a file, deleted: whether Slack accepts it (`cant_delete_message` for such a message would also be told
+  `not_own_message`), and what became of the file, looked for in the channel and, for a file also shared in a second channel, in
+  both channels. The words of `not_own_message` claim no more than that Slack would not let the app delete the message; a
+  workspace whose administrators restrict who may delete gives the same code. Close this item when these have been seen.
+- **CHAT-DELETE-FILES-STAY** [note] The command deletes the message and no file; what Slack then does with a file the message
+  shared (removes it, unshares it, or leaves it with no message to show it in) is not measured. A delete of the files themselves is
+  not built, because a right file delete needs more than the message's delete: (1) Slack's file
+  delete removes the file everywhere it is shared (another channel, a direct message, a second message of this channel), so it
+  must first learn where each file is shared (`files.info`'s shares) and delete only a file whose one share is this message;
+  (2) the message must be read first, and a message the read does not return must not be reported as having no files (a thread
+  reply is the common case, and the read's edge rule is not measured), nor a file entry with no usable id, nor a read refused by
+  the rate-limit wait or as busy, which would lose the file ids for good; (3) whether deleting the message itself removes,
+  unshares or leaves the file is unmeasured, and decides which of `file_deleted` and `file_not_found` every delete with a file
+  meets, the second also meaning "not visible to the caller"; (4) the read sits between admission and the delete, so a remap
+  during it deletes in the old channel unless it admits again; (5) a delete answered `unknown` that Slack performed is told
+  `gone` by the next ask, which cannot find the files. Rule if built: each of these, with a test that is red first.
 - **CHAT-MENTION-NO-AUTOCOMPLETE** [feature] Seen in use by a person on the 0.7.3 candidate, 2026-11-20 (the maintainer reported of a mention in a chat post that it works and is good enough for now, but that the user has to remember the exact spelling and name used, with no autocomplete): the Chat drawer's draft offers no names while a person types after `@`, so a mention needs the member's name as Slack has it, and a misspelled one goes out as plain text and is told back as unlinked only after the post. Wanted: the workspace's members offered as the name is typed, from the names the daemon already resolves a post against. Unbuilt, and not in 0.7.3 on his word that the mention is good enough for now; it needs his go-ahead.
 - **CHAT-MAY-EXIST-NAMES-NO-MENTIONS** [note] A post whose answer was lost (`chat.post` or `chat.post_file` answered `unknown`, "may exist") tells the poster no `mentioned` or `unlinked` names, though the daemon knows what it sent: the reply is wire's unit variant `Unknown` (`#[serde(other)]`, which carries no field). From the mentions landing's review, reading code; never seen. A person is sent to the channel, where the drawer shows the posted message with its mentions by name. The fix named: a new reply variant (for example `unknown_told`) carrying the optional, lenient `mentioned` and `unlinked`, which older readers already take as `unknown` through `#[serde(other)]` (an older `sot-fe` exits 3 on it); the daemon sends it for an `Unknown` outcome with names to tell, and fe-net's reply mapping, the owner's `PostReply` and `PostShown`, the status words and `sot-fe`'s case print the may-exist words and then the report, for a text and a file post: measured at about 35 product lines with its pairing test, over the 30 its landing allowed, so it is its own change.
 - **CHAT-MEMBER-WALK-NEVER-COMPLETES** [note] A post's member list walk (`Api::roster`, `rust/chat/src/api.rs`) runs inside the post's 10 s names deadline and is dropped with it, so in a workspace whose ten `users.list` pages take more than 10 s no walk ever completes: every post that names someone waits 10 s, goes out with its names as text (`the member list could not be read` on the status line and in `sot-fe chat post`'s output), and spends up to ten tier-2 reads, a rate limit among which pauses every read of the workspace. From the review of the mentions landing, reading code; never seen. The fix decided: the walk runs to its end as its own task and fills the cache while the post waits for it at most the names deadline; it needs `Api` held in an `Arc` by the task and a rule that the task ends with its workspace's service, so it is its own change.

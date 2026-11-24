@@ -3356,3 +3356,86 @@ async fn the_user_tokens_account_is_kept_with_the_token_and_only_then() {
     })
     .await;
 }
+
+use crate::api::DeleteOutcome;
+
+/// A delete goes out once under the bot's token, never the person's, whatever Slack answers, and each answer is the
+/// outcome it says: a message the app did not post is Slack's refusal and stays, one already gone is its own outcome.
+#[tokio::test]
+async fn a_delete_is_made_once_under_the_bots_token_and_each_answer_has_its_outcome() {
+    bounded(async {
+        let fake = FakeSlack::start(Identity::Trusted, |seen, _| {
+            if let Some(r) = auth(seen) {
+                return r;
+            }
+            match seen.json().unwrap_or_default()["channel"].as_str().unwrap_or("") {
+                "C0OK" => Reply::json(&json!({"ok": true, "channel": "C0OK", "ts": "1700000700.000100"})),
+                "C0GONE" => Reply::json(&json!({"ok": false, "error": "message_not_found"})),
+                "C0NOT" => Reply::json(&json!({"ok": false, "error": "cant_delete_message"})),
+                "C0FOUR" => status(403, &[], &json!({})),
+                "C0RATE" => status(429, &[], &json!({})),
+                "C0RATE7" => status(429, &[("Retry-After", "7")], &json!({})),
+                "C0INT" => Reply::json(&json!({"ok": false, "error": "internal_error"})),
+                "C0FIVE" => status(503, &[], &json!({})),
+                "C0NOOK" => Reply::json(&json!({"ts": "1700000700.000100"})),
+                _ => Reply::Drop,
+            }
+        })
+        .await;
+        let api = ready(&fake).await;
+        let delete = |c: &'static str| api.delete_message(c, "1700000700.000100");
+
+        assert_eq!(delete("C0OK").await, Ok(DeleteOutcome::Deleted));
+        let sent = fake.seen().into_iter().find(|s| s.path() == "/api/chat.delete").unwrap();
+        assert_eq!(sent.method, "POST");
+        assert_eq!(sent.authorization.as_deref(), Some(&*format!("Bearer {TOKEN}")), "the bot's token, never the person's");
+        assert_eq!(sent.json().unwrap(), json!({"channel": "C0OK", "ts": "1700000700.000100"}));
+
+        assert_eq!(delete("C0GONE").await, Ok(DeleteOutcome::Gone));
+        assert_eq!(delete("C0NOT").await, Ok(DeleteOutcome::Refused("cant_delete_message".into())));
+        assert_eq!(delete("C0FOUR").await, Ok(DeleteOutcome::Refused("http_403".into())));
+        // A limit carries Slack's wait when its answer has one, and a guess flagged as one when it has none.
+        assert_eq!(delete("C0RATE").await, Ok(DeleteOutcome::Limited { retry_after: ASSUMED_RETRY, assumed: true }));
+        assert_eq!(delete("C0RATE7").await, Ok(DeleteOutcome::Limited { retry_after: Duration::from_secs(7), assumed: false }));
+        for unconfirmed in ["C0INT", "C0FIVE", "C0NOOK", "C0DROP"] {
+            assert_eq!(delete(unconfirmed).await, Ok(DeleteOutcome::Unknown), "{unconfirmed}");
+        }
+        // Ten deletes, ten requests: none repeated, and the person's token carried none of them.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(calls(&fake, "chat.delete"), 10);
+        assert!(fake.seen().iter().all(|s| s.authorization.as_deref() != Some(&*format!("Bearer {PERSON}"))));
+
+        // Input a delete cannot carry is refused before sending.
+        let before = fake.seen().len();
+        for (channel, ts) in [("C0OK", "1700000700.00010"), ("C0OK", "17.5"), ("C0OK", ""), ("bad id", "1700000700.000100")] {
+            assert!(api.delete_message(channel, ts).await.is_err(), "{channel} {ts}");
+        }
+        assert_eq!(fake.seen().len(), before);
+
+        // A client whose service has begun to stop sends nothing more (chat guarantee 22), whatever the delete's input.
+        api.close();
+        assert_eq!(delete("C0OK").await, Err(ApiError::Closed));
+        assert_eq!(fake.seen().len(), before);
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+/// A delete Slack refuses for the bot token ends the service as every bot-token call does (guarantee 22): the refusal is
+/// the delete's answer, and nothing more is sent after it.
+#[tokio::test]
+async fn a_delete_the_bot_token_refuses_ends_the_service() {
+    bounded(async {
+        let fake = FakeSlack::start(Identity::Trusted, |seen, _| {
+            auth(seen).unwrap_or_else(|| Reply::json(&json!({"ok": false, "error": "invalid_auth"})))
+        })
+        .await;
+        let api = ready(&fake).await;
+        assert_eq!(api.delete_message("C0OK", "1700000700.000100").await, Ok(DeleteOutcome::Refused("invalid_auth".into())));
+        let sent = fake.seen().len();
+        assert_eq!(api.delete_message("C0OK", "1700000700.000100").await, Err(ApiError::Closed));
+        assert_eq!(fake.seen().len(), sent, "nothing is sent once the service has ended");
+        fake.shutdown().await;
+    })
+    .await;
+}

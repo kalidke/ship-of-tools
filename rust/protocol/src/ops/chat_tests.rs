@@ -51,6 +51,7 @@ fn the_chat_ops_are_declared_in_the_one_table() {
         "chat.history",
         "chat.post",
         "chat.post_file",
+        "chat.delete",
         "chat.file",
         "chat.changed",
         "chat.status",
@@ -644,13 +645,14 @@ fn every_code_has_its_one_text() {
         (ChatCode::NotAnImage, "that file is not a picture the chat can show"),
         (ChatCode::OtherApp, "these Slack codes may belong to a different Slack app than the one this Slack workspace is connected with now; nothing was changed"),
         (ChatCode::MixedApps, "the \"App-Level Token\" belongs to a different Slack app than the \"Bot User OAuth Token\", so nothing was changed; all three codes must come from one Slack app"),
+        (ChatCode::NotOwnMessage, "Slack would not let this project's Slack app delete that message (a person's or another app's message stays)"),
         (ChatCode::Failed, "the chat request failed"),
         (ChatCode::Other, "the chat request failed"),
     ];
     for (code, words) in table {
         assert_eq!(code.text(), words, "{code:?}");
     }
-    for code in ["bot_token_refused", "app_token_refused", "user_token_refused", "no_user_token", "not_a_member", "other_workspace", "not_in_channel", "channel_taken", "not_saved", "not_a_file", "too_large", "not_an_image", "too_many_workspaces", "no_such_channel", "other_app", "mixed_apps"] {
+    for code in ["bot_token_refused", "app_token_refused", "user_token_refused", "no_user_token", "not_a_member", "other_workspace", "not_in_channel", "channel_taken", "not_saved", "not_a_file", "too_large", "not_an_image", "too_many_workspaces", "no_such_channel", "other_app", "mixed_apps", "not_own_message"] {
         let r: ChatRefusal = serde_json::from_value(json!({"error": "text", "code": code})).unwrap();
         assert_ne!(r.code, Some(ChatCode::Other), "{code} is a code of this reader");
     }
@@ -882,4 +884,34 @@ fn sot_fe_and_the_wire_print_the_same_report() {
         };
         assert_eq!(format!("{lead}{}", told_words(&mentioned, &unlinked)), line, "{payload}");
     }
+}
+
+/// `chat.delete` keeps its shape: a ts, the row's handle and the target, no kind and no channel but the target's; each
+/// outcome pinned; a reader takes an outcome or a code added later for `unknown` and `other`, never for `deleted`; and an
+/// older daemon answers the op as an unknown op, a refusal with no code.
+#[test]
+fn the_delete_pair_keeps_its_shape_and_reads_what_is_added_later_as_not_known() {
+    pinned(
+        ChatDeleteReq { target: target(), name: "alpha-h".into(), ts: ts("1700000000.000100") },
+        json!({"target": target_json(), "name": "alpha-h", "ts": "1700000000.000100"}),
+    );
+    pinned(ChatDeleteRes::Deleted, json!({"outcome": "deleted"}));
+    pinned(ChatDeleteRes::Gone, json!({"outcome": "gone"}));
+    pinned(ChatDeleteRes::Refused { code: ChatCode::NotOwnMessage }, json!({"outcome": "refused", "code": "not_own_message"}));
+    pinned(ChatDeleteRes::Limited { retry_after_secs: 7, assumed: true }, json!({"outcome": "limited", "retry_after_secs": 7, "assumed": true}));
+    pinned(ChatDeleteRes::Unknown, json!({"outcome": "unknown"}));
+    // A wait is clamped to an hour, as a post's is.
+    let limited: ChatDeleteRes = serde_json::from_value(json!({"outcome": "limited", "retry_after_secs": u64::MAX, "assumed": false})).unwrap();
+    assert_eq!(limited, ChatDeleteRes::Limited { retry_after_secs: MAX_RETRY_SECS, assumed: false });
+    assert_eq!(serde_json::from_value::<ChatDeleteRes>(json!({"outcome": "queued"})).unwrap(), ChatDeleteRes::Unknown);
+    let refused: ChatDeleteRes = serde_json::from_value(json!({"outcome": "refused", "code": "from_the_future"})).unwrap();
+    assert_eq!(refused, ChatDeleteRes::Refused { code: ChatCode::Other });
+    // The request is bounded as a post's: a ts that is not Slack's six-digit form, and a name past its bound, do not decode.
+    for bad in [json!({"ts": "17.5"}), json!({"name": "n".repeat(crate::chat::MAX_NAME + 1)}), json!({"ts": 7})] {
+        let mut v = json!({"target": target_json(), "name": "alpha-h", "ts": "1700000000.000100"});
+        v.as_object_mut().unwrap().extend(bad.as_object().unwrap().clone());
+        assert!(serde_json::from_value::<ChatDeleteReq>(v).is_err());
+    }
+    let r: ChatRefusal = serde_json::from_value(json!({"error": "unknown op: chat.delete"})).unwrap();
+    assert_eq!(r.code, None);
 }

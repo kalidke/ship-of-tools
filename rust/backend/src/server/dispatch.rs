@@ -344,11 +344,12 @@ async fn serve(frame: Frame, shared: &Shared) -> Result<HandlerOutput> {
         // The 1.5 s prompt hold runs off the loop, without a preview-pool permit.
         op::PAGE_REPLY => crate::rows::ops::page_reply::handle_page_reply(req_id, payload, workspaces).await,
         op::MONITOR_HISTORY => handle_monitor_history(req_id, payload, workspaces),
-        // The four requests that reach Slack are jobs: admission, a file's read and the Slack call never hold the connection.
+        // The six requests that reach Slack are jobs: admission, a file's read and the Slack call never hold the connection.
         op::CHAT_RESOLVE => crate::chat::ops::resolve(req_id, payload, chat, workspaces).await,
         op::CHAT_HISTORY => crate::chat::ops::history(req_id, payload, chat, workspaces).await,
         op::CHAT_POST => crate::chat::ops::post(req_id, payload, chat, workspaces, shared.window).await,
         op::CHAT_POST_FILE => crate::chat::ops::post_file(req_id, payload, chat, workspaces, shared.window).await,
+        op::CHAT_DELETE => crate::chat::ops::delete(req_id, payload, chat, workspaces, shared.window).await,
         op::CHAT_FILE => crate::chat::ops::file(req_id, payload, chat, workspaces).await,
         op::CHAT_WATCH => crate::chat::ops::watch(req_id, payload, chat, workspaces, &shared.chat_conn).await,
         op::CHAT_UNWATCH => crate::chat::ops::unwatch(req_id, payload, chat, &shared.chat_conn).await,

@@ -191,6 +191,22 @@ pub enum JoinOutcome {
     Unknown,
 }
 
+/// How a delete of one message ended. Slack was asked to delete it at most once, whatever the outcome.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DeleteOutcome {
+    /// Slack acknowledged it. Files the message shared are not touched.
+    Deleted,
+    /// Slack has no such message (`message_not_found`): an earlier delete, or none ever made.
+    Gone,
+    /// Definitely not deleted: Slack's rejection (its code; `cant_delete_message` when Slack would not let the app delete it),
+    /// or the request never left (`busy`, `invalid`, `destination`).
+    Refused(String),
+    /// Slack was rate limited; nothing was deleted and nothing is resent. `assumed`: the wait is a guess.
+    Limited { retry_after: Duration, assumed: bool },
+    /// No usable acknowledgement: the message may or may not be deleted. Never resent.
+    Unknown,
+}
+
 /// The upper bound of a query. One variant at most, so `before` and `until` cannot both be asked for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Upper {
@@ -1315,22 +1331,42 @@ impl Api {
         if !valid_id(channel) || !is_channel_id(channel) {
             return Err(ApiError::BadRequest);
         }
-        let request = Request::post(
-            self.url("conversations.join", &[])?,
-            self.deadlines.post,
-            JSON,
-            json!({"channel": channel}).to_string().into_bytes(),
-        )
-        .bearer(self.token.clone());
-        Ok(match acknowledgement(self.http.send(request).await) {
+        Ok(match self.mutate("conversations.join", &json!({"channel": channel})).await? {
             Ack::Done(_) => JoinOutcome::Joined,
             Ack::Refused(code) if code == "already_in_channel" => JoinOutcome::Joined,
-            Ack::Refused(code) => {
-                self.refused(PostKind::Row, &code);
-                JoinOutcome::Refused(code)
-            }
+            Ack::Refused(code) => JoinOutcome::Refused(code),
             Ack::Limited { .. } | Ack::Unknown => JoinOutcome::Unknown,
         })
+    }
+
+    /// Delete the message `ts` of `channel` once, under the bot's token. Slack lets the app delete only its own messages
+    /// (`cant_delete_message` otherwise): this client makes no check of its own. A closed client sends nothing (`mutate`).
+    /// No path resends. Input the delete cannot carry is `Err` unsent.
+    pub async fn delete_message(&self, channel: &str, ts: &str) -> Result<DeleteOutcome, ApiError> {
+        let ts = Ts::parse(ts).map_err(|_| ApiError::BadBound)?;
+        if !valid_id(channel) {
+            return Err(ApiError::BadRequest);
+        }
+        Ok(match self.mutate("chat.delete", &json!({"channel": channel, "ts": ts.as_str()})).await? {
+            Ack::Done(_) => DeleteOutcome::Deleted,
+            Ack::Refused(code) if code == "message_not_found" => DeleteOutcome::Gone,
+            Ack::Refused(code) => DeleteOutcome::Refused(code),
+            Ack::Limited { retry_after, assumed } => DeleteOutcome::Limited { retry_after, assumed },
+            Ack::Unknown => DeleteOutcome::Unknown,
+        })
+    }
+
+    /// One mutation under the bot's token, once: its acknowledgement, with a refusal that names the token read as `read`'s.
+    async fn mutate(&self, method: &str, body: &Value) -> Result<Ack, ApiError> {
+        if self.is_closed() {
+            return Err(ApiError::Closed);
+        }
+        let request = Request::post(self.url(method, &[])?, self.deadlines.post, JSON, body.to_string().into_bytes()).bearer(self.token.clone());
+        let ack = acknowledgement(self.http.send(request).await);
+        if let Ack::Refused(code) = &ack {
+            self.refused(PostKind::Row, code);
+        }
+        Ok(ack)
     }
 
     /// A member's display name: `display_name`, then `real_name`, then `name`, from the cache or `users.info`. Any
