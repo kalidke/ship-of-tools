@@ -585,6 +585,13 @@ owned by `docs/CLAUDE.md`.
   since it took about 78 product lines of heuristics (a lock wrapper, an environment judged process-derived by
   comparing values, helper threads exempted by name) and still let a helper thread's read pass; a loaded run, such as
   the hosted ones, catches such a test.
+- **HEARTBEAT-CTX-WAIT-CLEANUP-UNDER-LOAD** [note] A red in one local gate run, 2026-11-24, with no use behind it:
+  `comm/tests/test-heartbeat-ctx-wait.py` stopped in `cleanup_case` with its fixture's cleanup not confirmed, on a
+  shared computer at a load of about 13 while the gate ran 20 jobs; the same commit passed the next run, and the
+  commit changed nothing the suite runs. `cleanup_case` waits a fixed time (`CLEANUP`) for the fixture's processes to
+  end. Not reproduced on purpose, so the cause is a deduction: the deadline is shorter than a loaded computer needs.
+  When it is seen again: find which case it was (the failing case prints nothing) and whether its child was still
+  running at the deadline.
 
 ## agents
 

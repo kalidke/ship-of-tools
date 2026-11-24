@@ -445,7 +445,14 @@ handle), so a channel post becomes mail and the row's answer reaches its thread 
 until a hub's `chat.toml` is made delivering, as the manual's configuration page says how (seen once on a live
 hub, 2026-11-24: a person's post filed as mail within a second, an idle Claude session woken by it, and the
 session's answer in the post's thread; a post missed while the hub was down and a Codex session's mail are not
-seen live);
+seen live); and, on `main` since 2026-11-24 and used by no person, a post by the Slack account whose user token the
+hub's chat holds is filed as mail whose first line says it is the user's own (the maintainer asked that day that
+a session can tell a post by the owner of its sessions from any other member's, with no Slack id or name in a
+session's rules; the session skills say what such a post may direct and the four things that still take the
+person's word in the session's pane; CHAT-OWNER-MARK-NOT-SEEN-LIVE, open), which rests on two rules for all mail
+that landed with it: a client files only under a valid name, so only the daemon's chat files as `#chat`, and a
+poll prints every line of a message after its first behind `> `, so no message's text can pose as the start of
+another (messaging's contract has the rules and their limits);
 SlackClaw's pause switch (its PR 18) merges on his word when the
 first channel moves. Also in progress: the agent sees what the user draws (`requirements.md`); the wire's drawing has
 landed, and so has the daemon's picture (the figure with the person's ink, inside the project), written through

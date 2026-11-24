@@ -3391,3 +3391,29 @@ the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the sa
       Ubuntu, macOS and Windows, which the plan had left unmeasured; a test that calls the function a key should
       reach proves nothing about the key; and a reading asked for regressions alone ended a lane that readings
       asked for everything had each kept open. Nothing ran in a real window or through a real clipboard.
+- Channel mail marks the user's own post, 2026-11-24: two commits, asked at 11:10 and built by 14:04, by one builder
+    of the cheaper kind from a brief. The maintainer asked that a session can tell a post by the owner of its
+    sessions from another member's, with no Slack id or name in a session's rules; the hub already asked Slack
+    whose user token it holds at each start and kept nothing of the answer.
+    - The mark alone was built in 13 minutes (about 49 product lines) and its first reading stopped it: the mark
+      is words in an inbox, a poll printed a message's later lines raw, and the filing op took any sender, so any
+      session could make a poll print the marked form. Before the mark no text in an inbox carried the person's
+      authority, so none of that had mattered. The answer is a commit of its own, before the mark: a client files
+      only under a valid name, and a poll prints every later line of a message behind a fixed prefix (50 product
+      lines in the end).
+    - Round 2 (33 minutes) answered a second reading: a handle the op had accepted was refused by the new check,
+      the second way a send reaches an inbox skipped it, the skills and the manual disagreed on what a marked post
+      may direct, and a new test would have reached the real comm folder had its check been removed. The round
+      also added a rule nobody had asked for in that form (a text beginning with a bracket starts on a line of
+      its own), which the third reading showed could be passed by an invisible character and moved ordinary
+      tagged mail off its sender's line.
+    - Round 3 (27 minutes) deleted that rule and the substitution beside it, and stated the one that holds: the
+      sender in a start line is true, and whatever follows it on that line is that sender's text. The
+      maintaining session wrote the skills' sentences itself after two rounds had left them reading two ways, and
+      read the round; no fourth reading was asked. The mark's commit is about 47 product lines added.
+    - What it cost and showed: 2 hours 54 minutes from the ask to the last commit, three readings of about 15
+      minutes each, three gates and one more for a red in a suite the change does not touch
+      (HEARTBEAT-CTX-WAIT-CLEANUP-UNDER-LOAD). The first build was a twelfth of the time. A mark that carries a
+      person's authority is a change to everything that can print text where the mark is read, and the brief had
+      not asked who else can write there; and a fix round's own additions were where the next reading found its
+      faults, twice. Nothing ran on a live hub: no marked mail has been filed.
