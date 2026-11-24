@@ -336,6 +336,49 @@ async fn a_hub_deposed_since_its_boot_writes_nothing() {
     assert_eq!((w.file(), w.starts()), (before, 1));
 }
 
+#[test]
+fn a_pairing_is_logged_with_who_made_it() {
+    let (ids, folder) = (Arc::new(Mutex::new(Vec::new())), Arc::new(Mutex::new(String::new())));
+    let (kept, folder_kept) = (ids.clone(), folder.clone());
+    let text = logged(|| async move {
+        let w = world(Some(fresh()), &[public("C0PUB", true)]).await;
+        *kept.lock().unwrap() = w.ids.to_vec();
+        *folder_kept.lock().unwrap() = w.folders[0].to_string_lossy().into_owned();
+        let mut conn = connect_window(w.services.clone()).await;
+        assert_eq!(conn.pair(&w.ids[0], Some("C0PUB")).await, json!({}));
+        // A pairing that changes nothing logs no change; an unpairing logs the channel it removed.
+        assert_eq!(conn.pair(&w.ids[0], Some("C0PUB")).await, json!({}));
+        assert_eq!(conn.pair(&w.ids[0], None).await, json!({}));
+        assert_eq!(conn.pair(&w.ids[0], None).await, json!({}));
+    });
+    let (ids, folder) = (ids.lock().unwrap().clone(), folder.lock().unwrap().clone());
+    let changed: Vec<&str> = text.lines().filter(|l| l.contains("a pairing changed")).collect();
+    assert_eq!(changed.len(), 2, "one line for each changed pairing:\n{text}");
+    for (line, outcome) in changed.iter().zip(["paired", "unpaired"]) {
+        let said = format!(r#"by="window" row="{}" workspace="T0AAAA" channel="C0PUB" outcome="{outcome}""#, ids[0]);
+        assert!(line.contains(&said), "{line}");
+    }
+    assert!(!text.contains(&folder) && !text.contains("general"), "a line names the folder's path or the channel's name");
+}
+
+/// A handle with a line break and spaces in it, refused before Slack, is one quoted field of one line: it neither ends the
+/// line nor forges another.
+#[test]
+fn a_log_line_never_carries_a_clients_text_as_structure() {
+    let text = logged(|| async {
+        let w = world(Some(fresh()), &[public("C0PUB", true)]).await;
+        assert_eq!(connect_window(w.services.clone()).await.pair(&w.ids[0], Some("C0PUB")).await, json!({}));
+        let mut cli = connect(w.services.clone()).await;
+        let hostile = "x\nWARN forged by=window outcome=\"paired\" ";
+        let refused = cli.ask(20, op::CHAT_DELETE, json!({"target": w.target(0, "C0PUB"), "name": hostile, "ts": "1700000000.000100"})).await;
+        assert_eq!(code(&refused), "bad_request");
+    });
+    let ours: Vec<&str> = text.lines().filter(|l| l.contains("a session's delete")).collect();
+    assert_eq!(ours.len(), 1, "{text}");
+    assert!(ours[0].contains(r#"handle="x\nWARN forged by=window"#), "{}", ours[0]);
+    assert!(text.lines().all(|l| !l.starts_with("WARN forged")), "a client's text began a line:\n{text}");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn the_channel_list_needs_a_running_service_and_a_window() {
     // A hub with no chat file: nothing runs, so a window's request is `unavailable`.

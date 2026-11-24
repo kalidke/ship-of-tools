@@ -189,11 +189,15 @@ pub(crate) async fn history(req_id: u64, payload: serde_json::Value, chat: &Arc<
 fn may_post(kind: ChatPostKind, name: &str, row: &str, rows: &Workspaces, window: bool) -> bool {
     match kind {
         ChatPostKind::Person => window,
-        ChatPostKind::Row => {
-            let all = rows.list();
-            rows.resolve(Some(row)).is_some_and(|ws| bound_handle(&ws, &all) == name)
-        }
+        ChatPostKind::Row => is_bound(name, row, rows),
     }
+}
+
+/// Whether `name` is the handle bound to `row` (an id or a slug), compared exactly: the check a row's post and a session's
+/// pairing make of who asks. A row with no handle is bound to the empty name, so a caller that must refuse one does so first.
+pub(super) fn is_bound(name: &str, row: &str, rows: &Workspaces) -> bool {
+    let all = rows.list();
+    rows.resolve(Some(row)).is_some_and(|ws| bound_handle(&ws, &all) == name)
 }
 
 fn post_kind(kind: ChatPostKind) -> PostKind {
@@ -306,7 +310,7 @@ pub(crate) async fn delete(req_id: u64, payload: serde_json::Value, chat: &Arc<C
         }
     };
     let log = |outcome: &dyn std::fmt::Debug| {
-        tracing::info!(channel = req.target.channel.as_str(), ts = req.ts.as_str(), handle = %req.name, row = %req.target.row, outcome = ?outcome, "project chat: a session's delete")
+        tracing::info!(channel = req.target.channel.as_str(), ts = req.ts.as_str(), handle = req.name.as_str(), row = req.target.row.as_str(), outcome = ?outcome, "project chat: a session's delete")
     };
     let refused = |code: ChatCode| -> Result<HandlerOutput> {
         log(&code);

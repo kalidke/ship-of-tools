@@ -4,7 +4,8 @@
 //! workspace or unmaps it, rewrites `chat.toml` and reloads; and `chat.workspaces`, the connected workspaces. The first
 //! three are jobs taken from a window's connection only (a row's agent has no use for them, and no token goes on a
 //! command line); `chat.workspaces` is a read any connection may make. The edit of a file and the reload that follows
-//! it hold the setup lock together, so two windows' pairings and a connect never lose one another's change. A token is a
+//! it hold the setup lock together, so two windows' pairings and a connect never lose one another's change, and one core (`edit_and_reload`) makes the edit,
+//! the write and the reload and logs each changed pairing. A token is a
 //! `Secret` from its decode on: no log line, reply or error here carries a byte of one, and no request payload is
 //! logged.
 
@@ -14,7 +15,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use sot_chat::api::{Api, ApiError, BotApp, Channel, Identified, JoinOutcome, TOKEN_REFUSALS};
-use sot_chat::config::{self, ConfigError, PairError, Secrets, Writers};
+use sot_chat::config::{self, Config, ConfigError, PairError, Resolution, Secrets, Writers};
 use sot_chat::http::{Http, Secret};
 use sot_chat::service::{Service, APP_TOKEN_REFUSED, BOT_TOKEN_REFUSED, WRONG_APP};
 use sot_chat::socket::SocketError;
@@ -377,19 +378,50 @@ async fn paired(payload: serde_json::Value, chat: &Arc<Chat>, rows: &Workspaces,
     // The request's workspace, else `chat.toml`'s (C4), fixed whatever runs.
     let workspace = req.workspace.clone().or_else(|| chat.default_workspace()).ok_or(ChatCode::Unavailable)?;
     // Admission canonicalizes the row's folder on the shared home, which can block.
-    let (held, row, ws) = (chat.clone(), rows.clone(), workspace.clone());
-    let (service, fact) = tokio::task::spawn_blocking(move || held.admit_row(&row, &req.row, &ws)).await.unwrap_or(Err(ChatCode::Failed))?;
+    let (held, row, ws, id) = (chat.clone(), rows.clone(), workspace.clone(), req.row.clone());
+    let (service, fact) = tokio::task::spawn_blocking(move || held.admit_row(&row, &id, &ws)).await.unwrap_or(Err(ChatCode::Failed))?;
     if let Some(channel) = &req.channel {
         in_channel(&service, channel.as_str()).await?;
     }
-    let setup = chat.setup().await;
-    let (env, folder, channel) = (chat.env.clone(), fact.canonical.to_string_lossy().into_owned(), req.channel);
-    let target = channel.as_ref().map(|c| (workspace.clone(), c.as_str().to_string()));
-    let changed = tokio::task::spawn_blocking(move || save(&env, &folder, target.as_ref().map(|(w, c)| (w.as_str(), c.as_str())))).await.unwrap_or(Err(ChatCode::Failed))?;
-    if changed {
-        chat.reload_for(&setup, rows, &workspace).await;
-    }
+    let target = req.channel.as_ref().map(|c| (workspace.clone(), c.as_str().to_string()));
+    edit_and_reload(chat, rows, &req.row, fact.canonical.to_string_lossy().into_owned(), target, &workspace, "window").await?;
     Ok(())
+}
+
+/// What a pairing's edit found: whether the file changed, and the folder's mapping the text held before it.
+struct Edited {
+    changed: bool,
+    before: Resolution,
+}
+
+/// The one pairing core: under the setup lock, the edit and write of `chat.toml` ([`save`]) and, only when the file
+/// changed, one info line naming `who` (`window`) and the reload. `wait_on` is the workspace the reply waits for. The
+/// caller's checks and Slack calls come before the lock, so a slow one never holds up another's setup.
+async fn edit_and_reload(
+    chat: &Arc<Chat>,
+    rows: &Workspaces,
+    row: &str,
+    folder: String,
+    target: Option<(String, String)>,
+    wait_on: &str,
+    who: &str,
+) -> Result<Edited, ChatCode> {
+    let setup = chat.setup().await;
+    let (env, to) = (chat.env.clone(), target.clone());
+    let saved = tokio::task::spawn_blocking(move || save(&env, &folder, to.as_ref().map(|(w, c)| (w.as_str(), c.as_str())))).await;
+    let (changed, before) = saved.unwrap_or(Err(ChatCode::Failed))?;
+    if changed {
+        let (workspace, channel) = match (&target, &before) {
+            (Some((w, c)), _) => (w.as_str(), c.as_str()),
+            (None, Resolution::Mapped { workspace, channel, .. }) => (workspace.as_str(), channel.as_str()),
+            (None, _) => ("", ""),
+        };
+        let outcome = if target.is_some() { "paired" } else { "unpaired" };
+        // Every field is a quoted, escaped string: text a client chose (a row as typed) never ends or forges a line.
+        tracing::info!(by = who, row, workspace, channel, outcome, "project chat: a pairing changed");
+        chat.reload_for(&setup, rows, wait_on).await;
+    }
+    Ok(Edited { changed, before })
 }
 
 /// That the app is in the channel, from one read of its facts: a member passes, a private channel it is not in is
@@ -420,27 +452,42 @@ async fn in_channel(service: &Arc<Service>, channel: &str) -> Result<(), ChatCod
     if joined { Ok(()) } else { Err(ChatCode::NotInChannel) }
 }
 
-/// The edit and its write, run with the setup lock held. The hub fact is asked again first, so a hub deposed since its
-/// boot writes nothing in the minute before it steps down. The file is read as the reload reads it (`config::read_file`,
-/// not the boot's injected reader, which is the boot's alone), so the text edited is the text the reload will load, a hand
-/// edit made since the start included. A text the load refuses is `not_saved` and never rewritten; a pairing that
-/// changes nothing writes nothing (`false`), and a new mapping in a delivering file takes the clock's now for its floor.
-fn save(env: &Env, folder: &str, target: Option<(&str, &str)>) -> Result<bool, ChatCode> {
+/// The edit and its write, run with the setup lock held: whether the file changed, and the mapping the folder had in the
+/// text edited.
+fn save(env: &Env, folder: &str, target: Option<(&str, &str)>) -> Result<(bool, Resolution), ChatCode> {
+    let edit = edit(env, folder, target)?;
+    let Some(text) = edit.edited else { return Ok((false, edit.before)) };
+    config::write_config(&edit.dir, &text, Writers::platform()).map_err(|e| not_saved(&e.kind()))?;
+    Ok((true, edit.before))
+}
+
+fn not_saved(why: &dyn std::fmt::Debug) -> ChatCode {
+    tracing::warn!(?why, "project chat: a pairing was not saved");
+    ChatCode::NotSaved
+}
+
+/// What [`edit`] made: the configuration folder, the text of `chat.toml` after the edit (none when it changes nothing), and
+/// the folder's mapping in the text before it.
+struct Edit {
+    dir: std::path::PathBuf,
+    edited: Option<String>,
+    before: Resolution,
+}
+
+/// The edit, with no write. The hub fact is asked again first, so a hub deposed since its boot writes nothing in the minute
+/// before it steps down. The file is read as the reload reads it (`config::read_file`, not the boot's injected reader,
+/// which is the boot's alone), so the text edited is the text the reload will load, a hand edit made since the start
+/// included. A text the load refuses is `not_saved` and never rewritten; a pairing that changes nothing is `None`, and a
+/// new mapping in a delivering file takes the clock's now for its floor.
+fn edit(env: &Env, folder: &str, target: Option<(&str, &str)>) -> Result<Edit, ChatCode> {
     if !is_hub(env) {
         return Err(ChatCode::Unavailable);
     }
-    let not_saved = |why: &dyn std::fmt::Debug| {
-        tracing::warn!(?why, "project chat: a pairing was not saved");
-        ChatCode::NotSaved
-    };
     let dir = config::config_dir(env).ok_or_else(|| not_saved(&"no config folder"))?;
     let text = config::read_file(&dir.join(config::CONFIG_FILE)).map_err(|e| not_saved(&e.kind()))?;
+    let before = config::resolve(&Config::parse(&text, &canon_of), folder);
     match config::pair(&text, folder, target, Some(now()), &canon_of) {
-        Ok(None) => Ok(false),
-        Ok(Some(edited)) => {
-            config::write_config(&dir, &edited, Writers::platform()).map_err(|e| not_saved(&e.kind()))?;
-            Ok(true)
-        }
+        Ok(edited) => Ok(Edit { dir, edited, before }),
         Err(PairError::ChannelTaken) => Err(ChatCode::ChannelTaken),
         Err(PairError::Config(e)) => Err(not_saved(&e)),
     }

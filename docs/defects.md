@@ -1344,6 +1344,10 @@ owned by `docs/CLAUDE.md`.
 
 ## chat
 
+- **CHAT-WINDOW-UNPAIR-WAITS-ON-ITS-REQUEST** [note] From reading the code, not seen in use: a window's `chat.pair` waits for the
+  reload of the workspace its request names (`chat.toml`'s when it names none), not for the workspace whose plan changed, so a
+  window's unpairing of a folder mapped in another workspace replies before that workspace's restart ends. Left as it is: the
+  window's own behavior does not change.
 - **CHAT-DELETE-UNMEASURED** [note] A session's delete of a message its project's Slack app posted (`sot-fe chat delete <ts>`,
   `Api::delete_message`, chat guarantee 36), asked by the maintainer on 2026-11-24, is proved against the fake Slack only: no real
   Slack message has been deleted by it. The checks are made on the first release candidate that carries the command, on a live hub
