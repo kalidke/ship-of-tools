@@ -647,13 +647,14 @@ fn every_code_has_its_one_text() {
         (ChatCode::OtherApp, "these Slack codes may belong to a different Slack app than the one this Slack workspace is connected with now; nothing was changed"),
         (ChatCode::MixedApps, "the \"App-Level Token\" belongs to a different Slack app than the \"Bot User OAuth Token\", so nothing was changed; all three codes must come from one Slack app"),
         (ChatCode::NotOwnMessage, "Slack would not let this project's Slack app delete that message (a person's or another app's message stays)"),
+        (ChatCode::AlreadyPaired, "the project already has a channel; unpair it first"),
         (ChatCode::Failed, "the chat request failed"),
         (ChatCode::Other, "the chat request failed"),
     ];
     for (code, words) in table {
         assert_eq!(code.text(), words, "{code:?}");
     }
-    for code in ["bot_token_refused", "app_token_refused", "user_token_refused", "no_user_token", "not_a_member", "other_workspace", "not_in_channel", "channel_taken", "not_saved", "not_a_file", "too_large", "not_an_image", "too_many_workspaces", "no_such_channel", "other_app", "mixed_apps", "not_own_message"] {
+    for code in ["bot_token_refused", "app_token_refused", "user_token_refused", "no_user_token", "not_a_member", "other_workspace", "not_in_channel", "channel_taken", "not_saved", "not_a_file", "too_large", "not_an_image", "too_many_workspaces", "no_such_channel", "other_app", "mixed_apps", "not_own_message", "already_paired"] {
         let r: ChatRefusal = serde_json::from_value(json!({"error": "text", "code": code})).unwrap();
         assert_ne!(r.code, Some(ChatCode::Other), "{code} is a code of this reader");
     }
@@ -977,4 +978,21 @@ fn a_row_pairing_names_who_asks_and_never_reads_a_lost_channel_as_an_unpairing()
     // An older daemon answers the op as an unknown op, a refusal with no code.
     let r: ChatRefusal = serde_json::from_value(json!({"error": "unknown op: chat.row_pair"})).unwrap();
     assert_eq!(r.code, None);
+}
+
+/// `already_paired` keeps its text and its body, the folder's pairing; a reader before the code reads it as `other`, as it
+/// reads any code added later.
+#[test]
+fn a_row_pairings_refusal_bodies_keep_their_shape_and_an_older_reader_reads_the_codes_as_other() {
+    let held = json!({"workspace": "T1", "workspace_tag": "lab", "channel": "C1", "name": "general", "delivers": true});
+    let mut refusal = held.clone();
+    refusal.as_object_mut().unwrap().extend(json!({"error": ChatCode::AlreadyPaired.text(), "code": "already_paired"}).as_object().unwrap().clone());
+    let read: ChatRefusal = serde_json::from_value(refusal.clone()).unwrap();
+    assert_eq!(read.code, Some(ChatCode::AlreadyPaired));
+    let body: ChatPairing = serde_json::from_value(refusal).unwrap();
+    assert_eq!((body.channel, body.name.as_deref(), body.delivers), (channel("C1"), Some("general"), true));
+    for later in ["from_the_future", "paired_twice"] {
+        let r: ChatRefusal = serde_json::from_value(json!({"error": "text", "code": later})).unwrap();
+        assert_eq!(r.code, Some(ChatCode::Other), "{later}");
+    }
 }

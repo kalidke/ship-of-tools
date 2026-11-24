@@ -879,7 +879,7 @@ owned by `docs/CLAUDE.md`.
 - **CHAT-UNMAPPED-ROW-MISSES-A-PAIRING** [note] From reading the code of a session's pairing, not seen in use: a window showing a
   project with no channel has no watch, so no event tells it when a session pairs that project, and its Chat drawer title
   stays `no channel` until the person switches sessions or closes and reopens the drawer (an unmapped answer is never asked
-  again on a pace; only a failed one is). A session cannot pair yet and can unpair today; the miss shows once it can pair.
+  again on a pace; only a failed one is). A session can pair and unpair, so the miss shows after a session's pairing.
   Fix: ask an unmapped answer of the shown row again each `GAP_PACE`, the title standing meanwhile.
 - **SHARE-CLEAR-FAILURE-NOT-TOLD** [note] From reading code, 2026-11-23; never seen. A withdrawal the daemon fails is
   not told and not tried again: `SelectionShare::on_reply` (`rust/frontend/src/ui/preview/share.rs`) gives a clear's
@@ -1358,7 +1358,7 @@ owned by `docs/CLAUDE.md`.
 - **CHAT-SESSION-PAIRING-CHURN** [note] From reading the code of a session's pairing, not seen in use: each changed pairing, a
   window's or a session's (`chat.row_pair`, `rust/backend/src/chat/setup.rs`), restarts its Slack workspace, so every window
   watching a channel of it resyncs and each of its delivering channels owes a pass, and nothing bounds how often a session
-  may ask. An agent that unpairs in a loop churns the workspace. The session skill `sot-chat-pair` tells an agent not to; no
+  may ask. An agent that pairs and unpairs in a loop churns the workspace. The session skill `sot-chat-pair` tells an agent not to; no
   limit is built.
 - **CHAT-WINDOW-UNPAIR-WAITS-ON-ITS-REQUEST** [note] From reading the code of a session's pairing, not seen in use: a window's `chat.pair`
   waits for the reload of the workspace its request names (`chat.toml`'s when it names none), not for the workspace whose

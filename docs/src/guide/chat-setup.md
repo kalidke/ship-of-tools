@@ -190,9 +190,10 @@ Select the project's session, open the Chat panel and press `Ctrl+Shift+k`. The 
 chat's settings file on the computer that runs your sessions. If you edited that file by hand, a pick from the panel
 rewrites it whole: its comments and the order of its keys are not kept.
 
-A session's agent can remove a project's channel when you ask it to, with `sot-fe chat unpair`
-([Unpairing a project's channel](chat.md#Unpairing-a-project's-channel)). Choosing a channel for a project, and a
-change from one channel to another, stay yours to do here.
+A session's agent can pair a project with a channel, or remove it, when you ask it to, with `sot-fe chat pair` and
+`sot-fe chat unpair` ([Pairing and unpairing a project's channel](chat.md#Pairing-and-unpairing-a-project's-channel)).
+It never moves a project that has a channel or takes another project's channel, so a move is an unpair and a pair, and
+taking the channel of a project whose folder is gone stays yours to do here.
 
 ## Connect another Slack workspace
 

@@ -384,8 +384,8 @@ async fn a_session_unpairing_is_refused_for_a_handle_not_its_rows_an_unknown_row
     let w = paired_world(fresh()).await;
     let (before, mut cli) = (w.file(), connect(w.services.clone()).await);
     let (alpha, beta) = (w.ids[0].as_str(), w.ids[1].as_str());
-    // Who asks: another's handle, none, other spellings, a row that is gone; and a request whose channel is not null
-    // (pairing is landing 2's). Each is `bad_request` before the target is looked at, an unknown target included.
+    // Who asks: another's handle, none, other spellings, a row that is gone, and a request that lost its channel key. Each is
+    // `bad_request` before the target is looked at, an unknown target included.
     let refused = [
         row_pair(beta, "alpha-h", "alpha", None),
         // Who asks comes before the target: a wrong handle answers for itself though no such row exists.
@@ -393,14 +393,14 @@ async fn a_session_unpairing_is_refused_for_a_handle_not_its_rows_an_unknown_row
         row_pair(beta, "", "alpha", None),
         row_pair(beta, "BETA-H", "alpha", None),
         row_pair("ws-gone-0000", "beta-h", "alpha", None),
-        row_pair(beta, "beta-h", "nobody", Some("C0PUB")),
-        row_pair(beta, "beta-h", "alpha", Some("general")),
+        // Lost its channel key: refused at decode, never read as an unpairing.
         json!({"by": {"row": beta, "name": "beta-h"}, "row": "alpha"}),
     ];
     for (n, payload) in refused.into_iter().enumerate() {
         assert_eq!(code(&cli.row_pair(payload).await), "bad_request", "refused request {n}");
     }
     assert_eq!(code(&cli.row_pair(row_pair(beta, "beta-h", "nobody", None)).await), "stale_row");
+    assert_eq!(code(&cli.row_pair(row_pair(beta, "beta-h", "nobody", Some("C0PUB"))).await), "stale_row", "a pairing's target is looked up too");
     assert_eq!((w.file(), w.starts()), (before.clone(), 2), "a refused unpairing writes and reloads nothing");
     // The default row is the inert anchor: it has no folder to unpair.
     w.rows.set_default(beta);
@@ -456,6 +456,173 @@ async fn a_session_unpair_waits_for_the_restart_of_the_workspace_it_removed_the_
     assert_eq!((done["outcome"].as_str(), done["pairing"]["workspace"].as_str()), (Some("unpaired"), Some(B)), "{done}");
     let listed = win.ask(5, op::CHAT_WORKSPACES, json!({})).await;
     assert!(listed["workspaces"].as_array().unwrap().iter().all(|w| w["running"] == true), "{listed}");
+}
+
+/// `row_pair` naming the workspace, as `--slack-workspace` does.
+fn row_pair_in(workspace: &str, by_row: &str, handle: &str, row: &str, channel: &str) -> Value {
+    let mut v = row_pair(by_row, handle, row, Some(channel));
+    v["workspace"] = json!(workspace);
+    v
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_pairs_another_project_by_id_and_never_moves_or_takes_a_channel() {
+    // C0ONE and C0GONE are channels the app is not in: a join would show in the count, so each refusal is proved to come
+    // before any join.
+    let w = world(Some(fresh()), &[("C0PUB", "general", false, false), ("C0ONE", "lab-one", false, false), ("C0GONE", "gone-one", false, false)]).await;
+    w.rows.set_agent_handle(&w.ids[1], "beta-h").unwrap();
+    let (mut cli, folder) = (connect(w.services.clone()).await, w.folders[0].to_string_lossy().into_owned());
+    // By id: one join, the mapping, one start, and the name the channel's facts gave.
+    let done = cli.row_pair(row_pair(&w.ids[1], "beta-h", "alpha", Some("C0PUB"))).await;
+    assert_eq!(done, json!({"outcome": "paired", "folder": folder, "pairing": {"workspace": "T0AAAA", "channel": "C0PUB", "name": "general"}}), "{done}");
+    assert_eq!((w.mappings(), w.calls("/conversations.join"), w.starts()), (vec![w.mapped(0, "C0PUB")], 1, 2));
+    assert!(w.file().contains("C0PUB"), "the channel is listed");
+    // The same again: unchanged, with no join and no start, and the file as it was.
+    let before = w.file();
+    let again = cli.row_pair(row_pair(&w.ids[1], "beta-h", "alpha", Some("C0PUB"))).await;
+    assert_eq!((again["outcome"].as_str(), again["pairing"]["channel"].as_str()), (Some("unchanged"), Some("C0PUB")), "{again}");
+    assert_eq!((w.file(), w.calls("/conversations.join"), w.starts()), (before.clone(), 1, 2));
+    // The project that has a channel is not moved to another; the refusal says what it has.
+    for channel in ["C0ONE"] {
+        let moved = cli.row_pair(row_pair(&w.ids[1], "beta-h", "alpha", Some(channel))).await;
+        assert_eq!((code(&moved), moved["workspace"].as_str(), moved["channel"].as_str()), ("already_paired", Some("T0AAAA"), Some("C0PUB")), "{moved}");
+    }
+    // A channel another project has is not taken, though the app is in it.
+    assert_eq!(code(&cli.row_pair(row_pair(&w.ids[0], "alpha-h", "beta", Some("C0PUB"))).await), "bad_request", "alpha has no handle bound");
+    w.rows.set_agent_handle(&w.ids[0], "alpha-h").unwrap();
+    assert_eq!(code(&cli.row_pair(row_pair(&w.ids[0], "alpha-h", "beta", Some("C0PUB"))).await), "channel_taken");
+    // A channel a folder that is gone holds is not taken either, only a person's pick in the window takes it over.
+    let gone = "workspace = \"T0AAAA\"\nchannels = [\"C0PUB\", \"C0GONE\"]\n[[mapping]]\nfolder = '/gone/folder'\nchannel = \"C0GONE\"\n[[mapping]]\nfolder = '".to_string() + &folder + "'\nchannel = \"C0PUB\"\n";
+    w.home.write(CONFIG_FILE, &gone);
+    assert_eq!(code(&cli.row_pair(row_pair(&w.ids[0], "alpha-h", "beta", Some("C0GONE"))).await), "channel_taken");
+    assert_eq!((w.file(), w.calls("/conversations.join"), w.starts()), (gone, 1, 2), "a refused pairing joined, wrote or reloaded");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_pairs_only_a_channel_given_by_an_id_that_exists_and_nothing_is_joined_for_a_refusal() {
+    let w = world(Some(fresh()), &[("G0PRIV", "secret", true, false), ("C0ONE", "dup", false, false)]).await;
+    w.rows.set_agent_handle(&w.ids[1], "beta-h").unwrap();
+    let (before, mut cli) = (w.file(), connect(w.services.clone()).await);
+    let mut ask = |channel: &'static str| row_pair(&w.ids[1], "beta-h", "alpha", Some(channel));
+    // A private channel the app is not in is not joined; an id no channel has is none; a name is not an id.
+    assert_eq!(code(&cli.row_pair(ask("G0PRIV")).await), "not_in_channel");
+    assert_eq!(code(&cli.row_pair(ask("C0NOPE")).await), "no_such_channel");
+    for name in ["dup", "#dup", "c0one"] {
+        assert_eq!(code(&cli.row_pair(ask(name)).await), "bad_request", "{name}");
+    }
+    assert_eq!((w.file(), w.calls("/conversations.join"), w.starts()), (before, 0, 1), "a refused pairing joined, wrote or reloaded");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_pairs_in_the_workspace_it_names_and_waits_for_that_workspaces_restart() {
+    let t = two().await;
+    let mut win = connect_window(t.services.clone()).await;
+    assert_eq!(win.ask(2, op::CHAT_CONNECT, t.connect_req(A)).await["workspace"], A);
+    assert_eq!(win.ask(3, op::CHAT_CONNECT, t.connect_req(B)).await["workspace"], B);
+    t.rows.set_agent_handle(&t.ids[0], "alpha-h").unwrap();
+    let arm = Holds::here().arm("chat.unit.off").key(Arc::as_ptr(t.services.chat.hub()) as usize).hold(1);
+    let (mut cli, by) = (connect(t.services.clone()).await, t.ids[0].clone());
+    // Beta's folder, by the id of a channel of workspace B, which the request names.
+    let asked = tokio::spawn(async move { cli.row_pair(row_pair_in(B, &by, "alpha-h", "beta", "C0BBBB01")).await });
+    // A reload stops B's service to start it with the new mapping: the reply is for after that restart, not A's.
+    arm.reached_async(0).await;
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(!asked.is_finished(), "the reply came before the workspace's restart ended");
+    arm.release(0);
+    let paired = asked.await.unwrap();
+    assert_eq!((paired["outcome"].as_str(), paired["pairing"]["workspace"].as_str(), paired["pairing"]["channel"].as_str()), (Some("paired"), Some(B), Some("C0BBBB01")), "{paired}");
+    let file: toml::Table = std::fs::read_to_string(t.home.config().join(CONFIG_FILE)).unwrap().parse().unwrap();
+    assert_eq!((file["mapping"][0]["workspace"].as_str(), file["mapping"][0]["channel"].as_str()), (Some(B), Some("C0BBBB01")));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_pairing_in_a_delivering_file_floors_at_the_clock_and_says_mail_follows() {
+    let w = world(Some(format!("{}mail_after = \"1.000000\"\n", fresh())), &[public("C0PUB", true)]).await;
+    w.rows.set_agent_handle(&w.ids[1], "beta-h").unwrap();
+    let mut cli = connect(w.services.clone()).await;
+    let before = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    let done = cli.row_pair(row_pair(&w.ids[1], "beta-h", "alpha", Some("C0PUB"))).await;
+    let after = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    assert_eq!((done["outcome"].as_str(), done["pairing"]["delivers"].as_bool()), (Some("paired"), Some(true)), "{done}");
+    let t: toml::Table = w.file().parse().unwrap();
+    let secs: u64 = t["mapping"][0]["mail_after"].as_str().unwrap().split_once('.').unwrap().0.parse().unwrap();
+    assert!((before..=after).contains(&secs), "the floor is the clock's, not the file's");
+}
+
+/// The reply to a pairing is what the edit wrote: the row removed after the write, with the reload held, is still answered paired.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pairing_that_was_written_is_answered_paired_whatever_became_of_its_row() {
+    let w = world(Some(fresh()), &[public("C0PUB", true)]).await;
+    w.rows.set_agent_handle(&w.ids[1], "beta-h").unwrap();
+    let arm = Holds::here().arm("chat.unit.off").key(Arc::as_ptr(w.services.chat.hub()) as usize).hold(1);
+    let (mut cli, by) = (connect(w.services.clone()).await, w.ids[1].clone());
+    let asked = tokio::spawn(async move { cli.row_pair(row_pair(&by, "beta-h", "alpha", Some("C0PUB"))).await });
+    arm.reached_async(0).await;
+    assert!(w.rows.remove_by_id(&w.ids[0]).is_some());
+    arm.release(0);
+    let done = asked.await.unwrap();
+    assert_eq!((done["outcome"].as_str(), done["pairing"]["channel"].as_str(), done["pairing"]["name"].as_str()), (Some("paired"), Some("C0PUB"), Some("general")), "{done}");
+    assert_eq!(w.mappings(), [w.mapped(0, "C0PUB")], "the pairing was written");
+}
+
+/// A mapping written by hand and not yet loaded refuses a pairing of its folder, and the refusal names that mapping.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_already_paired_refusal_names_the_mapping_the_file_holds_though_it_is_not_loaded() {
+    let w = world(Some(fresh()), &[public("C0PUB", true), ("C0ONE", "lab-one", false, true)]).await;
+    w.rows.set_agent_handle(&w.ids[1], "beta-h").unwrap();
+    let hand = format!("workspace = \"T0AAAA\"\nchannels = [\"C0ONE\"]\n[[mapping]]\nfolder = '{}'\nchannel = \"C0ONE\"\n", w.folders[0].to_string_lossy());
+    w.home.write(CONFIG_FILE, &hand);
+    let mut cli = connect(w.services.clone()).await;
+    let refused = cli.row_pair(row_pair(&w.ids[1], "beta-h", "alpha", Some("C0PUB"))).await;
+    assert_eq!((code(&refused), refused["workspace"].as_str(), refused["channel"].as_str()), ("already_paired", Some("T0AAAA"), Some("C0ONE")), "{refused}");
+    assert_eq!((w.file(), w.calls("/conversations.join")), (hand, 0));
+}
+
+/// What lands between the join and the lock is judged by the session's rules under the lock: a window's pairing of the
+/// folder, and a hand-written mapping of the channel by a folder that is gone, each refuse the session's pairing, which says the
+/// app is in the channel, and the file stays as they left it.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_edit_under_the_lock_keeps_the_sessions_rules_against_what_lands_after_the_join() {
+    let w = world(Some(fresh()), &[("C0PUB", "general", false, false), ("C0ONE", "lab-one", false, true)]).await;
+    w.rows.set_agent_handle(&w.ids[1], "beta-h").unwrap();
+    let key = Arc::as_ptr(&w.services.chat) as usize;
+    let mut window = connect_window(w.services.clone()).await;
+    let session = |row: &'static str, channel: &'static str| {
+        let (services, by) = (w.services.clone(), w.ids[1].clone());
+        tokio::spawn(async move { connect(services).await.row_pair(row_pair(&by, "beta-h", row, Some(channel))).await })
+    };
+    // A window's pairing of the folder lands in the gap.
+    let arm = Holds::here().arm("chat.pair.joined").key(key).hold(1);
+    let asked = session("alpha", "C0PUB");
+    arm.reached_async(0).await;
+    assert_eq!(window.pair(&w.ids[0], Some("C0ONE")).await, json!({}));
+    arm.release(0);
+    let refused = asked.await.unwrap();
+    assert_eq!((code(&refused), refused["channel"].as_str(), refused["joined"].as_bool()), ("already_paired", Some("C0ONE"), Some(true)), "{refused}");
+    assert_eq!((w.mappings(), w.calls("/conversations.join")), (vec![w.mapped(0, "C0ONE")], 1));
+    // A hand edit gives the channel to a folder that is gone.
+    drop(arm);
+    let arm = Holds::here().arm("chat.pair.joined").key(key).hold(1);
+    let asked = session("beta", "C0PUB");
+    arm.reached_async(0).await;
+    let hand = format!("workspace = \"T0AAAA\"\nchannels = [\"C0ONE\", \"C0PUB\"]\n[[mapping]]\nfolder = '{}'\nchannel = \"C0ONE\"\n[[mapping]]\nfolder = '/gone/folder'\nchannel = \"C0PUB\"\n", w.folders[0].to_string_lossy());
+    w.home.write(CONFIG_FILE, &hand);
+    arm.release(0);
+    let refused = asked.await.unwrap();
+    assert_eq!((code(&refused), refused["joined"].as_bool(), w.file()), ("channel_taken", Some(true), hand));
+}
+
+/// An unchanged pairing joins nothing, though the app has left the channel since: the answer comes from the file.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unchanged_pairing_joins_nothing_though_the_app_has_left_the_channel() {
+    let w = world(Some(fresh()), &[("C0PUB", "general", false, false)]).await;
+    w.rows.set_agent_handle(&w.ids[1], "beta-h").unwrap();
+    let mut cli = connect(w.services.clone()).await;
+    assert_eq!(cli.row_pair(row_pair(&w.ids[1], "beta-h", "alpha", Some("C0PUB"))).await["outcome"], "paired");
+    w.slack.channels.lock().unwrap().iter_mut().for_each(|c| c.3 = false);
+    let again = cli.row_pair(row_pair(&w.ids[1], "beta-h", "alpha", Some("C0PUB"))).await;
+    assert_eq!((again["outcome"].as_str(), again["pairing"]["channel"].as_str()), (Some("unchanged"), Some("C0PUB")), "{again}");
+    assert_eq!((w.calls("/conversations.join"), w.starts()), (1, 2), "an unchanged pairing joined or reloaded");
 }
 
 #[test]

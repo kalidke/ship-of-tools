@@ -57,7 +57,7 @@ Test the exit code, not the words.
 Nothing was posted. Tell the person what the command printed; most of these they fix in the window:
 
 - `refused unmapped this session's project has no channel`: this project has no Slack channel yet. They pick one in the
-  Chat drawer (`Ctrl+Shift+k`, `Cmd+Shift+k` on a Mac).
+  Chat drawer (`Ctrl+Shift+k`, `Cmd+Shift+k` on a Mac), or ask you to pair it (skill `sot-chat-pair`).
 - `refused unconfigured <words>`: Slack is not working on the computer that runs your sessions; the words say whether
   no workspace is connected, Slack refused the tokens, the tokens belong to two apps, or the chat could not start. They
   connect or fix Slack from the Chat drawer.

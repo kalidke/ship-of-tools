@@ -324,21 +324,30 @@ does not defend the channel limit against another program running under your own
 project's session. If the computer that runs your sessions runs an older Ship of Tools, the command says so and deletes
 nothing. The window has no command for deleting: delete a message you posted yourself in Slack.
 
-### Unpairing a project's channel
+### Pairing and unpairing a project's channel
 
-If you ask a session's agent to unpair a project from its Slack channel, it runs `sot-fe chat unpair <session>` in the
-session, where `<session>` is `.` for the agent's own project or another session's name or id (the names `sot-fe version`
-lists as `row <name>`). The command removes that project's channel from the chat's settings file, as the channel list
-does ([Change or remove a project's channel](chat-setup.md#Change-or-remove-a-project's-channel)): the project's sessions
-can no longer post to the channel, and its posts no longer reach them as mail. Each change restarts that Slack workspace's
-chat for a moment, so every window watching it shows the chat catching up, and a window showing the project's channel
-then says `no channel`. The agent unpairs only the projects you named, and tells you what it removed. The command prints
-`unpaired <folder> from #<channel> (<id>) in <workspace>`, or `unchanged: <folder> has no channel`, and exits 0; it exits
-2 with `refused` and a reason when nothing was changed, and 3 with `unknown` or `no answer` when the change may have been
-made, in which case running the same command again is safe and says what is there now. If the computer that runs your
-sessions runs an older Ship of Tools, the command says so and changes nothing. Pairing a project with a channel is still
-yours to do in the channel list: an agent cannot yet. As with deleting, Ship of Tools does not defend this against
-another program running under your own account, which can name another project's session.
+If you ask a session's agent to pair a project with a Slack channel, or to unpair it, it runs `sot-fe chat pair <session>
+<channel>` or `sot-fe chat unpair <session>` in the session, where `<session>` is `.` for the agent's own project or
+another session's name or id (the names `sot-fe version` lists as `row <name>`), and `<channel>` is the channel's ID, the
+last part of its link in Slack (a name is not looked up yet). The command makes the same change to the chat's settings file
+as the channel list does ([Change or remove a project's
+channel](chat-setup.md#Change-or-remove-a-project's-channel)): after a pair the project's sessions post to that channel and,
+where the chat delivers mail, its new posts reach them as mail; after an unpair they no longer do either. A pair joins a
+public channel the Slack app is not in, as the channel list does, which shows in the channel. On a computer that connects
+several Slack workspaces, a channel outside the first is named with `--slack-workspace <id>`.
+
+An agent's pair is more careful than yours in the list. It never moves a project that already has a channel, and never
+takes a channel another project has, nor one a project has whose folder is gone: it is refused and the pairing is unchanged (the Slack app may have joined the channel first). To
+move a project the agent unpairs it and then pairs it, when you ask for that; taking over a gone folder's channel is yours,
+in the channel list, since an agent cannot tell a folder that is gone from a disk that is not mounted. Each change restarts
+that Slack workspace's chat for a moment, so every window watching it shows the chat catching up, and a window showing a
+project that has no channel keeps saying `no channel` until you switch sessions or reopen the Chat panel. The agent changes
+only the projects and channels you named, and tells you what it changed. The command prints `paired <folder> with
+#<channel> (<id>) in <workspace>`, `unpaired <folder> from #<channel> (<id>) in <workspace>` or `unchanged: ...`, and exits
+0; it exits 2 with `refused` and a reason when nothing was changed, and 3 with `unknown` or `no answer` when the change may
+have been made, in which case running the same command again is safe and says what is there now. If the computer that runs
+your sessions runs an older Ship of Tools, the command says so and changes nothing. As with deleting, Ship of Tools does not
+defend this against another program running under your own account, which can name another project's session.
 
 ## Mail to the session
 

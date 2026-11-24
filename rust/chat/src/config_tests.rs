@@ -529,17 +529,17 @@ fn pairing_in_another_workspace_writes_its_workspace_key_and_in_the_files_none()
         t["mapping"].as_array().unwrap().iter().find(|m| m["folder"].as_str() == Some(folder)).unwrap().get("workspace").map(|w| w.as_str().unwrap().to_string())
     };
     let start = chat(&mapping("/work/a", "C0AAAA"));
-    let other = pair(&start, "/work/b", Some(("T0ZZZZ", "C0BBBB")), None, &rows).unwrap().unwrap();
+    let other = pair(&start, "/work/b", Some(("T0ZZZZ", "C0BBBB")), None, &rows, Pairer::Window).unwrap().unwrap();
     assert_eq!(key(&other, "/work/b").as_deref(), Some("T0ZZZZ"));
     assert_eq!(key(&other, "/work/a"), None, "a mapping in the file's workspace carries no key");
     assert!(matches!(crate::config::resolve(&parse(&other), "/work/b"), Resolution::Mapped { workspace, .. } if workspace == "T0ZZZZ"));
     // The same pair again changes nothing; the same channel in the file's workspace is a change, and writes no key.
-    assert_eq!(pair(&other, "/work/b", Some(("T0ZZZZ", "C0BBBB")), None, &rows), Ok(None));
-    let back = pair(&other, "/work/b", Some(("T0AAAA", "C0BBBB")), None, &rows).unwrap().expect("another workspace is a change");
+    assert_eq!(pair(&other, "/work/b", Some(("T0ZZZZ", "C0BBBB")), None, &rows, Pairer::Window), Ok(None));
+    let back = pair(&other, "/work/b", Some(("T0AAAA", "C0BBBB")), None, &rows, Pairer::Window).unwrap().expect("another workspace is a change");
     assert_eq!(key(&back, "/work/b"), None);
     // A channel another existing folder maps, in any workspace, is taken.
-    assert_eq!(pair(&other, "/work/a", Some(("T0AAAA", "C0BBBB")), None, &rows), Err(PairError::ChannelTaken));
-    assert_eq!(pair(&other, "/work/a", Some(("T0bad", "C0CCCC")), None, &rows), Err(PairError::Config(E::BadId)));
+    assert_eq!(pair(&other, "/work/a", Some(("T0AAAA", "C0BBBB")), None, &rows, Pairer::Window), Err(PairError::ChannelTaken));
+    assert_eq!(pair(&other, "/work/a", Some(("T0bad", "C0CCCC")), None, &rows, Pairer::Window), Err(PairError::Config(E::BadId)));
 }
 
 #[test]
@@ -792,9 +792,44 @@ fn a_fresh_file_and_a_secrets_text_parse_back_and_format_no_token() {
     assert_eq!(crate::config::secrets("nope", &secret(&bot()), &secret(&user()), &secret(&app())).map(drop).unwrap_err(), E::BadId);
 }
 
+/// A session's pairing never moves a folder that has a channel and never takes a channel any other mapping holds, a folder
+/// that is gone's included; a window's keeps both as they are (it moves, and takes over a gone folder's); the first refusal met
+/// in the file's order is the answer; an unpairing and the same pairing again are as a window's.
+#[test]
+fn a_sessions_pairing_never_moves_a_folder_or_takes_a_held_channel() {
+    let pair = |text: &str, by: Pairer, folder: &str, channel: Option<&str>| pair(text, folder, channel.map(|c| ("T0AAAA", c)), None, &rows, by);
+    let gone_first = format!("workspace = \"T0AAAA\"\nchannels = [\"C0AAAA\", \"C0CCCC\"]\n{}{}", mapping("/work/gone", "C0CCCC"), mapping("/work/a", "C0AAAA"));
+    let own_first = format!("workspace = \"T0AAAA\"\nchannels = [\"C0AAAA\", \"C0CCCC\"]\n{}{}", mapping("/work/a", "C0AAAA"), mapping("/work/gone", "C0CCCC"));
+    let (session, window) = (Pairer::Session, Pairer::Window);
+    // A free folder takes a free channel, for either.
+    assert!(pair(&gone_first, session, "/work/b", Some("C0DDDD")).unwrap().is_some());
+    // A channel an existing folder holds, and one a gone folder holds: refused for a session, the second taken over by a window.
+    assert_eq!(pair(&gone_first, session, "/work/b", Some("C0AAAA")), Err(PairError::ChannelTaken));
+    assert_eq!(pair(&gone_first, window, "/work/b", Some("C0AAAA")), Err(PairError::ChannelTaken));
+    assert_eq!(pair(&gone_first, session, "/work/b", Some("C0CCCC")), Err(PairError::ChannelTaken));
+    assert!(pair(&gone_first, window, "/work/b", Some("C0CCCC")).unwrap().is_some());
+    // A folder that has a channel is never moved by a session; a window moves it; the same channel again is no change.
+    assert_eq!(pair(&gone_first, session, "/link/a", Some("C0BBBB")), Err(PairError::FolderPaired("T0AAAA".into(), "C0AAAA".into())));
+    assert!(pair(&gone_first, window, "/link/a", Some("C0BBBB")).unwrap().is_some());
+    assert_eq!(pair(&gone_first, session, "/link/a", Some("C0AAAA")), Ok(None));
+    // The first refusal in the file's order wins: the gone folder's channel for the paired folder is a taken channel when
+    // its mapping comes first and a paired folder when its own does.
+    assert_eq!(pair(&gone_first, session, "/work/a", Some("C0CCCC")), Err(PairError::ChannelTaken));
+    assert_eq!(pair(&own_first, session, "/work/a", Some("C0CCCC")), Err(PairError::FolderPaired("T0AAAA".into(), "C0AAAA".into())));
+    // Another workspace's pairing of the same channel is a different pairing, so a paired folder is not moved to it.
+    assert_eq!(pair_in(&gone_first, session, "/work/a", ("T0ZZZZ", "C0AAAA")), Err(PairError::FolderPaired("T0AAAA".into(), "C0AAAA".into())));
+    // An unpairing is the window's.
+    let off = pair(&gone_first, session, "/work/a", None).unwrap().unwrap();
+    assert_eq!(Config::parse(&off, &rows).unwrap().mappings().count(), 0);
+}
+
+fn pair_in(text: &str, by: Pairer, folder: &str, target: (&str, &str)) -> Result<Option<String>, PairError> {
+    pair(text, folder, Some(target), None, &rows, by)
+}
+
 #[test]
 fn pairing_edits_one_mapping_keeps_what_it_ignores_and_returns_only_what_loads() {
-    let pair = |text: &str, folder: &str, channel: Option<&str>| pair(text, folder, channel.map(|c| ("T0AAAA", c)), None, &rows);
+    let pair = |text: &str, folder: &str, channel: Option<&str>| pair(text, folder, channel.map(|c| ("T0AAAA", c)), None, &rows, Pairer::Window);
     // A hand-written file: a comment, a listed channel no mapping holds, a mapping whose folder is gone, and a mapping.
     let hand = format!(
         "# the lab's chat\nworkspace = \"T0AAAA\"\nchannels = [\"C0AAAA\", \"C0CCCC\", \"C0EEEE\"]\n{}{}",
@@ -860,7 +895,7 @@ fn a_refused_file_is_never_rewritten() {
     ] {
         let code = Config::parse(&text, &rows).unwrap_err();
         for channel in [Some("C0BBBB"), None] {
-            assert_eq!(pair(&text, "/work/a", channel.map(|c| ("T0AAAA", c)), None, &rows), Err(PairError::Config(code)));
+            assert_eq!(pair(&text, "/work/a", channel.map(|c| ("T0AAAA", c)), None, &rows, Pairer::Window), Err(PairError::Config(code)));
         }
     }
 }
@@ -869,16 +904,16 @@ fn a_refused_file_is_never_rewritten() {
 fn a_delivering_files_new_mapping_carries_the_floor_it_is_given() {
     let ts = |s: &str| sot_protocol::chat::Ts::parse(s).unwrap();
     let text = chat(&(String::from("mail_after = \"5.000000\"\n") + &mapping_from("/work/a", "C0AAAA", "6.000000")));
-    let new = pair(&text, "/work/b", Some(("T0AAAA", "C0BBBB")), Some(ts("9.000000")), &rows).unwrap().unwrap();
+    let new = pair(&text, "/work/b", Some(("T0AAAA", "C0BBBB")), Some(ts("9.000000")), &rows, Pairer::Window).unwrap().unwrap();
     let c = Config::parse(&new, &rows).unwrap();
     assert_eq!(c.floor("C0BBBB"), Some(ts("9.000000")));
     // The other mapping keeps its own floor, never the new one's, and the hub's stays.
     assert_eq!(c.floor("C0AAAA"), Some(ts("6.000000")));
     assert_eq!(c.mail_after(), Some(&ts("5.000000")));
     // With no floor the edit is refused by the load's own rule.
-    assert_eq!(pair(&text, "/work/b", Some(("T0AAAA", "C0BBBB")), None, &rows), Err(PairError::Config(E::MappingWithoutFloor(2))));
+    assert_eq!(pair(&text, "/work/b", Some(("T0AAAA", "C0BBBB")), None, &rows, Pairer::Window), Err(PairError::Config(E::MappingWithoutFloor(2))));
     // A file that is not delivering takes no floor on the new mapping.
-    let plain = pair(&chat(""), "/work/b", Some(("T0AAAA", "C0BBBB")), Some(ts("9.000000")), &rows).unwrap().unwrap();
+    let plain = pair(&chat(""), "/work/b", Some(("T0AAAA", "C0BBBB")), Some(ts("9.000000")), &rows, Pairer::Window).unwrap().unwrap();
     assert!(!plain.contains("mail_after"));
 }
 

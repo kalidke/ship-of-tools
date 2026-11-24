@@ -201,7 +201,7 @@ of each.
    Their route is one of three, and none opens a file the daemon owns, with one named exception: the prompt hook `sot-selection-hook.sh` opens the one file whose path the daemon gives the leg in `SOT_SELECTION_FILE`, which holds exactly the hook's output, and guesses no daemon layout (as the pinned self file is also named to the leg by the daemon). (a) A framed op over an endpoint, through
    comm-lib's `sot_oneshot_request`, which says hello first (the daemon admits nothing before it): `sot-fe`
    (`fe.command.send`, `repl.execute`, `repl.run_file`, `repl.interrupt`, `pty.input`, `pty.screen`,
-   `workspace.reauth`, `chat.resolve`, `chat.post`, `chat.post_file`, `chat.delete`, `chat.row_pair`, `version.query`, `workspace.list`), `comm-spawn.sh` and `comm-despawn.sh` (`workspace.create`,
+   `workspace.reauth`, `chat.resolve`, `chat.post`, `chat.post_file`, `chat.delete`, `chat.row_pair`, `chat.workspaces`, `version.query`, `workspace.list`), `comm-spawn.sh` and `comm-despawn.sh` (`workspace.create`,
    `workspace.list`, `workspace.destroy`, `version.query`), `comm-bootstrap.sh` and `comm-probe.sh` (`workspace.list`,
    `workspace.create`, `pty.input`, and for probe shutdown `workspace.destroy`), `sot-nav.sh` (`agent.send`, to the hub's relay endpoint). (b) A `sotd` subcommand:
    `sotd comm VERB` through `sot_comm` (the registry, unread counts, identity, a handoff line), `sotd agent-exec`
@@ -518,32 +518,50 @@ of each.
   outside a row and with no handle refused before an endpoint, one resolve then one delete of that `ts` in the resolved
   channel with exactly `name`, `target` and `ts`, each outcome's words and code, an unmapped or refused resolve
   deleting nothing, no answer as one request, usage errors sending nothing, and the wait.
-- `sot-fe chat unpair <session>` (`sot-fe/sot-fe-chat.sh`, `send_chat_unpair`) removes the Slack channel of a project's
-  folder, for this session's own project (`.`, which is `$SOT_WORKSPACE_ID`) or another session's, named by its slug as
-  `sot-fe version` lists it (`row <slug>`) or by its id, through the same edit, write and reload of `chat.toml` as the
-  Chat drawer's channel list (chat guarantee 30). It needs the row and the handle as a post does (none of either
-  refused before an endpoint is found), sends no `chat.resolve` and ONE `chat.row_pair` with `by` (this session's row
-  and handle), the session as typed and `channel: null`, never a second, and waits 150 s (`--timeout` changes it): past a
-  reload under the setup lock in the ordinary case and not the worst case (chat guarantee 21's limit), so a no-answer is
-  exit 3, and an unpairing is idempotent, so the same command again is safe. `sot-fe` refuses `--thread`, `--file` and
-  `--stdin` (`ERROR: --thread, --file and --stdin are only for chat post`) and any count of arguments but one (a usage
-  line) with exit 1, and an unknown flag (`--slack-workspace` is not built) as it refuses any, before anything is sent.
-  Exit 0 with `unpaired <folder> from <chan> in <at>` (`<chan>` is `#<name> (<id>)` when the daemon's cache knew the
-  name, else the id; `<at>` is `<tag> (<workspace id>)` when the workspace's short name is known, else `Slack workspace
-  <id>`) or `unchanged: <folder> has no channel`; 2, nothing changed for certain, with `refused <code> <words>`
-  (`stale_row` (also a row whose folder cannot be reached), `unmapped`, `unavailable` (not the hub, or no `chat.toml`), `not_saved` and `bad_request` in the verb's own words, `<session>` as
-  typed and `this session's project` for `.`; any other code in the daemon's text) or `refused unsupported ...` for an
-  older daemon's unknown-op answer (it lets only a person pair or unpair, in the Chat drawer's channel list); 3, it may have been
-  made, with `no answer: ...` or `unknown: ...` (a `handler_error` reply, or an outcome added later), which end "running
-  the same command again is safe and says what is there now". Pairing a project with a channel is not built for a
-  session yet. Who may ask a session to unpair is the person's, not the daemon's: it lives in the
-  skill `sot-chat-pair` (`claude/sot-chat-pair/` and, byte-identical, `comm/adapters/codex/skills/sot-chat-pair/`, pinned
-  as `sot-chat-post`'s are): unpair only the projects the person named, report each change, and never in a loop. The
-  daemon checks `by` as a row's post is checked (attribution among one account's programs, not a security boundary) and
-  logs each changed pairing and each refusal with who asked. The 150 s default wait has no case that pins it past the daemon's bounds, as the post's and the delete's have (the harness always passes `--timeout`). `tests/test-sot-fe-chat.sh`'s unpair cases:
+- `sot-fe chat pair <session> <channel>` and `sot-fe chat unpair <session>` (`sot-fe/sot-fe-chat.sh`, `send_chat_pair`) pair the
+  Slack channel of a project's folder, or remove it, for this session's own project (`.`, which is `$SOT_WORKSPACE_ID`) or
+  another session's, named by its slug as `sot-fe version` lists it (`row <slug>`) or by its id, through the same edit,
+  write and reload of `chat.toml` as the Chat drawer's channel list (chat guarantee 30). `<channel>` is a Slack channel ID
+  (`C...` or `G...`; `sot-fe` refuses anything else with exit 1, a name not being looked up yet), and `--slack-workspace <id>`
+  names the workspace of a channel outside `chat.toml`'s (refused for any other verb, and when it is no workspace ID,
+  `ERROR: --slack-workspace expects a Slack workspace ID like T0123ABCD, got '<value>'`). Each needs the row and the handle as a
+  post does (none of either refused before an endpoint is found), sends no `chat.resolve` and ONE `chat.row_pair` with `by`
+  (this session's row and handle), the session as typed and the channel (`null` to unpair), never a second, and waits 150 s
+  (`--timeout` changes it): past a reload under the setup lock in the ordinary case and not the worst case (chat guarantee
+  21's limit), so a no-answer is exit 3, and a pairing is idempotent, so the same command again is safe. `sot-fe` refuses
+  `--thread`, `--file` and `--stdin` (`ERROR: --thread, --file and --stdin are only for chat post`) and a wrong count of
+  arguments with exit 1, before anything is sent. Exit 0 with `paired <folder> with <chan> in <at>` (`; new posts there reach
+  that project's session as mail` when the file delivers), `unpaired <folder> from <chan> in <at>` (`<chan>` is `#<name>
+  (<id>)` when the daemon's cache or the channel's facts gave the name, else the id; `<at>` is `<tag> (<workspace id>)` when
+  the workspace's short name is known, else `Slack workspace <id>`), `unchanged: <folder> already has <chan> in <at>` or
+  `unchanged: <folder> has no channel`; 2, nothing changed for certain, with `refused <code> <words>` (`stale_row` (also a row
+  whose folder cannot be reached), `unmapped`, `unavailable`, `not_saved`, `bad_request`, `already_paired` (the project has
+  another channel: move it by unpairing, then pairing), `channel_taken` (a channel any other project has, a gone folder's
+  included: a person's pick in the window), `no_such_channel` and `not_in_channel`, each in the verb's own words, which differ
+  by verb where the code means more for one, `<session>` as typed and `this session's project` for `.`; any other code in the
+  daemon's text) or `refused unsupported ...` for an older daemon's unknown-op answer (it lets only a person pair, or pair or
+  unpair, in the Chat drawer's channel list); 3, it may have been made, with `no answer: ...` or `unknown: ...` (a
+  `handler_error` reply, or an outcome added later), which end "running the same command again is safe and says what is there
+  now". For `no_such_channel` and `not_in_channel` the verb reads `chat.workspaces` once (`--timeout`, else 10 s) for the
+  workspace's name, its Slack app's name to invite, and, on a computer that connects several workspaces, the list with
+  their IDs (`; this computer connects these Slack workspaces: <id> (<name>), ...: name another with --slack-workspace <id>`);
+  with no answer the words say "that Slack workspace" and "your Slack app's name". A pair that names a workspace the hub does not
+  connect (`unavailable` with `--slack-workspace`) reads it too, and says that workspace is not connected and lists the ones that are. A
+  refusal whose body says `joined` (the Slack app is in the channel, and a window's pairing or a hand edit landed first) adds
+  that the app is now in the channel and nothing was paired; an `already_paired` with no channel in its body (never seen from
+  the daemon, which names the mapping the file holds) drops the channel from its words. Who may ask a session to pair or unpair is the
+  person's, not the daemon's: it lives in the skill `sot-chat-pair` (`claude/sot-chat-pair/` and, byte-identical,
+  `comm/adapters/codex/skills/sot-chat-pair/`, pinned as `sot-chat-post`'s are): only the projects and channels the person
+  named, a move only when asked (unpair, then pair), each change reported, never in a loop; `sot-chat-post`'s "A row with no
+  channel" says an unmapped project can be paired with it. The daemon checks `by` as a row's post is checked (attribution
+  among one account's programs, not a security boundary) and logs each changed pairing and each refusal with who asked. The
+  150 s default wait has no case that pins it past the daemon's bounds, as the post's and the delete's have (the harness always
+  passes `--timeout`). `tests/test-sot-fe-chat.sh`'s unpair and pair cases:
   `case_unpair_sends_one_row_pair_with_the_handle_and_prints_what_it_removed`, `case_each_unpair_answer_has_its_words_and_exit_code`,
-  `case_an_older_daemon_is_refused_unsupported`, `case_no_answer_to_a_pairing_is_one_request_and_exit_3` and
-  `case_pair_verbs_refuse_the_post_flags`. Lines the chat verbs share and that name project words: the refusals of `_chat_identity` (the unset `SOT_WORKSPACE_ID`, "comm handle") and the line
+  `case_an_older_daemon_is_refused_unsupported`, `case_no_answer_to_a_pairing_is_one_request_and_exit_3`,
+  `case_pair_sends_one_row_pair_with_the_channel_as_given_and_prints_the_pairing`, `case_each_pair_refusal_has_its_words_and_exit_code`,
+  `case_a_channel_not_found_on_a_hub_of_several_lists_the_workspaces_and_the_app` and `case_pair_verbs_refuse_the_post_flags`. Lines the
+  chat verbs share and that name project words: the refusals of `_chat_identity` (the unset `SOT_WORKSPACE_ID`, "comm handle") and the line
   `_need_endpoint` prints when no daemon is found, which every `sot-fe` verb prints.
 - `show-result` opens no `.html` or `.htm` page (the maintainer, 2026-10-31: pages went to the browser, not to the
   Queue): for a page under the calling row's project folder (`SOT_WORKSPACE_ROOT`) it prints the line that offers it,

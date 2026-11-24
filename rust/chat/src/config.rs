@@ -654,12 +654,23 @@ pub fn secrets(workspace: &str, bot: &Secret, user: &Secret, app: &Secret) -> Re
     Ok(Secret::new(text))
 }
 
-/// Why a pairing was not made: the current file refused as it stands, or the edit's result refused by the load (each
-/// its `ConfigError`); or the channel is mapped to another folder that exists.
+/// Who asks a pairing, which decides what it may undo: a window's person moves a folder from one channel to another and
+/// takes over the channel of a folder that is gone; a session's pairing never does either.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pairer {
+    Window,
+    Session,
+}
+
+/// Why a pairing was not made: the current file refused as it stands, or the edit's result refused by the load (each
+/// its `ConfigError`); or the channel is mapped to another folder that exists (to any other folder, for a session's
+/// pairing); or a session's pairing of a folder that already has another channel.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PairError {
     Config(ConfigError),
     ChannelTaken,
+    /// The workspace and channel of the mapping the text holds for the folder.
+    FolderPaired(String, String),
 }
 
 impl From<ConfigError> for PairError {
@@ -675,14 +686,17 @@ impl From<ConfigError> for PairError {
 /// does not canonicalize is dropped (taken over), one to another existing folder is `ChannelTaken`, and `{folder,
 /// channel}` is appended, with `workspace` only when it is not the file's and `mail_after = floor` when the file is
 /// delivering, its channel listed. A channel whose mapping the edit dropped and that no mapping holds
-/// after it leaves `channels`. Ignored mappings and every other key stay; comments and key order do not. The result is
-/// what the load admits, or the edit is refused with its code.
+/// after it leaves `channels`. For a session (`Pairer::Session`) the folder's own mapping is never replaced by a different
+/// pairing (`FolderPaired`) and a channel any other mapping holds, a gone folder's included, is `ChannelTaken`; the first
+/// refusal met in the file's order is the answer. Ignored mappings and every other key stay; comments and key order do not.
+/// The result is what the load admits, or the edit is refused with its code.
 pub fn pair(
     text: &str,
     folder: &str,
     target: Option<(&str, &str)>,
     floor: Option<Ts>,
     canon: Canon,
+    by: Pairer,
 ) -> Result<Option<String>, PairError> {
     let config = Config::parse(text, canon)?;
     if target.is_some_and(|(w, c)| !is_slack_id(w) || !is_slack_id(c)) {
@@ -708,8 +722,11 @@ pub fn pair(
         if own && target == Some((in_workspace.as_str(), c.as_str())) {
             return Ok(None);
         }
+        if own && target.is_some() && by == Pairer::Session {
+            return Err(PairError::FolderPaired(in_workspace, c));
+        }
         if own || channel == Some(c.as_str()) {
-            if !own && canon(&f).is_some() {
+            if !own && (canon(&f).is_some() || by == Pairer::Session) {
                 return Err(PairError::ChannelTaken);
             }
             dropped.push(c);

@@ -1,6 +1,6 @@
 # sot-fe's reply in the row's channel: `chat post`, one `chat.post` (or, with --file, one `chat.post_file`) of kind `row`
 # into the current thread; `chat delete`, one `chat.delete` of a message the hub's Slack app posted there; and
-# `chat unpair`, one `chat.row_pair` that removes the channel of a project folder.
+# `chat pair` and `chat unpair`, one `chat.row_pair` that pairs a project folder with a channel or removes its channel.
 # Sourced by sot-fe; defines functions only.
 
 # The row's own handle, as comm-context.sh gives it ("" when the session has not joined). In its own subshell, never
@@ -251,30 +251,52 @@ _chat_deleted() {
     esac
 }
 
-# $1=a session as typed: `.` for the row this session runs in, else another row's slug or id. Unpairs that row's project
-# folder from its Slack channel: ONE `chat.row_pair` with a null channel, never sent again. The request carries who asks (this
-# session's row and handle, checked by the daemon). Exits 0 with `unpaired <folder> from <chan> in <at>` or `unchanged: <folder>
-# has no channel`; 2 when nothing was changed; 3 when it may have been (no answer, unknown).
-send_chat_unpair() {
-    local session="$1" row req
+# $1=pair|unpair, $2=a session as typed (`.` for the row this session runs in, else another row's slug or id), $3=the channel as
+# typed (pair), $4=a Slack workspace id or "". Pairs that row's project folder with a channel, or unpairs it: ONE
+# `chat.row_pair`, never sent again. The request carries who asks (this session's row and handle, checked by the daemon).
+# Exits 0 with `paired <folder> with <chan> in <at>`, `unpaired <folder> from <chan> in <at>` or an `unchanged: ...` line;
+# 2 when nothing was changed; 3 when it may have been (no answer, unknown).
+send_chat_pair() {
+    local verb="$1" session="$2" channel="${3:-}" workspace="${4:-}" row req
+    CHAT_VERB="$verb"; CHAT_SESSION="$session"; CHAT_CHANNEL="$channel"; CHAT_WS="$workspace"
     _chat_identity
     row="$session"
     [ "$session" != . ] || row="$CHAT_ROW"
     _need_endpoint
-    # The session as typed and the handle are free text and reach jq on stdin, as JSON strings.
-    req="$({ sot_json_escape "$CHAT_ROW"; sot_json_escape "$CHAT_HANDLE"; sot_json_escape "$row"; } \
-        | jq -cn 'input as $by | input as $name | input as $row
-            | {v:1, id:3, kind:"req", op:"chat.row_pair", payload: {by:{row:$by, name:$name}, row:$row, channel:null}}')"
+    # The session as typed, the handle and the channel are free text and reach jq on stdin, as JSON strings.
+    req="$({ sot_json_escape "$CHAT_ROW"; sot_json_escape "$CHAT_HANDLE"; sot_json_escape "$row"; sot_json_escape "$channel"; sot_json_escape "$workspace"; } \
+        | jq -cn --arg verb "$verb" 'input as $by | input as $name | input as $row | input as $channel | input as $ws
+            | {v:1, id:3, kind:"req", op:"chat.row_pair",
+               payload: ({by:{row:$by, name:$name}, row:$row, channel:(if $verb == "pair" then $channel else null end)}
+                         + (if $ws == "" then {} else {workspace:$ws} end))}')"
     # Past a reload under the setup lock and its wait for a start (a pairing is idempotent, so a no-answer is exit 3).
     export SEND_TIMEOUT="${TIMEOUT:-150}"
-    _chat_paired "$(_chat_ask chat.row_pair "$req")" "$session"
+    _chat_paired "$(_chat_ask chat.row_pair "$req")"
 }
 
-# The pairing's reply $1 (empty for none) for the session $2 as typed, as `_chat_deleted` reads a delete's.
+# For a channel the Slack app cannot see or join: the workspace the request meant, its app's name and, when this computer
+# connects several workspaces, the list, from one `chat.workspaces` read. Into CHAT_AT, CHAT_APP and CHAT_MORE.
+_chat_workspaces_read() {
+    local resp ws
+    CHAT_AT="that Slack workspace"; CHAT_APP="your Slack app's name"; CHAT_MORE=""; CHAT_KNOWN=true
+    export SEND_TIMEOUT="${TIMEOUT:-10}"
+    resp="$(_chat_ask chat.workspaces '{"v":1,"id":4,"kind":"req","op":"chat.workspaces","payload":{}}')"
+    [ -n "$resp" ] || return 0
+    ws="${CHAT_WS:-$(jq -r '.payload.default // empty' <<<"$resp")}"
+    [ -n "$ws" ] || return 0
+    [ -z "$CHAT_WS" ] || [ "$(jq -r --arg ws "$ws" '[.payload.workspaces[]? | select(.id == $ws)] | length > 0' <<<"$resp")" = true ] || CHAT_KNOWN=false
+    CHAT_APP="$(jq -r --arg ws "$ws" '[.payload.workspaces[]? | select(.id == $ws) | .app_name // empty][0] // "your Slack app'"'"'s name"' <<<"$resp")"
+    CHAT_AT="$(jq -r --arg ws "$ws" '[.payload.workspaces[]? | select(.id == $ws) | .name // empty][0] as $n | if $n then "\($n) (\($ws))" else "Slack workspace \($ws)" end' <<<"$resp")"
+    CHAT_MORE="$(jq -r '.payload.workspaces // [] | if length > 1 then "; this computer connects these Slack workspaces: " + (map(.id + (if .name then " (\(.name))" else "" end)) | join(", ")) + ": name another with --slack-workspace <id>" else "" end' <<<"$resp")"
+}
+
+# The pairing's reply $1 (empty for none), for the verb and the session in CHAT_VERB and CHAT_SESSION, as `_chat_deleted`
+# reads a delete's. A refusal's words are the verb's own: they say only what that verb can meet.
 _chat_paired() {
-    local resp="$1" session="$2" err code say="$2" words
+    local resp="$1" err code say="$CHAT_SESSION" words chan at
     local maybe="the pairing may have been made; running the same command again is safe and says what is there now"
-    [ "$session" != . ] || say="this session's project"
+    local def='def at: if .workspace_tag then "\(.workspace_tag) (\(.workspace))" else "Slack workspace \(.workspace)" end; def chan: if .name then "#\(.name) (\(.channel))" else .channel end;'
+    [ "$CHAT_SESSION" != . ] || say="this session's project"
     if [ -z "$resp" ]; then
         echo "no answer: $maybe" >&2
         exit 3
@@ -283,7 +305,8 @@ _chat_paired() {
     if [ -n "$err" ]; then
         case "$err" in
             "unknown op"*)
-                echo "refused unsupported the computer that runs your sessions runs an older Ship of Tools, which lets only a person pair or unpair a project, in the Chat drawer's channel list (Ctrl+Shift+k, Cmd+Shift+k on a Mac); nothing was changed" >&2
+                words="pair"; [ "$CHAT_VERB" = pair ] || words="pair or unpair"
+                echo "refused unsupported the computer that runs your sessions runs an older Ship of Tools, which lets only a person $words a project, in the Chat drawer's channel list (Ctrl+Shift+k, Cmd+Shift+k on a Mac); nothing was changed" >&2
                 exit 2 ;;
         esac
         code="$(printf '%s' "$resp" | jq -r '.payload.code // "?"')"
@@ -292,20 +315,44 @@ _chat_paired() {
         case "$code" in
             stale_row)   words="no session of the computer that runs your sessions is $say, or its project folder cannot be reached (sot-fe version lists them as row <slug>)" ;;
             unmapped)    words="$say is the default session, which has no project folder" ;;
-            unavailable) words="no chat is set up on the computer that runs your sessions: it is not the hub for the chat, or no Slack workspace is connected" ;;
             not_saved)   words="the chat's settings file chat.toml could not be written, or is refused as it stands; the log of Ship of Tools' service says why (sotd log-path prints where it is)" ;;
-            bad_request) words="the request is not valid (this session's handle is not its row's, its row is no longer there, or the session is named in over 256 bytes)" ;;
+            channel_taken) words="another project has that channel, or had it and its folder is gone; only a person can give it to this project, in the Chat drawer's channel list (Ctrl+Shift+k, Cmd+Shift+k on a Mac)" ;;
+            already_paired)
+                chan="$(printf '%s' "$resp" | jq -r "$def"'.payload | if .channel then " \(chan) in \(at)" else "" end')"
+                words="$say already has${chan:- a channel}; to move it, run sot-fe chat unpair $CHAT_SESSION, then pair it again" ;;
+            no_such_channel)
+                _chat_workspaces_read
+                words="no channel $CHAT_CHANNEL that your Slack app can see in $CHAT_AT: a private channel shows only once the app is in it (in that channel in Slack, type /invite @$CHAT_APP), and in a workspace of over 1,000 channels name it by its ID$CHAT_MORE" ;;
+            not_in_channel)
+                _chat_workspaces_read
+                words="your Slack app is not in that channel and could not join it: in that channel in Slack, type /invite @$CHAT_APP, then run this again$CHAT_MORE" ;;
+            unavailable)
+                if [ "$CHAT_VERB" = pair ]; then
+                    words="the chat does not run on the computer that runs your sessions, or is stopped there"
+                    # A workspace the request named that the hub does not connect is not a chat that does not run.
+                    if [ -n "$CHAT_WS" ]; then
+                        _chat_workspaces_read
+                        [ "$CHAT_KNOWN" = true ] || words="the Slack workspace $CHAT_WS is not connected on the computer that runs your sessions$CHAT_MORE"
+                    fi
+                else words="no chat is set up on the computer that runs your sessions: it is not the hub for the chat, or no Slack workspace is connected"; fi ;;
+            bad_request)
+                if [ "$CHAT_VERB" = pair ]; then words="the request is not valid (this session's handle is not its row's, its row is no longer there, or the session or the channel is named in over 256 or 160 bytes, or with a control character)"
+                else words="the request is not valid (this session's handle is not its row's, its row is no longer there, or the session is named in over 256 bytes)"; fi ;;
             *)           words="$err" ;;
         esac
+        # A refusal after the app is in the channel: the pairing is unchanged, the app's membership may not be.
+        [ "$(printf '%s' "$resp" | jq -r '.payload.joined // false')" != true ] || words="$words; the Slack app is now in that channel, and nothing was paired"
         _chat_refused "$code" "$words"
     fi
     case "$(printf '%s' "$resp" | jq -r '.payload.outcome // empty')" in
+        paired)
+            printf '%s' "$resp" | jq -r "$def"'.payload | "paired \(.folder)" + (.pairing | if . then " with \(chan) in \(at)" + (if .delivers then "; new posts there reach that project'"'"'s session as mail" else "" end) else "" end)'
+            ;;
         unpaired)
-            printf '%s' "$resp" | jq -r '.payload | "unpaired \(.folder)" + (.pairing | if . then
-                " from \(if .name then "#\(.name) (\(.channel))" else .channel end) in \(if .workspace_tag then "\(.workspace_tag) (\(.workspace))" else "Slack workspace \(.workspace)" end)" else "" end)'
+            printf '%s' "$resp" | jq -r "$def"'.payload | "unpaired \(.folder)" + (.pairing | if . then " from \(chan) in \(at)" else "" end)'
             ;;
         unchanged)
-            printf '%s' "$resp" | jq -r '"unchanged: \(.payload.folder) has no channel"'
+            printf '%s' "$resp" | jq -r "$def"'.payload | .folder as $f | .pairing | if . then "unchanged: \($f) already has \(chan) in \(at)" else "unchanged: \($f) has no channel" end'
             ;;
         *)
             echo "unknown: $maybe" >&2

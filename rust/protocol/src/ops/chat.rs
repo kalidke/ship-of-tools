@@ -121,6 +121,9 @@ pub enum ChatCode {
     /// A `chat.delete` Slack refused with `cant_delete_message`: it would not let the hub's Slack app delete that message
     /// (the app's own, or not: the words claim no more).
     NotOwnMessage,
+    /// A session's `chat.row_pair` of a project that already has a channel: nothing was changed, and the refusal's body is
+    /// the folder's pairing (`ChatPairing`), so the session can say what it has and that it must unpair it first.
+    AlreadyPaired,
     Failed,
     #[serde(other)]
     Other,
@@ -155,6 +158,7 @@ impl ChatCode {
             ChatCode::OtherApp => "these Slack codes may belong to a different Slack app than the one this Slack workspace is connected with now; nothing was changed",
             ChatCode::MixedApps => "the \"App-Level Token\" belongs to a different Slack app than the \"Bot User OAuth Token\", so nothing was changed; all three codes must come from one Slack app",
             ChatCode::NotOwnMessage => "Slack would not let this project's Slack app delete that message (a person's or another app's message stays)",
+            ChatCode::AlreadyPaired => "the project already has a channel; unpair it first",
             ChatCode::Failed | ChatCode::Other => "the chat request failed",
         }
     }

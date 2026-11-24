@@ -14,8 +14,8 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use anyhow::Result;
-use sot_chat::api::{Api, ApiError, BotApp, Channel, Identified, JoinOutcome, TOKEN_REFUSALS};
-use sot_chat::config::{self, Config, ConfigError, PairError, Resolution, Secrets, Writers};
+use sot_chat::api::{self as chat_api, Api, ApiError, BotApp, Channel, Given, Identified, JoinOutcome, TOKEN_REFUSALS};
+use sot_chat::config::{self, Config, ConfigError, PairError, Pairer, Resolution, Secrets, Writers};
 use sot_chat::http::{Http, Secret};
 use sot_chat::service::{Service, APP_TOKEN_REFUSED, BOT_TOKEN_REFUSED, WRONG_APP};
 use sot_chat::socket::SocketError;
@@ -385,7 +385,7 @@ async fn paired(payload: serde_json::Value, chat: &Arc<Chat>, rows: &Workspaces,
         in_channel(&service, channel.as_str()).await?;
     }
     let target = req.channel.as_ref().map(|c| (workspace.clone(), c.as_str().to_string()));
-    edit_and_reload(chat, rows, &req.row, fact.canonical.to_string_lossy().into_owned(), target, Some(&workspace), "window").await?;
+    edit_and_reload(chat, rows, &req.row, fact.canonical.to_string_lossy().into_owned(), target, Some(&workspace), &Asker { who: "window", by: Pairer::Window }).await.map_err(|r| r.code)?;
     Ok(())
 }
 
@@ -394,10 +394,18 @@ async fn paired(payload: serde_json::Value, chat: &Arc<Chat>, rows: &Workspaces,
 struct Edited {
     changed: bool,
     before: Option<ChatPairing>,
+    /// The file the edit wrote delivers mail, so a new mapping in it does.
+    delivering: bool,
+}
+
+/// Who asks a pairing: the name its log line gives (`window`, or `session <handle> (row <id>)`) and what it may undo.
+struct Asker<'a> {
+    who: &'a str,
+    by: Pairer,
 }
 
 /// The one pairing core, window's and session's alike: under the setup lock, the edit and write of `chat.toml` ([`save`])
-/// and, only when the file changed, one info line naming `who` (`window`, or `session <handle> (row <id>)`) and the reload.
+/// and, only when the file changed, one info line naming who asked and the reload.
 /// `wait_on` is the workspace the reply waits for; none means the workspace the folder's old mapping named. The caller's
 /// checks and Slack calls come before the lock, so a slow one never holds up another's setup.
 async fn edit_and_reload(
@@ -407,13 +415,13 @@ async fn edit_and_reload(
     folder: String,
     target: Option<(String, String)>,
     wait_on: Option<&str>,
-    who: &str,
-) -> Result<Edited, ChatCode> {
+    asker: &Asker<'_>,
+) -> Result<Edited, Refused> {
     let setup = chat.setup().await;
-    let (env, to) = (chat.env.clone(), target.clone());
-    let saved = tokio::task::spawn_blocking(move || save(&env, &folder, to.as_ref().map(|(w, c)| (w.as_str(), c.as_str())))).await;
-    let (changed, before) = saved.unwrap_or(Err(ChatCode::Failed))?;
-    let before = pairing_of(chat, &before);
+    let (env, to, by) = (chat.env.clone(), target.clone(), asker.by);
+    let saved = tokio::task::spawn_blocking(move || save(&env, &folder, to.as_ref().map(|(w, c)| (w.as_str(), c.as_str())), by)).await;
+    let (changed, saved) = saved.unwrap_or(Err(ChatCode::Failed.into()))?;
+    let (before, delivering) = (pairing_of(chat, &saved.before), saved.delivering);
     if changed {
         let (workspace, channel) = match (&target, &before) {
             (Some((w, c)), _) => (w.as_str(), c.as_str()),
@@ -422,11 +430,11 @@ async fn edit_and_reload(
         };
         let outcome = if target.is_some() { "paired" } else { "unpaired" };
         // Every field is a quoted, escaped string: text a client chose (a row as typed) never ends or forges a line.
-        tracing::info!(by = who, row, workspace, channel, outcome, "project chat: a pairing changed");
+        tracing::info!(by = asker.who, row, workspace, channel, outcome, "project chat: a pairing changed");
         let on = wait_on.map(str::to_string).or_else(|| before.as_ref().map(|b| b.workspace.clone())).or_else(|| chat.default_workspace());
         chat.reload_for(&setup, rows, on.as_deref().unwrap_or_default()).await;
     }
-    Ok(Edited { changed, before })
+    Ok(Edited { changed, before, delivering })
 }
 
 /// The pairing a resolution holds as the wire tells it, as `chat.resolve` does: the workspace's short name, the channel's name
@@ -438,12 +446,28 @@ fn pairing_of(chat: &Arc<Chat>, resolution: &Resolution) -> Option<ChatPairing> 
     Some(ChatPairing { workspace: workspace.clone(), workspace_tag: chat.tag_of(workspace), channel: ChatChannel::try_from(channel.clone()).ok()?, name, delivers })
 }
 
-/// `chat.row_pair`: a session unpairs the folder of any row of this daemon (named by id or slug), through the same core as
-/// the window's pairing. In order, each refusal before anything is read past it: `by` (its handle bound to its row, as a
-/// row's post's is; attribution among one account's programs, not a security boundary) and a null `channel` (pairing a
-/// channel is not built yet), both `bad_request`; the target row (`stale_row`); a daemon that is not the hub
-/// (`unavailable`); the inert anchor (`unmapped`). No running service is needed, since an unpairing calls no Slack. Every
-/// changed pairing is logged by the core, and every refusal here in one line with who asked and its code, never a path.
+/// A refusal: its code, and the body a reader of that code needs (`already_paired`'s pairing).
+struct Refused {
+    code: ChatCode,
+    body: Option<serde_json::Value>,
+}
+
+impl From<ChatCode> for Refused {
+    fn from(code: ChatCode) -> Refused {
+        Refused { code, body: None }
+    }
+}
+
+/// `chat.row_pair`: a session pairs the folder of any row of this daemon (named by id or slug) with a channel (given by its
+/// id, in the request's workspace, absent `chat.toml`'s), or, with no channel, unpairs it, through the same core
+/// as the window's pairing. In order, each refusal before anything is read past it: `by` (its handle bound to its row, as a
+/// row's post's is; attribution among one account's programs, not a security boundary), `bad_request`; the target row
+/// (`stale_row`); a daemon that is not the hub, or holds no `chat.toml` (`unavailable`); the inert anchor (`unmapped`). An
+/// unpairing needs no running service, since it calls no Slack; a pairing needs its workspace's (`unavailable`), and a
+/// channel that is not an id is `bad_request` (a name is not looked up yet). A dry run of the edit refuses before any join
+/// (`already_paired`, `channel_taken`) or answers `unchanged`, and only then is the channel joined, if need be, and the edit
+/// made. Every changed pairing is logged by the core, and every refusal here in one line with who asked and its code, never a
+/// path or a channel name.
 pub(crate) async fn row_pair(req_id: u64, payload: serde_json::Value, chat: &Arc<Chat>, rows: &Workspaces) -> Result<HandlerOutput> {
     const NAME: &str = op::CHAT_ROW_PAIR;
     let req = match decode::<ChatRowPairReq>(payload) {
@@ -454,42 +478,84 @@ pub(crate) async fn row_pair(req_id: u64, payload: serde_json::Value, chat: &Arc
         }
     };
     let who = format!("session {} (row {})", req.by.name, req.by.row);
-    match row_paired(&req, &who, chat, rows).await {
+    match row_paired(&req, &Asker { who: &who, by: Pairer::Session }, chat, rows).await {
         Ok(res) => reply(req_id, NAME, &res),
-        Err(code) => {
+        Err(Refused { code, mut body }) => {
             tracing::info!(by = who.as_str(), row = req.row.as_str(), workspace = ?req.workspace, ?code, "project chat: a session's pairing was refused");
-            Ok(refuse(req_id, NAME, code))
+            // The pairing the text holds, as the wire tells it, with the workspace's short name and the channel's cached name.
+            let held = body.as_ref().filter(|_| code == ChatCode::AlreadyPaired).and_then(|b| Some(Resolution::Mapped { workspace: b["workspace"].as_str()?.into(), channel: b["channel"].as_str()?.into(), mail_after: None }));
+            if let (Some(p), Some(b)) = (held.and_then(|h| pairing_of(chat, &h)).and_then(|p| serde_json::to_value(p).ok()), body.as_mut().and_then(|b| b.as_object_mut())) {
+                b.extend(p.as_object().cloned().unwrap_or_default());
+            }
+            match body {
+                Some(body) => refuse_with(req_id, NAME, code, &body),
+                None => Ok(refuse(req_id, NAME, code)),
+            }
         }
     }
 }
 
-async fn row_paired(req: &ChatRowPairReq, who: &str, chat: &Arc<Chat>, rows: &Workspaces) -> Result<ChatRowPairRes, ChatCode> {
+async fn row_paired(req: &ChatRowPairReq, asker: &Asker<'_>, chat: &Arc<Chat>, rows: &Workspaces) -> Result<ChatRowPairRes, Refused> {
     // The wire refuses an empty handle, which a row with none would otherwise bind.
-    if !is_bound(&req.by.name, &req.by.row, rows) || req.channel.is_some() {
-        return Err(ChatCode::BadRequest);
+    if !is_bound(&req.by.name, &req.by.row, rows) {
+        return Err(ChatCode::BadRequest.into());
     }
     // A slug names a row, but only its id is the registry's current entry (`current_row`).
     let id = rows.resolve(Some(&req.row)).ok_or(ChatCode::StaleRow)?.workspace_id.clone();
     // No chat configuration is held: not the hub at its boot, or no `chat.toml` (a connect makes one). Nothing is read or written.
     if matches!(chat.config().as_ref(), None | Some(Err(ConfigError::Missing))) {
-        return Err(ChatCode::Unavailable);
+        return Err(ChatCode::Unavailable.into());
     }
     let (held, at) = (rows.clone(), id.clone());
     let fact = tokio::task::spawn_blocking(move || current_row(&held, &at)).await.unwrap_or(None).ok_or(ChatCode::StaleRow)?;
     if fact.inert {
-        return Err(ChatCode::Unmapped);
+        return Err(ChatCode::Unmapped.into());
     }
     let folder = fact.canonical.to_string_lossy().into_owned();
-    let edited = edit_and_reload(chat, rows, &id, folder.clone(), None, None, who).await?;
-    let outcome = if edited.changed { ChatPairOutcome::Unpaired } else { ChatPairOutcome::Unchanged };
-    Ok(ChatRowPairRes { outcome, folder, pairing: edited.before.filter(|_| edited.changed) })
+    let Some(channel) = req.channel.as_deref() else {
+        let edited = edit_and_reload(chat, rows, &id, folder.clone(), None, None, asker).await?;
+        let outcome = if edited.changed { ChatPairOutcome::Unpaired } else { ChatPairOutcome::Unchanged };
+        return Ok(ChatRowPairRes { outcome, folder, pairing: edited.before.filter(|_| edited.changed) });
+    };
+    let workspace = req.workspace.clone().or_else(|| chat.default_workspace()).ok_or(ChatCode::Unavailable)?;
+    let service = chat.service_of(&workspace).ok_or(ChatCode::Unavailable)?;
+    // A channel is given by its id; a name is not looked up yet.
+    let Given::Id(channel) = chat_api::given(channel) else { return Err(ChatCode::BadRequest.into()) };
+    let (channel, name) = (channel.to_string(), None::<String>);
+    // A dry run of the edit before any join, so a pairing that is refused or changes nothing joins nothing.
+    let (env, at, target) = (chat.env.clone(), folder.clone(), (workspace.clone(), channel.clone()));
+    let dry = tokio::task::spawn_blocking(move || edit(&env, &at, Some((&target.0, &target.1)), Pairer::Session)).await;
+    let dry = dry.unwrap_or(Err(ChatCode::Failed.into()))?;
+    if dry.edited.is_none() {
+        let pairing = pairing_of(chat, &dry.before).map(|p| ChatPairing { name: name.or(p.name), ..p });
+        return Ok(ChatRowPairRes { outcome: ChatPairOutcome::Unchanged, folder, pairing });
+    }
+    let name = in_channel(&service, &channel).await?;
+    // Between the join and the lock a window's pairing or a hand edit may land: the edit under the lock is the session's own.
+    sot_platform::hold_point_async!("chat.pair.joined", Arc::as_ptr(chat) as usize);
+    let target = Some((workspace.clone(), channel.clone()));
+    let edited = edit_and_reload(chat, rows, &id, folder.clone(), target, Some(&workspace), asker).await.map_err(joined)?;
+    // The reply is what the edit wrote, not a second read: the pairing was written, whatever became of the row since.
+    let delivers = edited.delivering && chat.status_of(&workspace) == Status::Running;
+    let channel = ChatChannel::try_from(channel).map_err(|_| ChatCode::BadRequest)?;
+    let pairing = ChatPairing { workspace_tag: chat.tag_of(&workspace), workspace, channel, name: Some(name), delivers };
+    let outcome = if edited.changed { ChatPairOutcome::Paired } else { ChatPairOutcome::Unchanged };
+    Ok(ChatRowPairRes { outcome, folder, pairing: Some(pairing) })
+}
+
+/// A refusal after the app is in the channel (it joined, or already was): its body says so, since the pairing is unchanged
+/// but the app's membership may not be.
+fn joined(r: Refused) -> Refused {
+    let mut body = r.body.unwrap_or_else(|| serde_json::json!({}));
+    body["joined"] = true.into();
+    Refused { code: r.code, body: Some(body) }
 }
 
 /// That the app is in the channel, from one read of its facts: a member passes, a private channel it is not in is
 /// `not_in_channel` unjoined, and a public one is joined once. A join Slack refused is `not_in_channel` (its code is
 /// logged: `missing_scope` is an app made before the manifest carried `channels:join`); a join with no usable
-/// acknowledgement is settled by reading the channel again, never sent twice.
-async fn in_channel(service: &Arc<Service>, channel: &str) -> Result<(), ChatCode> {
+/// acknowledgement is settled by reading the channel again, never sent twice. The channel's name, as its facts give it.
+async fn in_channel(service: &Arc<Service>, channel: &str) -> Result<String, ChatCode> {
     let api = service.api().map_err(|_| ChatCode::Unavailable)?;
     // Slack's `channel_not_found` to this workspace's app: the channel is another workspace's, or none (PS9).
     let facts = api.channel(channel).await.map_err(|e| match &e {
@@ -497,7 +563,7 @@ async fn in_channel(service: &Arc<Service>, channel: &str) -> Result<(), ChatCod
         _ => code_of(&e),
     })?;
     if facts.member {
-        return Ok(());
+        return Ok(facts.name);
     }
     if facts.private {
         return Err(ChatCode::NotInChannel);
@@ -510,16 +576,16 @@ async fn in_channel(service: &Arc<Service>, channel: &str) -> Result<(), ChatCod
         }
         JoinOutcome::Unknown => api.channel(channel).await.map_err(|e| code_of(&e))?.member,
     };
-    if joined { Ok(()) } else { Err(ChatCode::NotInChannel) }
+    if joined { Ok(facts.name) } else { Err(ChatCode::NotInChannel) }
 }
 
-/// The edit and its write, run with the setup lock held: whether the file changed, and the mapping the folder had in the
-/// text edited.
-fn save(env: &Env, folder: &str, target: Option<(&str, &str)>) -> Result<(bool, Resolution), ChatCode> {
-    let edit = edit(env, folder, target)?;
-    let Some(text) = edit.edited else { return Ok((false, edit.before)) };
-    config::write_config(&edit.dir, &text, Writers::platform()).map_err(|e| not_saved(&e.kind()))?;
-    Ok((true, edit.before))
+/// The edit and its write, run with the setup lock held: whether the file changed, and what the edit found.
+fn save(env: &Env, folder: &str, target: Option<(&str, &str)>, by: Pairer) -> Result<(bool, Edit), Refused> {
+    let edit = edit(env, folder, target, by)?;
+    if let Some(text) = &edit.edited {
+        config::write_config(&edit.dir, text, Writers::platform()).map_err(|e| not_saved(&e.kind()))?;
+    }
+    Ok((edit.edited.is_some(), edit))
 }
 
 fn not_saved(why: &dyn std::fmt::Debug) -> ChatCode {
@@ -527,12 +593,13 @@ fn not_saved(why: &dyn std::fmt::Debug) -> ChatCode {
     ChatCode::NotSaved
 }
 
-/// What [`edit`] made: the configuration folder, the text of `chat.toml` after the edit (none when it changes nothing), and
-/// the folder's mapping in the text before it.
+/// What [`edit`] made: the configuration folder, the text of `chat.toml` after the edit (none when it changes nothing), the
+/// folder's mapping in the text before it, and whether the file delivers mail.
 struct Edit {
     dir: std::path::PathBuf,
     edited: Option<String>,
     before: Resolution,
+    delivering: bool,
 }
 
 /// The edit, with no write. The hub fact is asked again first, so a hub deposed since its boot writes nothing in the minute
@@ -540,17 +607,19 @@ struct Edit {
 /// which is the boot's alone), so the text edited is the text the reload will load, a hand edit made since the start
 /// included. A text the load refuses is `not_saved` and never rewritten; a pairing that changes nothing is `None`, and a
 /// new mapping in a delivering file takes the clock's now for its floor.
-fn edit(env: &Env, folder: &str, target: Option<(&str, &str)>) -> Result<Edit, ChatCode> {
+fn edit(env: &Env, folder: &str, target: Option<(&str, &str)>, by: Pairer) -> Result<Edit, Refused> {
     if !is_hub(env) {
-        return Err(ChatCode::Unavailable);
+        return Err(ChatCode::Unavailable.into());
     }
     let dir = config::config_dir(env).ok_or_else(|| not_saved(&"no config folder"))?;
     let text = config::read_file(&dir.join(config::CONFIG_FILE)).map_err(|e| not_saved(&e.kind()))?;
-    let before = config::resolve(&Config::parse(&text, &canon_of), folder);
-    match config::pair(&text, folder, target, Some(now()), &canon_of) {
-        Ok(edited) => Ok(Edit { dir, edited, before }),
-        Err(PairError::ChannelTaken) => Err(ChatCode::ChannelTaken),
-        Err(PairError::Config(e)) => Err(not_saved(&e)),
+    let loaded = Config::parse(&text, &canon_of);
+    let (before, delivering) = (config::resolve(&loaded, folder), loaded.as_ref().is_ok_and(|c| c.mail_after().is_some()));
+    match config::pair(&text, folder, target, Some(now()), &canon_of, by) {
+        Ok(edited) => Ok(Edit { dir, edited, before, delivering }),
+        Err(PairError::ChannelTaken) => Err(ChatCode::ChannelTaken.into()),
+        Err(PairError::FolderPaired(workspace, channel)) => Err(Refused { code: ChatCode::AlreadyPaired, body: Some(serde_json::json!({"workspace": workspace, "channel": channel})) }),
+        Err(PairError::Config(e)) => Err(not_saved(&e).into()),
     }
 }
 

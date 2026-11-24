@@ -33,6 +33,7 @@
 #   sot-fe chat post [--thread <ts>] (<text> | --stdin) [--timeout <s>]
 #   sot-fe chat post [--thread <ts>] --file <path> [<comment> | --stdin] [--timeout <s>]
 #   sot-fe chat delete <ts> [--timeout <s>]
+#   sot-fe chat pair <session> <channel> [--slack-workspace <id>] [--timeout <s>]
 #   sot-fe chat unpair <session> [--timeout <s>]
 #
 #   preview  — preview <path> and expand the file tree to it. If the FE is
@@ -184,13 +185,18 @@
 #              own person has asked for it (the sot-chat-post skill says how). Prints `deleted <ts>` or `gone <ts>: ...`
 #              and exits 0; 1 for usage; 2 with `refused <code> <words>` or `limited, ...` (nothing changed); 3 with
 #              `unknown: ...` or `no answer: ...` (the message may be deleted: run it again, which asks Slack again).
-#              `chat unpair <session>` removes the Slack channel of a project's folder, for this session's own project (`.`)
-#              or another session's (its slug as `version` lists it, `row <slug>`, or its id), through the same edit of
-#              the hub's chat.toml as the Chat drawer's channel list: ONE `chat.row_pair` naming this session's row and
-#              handle, never sent twice, waiting 150 s. Only when the person asked for it (the sot-chat-pair skill says
-#              how). Prints `unpaired <folder> from <channel> in <workspace>` or `unchanged: <folder> has no channel` and
-#              exits 0; 1 for usage; 2 with `refused <code> <words>` (nothing changed); 3 with `unknown: ...` or
-#              `no answer: ...` (it may have been made: run it again, which says what is there now).
+#              `chat pair <session> <channel>` pairs a project's folder with a Slack channel, `chat unpair <session>` removes
+#              the project's channel, each for this session's own project (`.`) or another session's (its slug as `version`
+#              lists it, `row <slug>`, or its id), through the same edit of the hub's chat.toml as the Chat drawer's channel
+#              list: ONE `chat.row_pair` naming this session's row and handle, never sent twice, waiting 150 s. <channel> is
+#              a channel's ID (`C...` or `G...`, the last part of its link in Slack; a name is not built yet); a channel of
+#              a Slack workspace other than the first is named with `--slack-workspace <id>`. A pair never moves a project
+#              that has a channel and never takes one another project has: it is refused, and a person does those in the
+#              Chat drawer's channel list. Only when the person asked for it (the sot-chat-pair skill says how). Prints
+#              `paired <folder> with <channel> in <workspace>` (`; new posts there reach that project's session as mail`
+#              when they will), `unpaired <folder> from <channel> in <workspace>` or `unchanged: ...` and exits 0; 1 for
+#              usage; 2 with `refused <code> <words>` (nothing changed); 3 with `unknown: ...` or `no answer: ...` (it may
+#              have been made: run it again, which says what is there now).
 #   version  — what build the daemon at --endpoint is, plus every attached
 #              frontend and every capsule row's own PHASE, verbatim (ADR
 #              0030 §8 decision 31, ADR 0043 decision 31). One
@@ -285,6 +291,7 @@ FILE_SET=false
 TIMEOUT=""     # repl: wall-clock budget in seconds
 CODE=""        # repl eval: code (else read stdin)
 READ_STDIN=false
+SLACK_WS=""      # chat pair: the Slack workspace of the channel
 ORIGIN=""      # repl: label shown in the user's drawer (default "session"); type: the controller id (default: the caller's comm handle, else "sot-fe")
 ROI=""         # preview: source-px rect "x,y,w,h" to frame the image at (ADR-0022 vocab)
 CAPTION=""     # preview/reveal: figure caption rendered under the image
@@ -329,6 +336,10 @@ while [ $# -gt 0 ]; do
                     [ $# -ge 2 ] || { echo "ERROR: --file expects a path" >&2; exit 1; }
                     FILE="$2"; FILE_SET=true; shift 2 ;;
         --stdin)    READ_STDIN=true; shift ;;
+        --slack-workspace)
+                    [ "$CMD" = chat ] || { echo "ERROR: --slack-workspace is only for chat pair" >&2; exit 1; }
+                    [[ "${2:-}" =~ ^[A-Z][A-Z0-9]{0,31}$ ]] || { echo "ERROR: --slack-workspace expects a Slack workspace ID like T0123ABCD, got '${2:-}'" >&2; exit 1; }
+                    SLACK_WS="$2"; shift 2 ;;
         --origin)   ORIGIN="$2"; shift 2 ;;
         --enter)    ENTER=true; shift ;;
         --roi)      ROI="$2"; shift 2 ;;
@@ -571,6 +582,7 @@ case "$CMD" in
         send_workspace_reauth "$ACCOUNT"
         ;;
     chat)
+        [ -z "$SLACK_WS" ] || [ "${POS[0]:-}" = pair ] || { echo "ERROR: --slack-workspace is only for chat pair" >&2; exit 1; }
         if [ "${POS[0]:-}" = delete ]; then
             # Only a message's ts: no thread, file or text, and one argument, which must be a ts.
             if [ "${#POS[@]}" -ne 2 ] || [ -n "$THREAD" ] || [ "$FILE_SET" = true ] || [ "$READ_STDIN" = true ]; then
@@ -580,15 +592,21 @@ case "$CMD" in
             send_chat_delete "${POS[1]}"
             exit
         fi
-        if [ "${POS[0]:-}" = unpair ]; then
+        if [ "${POS[0]:-}" = pair ] || [ "${POS[0]:-}" = unpair ]; then
             if [ -n "$THREAD" ] || [ "$FILE_SET" = true ] || [ "$READ_STDIN" = true ]; then
                 echo "ERROR: --thread, --file and --stdin are only for chat post" >&2; exit 1
             fi
-            [ "${#POS[@]}" -eq 2 ] || { echo "usage: sot-fe chat unpair <session> [--timeout <s>]  — <session> is . for this session's own project, or a row's slug or id" >&2; exit 1; }
-            send_chat_unpair "${POS[1]}"
+            if [ "${POS[0]}" = pair ]; then
+                [ "${#POS[@]}" -eq 3 ] || { echo "usage: sot-fe chat pair <session> <channel> [--slack-workspace <id>] [--timeout <s>]  — <session> is . for this session's own project, or a row's slug or id; <channel> is its ID" >&2; exit 1; }
+                [[ "${POS[2]}" =~ ^[CG][A-Z0-9]{0,31}$ ]] || { echo "usage: sot-fe chat pair <session> <channel>  — '${POS[2]}' is not a channel ID like C0123ABCD (the last part of the channel's link in Slack); naming a channel by its name is not built yet" >&2; exit 1; }
+                send_chat_pair pair "${POS[1]}" "${POS[2]}" "$SLACK_WS"
+            else
+                [ "${#POS[@]}" -eq 2 ] || { echo "usage: sot-fe chat unpair <session> [--timeout <s>]  — <session> is . for this session's own project, or a row's slug or id" >&2; exit 1; }
+                send_chat_pair unpair "${POS[1]}"
+            fi
             exit
         fi
-        [ "${POS[0]:-}" = post ] || { echo "usage: sot-fe chat post [--thread <ts>] (<text> | --stdin) [--timeout <s>]  or  sot-fe chat post [--thread <ts>] --file <path> [<comment> | --stdin] [--timeout <s>]  or  sot-fe chat delete <ts> [--timeout <s>]  or  sot-fe chat unpair <session> [--timeout <s>]" >&2; exit 1; }
+        [ "${POS[0]:-}" = post ] || { echo "usage: sot-fe chat post [--thread <ts>] (<text> | --stdin) [--timeout <s>]  or  sot-fe chat post [--thread <ts>] --file <path> [<comment> | --stdin] [--timeout <s>]  or  sot-fe chat delete <ts> [--timeout <s>]  or  sot-fe chat pair <session> <channel> [--slack-workspace <id>] [--timeout <s>]  or  sot-fe chat unpair <session> [--timeout <s>]" >&2; exit 1; }
         if [ "$FILE_SET" = true ]; then
             [ -n "$FILE" ] || { echo "usage: sot-fe chat post [--thread <ts>] --file <path> [<comment> | --stdin] [--timeout <s>]  — name the file" >&2; exit 1; }
             if [ "$READ_STDIN" = true ]; then

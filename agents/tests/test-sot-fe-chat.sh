@@ -655,6 +655,94 @@ case_no_answer_to_a_pairing_is_one_request_and_exit_3() {
         || { echo "rc=$CH_RC requests=$r out=$CH_OUT"; return 1; }
 }
 
+# --- chat pair -------------------------------------------------------------
+
+# The row_pair answered with the JSON object $1; `pair <session> <channel>` run as the row, the handle alpha-h.
+pair_answered() {
+    stage_reply chat.row_pair "{\"v\":1,\"id\":3,\"kind\":\"res\",\"op\":\"chat.row_pair\",\"payload\":$1}"
+    start_stub_daemon
+    CH_VERB=pair run_chat "" SOT_WORKSPACE_ID=$ROW STUB_NAME=alpha-h -- "${PAIR_SESSION:-alpha}" "${PAIR_CHANNEL:-C0AAAA}" ${PAIR_FLAGS:-}
+}
+
+case_pair_sends_one_row_pair_with_the_channel_as_given_and_prints_the_pairing() {
+    local bad="" body r rs by_row by_name row ch ws keys
+    for body in '{"workspace":"T0AAAA","workspace_tag":"lab","channel":"C0AAAA","name":"general","delivers":true}|paired /p/alpha with #general (C0AAAA) in lab (T0AAAA); new posts there reach that project'"'"'s session as mail' \
+                '{"workspace":"T0AAAA","channel":"C0AAAA"}|paired /p/alpha with C0AAAA in Slack workspace T0AAAA'; do
+        for flags in "" "--slack-workspace T0BBBB"; do
+            for session in alpha .; do
+                PAIR_SESSION="$session" PAIR_FLAGS="$flags" pair_answered "{\"outcome\":\"paired\",\"folder\":\"/p/alpha\",\"pairing\":${body%%|*}}"
+                r="$(sent chat.row_pair)"; rs="$(sent chat.resolve)"
+                by_row="$(paired_field .payload.by.row)"; by_name="$(paired_field .payload.by.name)"; row="$(paired_field .payload.row)"
+                ch="$(paired_field '.payload.channel')"; ws="$(paired_field '.payload.workspace // "none"')"; keys="$(paired_field '.payload | keys | join(",")')"
+                stop_stub_daemon
+                local want_row="$session" want_ws=none want_keys="by,channel,row"
+                [ "$session" != . ] || want_row="$ROW"
+                [ -z "$flags" ] || { want_ws=T0BBBB; want_keys="by,channel,row,workspace"; }
+                { [ "$CH_RC" = 0 ] && [ "$CH_OUT" = "${body#*|}" ] && [ "$r" = 1 ] && [ "$rs" = 0 ] && [ "$by_row" = "$ROW" ] && [ "$by_name" = alpha-h ] \
+                    && [ "$row" = "$want_row" ] && [ "$ch" = C0AAAA ] && [ "$ws" = "$want_ws" ] && [ "$keys" = "$want_keys" ]; } \
+                    || bad="$bad [$session '$flags': rc=$CH_RC out=$CH_OUT requests=$r resolves=$rs by=$by_row/$by_name row=$row channel=$ch ws=$ws keys=$keys]"
+            done
+        done
+    done
+    PAIR_SESSION=alpha PAIR_FLAGS="" pair_answered '{"outcome":"unchanged","folder":"/p/alpha","pairing":{"workspace":"T0AAAA","workspace_tag":"lab","channel":"C0AAAA","name":"general"}}'
+    stop_stub_daemon
+    { [ "$CH_RC" = 0 ] && [ "$CH_OUT" = "unchanged: /p/alpha already has #general (C0AAAA) in lab (T0AAAA)" ]; } || bad="$bad [unchanged: rc=$CH_RC out=$CH_OUT]"
+    [ -z "$bad" ] || { echo "$bad"; return 1; }
+}
+
+case_each_pair_refusal_has_its_words_and_exit_code() {
+    local bad="" want_rc want_text payload session
+    while IFS='|' read -r session payload want_rc want_text; do
+        PAIR_SESSION="$session" pair_answered "$payload"
+        stop_stub_daemon
+        { [ "$CH_RC" = "$want_rc" ] && [ "$CH_OUT" = "$want_text" ]; } \
+            || bad="$bad [$session $payload: rc=$CH_RC out=$CH_OUT]"
+    done <<'EOF2'
+alpha|{"error":"x","code":"already_paired","workspace":"T0AAAA","workspace_tag":"lab","channel":"C0AAAA","name":"general"}|2|refused already_paired alpha already has #general (C0AAAA) in lab (T0AAAA); to move it, run sot-fe chat unpair alpha, then pair it again
+.|{"error":"x","code":"already_paired","workspace":"T0AAAA","channel":"C0AAAA"}|2|refused already_paired this session's project already has C0AAAA in Slack workspace T0AAAA; to move it, run sot-fe chat unpair ., then pair it again
+alpha|{"error":"x","code":"already_paired"}|2|refused already_paired alpha already has a channel; to move it, run sot-fe chat unpair alpha, then pair it again
+alpha|{"error":"x","code":"channel_taken","joined":true}|2|refused channel_taken another project has that channel, or had it and its folder is gone; only a person can give it to this project, in the Chat drawer's channel list (Ctrl+Shift+k, Cmd+Shift+k on a Mac); the Slack app is now in that channel, and nothing was paired
+alpha|{"error":"x","code":"channel_taken"}|2|refused channel_taken another project has that channel, or had it and its folder is gone; only a person can give it to this project, in the Chat drawer's channel list (Ctrl+Shift+k, Cmd+Shift+k on a Mac)
+alpha|{"error":"x","code":"stale_row"}|2|refused stale_row no session of the computer that runs your sessions is alpha, or its project folder cannot be reached (sot-fe version lists them as row <slug>)
+alpha|{"error":"x","code":"unmapped"}|2|refused unmapped alpha is the default session, which has no project folder
+alpha|{"error":"x","code":"unavailable"}|2|refused unavailable the chat does not run on the computer that runs your sessions, or is stopped there
+alpha|{"error":"x","code":"not_saved"}|2|refused not_saved the chat's settings file chat.toml could not be written, or is refused as it stands; the log of Ship of Tools' service says why (sotd log-path prints where it is)
+alpha|{"error":"x","code":"bad_request"}|2|refused bad_request the request is not valid (this session's handle is not its row's, its row is no longer there, or the session or the channel is named in over 256 or 160 bytes, or with a control character)
+alpha|{"error":"the chat is busy","code":"busy"}|2|refused busy the chat is busy
+alpha|{"error":"Slack asked for a pause","code":"limited"}|2|refused limited Slack asked for a pause
+alpha|{"error":"the chat request failed","code":"handler_error"}|3|unknown: the pairing may have been made; running the same command again is safe and says what is there now
+alpha|{"error":"unknown op: chat.row_pair"}|2|refused unsupported the computer that runs your sessions runs an older Ship of Tools, which lets only a person pair a project, in the Chat drawer's channel list (Ctrl+Shift+k, Cmd+Shift+k on a Mac); nothing was changed
+EOF2
+    [ -z "$bad" ] || { echo "$bad"; return 1; }
+}
+
+# A channel the app cannot see or join: the workspace and the app are read once from chat.workspaces, and a hub of several
+# workspaces lists them. Without that read the words still say what is true.
+case_a_channel_not_found_on_a_hub_of_several_lists_the_workspaces_and_the_app() {
+    local bad="" refusal flags body want w n
+    local two='{"v":1,"id":4,"kind":"res","op":"chat.workspaces","payload":{"default":"T0AAAA","workspaces":[{"id":"T0AAAA","name":"Alpha Lab","running":true,"app_name":"alpha-app"},{"id":"T0BBBB","name":"Beta Lab","running":true,"app_name":"beta-app"}]}}'
+    local one='{"v":1,"id":4,"kind":"res","op":"chat.workspaces","payload":{"default":"T0AAAA","workspaces":[{"id":"T0AAAA","running":true}]}}'
+    local more="; this computer connects these Slack workspaces: T0AAAA (Alpha Lab), T0BBBB (Beta Lab): name another with --slack-workspace <id>"
+    while IFS='|' read -r refusal flags w want; do
+        stage_reply chat.row_pair "{\"v\":1,\"id\":3,\"kind\":\"res\",\"op\":\"chat.row_pair\",\"payload\":{\"error\":\"x\",\"code\":\"$refusal\"}}"
+        case "$w" in two) stage_reply chat.workspaces "$two" ;; one) stage_reply chat.workspaces "$one" ;; esac
+        start_stub_daemon
+        CH_VERB=pair run_chat "" SOT_WORKSPACE_ID=$ROW STUB_NAME=alpha-h -- alpha C0AAAA $flags
+        n="$(sent chat.workspaces)"; stop_stub_daemon
+        want="${want//MORE/$more}"
+        { [ "$CH_RC" = 2 ] && [ "$CH_OUT" = "$want" ] && [ "$n" = 1 ]; } || bad="$bad [$refusal $flags $w: rc=$CH_RC reads=$n out=$CH_OUT]"
+    done <<'EOF2'
+no_such_channel||two|refused no_such_channel no channel C0AAAA that your Slack app can see in Alpha Lab (T0AAAA): a private channel shows only once the app is in it (in that channel in Slack, type /invite @alpha-app), and in a workspace of over 1,000 channels name it by its IDMORE
+no_such_channel|--slack-workspace T0BBBB|two|refused no_such_channel no channel C0AAAA that your Slack app can see in Beta Lab (T0BBBB): a private channel shows only once the app is in it (in that channel in Slack, type /invite @beta-app), and in a workspace of over 1,000 channels name it by its IDMORE
+not_in_channel||two|refused not_in_channel your Slack app is not in that channel and could not join it: in that channel in Slack, type /invite @alpha-app, then run this again; this computer connects these Slack workspaces: T0AAAA (Alpha Lab), T0BBBB (Beta Lab): name another with --slack-workspace <id>
+no_such_channel||one|refused no_such_channel no channel C0AAAA that your Slack app can see in Slack workspace T0AAAA: a private channel shows only once the app is in it (in that channel in Slack, type /invite @your Slack app's name), and in a workspace of over 1,000 channels name it by its ID
+unavailable|--slack-workspace T0ZZZZ|two|refused unavailable the Slack workspace T0ZZZZ is not connected on the computer that runs your sessionsMORE
+unavailable|--slack-workspace T0BBBB|two|refused unavailable the chat does not run on the computer that runs your sessions, or is stopped there
+not_in_channel||none|refused not_in_channel your Slack app is not in that channel and could not join it: in that channel in Slack, type /invite @your Slack app's name, then run this again
+EOF2
+    [ -z "$bad" ] || { echo "$bad"; return 1; }
+}
+
 # Outside a row or with no handle nothing is sent, and the post verb's flags, a missing or extra session and a flag
 # of the pair verb that is not built here are usage errors that send nothing.
 case_pair_verbs_refuse_the_post_flags() {
@@ -675,6 +763,18 @@ case_pair_verbs_refuse_the_post_flags() {
         CH_VERB=unpair run_chat "" SOT_WORKSPACE_ID=$ROW STUB_NAME=alpha-h -- $args
         [ "$CH_RC" = 1 ] || bad="$bad [$args: rc=$CH_RC out=$CH_OUT]"
     done
+    # The pair verb: the post flags, a missing or extra argument, and a workspace that is no id, each exit 1; the workspace
+    # flag is the pair verb's alone.
+    for args in "alpha general" "alpha #general" "alpha c0aaaa" "alpha C0AAAA --thread $TS" "alpha C0AAAA --stdin" "alpha C0AAAA --file x.png" "" "alpha" "alpha C0AAAA C0BBBB" \
+                "alpha C0AAAA --slack-workspace t0aaaa" "alpha C0AAAA --slack-workspace T0AAAA-X" "alpha C0AAAA --slack-workspace"; do
+        # shellcheck disable=SC2086
+        CH_VERB=pair run_chat "text" SOT_WORKSPACE_ID=$ROW STUB_NAME=alpha-h -- $args
+        [ "$CH_RC" = 1 ] || bad="$bad [pair $args: rc=$CH_RC out=$CH_OUT]"
+    done
+    CH_VERB=post run_chat "" SOT_WORKSPACE_ID=$ROW STUB_NAME=alpha-h -- hi --slack-workspace T0AAAA
+    { [ "$CH_RC" = 1 ] && contains "$CH_OUT" "--slack-workspace is only for chat pair"; } || bad="$bad [post --slack-workspace: rc=$CH_RC out=$CH_OUT]"
+    CH_VERB=pair run_chat "" SOT_WORKSPACE_ID=$ROW STUB_NAME=alpha-h -- alpha C0AAAA --slack-workspace bad
+    { [ "$CH_RC" = 1 ] && contains "$CH_OUT" "ERROR: --slack-workspace expects a Slack workspace ID like T0123ABCD, got 'bad'"; } || bad="$bad [bad workspace: rc=$CH_RC out=$CH_OUT]"
     n="$(sent_any)"; stop_stub_daemon
     [ -z "$bad" ] && [ "$n" = 0 ] || { echo "$bad sent=$n"; return 1; }
 }
@@ -711,6 +811,9 @@ check "an unpair is one chat.row_pair with the row, the handle and a null channe
 check "each unpair answer prints its words and exits with its code"                         case_each_unpair_answer_has_its_words_and_exit_code
 check "an older daemon's unknown op is refused as unsupported, with exit 2"                  case_an_older_daemon_is_refused_unsupported
 check "no answer to a pairing is one request, never two, and exit 3"                        case_no_answer_to_a_pairing_is_one_request_and_exit_3
+check "a pair is one chat.row_pair with the channel as given and the workspace when named, and prints the pairing" case_pair_sends_one_row_pair_with_the_channel_as_given_and_prints_the_pairing
+check "each pair refusal prints its words and exits with its code"                          case_each_pair_refusal_has_its_words_and_exit_code
+check "a channel not found lists the workspaces and the app from one chat.workspaces read" case_a_channel_not_found_on_a_hub_of_several_lists_the_workspaces_and_the_app
 check "the pairing verbs refuse the post flags and a missing row or handle, sending nothing" case_pair_verbs_refuse_the_post_flags
 
 echo ""

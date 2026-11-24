@@ -172,6 +172,19 @@ pub struct Channel {
     pub member: bool,
 }
 
+/// A channel as a session gives it: by its Slack id, or by its name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Given<'a> {
+    Id(&'a str),
+    Name(&'a str),
+}
+
+/// A channel's id is a Slack id that begins `C` (a channel) or `G` (a private one); anything else is a name, since Slack's
+/// names are lowercase and so never read as an id.
+pub fn given(s: &str) -> Given<'_> {
+    if crate::config::is_slack_id(s) && s.starts_with(['C', 'G']) { Given::Id(s) } else { Given::Name(s) }
+}
+
 /// The channels the bot can see, at most `MAX_LISTED`; `more` when Slack had a page left at the bound.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChannelList {

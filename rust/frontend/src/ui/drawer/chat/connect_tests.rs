@@ -1284,7 +1284,7 @@ fn no_project_word_reaches_a_screen() {
             | ChatCode::UserTokenRefused | ChatCode::NoUserToken | ChatCode::NotAMember | ChatCode::OtherWorkspace
             | ChatCode::NotInChannel | ChatCode::ChannelTaken | ChatCode::NotSaved | ChatCode::NotAFile | ChatCode::TooLarge
             | ChatCode::NotAnImage | ChatCode::TooManyWorkspaces | ChatCode::NoSuchChannel | ChatCode::OtherApp | ChatCode::MixedApps
-            | ChatCode::NotOwnMessage | ChatCode::Failed | ChatCode::Other => c,
+            | ChatCode::NotOwnMessage | ChatCode::AlreadyPaired | ChatCode::Failed | ChatCode::Other => c,
         };
         [
             ChatCode::Unavailable, ChatCode::Unmapped, ChatCode::StaleRow, ChatCode::StaleMapping, ChatCode::BadRequest,
@@ -1292,7 +1292,7 @@ fn no_project_word_reaches_a_screen() {
             ChatCode::UserTokenRefused, ChatCode::NoUserToken, ChatCode::NotAMember, ChatCode::OtherWorkspace,
             ChatCode::NotInChannel, ChatCode::ChannelTaken, ChatCode::NotSaved, ChatCode::NotAFile, ChatCode::TooLarge,
             ChatCode::NotAnImage, ChatCode::TooManyWorkspaces, ChatCode::NoSuchChannel, ChatCode::OtherApp, ChatCode::MixedApps,
-            ChatCode::NotOwnMessage, ChatCode::Failed, ChatCode::Other,
+            ChatCode::NotOwnMessage, ChatCode::AlreadyPaired, ChatCode::Failed, ChatCode::Other,
         ]
         .map(all)
     };
