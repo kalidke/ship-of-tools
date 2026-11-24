@@ -328,8 +328,9 @@ nothing. The window has no command for deleting: delete a message you posted you
 
 If you ask a session's agent to pair a project with a Slack channel, or to unpair it, it runs `sot-fe chat pair <session>
 <channel>` or `sot-fe chat unpair <session>` in the session, where `<session>` is `.` for the agent's own project or
-another session's name or id (the names `sot-fe version` lists as `row <name>`), and `<channel>` is the channel's ID, the
-last part of its link in Slack (a name is not looked up yet). The command makes the same change to the chat's settings file
+another session's name or id (the names `sot-fe version` lists as `row <name>`), and `<channel>` is the channel's name, with or without `#`, or its ID, the
+last part of its link in Slack. A name that more than one channel has, or that no channel the Slack app can see has (a private
+channel shows only once the app is in it), is refused with what to do. The command makes the same change to the chat's settings file
 as the channel list does ([Change or remove a project's
 channel](chat-setup.md#Change-or-remove-a-project's-channel)): after a pair the project's sessions post to that channel and,
 where the chat delivers mail, its new posts reach them as mail; after an unpair they no longer do either. A pair joins a

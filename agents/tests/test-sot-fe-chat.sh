@@ -661,7 +661,7 @@ case_no_answer_to_a_pairing_is_one_request_and_exit_3() {
 pair_answered() {
     stage_reply chat.row_pair "{\"v\":1,\"id\":3,\"kind\":\"res\",\"op\":\"chat.row_pair\",\"payload\":$1}"
     start_stub_daemon
-    CH_VERB=pair run_chat "" SOT_WORKSPACE_ID=$ROW STUB_NAME=alpha-h -- "${PAIR_SESSION:-alpha}" "${PAIR_CHANNEL:-C0AAAA}" ${PAIR_FLAGS:-}
+    CH_VERB=pair run_chat "" SOT_WORKSPACE_ID=$ROW STUB_NAME=alpha-h -- "${PAIR_SESSION:-alpha}" "${PAIR_CHANNEL:-#General}" ${PAIR_FLAGS:-}
 }
 
 case_pair_sends_one_row_pair_with_the_channel_as_given_and_prints_the_pairing() {
@@ -679,7 +679,7 @@ case_pair_sends_one_row_pair_with_the_channel_as_given_and_prints_the_pairing() 
                 [ "$session" != . ] || want_row="$ROW"
                 [ -z "$flags" ] || { want_ws=T0BBBB; want_keys="by,channel,row,workspace"; }
                 { [ "$CH_RC" = 0 ] && [ "$CH_OUT" = "${body#*|}" ] && [ "$r" = 1 ] && [ "$rs" = 0 ] && [ "$by_row" = "$ROW" ] && [ "$by_name" = alpha-h ] \
-                    && [ "$row" = "$want_row" ] && [ "$ch" = C0AAAA ] && [ "$ws" = "$want_ws" ] && [ "$keys" = "$want_keys" ]; } \
+                    && [ "$row" = "$want_row" ] && [ "$ch" = '#General' ] && [ "$ws" = "$want_ws" ] && [ "$keys" = "$want_keys" ]; } \
                     || bad="$bad [$session '$flags': rc=$CH_RC out=$CH_OUT requests=$r resolves=$rs by=$by_row/$by_name row=$row channel=$ch ws=$ws keys=$keys]"
             done
         done
@@ -703,6 +703,7 @@ alpha|{"error":"x","code":"already_paired","workspace":"T0AAAA","workspace_tag":
 alpha|{"error":"x","code":"already_paired"}|2|refused already_paired alpha already has a channel; to move it, run sot-fe chat unpair alpha, then pair it again
 alpha|{"error":"x","code":"channel_taken","joined":true}|2|refused channel_taken another project has that channel, or had it and its folder is gone; only a person can give it to this project, in the Chat drawer's channel list (Ctrl+Shift+k, Cmd+Shift+k on a Mac); the Slack app is now in that channel, and nothing was paired
 alpha|{"error":"x","code":"channel_taken"}|2|refused channel_taken another project has that channel, or had it and its folder is gone; only a person can give it to this project, in the Chat drawer's channel list (Ctrl+Shift+k, Cmd+Shift+k on a Mac)
+alpha|{"error":"x","code":"several_channels","channels":["C0ONE","C0TWO"]}|2|refused several_channels several channels are named #General: C0ONE, C0TWO; name one by its ID
 alpha|{"error":"x","code":"stale_row"}|2|refused stale_row no session of the computer that runs your sessions is alpha, or its project folder cannot be reached (sot-fe version lists them as row <slug>)
 alpha|{"error":"x","code":"unmapped"}|2|refused unmapped alpha is the default session, which has no project folder
 alpha|{"error":"x","code":"unavailable"}|2|refused unavailable the chat does not run on the computer that runs your sessions, or is stopped there
@@ -727,19 +728,35 @@ case_a_channel_not_found_on_a_hub_of_several_lists_the_workspaces_and_the_app() 
         stage_reply chat.row_pair "{\"v\":1,\"id\":3,\"kind\":\"res\",\"op\":\"chat.row_pair\",\"payload\":{\"error\":\"x\",\"code\":\"$refusal\"}}"
         case "$w" in two) stage_reply chat.workspaces "$two" ;; one) stage_reply chat.workspaces "$one" ;; esac
         start_stub_daemon
-        CH_VERB=pair run_chat "" SOT_WORKSPACE_ID=$ROW STUB_NAME=alpha-h -- alpha C0AAAA $flags
+        CH_VERB=pair run_chat "" SOT_WORKSPACE_ID=$ROW STUB_NAME=alpha-h -- alpha '#General' $flags
         n="$(sent chat.workspaces)"; stop_stub_daemon
         want="${want//MORE/$more}"
         { [ "$CH_RC" = 2 ] && [ "$CH_OUT" = "$want" ] && [ "$n" = 1 ]; } || bad="$bad [$refusal $flags $w: rc=$CH_RC reads=$n out=$CH_OUT]"
     done <<'EOF2'
-no_such_channel||two|refused no_such_channel no channel C0AAAA that your Slack app can see in Alpha Lab (T0AAAA): a private channel shows only once the app is in it (in that channel in Slack, type /invite @alpha-app), and in a workspace of over 1,000 channels name it by its IDMORE
-no_such_channel|--slack-workspace T0BBBB|two|refused no_such_channel no channel C0AAAA that your Slack app can see in Beta Lab (T0BBBB): a private channel shows only once the app is in it (in that channel in Slack, type /invite @beta-app), and in a workspace of over 1,000 channels name it by its IDMORE
+no_such_channel||two|refused no_such_channel no channel #General that your Slack app can see in Alpha Lab (T0AAAA): a private channel shows only once the app is in it (in that channel in Slack, type /invite @alpha-app), and in a workspace of over 1,000 channels name it by its IDMORE
+no_such_channel|--slack-workspace T0BBBB|two|refused no_such_channel no channel #General that your Slack app can see in Beta Lab (T0BBBB): a private channel shows only once the app is in it (in that channel in Slack, type /invite @beta-app), and in a workspace of over 1,000 channels name it by its IDMORE
 not_in_channel||two|refused not_in_channel your Slack app is not in that channel and could not join it: in that channel in Slack, type /invite @alpha-app, then run this again; this computer connects these Slack workspaces: T0AAAA (Alpha Lab), T0BBBB (Beta Lab): name another with --slack-workspace <id>
-no_such_channel||one|refused no_such_channel no channel C0AAAA that your Slack app can see in Slack workspace T0AAAA: a private channel shows only once the app is in it (in that channel in Slack, type /invite @your Slack app's name), and in a workspace of over 1,000 channels name it by its ID
+no_such_channel||one|refused no_such_channel no channel #General that your Slack app can see in Slack workspace T0AAAA: a private channel shows only once the app is in it (in that channel in Slack, type /invite @your Slack app's name), and in a workspace of over 1,000 channels name it by its ID
 unavailable|--slack-workspace T0ZZZZ|two|refused unavailable the Slack workspace T0ZZZZ is not connected on the computer that runs your sessionsMORE
 unavailable|--slack-workspace T0BBBB|two|refused unavailable the chat does not run on the computer that runs your sessions, or is stopped there
 not_in_channel||none|refused not_in_channel your Slack app is not in that channel and could not join it: in that channel in Slack, type /invite @your Slack app's name, then run this again
 EOF2
+    [ -z "$bad" ] || { echo "$bad"; return 1; }
+}
+
+# A name typed in capitals that begins with C or G reads as a channel ID, which no channel has: the refusal says so.
+case_a_capitalized_name_read_as_an_id_says_so() {
+    local one='{"v":1,"id":4,"kind":"res","op":"chat.workspaces","payload":{"default":"T0AAAA","workspaces":[{"id":"T0AAAA","running":true}]}}' bad="" channel want
+    for channel in GENERAL CORE general; do
+        stage_reply chat.row_pair '{"v":1,"id":3,"kind":"res","op":"chat.row_pair","payload":{"error":"x","code":"no_such_channel"}}'
+        stage_reply chat.workspaces "$one"
+        start_stub_daemon
+        CH_VERB=pair run_chat "" SOT_WORKSPACE_ID=$ROW STUB_NAME=alpha-h -- alpha "$channel"
+        stop_stub_daemon
+        want="refused no_such_channel no channel $channel that your Slack app can see in Slack workspace T0AAAA"
+        [ "$channel" = general ] || want="$want; $channel was read as a channel ID, and a channel name is typed in lowercase"
+        { [ "$CH_RC" = 2 ] && contains "$CH_OUT" "$want: a private channel shows only once" && { [ "$channel" != general ] || ! contains "$CH_OUT" "read as a channel ID"; }; } || bad="$bad [$channel: rc=$CH_RC out=$CH_OUT]"
+    done
     [ -z "$bad" ] || { echo "$bad"; return 1; }
 }
 
@@ -765,7 +782,7 @@ case_pair_verbs_refuse_the_post_flags() {
     done
     # The pair verb: the post flags, a missing or extra argument, and a workspace that is no id, each exit 1; the workspace
     # flag is the pair verb's alone.
-    for args in "alpha general" "alpha #general" "alpha c0aaaa" "alpha C0AAAA --thread $TS" "alpha C0AAAA --stdin" "alpha C0AAAA --file x.png" "" "alpha" "alpha C0AAAA C0BBBB" \
+    for args in "alpha C0AAAA --thread $TS" "alpha C0AAAA --stdin" "alpha C0AAAA --file x.png" "" "alpha" "alpha C0AAAA C0BBBB" \
                 "alpha C0AAAA --slack-workspace t0aaaa" "alpha C0AAAA --slack-workspace T0AAAA-X" "alpha C0AAAA --slack-workspace"; do
         # shellcheck disable=SC2086
         CH_VERB=pair run_chat "text" SOT_WORKSPACE_ID=$ROW STUB_NAME=alpha-h -- $args
@@ -814,6 +831,7 @@ check "no answer to a pairing is one request, never two, and exit 3"            
 check "a pair is one chat.row_pair with the channel as given and the workspace when named, and prints the pairing" case_pair_sends_one_row_pair_with_the_channel_as_given_and_prints_the_pairing
 check "each pair refusal prints its words and exits with its code"                          case_each_pair_refusal_has_its_words_and_exit_code
 check "a channel not found lists the workspaces and the app from one chat.workspaces read" case_a_channel_not_found_on_a_hub_of_several_lists_the_workspaces_and_the_app
+check "a capitalized name read as an ID says so in the refusal" case_a_capitalized_name_read_as_an_id_says_so
 check "the pairing verbs refuse the post flags and a missing row or handle, sending nothing" case_pair_verbs_refuse_the_post_flags
 
 echo ""

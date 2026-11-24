@@ -521,8 +521,9 @@ of each.
 - `sot-fe chat pair <session> <channel>` and `sot-fe chat unpair <session>` (`sot-fe/sot-fe-chat.sh`, `send_chat_pair`) pair the
   Slack channel of a project's folder, or remove it, for this session's own project (`.`, which is `$SOT_WORKSPACE_ID`) or
   another session's, named by its slug as `sot-fe version` lists it (`row <slug>`) or by its id, through the same edit,
-  write and reload of `chat.toml` as the Chat drawer's channel list (chat guarantee 30). `<channel>` is a Slack channel ID
-  (`C...` or `G...`; `sot-fe` refuses anything else with exit 1, a name not being looked up yet), and `--slack-workspace <id>`
+  write and reload of `chat.toml` as the Chat drawer's channel list (chat guarantee 30). `<channel>` is a Slack channel's ID
+  (`C...` or `G...`) or its name, with or without `#` (quote a name that begins with it: unquoted, the shell takes the rest of
+  the line for a comment, and the verb then has no channel and prints its usage), and `--slack-workspace <id>`
   names the workspace of a channel outside `chat.toml`'s (refused for any other verb, and when it is no workspace ID,
   `ERROR: --slack-workspace expects a Slack workspace ID like T0123ABCD, got '<value>'`). Each needs the row and the handle as a
   post does (none of either refused before an endpoint is found), sends no `chat.resolve` and ONE `chat.row_pair` with `by`
@@ -537,7 +538,8 @@ of each.
   `unchanged: <folder> has no channel`; 2, nothing changed for certain, with `refused <code> <words>` (`stale_row` (also a row
   whose folder cannot be reached), `unmapped`, `unavailable`, `not_saved`, `bad_request`, `already_paired` (the project has
   another channel: move it by unpairing, then pairing), `channel_taken` (a channel any other project has, a gone folder's
-  included: a person's pick in the window), `no_such_channel` and `not_in_channel`, each in the verb's own words, which differ
+  included: a person's pick in the window), `several_channels` (a name more than one channel has: the ids are listed, and the
+  session names one by its ID), `no_such_channel` and `not_in_channel`, each in the verb's own words, which differ
   by verb where the code means more for one, `<session>` as typed and `this session's project` for `.`; any other code in the
   daemon's text) or `refused unsupported ...` for an older daemon's unknown-op answer (it lets only a person pair, or pair or
   unpair, in the Chat drawer's channel list); 3, it may have been made, with `no answer: ...` or `unknown: ...` (a

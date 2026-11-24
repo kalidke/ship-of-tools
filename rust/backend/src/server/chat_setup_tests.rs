@@ -499,17 +499,76 @@ async fn a_session_pairs_another_project_by_id_and_never_moves_or_takes_a_channe
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_session_pairs_only_a_channel_given_by_an_id_that_exists_and_nothing_is_joined_for_a_refusal() {
-    let w = world(Some(fresh()), &[("G0PRIV", "secret", true, false), ("C0ONE", "dup", false, false)]).await;
+async fn a_session_pairs_by_an_id_only_a_channel_the_app_can_be_in_and_a_refusal_joins_nothing() {
+    let w = world(Some(fresh()), &[("G0PRIV", "secret", true, false)]).await;
     w.rows.set_agent_handle(&w.ids[1], "beta-h").unwrap();
     let (before, mut cli) = (w.file(), connect(w.services.clone()).await);
     let mut ask = |channel: &'static str| row_pair(&w.ids[1], "beta-h", "alpha", Some(channel));
-    // A private channel the app is not in is not joined; an id no channel has is none; a name is not an id.
+    // A private channel the app is not in is not joined; an id no channel has is none.
     assert_eq!(code(&cli.row_pair(ask("G0PRIV")).await), "not_in_channel");
     assert_eq!(code(&cli.row_pair(ask("C0NOPE")).await), "no_such_channel");
-    for name in ["dup", "#dup", "c0one"] {
-        assert_eq!(code(&cli.row_pair(ask(name)).await), "bad_request", "{name}");
+    assert_eq!((w.file(), w.calls("/conversations.join"), w.starts()), (before, 0, 1), "a refused pairing joined, wrote or reloaded");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_pairs_another_project_by_name_and_never_moves_or_takes_a_channel() {
+    // C0ONE and C0GONE are channels the app is not in: a join would show in the count, so each refusal is proved to come
+    // before any join.
+    let w = world(Some(fresh()), &[("C0PUB", "general", false, false), ("C0ONE", "lab-one", false, false), ("C0GONE", "gone-one", false, false)]).await;
+    w.rows.set_agent_handle(&w.ids[1], "beta-h").unwrap();
+    let (mut cli, folder) = (connect(w.services.clone()).await, w.folders[0].to_string_lossy().into_owned());
+    // By name, with capitals and a hash: one join, the mapping, one start, and the name the list gave.
+    let done = cli.row_pair(row_pair(&w.ids[1], "beta-h", "alpha", Some("#GENERAL"))).await;
+    assert_eq!(done, json!({"outcome": "paired", "folder": folder, "pairing": {"workspace": "T0AAAA", "channel": "C0PUB", "name": "general"}}), "{done}");
+    assert_eq!((w.mappings(), w.calls("/conversations.join"), w.starts()), (vec![w.mapped(0, "C0PUB")], 1, 2));
+    assert!(w.file().contains("C0PUB"), "the channel is listed");
+    // The same again: unchanged, with no join and no start, and the file as it was.
+    let before = w.file();
+    let again = cli.row_pair(row_pair(&w.ids[1], "beta-h", "alpha", Some("general"))).await;
+    assert_eq!((again["outcome"].as_str(), again["pairing"]["channel"].as_str(), again["pairing"]["name"].as_str()), (Some("unchanged"), Some("C0PUB"), Some("general")), "{again}");
+    assert_eq!((w.file(), w.calls("/conversations.join"), w.starts()), (before.clone(), 1, 2));
+    // The project that has a channel is not moved to another, by name or by id; the refusal says what it has.
+    for channel in ["lab-one", "C0ONE"] {
+        let moved = cli.row_pair(row_pair(&w.ids[1], "beta-h", "alpha", Some(channel))).await;
+        assert_eq!((code(&moved), moved["workspace"].as_str(), moved["channel"].as_str(), moved["name"].as_str()), ("already_paired", Some("T0AAAA"), Some("C0PUB"), Some("general")), "{moved}");
     }
+    // A channel another project has is not taken, though the app is in it.
+    assert_eq!(code(&cli.row_pair(row_pair(&w.ids[0], "alpha-h", "beta", Some("#general"))).await), "bad_request", "alpha has no handle bound");
+    w.rows.set_agent_handle(&w.ids[0], "alpha-h").unwrap();
+    assert_eq!(code(&cli.row_pair(row_pair(&w.ids[0], "alpha-h", "beta", Some("#general"))).await), "channel_taken");
+    // A channel a folder that is gone holds is not taken either, only a person's pick in the window takes it over.
+    let gone = "workspace = \"T0AAAA\"\nchannels = [\"C0PUB\", \"C0GONE\"]\n[[mapping]]\nfolder = '/gone/folder'\nchannel = \"C0GONE\"\n[[mapping]]\nfolder = '".to_string() + &folder + "'\nchannel = \"C0PUB\"\n";
+    w.home.write(CONFIG_FILE, &gone);
+    assert_eq!(code(&cli.row_pair(row_pair(&w.ids[0], "alpha-h", "beta", Some("C0GONE"))).await), "channel_taken");
+    assert_eq!((w.file(), w.calls("/conversations.join"), w.starts()), (gone, 1, 2), "a refused pairing joined, wrote or reloaded");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_names_a_channel_that_is_missing_twice_or_private_and_nothing_is_joined() {
+    let channels = [
+        ("C0ONE", "dup", false, false),
+        ("C0TWO", "Dup", false, false),
+        ("G0PRIV", "secret", true, false),
+        ("C0F1", "five", false, false),
+        ("C0F2", "five", false, false),
+        ("C0F3", "five", false, false),
+        ("C0F4", "five", false, false),
+        ("C0F5", "five", false, false),
+    ];
+    let w = world(Some(fresh()), &channels).await;
+    w.rows.set_agent_handle(&w.ids[1], "beta-h").unwrap();
+    let (before, mut cli) = (w.file(), connect(w.services.clone()).await);
+    let mut ask = |channel: &'static str| row_pair(&w.ids[1], "beta-h", "alpha", Some(channel));
+    // Two channels with the name, in any case: refused, naming their ids; at most four of five.
+    let two = cli.row_pair(ask("#dup")).await;
+    assert_eq!((code(&two), two["channels"].clone()), ("several_channels", json!(["C0ONE", "C0TWO"])), "{two}");
+    assert_eq!(cli.row_pair(ask("five")).await["channels"], json!(["C0F1", "C0F2", "C0F3", "C0F4"]));
+    // No channel of the name, a private one the app is not in (Slack does not list it): by name, none; by id, not in it.
+    for name in ["nothing", "secret", "#"] {
+        assert_eq!(code(&cli.row_pair(ask(name)).await), "no_such_channel", "{name}");
+    }
+    assert_eq!(code(&cli.row_pair(ask("G0PRIV")).await), "not_in_channel");
+    assert_eq!(code(&cli.row_pair(ask("C0NOPE")).await), "no_such_channel");
     assert_eq!((w.file(), w.calls("/conversations.join"), w.starts()), (before, 0, 1), "a refused pairing joined, wrote or reloaded");
 }
 

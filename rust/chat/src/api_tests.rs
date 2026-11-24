@@ -3440,10 +3440,11 @@ async fn a_delete_the_bot_token_refuses_ends_the_service() {
     .await;
 }
 
-/// A given channel is an id when it is a Slack id beginning `C` or `G`, else a name.
+/// A given channel is an id when it is a Slack id beginning `C` or `G`, else a name; a name matches the listed channels whose
+/// name is it with one leading `#` dropped, ASCII case ignored, and no other (no prefix, no second `#`, no other letters).
 #[test]
 fn a_channel_is_given_by_its_id_or_its_name_without_case_or_one_hash() {
-    use crate::api::{given, Given};
+    use crate::api::{given, named, Channel, Given};
     for id in ["C0123ABCD", "G0PRIVATE1", "C0PUB", "C"] {
         assert_eq!(given(id), Given::Id(id), "{id}");
     }
@@ -3451,4 +3452,14 @@ fn a_channel_is_given_by_its_id_or_its_name_without_case_or_one_hash() {
     for name in ["c0123abcd", "general", "#general", "U0AAAA", "T0AAAA", "C0 PUB", "", &format!("C{}", "A".repeat(32))] {
         assert_eq!(given(name), Given::Name(name), "{name}");
     }
+    let channel = |id: &str, name: &str| Channel { id: id.into(), name: name.into(), private: false, member: true };
+    let list = vec![channel("C1", "general"), channel("C2", "Random"), channel("C3", "gen"), channel("C4", "#odd"), channel("C5", "general")];
+    let ids = |name: &str| named(&list, name).iter().map(|c| c.id.clone()).collect::<Vec<_>>();
+    assert_eq!(ids("general"), ["C1", "C5"], "every channel with the name, in the list's order");
+    assert_eq!(ids("#general"), ["C1", "C5"], "one leading hash is dropped");
+    assert_eq!(ids("RANDOM"), ["C2"], "ASCII case is ignored");
+    assert_eq!(ids("gen"), ["C3"], "no prefix match");
+    assert_eq!(ids("##odd"), ["C4"], "only one hash is dropped, so a name that begins with one is the listed one");
+    assert_eq!(ids("#odd"), Vec::<String>::new());
+    assert_eq!(ids(""), Vec::<String>::new());
 }

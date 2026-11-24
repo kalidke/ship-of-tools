@@ -26,6 +26,8 @@ pub const MAX_CHAT_FILE: usize = 16 * 1024 * 1024;
 pub const MAX_THUMB: usize = 256 * 1024;
 /// A `chat.post_file` node id (`files:<rel>`): the project-relative name of the file to post.
 pub const MAX_NODE_ID: usize = 4096;
+/// The most channels a `several_channels` refusal names.
+pub const MAX_SEVERAL: usize = 4;
 const MAX_ROW: usize = 256;
 
 /// A channel id: 1 to 64 ASCII letters, digits, `_` and `-`.
@@ -124,6 +126,9 @@ pub enum ChatCode {
     /// A session's `chat.row_pair` of a project that already has a channel: nothing was changed, and the refusal's body is
     /// the folder's pairing (`ChatPairing`), so the session can say what it has and that it must unpair it first.
     AlreadyPaired,
+    /// A session's `chat.row_pair` named a channel by a name that more than one channel has: nothing was joined or changed,
+    /// and the refusal's body names them (`ChatSeveralChannels`).
+    SeveralChannels,
     Failed,
     #[serde(other)]
     Other,
@@ -159,6 +164,7 @@ impl ChatCode {
             ChatCode::MixedApps => "the \"App-Level Token\" belongs to a different Slack app than the \"Bot User OAuth Token\", so nothing was changed; all three codes must come from one Slack app",
             ChatCode::NotOwnMessage => "Slack would not let this project's Slack app delete that message (a person's or another app's message stays)",
             ChatCode::AlreadyPaired => "the project already has a channel; unpair it first",
+            ChatCode::SeveralChannels => "several channels have that name; name one by its ID",
             ChatCode::Failed | ChatCode::Other => "the chat request failed",
         }
     }
@@ -823,6 +829,13 @@ pub struct ChatPairing {
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub delivers: bool,
+}
+
+/// The body of a `several_channels` refusal: the ids of the channels that have the name given, at most `MAX_SEVERAL`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChatSeveralChannels {
+    #[serde(deserialize_with = "at_most::<_, _, MAX_SEVERAL>")]
+    pub channels: Vec<ChatChannel>,
 }
 
 /// Reply to `chat.row_pair`: the folder (the hub's canonical spelling, for the asking session alone), and its pairing now

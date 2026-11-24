@@ -1,6 +1,6 @@
 ---
 name: sot-chat-pair
-description: "Pair a project folder with a Slack channel, or unpair it, with `sot-fe chat pair` and `sot-fe chat unpair`, for this session's own project or another session's project on the same computer. Use when the person asks to set, connect, link or pair a project's Slack channel, or to remove, unpair or move it: \"pair this project with the channel C0123ABCD\", \"connect project X to the channel C0123ABCD\", \"set the Slack channels for these projects\", \"unpair project Y from Slack\", \"move project Z to channel C0456EFGH\". Not for posting in a channel (sot-chat-post), connecting a Slack workspace, or a direct message."
+description: "Pair a project folder with a Slack channel, or unpair it, with `sot-fe chat pair` and `sot-fe chat unpair`, for this session's own project or another session's project on the same computer. Use when the person asks to set, connect, link or pair a project's Slack channel, or to remove, unpair or move it: \"pair this project with #lab-general\", \"connect project X to the channel #x\", \"set the Slack channels for these projects\", \"unpair project Y from Slack\", \"move project Z to #new\". Not for posting in a channel (sot-chat-post), connecting a Slack workspace, or a direct message."
 ---
 
 # sot-chat-pair
@@ -22,13 +22,13 @@ session's project or another session's there, as the Chat drawer's channel list 
 ## Pair
 
 ```bash
-~/.sot-comm/bin/sot-fe chat pair <session> <channel>
+~/.sot-comm/bin/sot-fe chat pair <session> '<channel>'
 ```
 
 - `<session>`: `.` for this session's own project, or another session's: its slug as
   `~/.sot-comm/bin/sot-fe version` lists it (`row <slug>`), or its id.
-- `<channel>`: its ID (`C...` or `G...`, the last part of the channel's link in Slack). A name is not looked up yet: if the
-  person gave a name, ask them for the channel's ID.
+- `<channel>`: its name (`'#lab-general'` or `lab-general`) or its ID (`C...` or `G...`, the last part of the channel's
+  link in Slack). Quote a name that begins with `#`: unquoted, the shell takes the rest of the line for a comment.
 - On a computer that connects several Slack workspaces, a channel outside the first is named with
   `--slack-workspace <id>`; a refusal lists the workspaces and their IDs.
 

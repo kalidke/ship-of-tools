@@ -185,6 +185,12 @@ pub fn given(s: &str) -> Given<'_> {
     if crate::config::is_slack_id(s) && s.starts_with(['C', 'G']) { Given::Id(s) } else { Given::Name(s) }
 }
 
+/// The listed channels whose name is `name`, one leading `#` dropped, ASCII case ignored, in the list's order.
+pub fn named<'a>(list: &'a [Channel], name: &str) -> Vec<&'a Channel> {
+    let name = name.strip_prefix('#').unwrap_or(name);
+    list.iter().filter(|c| c.name.eq_ignore_ascii_case(name)).collect()
+}
+
 /// The channels the bot can see, at most `MAX_LISTED`; `more` when Slack had a page left at the bound.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChannelList {

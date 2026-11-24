@@ -189,7 +189,7 @@
 #              the project's channel, each for this session's own project (`.`) or another session's (its slug as `version`
 #              lists it, `row <slug>`, or its id), through the same edit of the hub's chat.toml as the Chat drawer's channel
 #              list: ONE `chat.row_pair` naming this session's row and handle, never sent twice, waiting 150 s. <channel> is
-#              a channel's ID (`C...` or `G...`, the last part of its link in Slack; a name is not built yet); a channel of
+#              a channel's ID or its name, with or without `#` (quote it: unquoted, `#` starts a shell comment); a channel of
 #              a Slack workspace other than the first is named with `--slack-workspace <id>`. A pair never moves a project
 #              that has a channel and never takes one another project has: it is refused, and a person does those in the
 #              Chat drawer's channel list. Only when the person asked for it (the sot-chat-pair skill says how). Prints
@@ -597,8 +597,7 @@ case "$CMD" in
                 echo "ERROR: --thread, --file and --stdin are only for chat post" >&2; exit 1
             fi
             if [ "${POS[0]}" = pair ]; then
-                [ "${#POS[@]}" -eq 3 ] || { echo "usage: sot-fe chat pair <session> <channel> [--slack-workspace <id>] [--timeout <s>]  — <session> is . for this session's own project, or a row's slug or id; <channel> is its ID" >&2; exit 1; }
-                [[ "${POS[2]}" =~ ^[CG][A-Z0-9]{0,31}$ ]] || { echo "usage: sot-fe chat pair <session> <channel>  — '${POS[2]}' is not a channel ID like C0123ABCD (the last part of the channel's link in Slack); naming a channel by its name is not built yet" >&2; exit 1; }
+                [ "${#POS[@]}" -eq 3 ] || { echo "usage: sot-fe chat pair <session> <channel> [--slack-workspace <id>] [--timeout <s>]  — <session> is . for this session's own project, or a row's slug or id; quote a channel name that begins with #" >&2; exit 1; }
                 send_chat_pair pair "${POS[1]}" "${POS[2]}" "$SLACK_WS"
             else
                 [ "${#POS[@]}" -eq 2 ] || { echo "usage: sot-fe chat unpair <session> [--timeout <s>]  — <session> is . for this session's own project, or a row's slug or id" >&2; exit 1; }

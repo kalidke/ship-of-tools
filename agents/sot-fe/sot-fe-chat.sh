@@ -293,7 +293,7 @@ _chat_workspaces_read() {
 # The pairing's reply $1 (empty for none), for the verb and the session in CHAT_VERB and CHAT_SESSION, as `_chat_deleted`
 # reads a delete's. A refusal's words are the verb's own: they say only what that verb can meet.
 _chat_paired() {
-    local resp="$1" err code say="$CHAT_SESSION" words chan at
+    local resp="$1" err code say="$CHAT_SESSION" words chan at caps
     local maybe="the pairing may have been made; running the same command again is safe and says what is there now"
     local def='def at: if .workspace_tag then "\(.workspace_tag) (\(.workspace))" else "Slack workspace \(.workspace)" end; def chan: if .name then "#\(.name) (\(.channel))" else .channel end;'
     [ "$CHAT_SESSION" != . ] || say="this session's project"
@@ -320,9 +320,13 @@ _chat_paired() {
             already_paired)
                 chan="$(printf '%s' "$resp" | jq -r "$def"'.payload | if .channel then " \(chan) in \(at)" else "" end')"
                 words="$say already has${chan:- a channel}; to move it, run sot-fe chat unpair $CHAT_SESSION, then pair it again" ;;
+            several_channels)
+                words="several channels are named $CHAT_CHANNEL: $(printf '%s' "$resp" | jq -r '.payload.channels | join(", ")'); name one by its ID" ;;
             no_such_channel)
                 _chat_workspaces_read
-                words="no channel $CHAT_CHANNEL that your Slack app can see in $CHAT_AT: a private channel shows only once the app is in it (in that channel in Slack, type /invite @$CHAT_APP), and in a workspace of over 1,000 channels name it by its ID$CHAT_MORE" ;;
+                # A name typed in capitals that begins with C or G reads as an ID, which no channel has.
+                caps=""; [[ "$CHAT_CHANNEL" =~ ^[CG][A-Z0-9]{0,31}$ ]] && caps="; $CHAT_CHANNEL was read as a channel ID, and a channel name is typed in lowercase"
+                words="no channel $CHAT_CHANNEL that your Slack app can see in $CHAT_AT$caps: a private channel shows only once the app is in it (in that channel in Slack, type /invite @$CHAT_APP), and in a workspace of over 1,000 channels name it by its ID$CHAT_MORE" ;;
             not_in_channel)
                 _chat_workspaces_read
                 words="your Slack app is not in that channel and could not join it: in that channel in Slack, type /invite @$CHAT_APP, then run this again$CHAT_MORE" ;;

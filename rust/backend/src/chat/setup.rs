@@ -14,7 +14,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use anyhow::Result;
-use sot_chat::api::{self as chat_api, Api, ApiError, BotApp, Channel, Given, Identified, JoinOutcome, TOKEN_REFUSALS};
+use sot_chat::api::{self as chat_api, named, Api, ApiError, BotApp, Channel, Given, Identified, JoinOutcome, TOKEN_REFUSALS};
 use sot_chat::config::{self, Config, ConfigError, PairError, Pairer, Resolution, Secrets, Writers};
 use sot_chat::http::{Http, Secret};
 use sot_chat::service::{Service, APP_TOKEN_REFUSED, BOT_TOKEN_REFUSED, WRONG_APP};
@@ -23,8 +23,8 @@ use sot_platform::host::env::Env;
 use sot_protocol::chat::Ts;
 use sot_protocol::ops::{
     op, ChatChannel, ChatChannelInfo, ChatChannelsReq, ChatChannelsRes, ChatCode, ChatConnectReq, ChatConnectRes, ChatOtherApp,
-    ChatPairOutcome, ChatPairReq, ChatPairRes, ChatPairing, ChatRowPairReq, ChatRowPairRes, ChatUnconfigured, ChatUnread, ChatWorkspacesReq,
-    ChatWorkspacesRes, MAX_WATCHED, MAX_WORKSPACES,
+    ChatPairOutcome, ChatPairReq, ChatPairRes, ChatPairing, ChatRowPairReq, ChatRowPairRes, ChatSeveralChannels, ChatUnconfigured, ChatUnread,
+    ChatWorkspacesReq, ChatWorkspacesRes, MAX_SEVERAL, MAX_WATCHED, MAX_WORKSPACES,
 };
 use sot_protocol::reply::HandlerOutput;
 
@@ -446,7 +446,7 @@ fn pairing_of(chat: &Arc<Chat>, resolution: &Resolution) -> Option<ChatPairing> 
     Some(ChatPairing { workspace: workspace.clone(), workspace_tag: chat.tag_of(workspace), channel: ChatChannel::try_from(channel.clone()).ok()?, name, delivers })
 }
 
-/// A refusal: its code, and the body a reader of that code needs (`already_paired`'s pairing).
+/// A refusal: its code, and the body a reader of that code needs (`already_paired`'s pairing, `several_channels`' ids).
 struct Refused {
     code: ChatCode,
     body: Option<serde_json::Value>,
@@ -459,14 +459,14 @@ impl From<ChatCode> for Refused {
 }
 
 /// `chat.row_pair`: a session pairs the folder of any row of this daemon (named by id or slug) with a channel (given by its
-/// id, in the request's workspace, absent `chat.toml`'s), or, with no channel, unpairs it, through the same core
+/// id or its name, in the request's workspace, absent `chat.toml`'s), or, with no channel, unpairs it, through the same core
 /// as the window's pairing. In order, each refusal before anything is read past it: `by` (its handle bound to its row, as a
 /// row's post's is; attribution among one account's programs, not a security boundary), `bad_request`; the target row
 /// (`stale_row`); a daemon that is not the hub, or holds no `chat.toml` (`unavailable`); the inert anchor (`unmapped`). An
-/// unpairing needs no running service, since it calls no Slack; a pairing needs its workspace's (`unavailable`), and a
-/// channel that is not an id is `bad_request` (a name is not looked up yet). A dry run of the edit refuses before any join
-/// (`already_paired`, `channel_taken`) or answers `unchanged`, and only then is the channel joined, if need be, and the edit
-/// made. Every changed pairing is logged by the core, and every refusal here in one line with who asked and its code, never a
+/// unpairing needs no running service, since it calls no Slack; a pairing needs its workspace's (`unavailable`): a name is
+/// looked up once in the workspace's channel list (`no_such_channel`, `several_channels`), a dry run of the edit refuses before
+/// any join (`already_paired`, `channel_taken`) or answers `unchanged`, and only then is the channel joined, if need be, and the
+/// edit made. Every changed pairing is logged by the core, and every refusal here in one line with who asked and its code, never a
 /// path or a channel name.
 pub(crate) async fn row_pair(req_id: u64, payload: serde_json::Value, chat: &Arc<Chat>, rows: &Workspaces) -> Result<HandlerOutput> {
     const NAME: &str = op::CHAT_ROW_PAIR;
@@ -519,9 +519,21 @@ async fn row_paired(req: &ChatRowPairReq, asker: &Asker<'_>, chat: &Arc<Chat>, r
     };
     let workspace = req.workspace.clone().or_else(|| chat.default_workspace()).ok_or(ChatCode::Unavailable)?;
     let service = chat.service_of(&workspace).ok_or(ChatCode::Unavailable)?;
-    // A channel is given by its id; a name is not looked up yet.
-    let Given::Id(channel) = chat_api::given(channel) else { return Err(ChatCode::BadRequest.into()) };
-    let (channel, name) = (channel.to_string(), None::<String>);
+    // The channel's id, and its name when the lookup gave it: a name is looked up once, in this workspace's list.
+    let (channel, name) = match chat_api::given(channel) {
+        Given::Id(c) => (c.to_string(), None),
+        Given::Name(n) => {
+            let list = service.api().map_err(|_| ChatCode::Unavailable)?.channels().await.map_err(|e| code_of(&e))?;
+            match named(&list.channels, n).as_slice() {
+                [] => return Err(ChatCode::NoSuchChannel.into()),
+                [one] => (one.id.clone(), Some(one.name.clone())),
+                many => {
+                    let channels = many.iter().filter_map(|c| ChatChannel::try_from(c.id.clone()).ok()).take(MAX_SEVERAL).collect();
+                    return Err(Refused { code: ChatCode::SeveralChannels, body: serde_json::to_value(ChatSeveralChannels { channels }).ok() });
+                }
+            }
+        }
+    };
     // A dry run of the edit before any join, so a pairing that is refused or changes nothing joins nothing.
     let (env, at, target) = (chat.env.clone(), folder.clone(), (workspace.clone(), channel.clone()));
     let dry = tokio::task::spawn_blocking(move || edit(&env, &at, Some((&target.0, &target.1)), Pairer::Session)).await;
@@ -530,7 +542,7 @@ async fn row_paired(req: &ChatRowPairReq, asker: &Asker<'_>, chat: &Arc<Chat>, r
         let pairing = pairing_of(chat, &dry.before).map(|p| ChatPairing { name: name.or(p.name), ..p });
         return Ok(ChatRowPairRes { outcome: ChatPairOutcome::Unchanged, folder, pairing });
     }
-    let name = in_channel(&service, &channel).await?;
+    let name = name.unwrap_or(in_channel(&service, &channel).await?);
     // Between the join and the lock a window's pairing or a hand edit may land: the edit under the lock is the session's own.
     sot_platform::hold_point_async!("chat.pair.joined", Arc::as_ptr(chat) as usize);
     let target = Some((workspace.clone(), channel.clone()));
