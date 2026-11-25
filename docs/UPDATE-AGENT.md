@@ -392,5 +392,11 @@ step 4. Then:
   the new release's line. A row that reads unreachable may be a slow login: run `status` once more before you decide.
   Anything else is a daemon the window cannot use: tell the person which computer and what its
   row says, and that this computer's window should not be started until that computer is updated.
+- If `status` printed a line saying a session `is not woken by mail`, tell the person which sessions on which
+  computers, that mail to them waits until their agent is started again, and that `sot-fe restart <session>` on that
+  computer starts it again in a new conversation, ending its Codex program (text typed in its input and not sent is
+  lost). The new agent has the hooks only if that computer's install starts Codex with them: if `status` still lists the
+  session afterward, tell the person to run the installer there and check that its Codex accepts `--no-daemon`, and do not
+  run the restart again for that. Run it only for the sessions the person names, once they say so, and when the session is at rest.
 - Ask the person to quit and start again every open Ship of Tools window, on every computer of the group, once the
   daemons all answer. Never quit or end a window yourself.

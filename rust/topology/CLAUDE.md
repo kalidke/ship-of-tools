@@ -127,8 +127,17 @@ of each.
     what each daemon answered at this probe and nothing of a host that runs no daemon of its own or is not dialed from
     here (a window-only computer's update is not in the table); a cause can hold a path of that computer; the columns
     are joined by single spaces and this one holds spaces, as CLIENTS does, so the seam before it is not marked.
+    Below the table and before the last line, `sotd status` prints one line for each Codex session a daemon lists as not
+    woken by mail (`WorkspaceListEntry.not_woken_by_mail`, rows' guarantee on the list; messaging's fact): `<host>: <slug>
+    is not woken by mail: its Codex agent started without Ship of Tools' Codex hooks, so mail waits for its next turn;
+    sot-fe restart <slug> on <host> starts it again in a new conversation`, in each daemon's own order. A slug comes from
+    that computer's daemon, so each control character of it is a space and it adds no line. `--json` carries each host's
+    slugs as `not_woken_by_mail`, an empty list where there are none and for a host with no daemon answer. Limits: a
+    daemon older than the field lists none, so its sessions show no line (the window's mark needs the same daemon), and a
+    computer with no `hosts.toml` prints no status, where the Sessions mark is the only sign.
     Test `rust/backend/src/topology/status_tests.rs`:
-    `each_row_ends_with_its_update_state_and_an_older_daemon_reads_not_reported`; against a real daemon,
+    `each_row_ends_with_its_update_state_and_an_older_daemon_reads_not_reported` and, for the lines of sessions mail
+    does not wake, `a_daemon_that_lists_a_codex_session_not_woken_by_mail_gets_a_line_naming_the_restart`; against a real daemon,
     `rust/backend/tests/status_integration.rs` reads a phase in `daemon_update`.
 11. **Every `systemctl` call topology makes is given a wait budget, and a stuck manager is a named failure.** Each call
     runs through `sot_containment::process().output` with `SYSTEMCTL_BOUND` (30 s) and fails `did not exit within`

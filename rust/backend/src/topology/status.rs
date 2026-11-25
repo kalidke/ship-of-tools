@@ -49,7 +49,9 @@ Usage: sotd status [--json]
   UPDATE, is what each daemon says of its own update: up to date and when
   it was checked, a release found, preparing, ready and what applies it,
   not applied or off with the reason; `not reported` for a daemon built
-  before it told one. `--json` prints the same facts as one object.
+  before it told one. Below the table, one line for each Codex session a daemon
+  lists as not woken by mail, with the command that starts its agent again.
+  `--json` prints the same facts as one object.
 
   `sotd topology status` stays the pure, offline, declared-only view.";
 
@@ -115,6 +117,9 @@ pub struct Row {
     /// UPDATE column: `None` where no daemon answered; `Some(None)` a daemon that answered without the state of its
     /// update (one built before it told one); else the state as it told it.
     pub update: Option<Option<UpdateState>>,
+    /// The slugs of the Codex sessions this host's daemon listed as not woken by mail (`not_woken_by_mail`), in its list's
+    /// order; empty where no daemon answered, and from a daemon built before the field.
+    pub not_woken_by_mail: Vec<String>,
 }
 
 /// The whole answer: every declared row (hosts, then monitor-only labels,
@@ -164,6 +169,7 @@ pub fn report(topo: &Topology, probes: &BTreeMap<String, Probe>) -> Report {
                 rows: None,
                 clients: Vec::new(),
                 update: None,
+                not_woken_by_mail: Vec::new(),
             });
         }
     }
@@ -194,7 +200,11 @@ fn host_row(topo: &Topology, h: &HostDecl, probe: Option<&Probe>, hub_clients: O
             None => Vec::new(),
         },
     };
-    Row { host: h.name.clone(), declared, daemon, rows, clients, update }
+    let not_woken_by_mail = match probe {
+        Some(Probe::Up { rows, .. }) => rows.iter().filter(|r| r.not_woken_by_mail).map(|r| r.slug.clone()).collect(),
+        _ => Vec::new(),
+    };
+    Row { host: h.name.clone(), declared, daemon, rows, clients, update, not_woken_by_mail }
 }
 
 fn group_clients<'a>(clients: impl Iterator<Item = &'a ClientVersion>) -> Vec<ClientGroup> {
@@ -284,6 +294,14 @@ pub fn render_text(r: &Report) -> String {
         };
         out.push_str(&format!("{} {} {} {} {} {}\n", row.host, row.declared, daemon, rows, clients, update));
     }
+    // One line for each Codex session a daemon lists as not woken by mail. A slug comes from that computer's daemon, so
+    // each control character of it is a space.
+    for row in &r.rows {
+        for slug in row.not_woken_by_mail.iter().map(|s| s.replace(char::is_control, " ")) {
+            let host = &row.host;
+            out.push_str(&format!("{host}: {slug} is not woken by mail: its Codex agent started without Ship of Tools' Codex hooks, so mail waits for its next turn; sot-fe restart {slug} on {host} starts it again in a new conversation\n"));
+        }
+    }
     let active = match (&r.active_frontend_of_hub, r.hub_reachable) {
         (Some(fe), _) => fe.clone(),
         (None, true) => "none".to_string(),
@@ -311,6 +329,8 @@ pub fn render_json(r: &Report) -> String {
         rows_total: Option<usize>,
         rows_by_phase: &'a [(String, usize)],
         rows_by_account: &'a [(String, usize)],
+        /// The slugs of the Codex sessions the daemon listed as not woken by mail; empty where there are none.
+        not_woken_by_mail: &'a [String],
         clients: Vec<serde_json::Value>,
     }
     let empty: Vec<(String, usize)> = Vec::new();
@@ -338,6 +358,7 @@ pub fn render_json(r: &Report) -> String {
                 rows_total: total,
                 rows_by_phase: by_phase,
                 rows_by_account: by_account,
+                not_woken_by_mail: &row.not_woken_by_mail,
                 clients: row
                     .clients
                     .iter()

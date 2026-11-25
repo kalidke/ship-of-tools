@@ -81,7 +81,7 @@ next `comm-poll.sh`, which comes only when something else starts a turn there.
 That is every Codex session that was already running when its computer moved
 from 0.7.3 or earlier to this version, and one started where the Codex hooks
 are not installed or Codex does not accept `--no-daemon`. Sessions mode marks
-such a session `[not woken by mail]`. Mail wakes it once its agent is started
+such a session `[not woken by mail]`, and `sotd status` lists it. Mail wakes it once its agent is started
 again with the hooks.
 
 `sot-fe restart <session>`, run in a shell or a session on the computer that

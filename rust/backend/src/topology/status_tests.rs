@@ -286,3 +286,42 @@ fn each_row_ends_with_its_update_state_and_an_older_daemon_reads_not_reported() 
         assert!(row(none)["daemon_update"].is_null(), "{none}: {}", row(none));
     }
 }
+
+/// A daemon that lists Codex sessions as not woken by mail gets one line each, after the table and before the last line:
+/// the host, the session and the command that starts its agent again. A host with none, a daemon that listed none and a
+/// host nobody answered add nothing, and the table is as it was. A slug is data from another computer's daemon: a newline or an
+/// escape in it becomes a space, so it adds no line and moves no cursor. `--json` carries the slugs for each host, an empty
+/// list where there are none.
+#[test]
+fn a_daemon_that_lists_a_codex_session_not_woken_by_mail_gets_a_line_naming_the_restart() {
+    let topo = example_topology();
+    let marked = |slug: &str| WorkspaceListEntry { slug: slug.to_string(), not_woken_by_mail: true, ..ws(Some("ready"), "") };
+    let mut probes = BTreeMap::new();
+    probes.insert(
+        "hub-a".to_string(),
+        Probe::Up {
+            build: "0.7.4".to_string(),
+            reported_host: "hub-a".to_string(),
+            clients: vec![cv("fe", "desktop", true)],
+            rows: vec![marked("alpha"), ws(Some("ready"), ""), marked("be\nta\u{1b}[31m")],
+            update: None,
+        },
+    );
+    let plain = {
+        let mut other = probes.clone();
+        other.insert("hub-a".to_string(), Probe::Up { build: "0.7.4".to_string(), reported_host: "hub-a".to_string(), clients: vec![cv("fe", "desktop", true)], rows: vec![ws(Some("ready"), "")], update: None });
+        render_text(&report(&topo, &other))
+    };
+    let text = render_text(&report(&topo, &probes));
+    let line = |slug: &str| format!("hub-a: {slug} is not woken by mail: its Codex agent started without Ship of Tools' Codex hooks, so mail waits for its next turn; sot-fe restart {slug} on hub-a starts it again in a new conversation\n");
+    let want = format!("{}{}", line("alpha"), line("be ta [31m"));
+    let (table, last) = text.split_at(text.rfind("active frontend of the hub:").expect("the last line"));
+    assert_eq!(last, "active frontend of the hub: fe@desktop\n", "{text}");
+    assert!(table.ends_with(&want), "two lines, in the listed order, after the table: {text}");
+    assert_eq!(table.len() - want.len(), plain.rfind("active frontend of the hub:").unwrap(), "the table itself is as it was");
+    assert_eq!(text.lines().count(), plain.lines().count() + 2, "a newline in a slug added a line: {text}");
+    let v: serde_json::Value = serde_json::from_str(&render_json(&report(&topo, &probes))).expect("valid json");
+    let slugs = |host: &str| v["rows"].as_array().unwrap().iter().find(|r| r["host"] == host).unwrap()["not_woken_by_mail"].clone();
+    assert_eq!(slugs("hub-a"), serde_json::json!(["alpha", "be\nta\u{1b}[31m"]));
+    assert_eq!(slugs("server-a"), serde_json::json!([]), "a host with no daemon answer");
+}
