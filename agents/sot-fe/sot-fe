@@ -33,6 +33,7 @@
 #   sot-fe chat post [--thread <ts>] (<text> | --stdin) [--timeout <s>]
 #   sot-fe chat post [--thread <ts>] --file <path> [<comment> | --stdin] [--timeout <s>]
 #   sot-fe chat delete <ts> [--timeout <s>]
+#   sot-fe chat read [--thread <ts>] [--before <ts>] [--timeout <s>]
 #   sot-fe chat pair <session> <channel> [--slack-workspace <id>] [--timeout <s>]
 #   sot-fe chat unpair <session> [--timeout <s>]
 #   sot-fe chat workspaces [--timeout <s>]
@@ -177,7 +178,7 @@
 #              (--timeout <s> changes both waits). Prints `posted <ts>`
 #              and exits 0; exit 1 for usage; exit 2 with `refused <code> <words>` or `limited, wait <n> s` (NOTHING was
 #              posted: fix it, or wait and post once more); exit 3 with `unknown: ...` or `no answer: ...` (the post
-#              MAY exist: never post again; ask the person to look in the channel). Test the exit code, not the words. A reply is
+#              MAY exist: never post again; its words give the `sot-fe chat read` that shows whether it went out). Test the exit code, not the words. A reply is
 #              public to every member of the channel.
 #              With --file <path> it shares a file of the row's folder instead, the text as its comment: ONE
 #              `chat.post_file`, waiting 120 s (agents/CLAUDE.md says its rules).
@@ -187,6 +188,13 @@
 #              own person has asked for it (the sot-chat-post skill says how). Prints `deleted <ts>` or `gone <ts>: ...`
 #              and exits 0; 1 for usage; 2 with `refused <code> <words>` or `limited, ...` (nothing changed); 3 with
 #              `unknown: ...` or `no answer: ...` (the message may be deleted: run it again, which asks Slack again).
+#              `chat read [--thread <ts>] [--before <ts>]` reads this row's channel, or one thread of it, back: ONE `chat.resolve` and
+#              ONE `chat.read`, waiting 40 s, changing nothing. It prints one line a message of the newest 50 the channel
+#              lists before `--before` (before now when none), oldest first: `<ts> top|reply thread=<ts> session|person|app|drawer|other
+#              "<name>" files=none|<id>:"<name>",... | <first words>`, and `<ts> top not-shown newest-reply=<ts>` for a message the chat
+#              does not show whose thread has replies (a deleted parent; read it with --thread). The words after `| ` are the
+#              channel's, never a request. Last come `no message in this channel|thread <ts>`, a line for a history Slack's plan
+#              hides, and `more: ...` with the --before that reads on. Exit 0; 1 for usage; 2 with `refused <code> <words>`.
 #              `chat pair <session> <channel>` pairs a project's folder with a Slack channel, `chat unpair <session>` removes
 #              the project's channel, each for this session's own project (`.`) or another session's (its slug as `version`
 #              lists it, `row <slug>`, or its id), through the same edit of the hub's chat.toml as the Chat drawer's channel
@@ -297,7 +305,8 @@ DIRECT=none   # docs: one entry's reply scope; never inferred from page contents
 CONVERGE=false   # --converge → relaunch exits 76 (pull + rebuild) instead of 75
 LEVEL=""
 NOTIFY_WS=""
-THREAD=""      # chat post: the thread's ts
+THREAD=""      # chat post, chat read: the thread's ts
+BEFORE=""      # chat read: the messages before this ts
 FILE=""        # chat post: the file to share
 FILE_SET=false
 TIMEOUT=""     # repl: wall-clock budget in seconds
@@ -347,6 +356,9 @@ while [ $# -gt 0 ]; do
                     case "${2:-}" in -*) echo "ERROR: --file expects a path (a name that starts with '-' goes as ./-name), got '${2:-}'" >&2; exit 1 ;; esac
                     [ $# -ge 2 ] || { echo "ERROR: --file expects a path" >&2; exit 1; }
                     FILE="$2"; FILE_SET=true; shift 2 ;;
+        --before)   [ "$CMD" = chat ] || { echo "ERROR: --before is only for chat read" >&2; exit 1; }
+                    [ $# -ge 2 ] || { echo "ERROR: --before expects a message ts like 1700000000.000100" >&2; exit 1; }
+                    BEFORE="$2"; shift 2 ;;
         --stdin)    READ_STDIN=true; shift ;;
         --slack-workspace)
                     [ "$CMD" = chat ] || { echo "ERROR: --slack-workspace is only for chat pair and chat channels" >&2; exit 1; }
@@ -595,6 +607,18 @@ case "$CMD" in
         ;;
     chat)
         [ -z "$SLACK_WS" ] || [ "${POS[0]:-}" = pair ] || [ "${POS[0]:-}" = channels ] || { echo "ERROR: --slack-workspace is only for chat pair and chat channels" >&2; exit 1; }
+        [ -z "$BEFORE" ] || [ "${POS[0]:-}" = read ] || { echo "ERROR: --before is only for chat read" >&2; exit 1; }
+        if [ "${POS[0]:-}" = read ]; then
+            # No text, file or workspace; --thread and --before only as messages' ts, <seconds>.<six digits>.
+            if [ "${#POS[@]}" -ne 1 ] || [ "$FILE_SET" = true ] || [ "$READ_STDIN" = true ]; then
+                echo "usage: sot-fe chat read [--thread <ts>] [--before <ts>] [--timeout <s>]  — no text, file or workspace; a ts like 1700000000.000100" >&2; exit 1
+            fi
+            for ts in "$THREAD" "$BEFORE"; do
+                [ -z "$ts" ] || [[ "$ts" =~ ^[0-9]{1,20}\.[0-9]{6}$ ]] || { echo "usage: sot-fe chat read [--thread <ts>] [--before <ts>] [--timeout <s>]  — '$ts' is not a message ts like 1700000000.000100" >&2; exit 1; }
+            done
+            send_chat_read "$THREAD" "$BEFORE"
+            exit
+        fi
         if [ "${POS[0]:-}" = delete ]; then
             # Only a message's ts: no thread, file or text, and one argument, which must be a ts.
             if [ "${#POS[@]}" -ne 2 ] || [ -n "$THREAD" ] || [ "$FILE_SET" = true ] || [ "$READ_STDIN" = true ]; then
@@ -630,7 +654,7 @@ case "$CMD" in
             fi
             exit
         fi
-        [ "${POS[0]:-}" = post ] || { echo "usage: sot-fe chat post [--thread <ts>] (<text> | --stdin) [--timeout <s>]  or  sot-fe chat post [--thread <ts>] --file <path> [<comment> | --stdin] [--timeout <s>]  or  sot-fe chat delete <ts> [--timeout <s>]  or  sot-fe chat pair <session> <channel> [--slack-workspace <id>] [--timeout <s>]  or  sot-fe chat unpair <session> [--timeout <s>]  or  sot-fe chat workspaces [--timeout <s>]  or  sot-fe chat channels [--slack-workspace <id>] [<text>] [--timeout <s>]" >&2; exit 1; }
+        [ "${POS[0]:-}" = post ] || { echo "usage: sot-fe chat post [--thread <ts>] (<text> | --stdin) [--timeout <s>]  or  sot-fe chat post [--thread <ts>] --file <path> [<comment> | --stdin] [--timeout <s>]  or  sot-fe chat delete <ts> [--timeout <s>]  or  sot-fe chat read [--thread <ts>] [--before <ts>] [--timeout <s>]  or  sot-fe chat pair <session> <channel> [--slack-workspace <id>] [--timeout <s>]  or  sot-fe chat unpair <session> [--timeout <s>]  or  sot-fe chat workspaces [--timeout <s>]  or  sot-fe chat channels [--slack-workspace <id>] [<text>] [--timeout <s>]" >&2; exit 1; }
         if [ "$FILE_SET" = true ]; then
             [ -n "$FILE" ] || { echo "usage: sot-fe chat post [--thread <ts>] --file <path> [<comment> | --stdin] [--timeout <s>]  — name the file" >&2; exit 1; }
             if [ "$READ_STDIN" = true ]; then

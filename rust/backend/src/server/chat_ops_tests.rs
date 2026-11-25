@@ -32,6 +32,7 @@ const OPS: &[(&str, Answer)] = &[
     (op::CHAT_POST, Answer::Handled),
     (op::CHAT_POST_FILE, Answer::Handled),
     (op::CHAT_DELETE, Answer::Handled),
+    (op::CHAT_READ, Answer::Handled),
     (op::CHAT_FILE, Answer::Handled),
     (op::CHAT_WATCH, Answer::Handled),
     (op::CHAT_UNWATCH, Answer::Handled),

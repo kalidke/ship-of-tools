@@ -1378,20 +1378,6 @@ owned by `docs/CLAUDE.md`.
 
 ## chat
 
-- **CHAT-DELETE-CANNOT-REACH-A-FILE-POST** [session] Seen by a session on 2026-11-24, on the first candidate that carries the delete,
-  when its person asked it to remove its old posts from its channel: `sot-fe chat post --file` prints the file's id and no message
-  time, and `sot-fe chat delete` takes a message's time, so a post that shared a file cannot be named to the delete. The session's
-  19 text posts were deleted and its 91 posts of pictures and pages stayed, each thread under a deleted post keeping Slack's
-  placeholder while they remain. The session asked that the file post print its message's time, or that the delete take a file's
-  id; neither is built or decided (what Slack does with the file is CHAT-DELETE-FILES-STAY).
-- **CHAT-POST-UNKNOWN-NOT-READ-BACK** [session] Seen by a session on 2026-11-25 on a hub running the first 0.7.4 candidate: one
-  `sot-fe chat post` into a thread ended `unknown` (exit 3) after the daemon had waited five seconds for Slack, where the posts
-  before and after it took under a third of a second; the post had not been made, and the same text sent a minute later
-  posted. The verb said what the contract says. Two things were missing. The daemon's log had only its slow-request line for
-  that post, so why it ended unknown (a timeout, a reset, which step) could not be read back: the log now carries one line
-  for each post or file post that ends unknown, with the step and a fixed code for why, built on `main` and not yet seen in
-  use. And a session told not to send again has no command that reads its channel or thread, so it cannot learn from the
-  product whether its post exists (that session read the thread with another tool): not built.
 - **CHAT-LIST-LIMITS** [note] From the three readings of a session's listing, none seen in use: a `chat.toml` that is valid TOML
   but that the load refuses is marked from its raw text, while every pairing then answers `not_saved`; a channel held only by
   a mapping whose folder is gone is told as held by a project; a listing does not tell a session its own project's channel
@@ -1405,10 +1391,26 @@ owned by `docs/CLAUDE.md`.
   listing has run against real Slack. The checks are made on the first release candidate that carries it, on a live hub: a listing
   shows the public channels, the private ones the app is in, and no private one it is not in, and marks the channel a project is
   paired with `taken`; a workspace of over 1,000 channels is cut and says so.
+- **CHAT-READ-UNMEASURED** [note] A session's read of its channel (`sot-fe chat read`, `chat.read`, chat guarantee 37) is proved
+  against the fake Slack only. The checks are made on the first release candidate that carries it, on a live hub and in a throwaway
+  channel, before a release is published (nothing in the build or the release gate enforces it). In order: (1) a post, then the
+  read: the post's line, with its time and `session "<handle>"`; (2) a file post into a thread, then `read --thread`: its line names
+  the id `posted file <id>` printed, as `session` (`app` if Slack's share carries no mark of the app's own), and `sot-fe chat
+  delete` of its time: whether Slack deletes a file post (the fourth check of CHAT-DELETE-UNMEASURED), and what became of the
+  file; (3) delete a thread's parent that has replies, then read the channel: one `not-shown` line, and whether `read --thread` of
+  it lists the replies or nothing (the probe CHAT-DELETED-PARENT-THREAD-UNSERVED owed), after which the person deletes those
+  replies in Slack; (4) a channel of more than 50 messages: `more` and `--before` read on with none twice and none missing; (5)
+  after an exit 3 of a post, the daemon's log names the step and the code. Also unmeasured: when Slack puts a share into the
+  channel's history, and which failures real posts meet. Close this item when these have been seen.
+- **CHAT-DRAWER-HIDES-DELETED-PARENT-THREADS** [note] From reading the code, not seen in a window: the Chat drawer shows no thread
+  whose first message was deleted and has replies, because Slack lists such a parent as a tombstone, which the chat normalizes as
+  `Unsupported` and never as a record, and the drawer's history pages keep only records. A session's read lists such a parent as a
+  `not-shown` line and reads its thread. Not built for the drawer.
 - **CHAT-LIST-READS-ARE-UNBOUNDED** [note] From reading the code, not seen in use: each session's listing reads up to five pages of
   Slack's channel list (`Api::channels`), a rate-limit answer to any read pauses every read of that workspace until it passes (the
   windows' history reads and the delivery's passes too), and nothing bounds how often a session lists. The skill tells a session to list
-  once before a pairing; no limit is built.
+  once before a pairing; no limit is built. A session's read of its channel is one scan each and is bounded only by its skill, the
+  same way (CHAT-READ-UNMEASURED).
 - **CHAT-LIST-SHOWS-PRIVATE-CHANNELS-TO-SESSIONS** [note] A session's `chat.channels` lists the private channels the Slack app is in,
   by name, to any session of its computer, as the window's channel list shows them to a person. A session is told
   by its skill not to repeat them to anyone but the person, and the daemon cannot check that; the handle check is attribution among
@@ -1439,8 +1441,8 @@ owned by `docs/CLAUDE.md`.
   workspace whose administrators restrict who may delete gives the same code. Seen so far, by a session on a live hub on
   2026-11-24, in its own channel and not a throwaway one: of (1), 19 of the app's own text posts in threads deleted (`deleted`);
   of (3), 11 posts a person had already deleted in Slack answered `gone`, exit 0. Not seen: (2), a thread parent with replies,
-  and (4), which the command cannot reach at all (CHAT-DELETE-CANNOT-REACH-A-FILE-POST). Close this item when these have been
-  seen.
+  and (4), which a session can now reach: it finds a file post's time with `sot-fe chat read` and deletes it (CHAT-READ-UNMEASURED
+  lists the check). Close this item when these have been seen.
 - **CHAT-DELETE-FILES-STAY** [note] The command deletes the message and no file; what Slack then does with a file the message
   shared (removes it, unshares it, or leaves it with no message to show it in) is not measured. A delete of the files themselves is
   not built, because a right file delete needs more than the message's delete: (1) Slack's file
@@ -1670,6 +1672,10 @@ owned by `docs/CLAUDE.md`.
 ## Closed
 
 - **PDF-COPY-SPLITS-HEADINGS-AND-SUBSCRIPTS** (wire) [person] Closed on 2026-11-25 by the landing that fixes it. The maintainer, that day, on a window running the first 0.7.4 candidate on Windows, selected a section heading and the sentence under it on a PDF page and copied them, the first copy of a PDF selection through a real clipboard: the text came whole, but the heading's number and its title, one line on the page, were two lines, and each subscript was a word of its own with a space before it. The copy's text (`PageWords::text`, wire's guarantee 17) joined every two words of a line by a space and every two lines by a line break, while the PDF text tool makes a word of its own of a subscript or a superscript, and gives a heading's number and its title as two lines when the space between them is as wide as a gap between columns. Two words of a line now touch, with no space between them, when the gap between their boxes is under a tenth of the smaller of the two words' lengths per character, both taken along the axis the boxes are apart on (across the page, or down it for a line set at 90 or 270 degrees, whose words are stacked); and a line that is only a section's number in digits goes on, after one space, with the next line when that line starts beside it on its right, within four of the number's heights, on its band (the heights are counted in the document's fractions of the page, so about three real heights on a portrait page). No other pair of lines is joined, because the boxes alone cannot tell a heading from two columns, and the tool gives some two-column pages a line of each column in turn; the bound of four heights keeps a lone number at a column's left from joining another column's line (a heading's title is under two of these heights from its number, the measured pages' other-column lines over fifteen), while a lone number at the right end of a column's line, a right-aligned cell or an equation number without brackets, can sit within four heights of the next column and join it. What stays different from the page: the half point TeX sets after a subscript is a space (`ϕ1 , ϕ2`, `H2 O`, as in the tool's own plain text); a superscript a tenth of a character or more after its letter has a space before it; a subscript or a superscript the tool gives as a line of its own stays one, in the tool's order (a footnote's mark before the words it follows, on a generated two-column page), except that a lone number of it joins a line that starts within four heights beside it (a lettered one never joins); a heading whose number the tool gives far from its title (on a generated two-column page it gave three of four headings' numbers lines away), or whose number is not in digits, or whose title starts further than four heights from its number, or that is set at 90 or 270 degrees, stays two lines; a lone number in a table's cell goes on with the cell beside it while the other cells stay lines of their own; the parts of a stacked fraction are one above the other and copy with a space (`x 2` for x over 2, where the tool's plain text has `x2`); two display equations side by side stay two lines; and the marks drawn over a selection are still one band for each line of the tool, so a heading's number and its title have two. Checked by running the rules over the plugin's documents of the preview sample's three pages and of two generated two-column pages, and by tests on boxes of two columns and of a rotated line's subscripts as the tool wrote them, and on invented boxes of a sideways line; no person has used this change.
+
+- **CHAT-DELETE-CANNOT-REACH-A-FILE-POST** (chat) [session] Closed on 2026-11-25 by the landing that fixes it. Seen by a session on 2026-11-24, on the first candidate that carries the delete: `sot-fe chat post --file` prints the file's id and no message time, and `sot-fe chat delete` takes a message's time, so a post that shared a file could not be named to the delete, and the session's 91 posts of pictures and pages stayed. A session now reads its channel or a thread back with `sot-fe chat read`, which names each message's time beside its files' ids, so a file post is found by the id `posted file <id>` printed and deleted by its time (`chat_mail_tests::a_file_post_that_names_no_time_is_found_by_a_read_and_deleted`). The file post itself still prints no time when Slack's share names none. Proved against the fake Slack only (CHAT-READ-UNMEASURED); what Slack does with the file is CHAT-DELETE-FILES-STAY.
+
+- **CHAT-POST-UNKNOWN-NOT-READ-BACK** (chat) [session] Closed on 2026-11-25 by the landing that fixes it. Seen by a session on 2026-11-25: a post into a thread ended `unknown` (exit 3) after five seconds, and nothing said why or whether it existed. The daemon now logs one line for each post or file post that ends unknown, with the Slack step and a fixed code for why (`chat_ops_tests::a_post_that_may_exist_is_logged_once_with_why_and_never_its_text`), and the exit-3 words name `sot-fe chat read`, which shows whether the post went out (`chat_mail_tests::a_session_reads_a_thread_and_one_slack_does_not_find_is_empty`). Proved against the fake Slack only (CHAT-READ-UNMEASURED).
 
 - **CHAT-UNMAPPED-ROW-MISSES-A-PAIRING** (fe-ui) [note] Closed on 2026-11-24 by the landing that fixes it. Reading the code showed that a window showing a project with no channel has no watch, so nothing told it when a session paired that project, and its Chat drawer title stayed `no channel` until the person switched sessions or reopened the drawer. An `unmapped` answer of the shown row is now asked again each `GAP_PACE`, the title standing meanwhile (`row_channel_tests::an_unmapped_row_is_asked_again_each_minute_and_its_title_holds`).
 

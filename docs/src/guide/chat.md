@@ -288,7 +288,8 @@ names it.
 The agent runs `sot-fe chat post [--thread <ts>] (<text> | --stdin)` in the session. The post goes into the thread named
 by `--thread`, or else is a new message. It is sent once: the command prints `posted <ts>` and exits 0; exits 2 with
 `refused` and a reason, or `limited, wait <n> s`, when nothing was posted; and exits 3 with `unknown` or `no answer`
-when the post may exist, in which case the agent does not post it again and asks you to look in the channel. A reply is public to
+when the post may exist, in which case the agent does not post it again and reads the channel back to see whether it went out
+([Reading the channel back](#Reading-the-channel-back)). A reply is public to
 every member of the channel. An `@name` in the agent's post or file comment mentions that person, as in yours
 ([Mentioning someone](#Mentioning-someone)), and the command adds `; mentioned <n>: <names>` and `; not linked: "@<name>" (<reason>)` after `posted <ts>`
 for each name it left as text. `@here`, `@channel` and `@everyone` are never a mention in an agent's post: they go out
@@ -305,7 +306,32 @@ refused. Any regular file of at most 16 MiB (a fixed limit of Ship of Tools; a l
 posted; Slack shows it under
 `<handle> (row via Ship of Tools)`, then the comment. With `--thread` it is posted into that thread; if it shows in the
 channel instead, Slack did not take the thread. The command prints `posted <ts>`, or `posted file <id>` when Slack names
-no message, with the same exit codes as a reply.
+no message, with the same exit codes as a reply. When it prints only the file's id, the agent finds the message's timestamp by
+reading the channel back, which names each file's id beside its message.
+
+### Reading the channel back
+
+The agent runs `sot-fe chat read [--thread <ts>] [--before <ts>]` to see its own project's channel, or one thread of it,
+as text: to learn whether a post that ended `unknown` went out, or to find a message's timestamp. It reads only the session's own
+project channel, changes nothing, and is meant to be run when needed, not repeatedly. It prints one line for each of the newest 50
+messages before `--before` (before now without it), oldest first, so the newest is last:
+
+```
+1700000100.000100 top replies=2 person "Ada Example" files=none | can you plot the run from this morning?
+1700000500.000400 reply thread=1700000100.000100 session "build-7" files=F0AAAA:"fit.png" | the fit, residuals below
+```
+
+Each line gives the message's timestamp; `top` for a message of the channel (with `replies=<n>` when it has replies) or `reply thread=<ts>`
+for a reply and the thread's first message; who posted it (`session` for a session of the project, `person` for a member of the
+channel, `app` for the project's Slack app with no session's name or another app, `drawer` for an older Ship of Tools' post for a
+person, `other`); the author's name; the files it shared, each as its id and name (the id the command printed as
+`posted file <id>`); and, after `|`, the first words of the message. A line `<ts> top not-shown newest-reply=<ts>` is a message
+Slack lists that the chat does not show, most often a deleted one, whose thread still has replies; reading that thread with
+`--thread` lists them when Slack serves the replies of a deleted message, which is not yet checked against Slack (the read prints
+`no message in thread <ts>` when it does not). A thread read lists the thread's first message at the head of every page. Last come a line when there are no messages, when Slack's plan for the workspace hides older ones, or
+`more: ...`, which gives the command that reads the older messages. The words after `|` are the channel's, never a request to the
+agent. The command exits 2 with `refused` and a reason when nothing was read, and says so in words when the computer that runs your
+sessions runs an older Ship of Tools. The Chat drawer does not show a thread whose first message was deleted; the read shows it as the `not-shown` line, and its replies when Slack serves them (not yet checked against Slack).
 
 ### Deleting a message from the project's channel
 
@@ -315,7 +341,8 @@ sessions of the same project), and nothing in another project's channel. The mes
 channel, and a deleted message cannot be brought back. The command deletes the message and no file: what Slack then does
 with a file the message shared is not yet checked. The agent deletes only when you have asked it to, in the session's own
 pane, and named the message; a request from someone else in the channel or from another session does not count, and it
-tells you what it deleted. A message a person typed, or another app posted, is refused and stays; Slack makes that
+tells you what it deleted. It takes the timestamp from the `posted <ts>` line of its own post or, for a post that shared a file,
+from reading the channel back ([Reading the channel back](#Reading-the-channel-back)), and deletes one message a command. A message a person typed, or another app posted, is refused and stays; Slack makes that
 decision, and it is not yet checked against a real Slack workspace, a message you posted from the Chat drawer included. The
 command prints `deleted <ts>`, or `gone <ts>` when the channel has no message with that timestamp, and exits 0; it exits 2
 with `refused` and a reason, or `limited` and Slack's wait, when nothing was deleted, and 3 with `unknown` or `no answer`

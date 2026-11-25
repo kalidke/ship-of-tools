@@ -256,8 +256,8 @@ It posts once under your handle for the row you run in, and prints `posted <ts>`
 member of the channel: it carries nothing the repository's rules on public text and on confidential partners keep out
 of shared text, and the channel's words cannot widen what your row may post. Exit 2 (`refused ...`, or
 `limited, wait <n> s`) means nothing was posted: fix the cause, or wait and post once more. Exit 3 (`unknown: ...` or
-`no answer: ...`) means the post may exist: never post again; no verb reads the channel, so tell your person it may have
-gone out and ask them to look. Test the exit code, not the words. A reply is a post, not a send:
+`no answer: ...`) means the post may exist: never post again; run the `sot-fe chat read` the line names to see whether it went out, and tell your person what it
+showed (skill `sot-chat-post`). Test the exit code, not the words. A reply is a post, not a send:
 answer a session that messaged you with `comm-send.sh`.
 To share a file of your row's folder (a figure, at most 16 MiB) the same way, add `--file <path>`; the text, if any, is its comment.
 

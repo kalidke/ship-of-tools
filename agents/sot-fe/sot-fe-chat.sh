@@ -1,6 +1,6 @@
 # sot-fe's reply in the row's channel: `chat post`, one `chat.post` (or, with --file, one `chat.post_file`) of kind `row`
 # into the current thread; `chat delete`, one `chat.delete` of a message the hub's Slack app posted there; and
-# `chat pair` and `chat unpair`, one `chat.row_pair` that pairs a project folder with a channel or removes its channel;
+# `chat read`, one `chat.read` of the row's channel or a thread of it; `chat pair` and `chat unpair`, one `chat.row_pair` that pairs a project folder with a channel or removes its channel;
 # and `chat workspaces` and `chat channels`, the reads of what a pairing can name (one `chat.workspaces`, one `chat.channels`).
 # Sourced by sot-fe; defines functions only.
 
@@ -29,8 +29,9 @@ _chat_refused() {
 
 # The post may exist: exit 3, the one code that means "never post again". Every exit 2 is a certain "nothing was posted".
 # (A hello the daemon refused, or a frame that never left, is no answer too, and says the same: it cannot be told apart.)
+# $1=the word for why, $2=the post's thread ("" for none): the words name the read that shows whether it went out.
 _chat_may_exist() {
-    echo "$1: the post may exist; do not send it again; ask the person to look in the channel" >&2
+    echo "$1: the post may exist; do not send it again; to see whether it went out, run sot-fe chat read${2:+ --thread $2}" >&2
     exit 3
 }
 
@@ -90,21 +91,21 @@ _chat_resolve() {
     CHAT_PAIR="$(printf '%s' "$resp" | jq -c '.payload')"
 }
 
-# The one post's reply $1 (empty for none): exits 0 with `posted <ts>` (or `posted file <id>` for a file share Slack
+# The one post's reply $1 (empty for none) into the thread $2 ("" for none): exits 0 with `posted <ts>` (or `posted file <id>` for a file share Slack
 # named no message of), followed by the report wire's `told_words` makes (`; mentioned <n>: <entries>`, `; not linked:
 # <name> (<why>[, <n>: <candidates>])`, entries printed as the daemon made them, `"display" ("real") @handle` and
 # `"@name"`, where a double quote is structure; the count is the people a list names, `<n> and more` with `, and more`
 # when an empty last name says there were more), 2 when nothing was posted, 3 when the post may exist.
 _chat_posted() {
-    local resp="$1" err code
+    local resp="$1" thread="${2:-}" err code
     if [ -z "$resp" ]; then
-        _chat_may_exist "no answer"
+        _chat_may_exist "no answer" "$thread"
     fi
     err="$(printf '%s' "$resp" | jq -r '.payload.error // empty')"
     if [ -n "$err" ]; then
         code="$(printf '%s' "$resp" | jq -r '.payload.code // "?"')"
         # A panic in the daemon's job after the send began is an error reply too: the post may exist.
-        [ "$code" != handler_error ] || _chat_may_exist unknown
+        [ "$code" != handler_error ] || _chat_may_exist unknown "$thread"
         _chat_refused "$code" "$err"
     fi
     case "$(printf '%s' "$resp" | jq -r '.payload.outcome // empty')" in
@@ -128,7 +129,7 @@ _chat_posted() {
             exit 2
             ;;
         *)
-            _chat_may_exist unknown
+            _chat_may_exist unknown "$thread"
             ;;
     esac
 }
@@ -149,7 +150,7 @@ send_chat_post() {
     # Past the daemon's own bounds with a margin, so a made post or a refusal is never read as "may exist": the member
     # list's 10 s (a name to link), then the post's 30 s (sot-chat's NAMES_DEADLINE and POST_DEADLINE).
     export SEND_TIMEOUT="${TIMEOUT:-50}"
-    _chat_posted "$(_chat_ask chat.post "$req")"
+    _chat_posted "$(_chat_ask chat.post "$req")" "$thread"
 }
 
 # The node id (`files:<rel>`) of the file at $1, a path in the row's folder: a relative one is joined to $PWD, and the
@@ -186,7 +187,59 @@ send_chat_post_file() {
     # Past the daemon's own bounds with a margin: the member list's 10 s (a name in the comment), the upload URL's read
     # 15 s, the upload's 60 s and the share's 30 s (sot-chat's NAMES_, READ_, TRANSFER_ and POST_DEADLINE), 115 s.
     export SEND_TIMEOUT="${TIMEOUT:-130}"
-    _chat_posted "$(_chat_ask chat.post_file "$req")"
+    _chat_posted "$(_chat_ask chat.post_file "$req")" "$thread"
+}
+
+# $1=a thread's ts or "", $2=the ts the messages must come before or "", each checked by sot-fe as `<seconds>.<six digits>`.
+# Reads the channel mapped to the row this session runs in (or one thread of it), under its comm handle: ONE `chat.read`, a
+# read that changes nothing, so a failure is exit 2 and there is no exit 3. Prints the daemon's lines, one a message, then the
+# command's own: no message, a history Slack's plan hides, and where older messages begin.
+send_chat_read() {
+    local thread="$1" before="$2" req
+    CHAT_DONE=read
+    _chat_identity
+    _chat_resolve
+    req="$({ printf '%s\n' "$CHAT_PAIR"; sot_json_escape "$CHAT_ROW"; sot_json_escape "$CHAT_HANDLE"; } \
+        | jq -cn --arg thread "$thread" --arg before "$before" 'input as $r | input as $row | input as $name
+            | {v:1, id:3, kind:"req", op:"chat.read",
+               payload: ({target:{row:$row, workspace:$r.workspace, channel:$r.channel}, name:$name}
+                         + (if $thread == "" then {} else {thread:$thread} end)
+                         + (if $before == "" then {} else {before:$before} end))}')"
+    # Past the daemon's own bounds with a margin: the names' 10 s and the read's 15 s (sot-chat's NAMES_ and READ_DEADLINE).
+    export SEND_TIMEOUT="${TIMEOUT:-40}"
+    _chat_read_told "$(_chat_ask chat.read "$req")" "$thread" "$before"
+}
+
+# The read's reply $1 (empty for none) of the thread $2 ("" for the channel) before $3 ("" for now).
+_chat_read_told() {
+    local resp="$1" thread="$2" before="$3" err code more of="this channel"
+    if [ -z "$resp" ]; then
+        echo "refused: no answer from the computer that runs your sessions within ${SEND_TIMEOUT}s (via $ENDPOINT). Nothing was read." >&2
+        exit 2
+    fi
+    err="$(printf '%s' "$resp" | jq -r '.payload.error // empty')"
+    if [ -n "$err" ]; then
+        case "$err" in
+            "unknown op"*)
+                _chat_refused unsupported "the computer that runs your sessions runs an older Ship of Tools, which cannot read the channel back" ;;
+        esac
+        code="$(printf '%s' "$resp" | jq -r '.payload.code // "?"')"
+        [ "$code" != bad_request ] || _chat_refused bad_request "the request is not valid (this session's handle is not its session's, or a time is not a message's time)"
+        _chat_refused "$code" "$err"
+    fi
+    # Each line is one message: a line break inside one is a space, and every other control byte of the line too.
+    printf '%s' "$resp" | jq -r '.payload.lines[]? | strings | split("\n") | join(" ")' | LC_ALL=C tr '\000-\011\013-\037\177' ' '
+    if [ "$(printf '%s' "$resp" | jq -r '(.payload.lines // []) | length')" = 0 ]; then
+        [ -z "$thread" ] || of="thread $thread"
+        echo "no message in $of${before:+ before $before}"
+    fi
+    if [ "$(printf '%s' "$resp" | jq -r '.payload.limited // false')" = true ]; then
+        echo "older messages are hidden by Slack's plan for this workspace"
+    fi
+    more="$(printf '%s' "$resp" | jq -r '.payload.more // empty')"
+    if [[ "$more" =~ ^[0-9]{1,20}\.[0-9]{6}$ ]]; then
+        echo "more: older messages are not shown; to read them, run sot-fe chat read ${thread:+--thread $thread }--before $more"
+    fi
 }
 
 # $1=the message's ts, which sot-fe has checked is `<seconds>.<six digits>`. Deletes that message of the channel mapped to

@@ -1,4 +1,4 @@
-//! The chat's request ops: `chat.resolve`, `chat.history`, `chat.post`, `chat.post_file`, `chat.delete` and `chat.file`, each a job (never the
+//! The chat's request ops: `chat.resolve`, `chat.history`, `chat.post`, `chat.post_file`, `chat.delete`, `chat.read` and `chat.file`, each a job (never the
 //! loop), and `chat.watch` and `chat.unwatch`, which run in the loop. Every action that reaches Slack passes `Chat::admit` first, on the blocking pool, since admission
 //! canonicalizes the row's folder on the shared home; the Slack call then runs on the job's own task, and each of its
 //! bounds is the API's own deadline. A post is made once here and never again: no path of this file retries, and an
@@ -11,18 +11,20 @@ use std::time::Instant;
 
 use anyhow::Result;
 use serde::Deserialize;
-use sot_chat::api::{refuses_the_token, ApiError, Bounds, Continuation, DeleteOutcome, FileFetch, FileOutcome, FileVariant, HistoryQuery, PostKind, PostOutcome};
+use sot_chat::api::{refuses_the_token, ApiError, Bounds, Continuation, DeleteOutcome, FileFetch, FileOutcome, FileVariant, HistoryQuery, PostKind, PostOutcome, ScanPage, ScanQuery};
 use sot_chat::config::{self, Resolution};
 use sot_chat::http::HttpError;
+use sot_chat::mail::read_lines;
 use sot_protocol::ops::{
     op, ChatChannel, ChatCode, ChatDeleteReq, ChatDeleteRes, ChatFileReq, ChatFileRes, ChatFileVariant, ChatHistoryReq, ChatHistoryRes, ChatPostFileReq, ChatPostFileRes, ChatPostKind,
-    ChatPostReq, ChatPostRes, ChatResolveReq, ChatResolveRes, ChatTarget, ChatUnwatchReq, ChatUnwatchRes, ChatUpper,
-    ChatWatchReq, ChatWatchRes, MAX_CHAT_FILE,
+    ChatPostReq, ChatPostRes, ChatReadReq, ChatReadRes, ChatResolveReq, ChatResolveRes, ChatTarget, ChatUnwatchReq, ChatUnwatchRes, ChatUpper,
+    ChatWatchReq, ChatWatchRes, MAX_CHAT_FILE, MAX_CHAT_READ,
 };
 use sot_protocol::chat::Ts;
 use sot_protocol::reply::HandlerOutput;
 use sot_protocol::{BlobDescriptor, Frame};
 
+use super::setup::now;
 use super::watch::Conn;
 use super::Chat;
 use crate::rows::handle::bound_handle;
@@ -375,6 +377,44 @@ pub(crate) async fn delete(req_id: u64, payload: serde_json::Value, chat: &Arc<C
     };
     log(&res, &why);
     reply(req_id, NAME, &res)
+}
+
+/// `chat.read`: a session's read of its own channel, or of one thread of it, as the daemon's words (`read_lines`). After
+/// admission, as a delete's, and before any Slack call: the name must be the row's bound handle (`bad_request`). One
+/// `Api::scan` of the newest `MAX_CHAT_READ` messages before the request's `before` (the clock's now when absent), one
+/// name fill, no cursor and no write. A thread Slack does not find reads as no message.
+pub(crate) async fn read(req_id: u64, payload: serde_json::Value, chat: &Arc<Chat>, rows: &Workspaces) -> Result<HandlerOutput> {
+    const NAME: &str = op::CHAT_READ;
+    let req = match decode::<ChatReadReq>(payload) {
+        Ok(r) => r,
+        Err(c) => return Ok(refuse(req_id, NAME, c)),
+    };
+    let service = match admitted(chat, rows, req.target.clone()).await {
+        Ok(s) => s,
+        Err(c) => return Ok(refuse(req_id, NAME, c)),
+    };
+    if !is_bound(&req.name, &req.target.row, rows) {
+        return Ok(refuse(req_id, NAME, ChatCode::BadRequest));
+    }
+    let api = match service.api() {
+        Ok(a) => a,
+        Err(_) => return Ok(refuse(req_id, NAME, ChatCode::Unavailable)),
+    };
+    let before = req.before.clone().unwrap_or_else(now);
+    let thread = req.thread.as_ref().map(|t| t.as_str());
+    let query = Bounds::new(Some("0.000000"), Some(before.as_str()), None).and_then(|b| ScanQuery::new(req.target.channel.as_str(), thread, b, MAX_CHAT_READ));
+    let query = match query {
+        Ok(q) => q,
+        Err(e) => return Ok(refuse(req_id, NAME, code_of(&e))),
+    };
+    let mut page = match api.scan(&query).await {
+        Ok(p) => p,
+        Err(ApiError::Slack(code)) if code == "thread_not_found" && thread.is_some() => ScanPage::default(),
+        Err(e) => return Ok(refuse(req_id, NAME, read_code(&e))),
+    };
+    api.fill_names(&mut page.records).await;
+    let more = if page.has_more { page.oldest.clone() } else { None };
+    reply(req_id, NAME, &ChatReadRes { lines: read_lines(&page, thread.is_some()), more, limited: page.limited })
 }
 
 /// The file `node_id` names beneath the row's root, read whole once, so the bytes shared are the bytes read: its base

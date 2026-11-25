@@ -662,7 +662,7 @@ fn edit(env: &Env, folder: &str, target: Option<(&str, &str)>, by: Pairer) -> Re
 }
 
 /// The clock's reading now, as a message timestamp.
-fn now() -> Ts {
+pub(super) fn now() -> Ts {
     let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
     Ts::parse(&format!("{}.{:06}", t.as_secs(), t.subsec_micros())).expect("seconds and six digits are a timestamp")
 }

@@ -60,7 +60,7 @@ over this page. The table above says what each guarantees to the rest.
   Rests on: the OS. Owns no runtime state. Does not: start processes for anyone but the native launcher it hands out.
 - **wire:** `rust/protocol/CLAUDE.md`, the frames and payloads between our programs (the lanes' frames are the capsule's,
   the sidecars' protocols the sidecars'). Rests on: serde, the compiler, platform. Owns nothing at run time.
-- **chat:** `rust/chat/CLAUDE.md`, crate `sot-chat`, on wire, platform and `toml`. `sotd` builds its service on the configured hub alone (`rust/backend/src/chat.rs`), and admits each chat action through one recheck of its row and channel; its seven request ops, `chat.post_file` and `chat.file` among them, are dispatched to it (`rust/backend/src/chat/ops.rs`; the setup's three in `chat/setup.rs`), and the watches and the `chat.changed` and `chat.status` events are served (`rust/backend/src/chat/watch.rs`). Owns:
+- **chat:** `rust/chat/CLAUDE.md`, crate `sot-chat`, on wire, platform and `toml`. `sotd` builds its service on the configured hub alone (`rust/backend/src/chat.rs`), and admits each chat action through one recheck of its row and channel; its nine request ops, `chat.post_file`, `chat.delete`, `chat.read` and `chat.file` among them, are dispatched to it (`rust/backend/src/chat/ops.rs`; the setup's three in `chat/setup.rs`), and the watches and the `chat.changed` and `chat.status` events are served (`rust/backend/src/chat/watch.rs`). Owns:
   normalization of Slack's message JSON into the wire's record (representation: wire's), `http`, the one door to the
   network, the Slack calls, the Socket Mode listener, and the configuration and channel mapping read through platform's
   config folder. Does not: hold a credential at rest, resolve a row, lock a workspace or file mail.
@@ -492,10 +492,13 @@ project's channel is a tree, every running workspace a row that opens in place w
 its channels beneath it, drawn as the nav pane draws its rows (the maintainer asked that day that choosing a Slack
 workspace and channel look and work like the window's file and session navigation; the three landings of a
 written plan; the paging between workspaces with Left and Right is gone; proved by unit tests only, seen in no
-window, CHAT-PICKER-TREE-NOT-SEEN); and, on `main` since 2026-11-25 and used by no person, the daemon's log carries
-one line for each post or file post that ends unknown, with the Slack step and a fixed code for why (a session had seen
-a post end unknown with nothing to say which failure it was; CHAT-POST-UNKNOWN-NOT-READ-BACK, whose second half, a
-session reading its channel back, is not built, though the read's lines and payloads are, called by nothing yet); and, the same day and used by no person, three chat words a session found
+window, CHAT-PICKER-TREE-NOT-SEEN); and, on `main` since 2026-11-25 and used by no person, a session reads its project's
+channel, or one thread of it, back with `sot-fe chat read` (the newest 50 messages as one line each: time, who, files and
+first words, with a deleted parent whose thread has replies listed as one line), the exit-3 words of a post name the read that
+shows whether it went out, and the daemon's log carries one line for each post or file post that ends unknown, with the Slack
+step and a fixed code for why (a session had seen a post end unknown with nothing to say why or whether it existed, and
+another could not name its file posts to the delete; CHAT-POST-UNKNOWN-NOT-READ-BACK and
+CHAT-DELETE-CANNOT-REACH-A-FILE-POST, Closed; proved against the fake Slack only, CHAT-READ-UNMEASURED); and, the same day and used by no person, three chat words a session found
 unclear (a pairing that delivers says new posts reach this project's session when it is the session's own, an unpairing says a
 delivering channel's posts no longer reach it, and a chat mail's first line names the channel as `#<name> (<id>)` when the
 daemon's name cache holds it);

@@ -62,6 +62,8 @@ pub(super) struct Levers {
     pub(super) hello_app: Arc<Mutex<Option<String>>>,
     /// The name `conversations.info` answers for any channel (unset: the call is unknown, so no channel has a name).
     pub(super) channel_name: Arc<Mutex<Option<String>>>,
+    /// While set, a file's share answers no `ts` of its own, as Slack's answers have.
+    pub(super) no_share_ts: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// A fake Slack with a live socket: `auth.test` names the workspace, history answers an empty page, a file's upload is
@@ -83,11 +85,12 @@ pub(super) async fn live() -> (FakeSlack, Levers) {
         bot_app: Arc::new(Mutex::new(None)),
         hello_app: Arc::new(Mutex::new(None)),
         channel_name: Arc::new(Mutex::new(None)),
+        no_share_ts: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
     let (mode, gate, acked, histories, hello, channel) = (lv.mode.clone(), lv.gate.clone(), lv.acked.clone(), lv.histories.clone(), lv.hello.clone(), lv.channel.clone());
     let (replies_fail, replies_failed, names_hang) = (lv.replies_fail.clone(), lv.replies_failed.clone(), lv.names_hang.clone());
-    let (bot_app, hello_app, channel_name) = (lv.bot_app.clone(), lv.hello_app.clone(), lv.channel_name.clone());
-    let upload = Upload::new();
+    let (bot_app, hello_app, channel_name, no_share_ts) = (lv.bot_app.clone(), lv.hello_app.clone(), lv.channel_name.clone(), lv.no_share_ts.clone());
+    let (upload, upload_no_ts) = (Upload::new(), Upload::new().no_ts());
     let fake = FakeSlack::start(Identity::Trusted, move |seen, port| {
         let path = seen.path();
         if path.ends_with("/auth.test") {
@@ -97,8 +100,11 @@ pub(super) async fn live() -> (FakeSlack, Levers) {
             }
             return Reply::json(&json!({"ok": true, "team_id": "T0AAAA", "user_id": "U0BOT", "bot_id": "B0BOT"}));
         }
-        if let Some(r) = upload.reply(seen, port) {
+        if let Some(r) = (if no_share_ts.load(Ordering::SeqCst) { &upload_no_ts } else { &upload }).reply(seen, port) {
             return r;
+        }
+        if path.ends_with("/chat.delete") {
+            return Reply::json(&json!({"ok": true}));
         }
         if let (true, Some(app)) = (path.ends_with("/bots.info"), bot_app.lock().unwrap().clone()) {
             return Reply::json(&json!({"ok": true, "bot": {"id": "B0BOT", "app_id": app}}));

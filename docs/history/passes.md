@@ -3554,3 +3554,9 @@ the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the sa
       `ChatReadRes` with their bounds, and no op.
     - The tests were mutated once: without the whitespace collapse two fail, and with a file id cut at 64 instead of
       32 the worst line passes 4096 bytes and its test fails.
+- A session's read of its channel, the op and the verb, 2026-11-25: the third landing of the same plan.
+    - The daemon's `chat.read` admits a read as a delete is admitted (the row's current mapping, the row's bound handle) and
+      makes one scan of the channel or thread; `sot-fe chat read` sends it after one resolve and prints the daemon's lines
+      as one line each, then where older messages begin. The exit-3 words of a post now name the read, the skills and the
+      manual say how to read the channel back and that a file post is found by its id, and two defects close.
+    - The fake Slack's live fixture gained a lever for a share that names no time, and a delete's answer.

@@ -247,9 +247,9 @@ case_each_outcome_has_its_words_and_exit_code() {
 {"outcome":"refused","code":"busy"}|2|refused busy the chat is busy; try again in a moment
 {"outcome":"refused","code":"bad_request"}|2|refused bad_request the request is not valid (empty or over-long text, or a name that is not this session's)
 {"outcome":"limited","retry_after_secs":12,"assumed":false}|2|limited, wait 12 s
-{"outcome":"unknown"}|3|unknown: the post may exist; do not send it again; ask the person to look in the channel
-{"outcome":"somethingelse"}|3|unknown: the post may exist; do not send it again; ask the person to look in the channel
-{"error":"the chat request failed","code":"handler_error"}|3|unknown: the post may exist; do not send it again; ask the person to look in the channel
+{"outcome":"unknown"}|3|unknown: the post may exist; do not send it again; to see whether it went out, run sot-fe chat read --thread 1700000050.000000
+{"outcome":"somethingelse"}|3|unknown: the post may exist; do not send it again; to see whether it went out, run sot-fe chat read --thread 1700000050.000000
+{"error":"the chat request failed","code":"handler_error"}|3|unknown: the post may exist; do not send it again; to see whether it went out, run sot-fe chat read --thread 1700000050.000000
 {"error":"the session's project now has another channel","code":"stale_mapping"}|2|refused stale_mapping the session's project now has another channel
 EOF
     [ -z "$bad" ] || { echo "$bad"; return 1; }
@@ -280,7 +280,7 @@ case_no_answer_to_the_post_is_one_request_and_exit_3() {
     stage_reply chat.resolve "$MAPPED"; start_stub_daemon
     run_chat "" SOT_WORKSPACE_ID=$ROW STUB_NAME=alpha-h -- "hi"
     local p; p="$(sent chat.post)"; stop_stub_daemon
-    [ "$CH_RC" = 3 ] && contains "$CH_OUT" "no answer: the post may exist; do not send it again; ask the person to look in the channel" && [ "$p" = 1 ] \
+    [ "$CH_RC" = 3 ] && contains "$CH_OUT" "no answer: the post may exist; do not send it again; to see whether it went out, run sot-fe chat read" && ! contains "$CH_OUT" "--thread" && [ "$p" = 1 ] \
         || { echo "rc=$CH_RC post_requests=$p out=$CH_OUT"; return 1; }
 }
 
@@ -389,9 +389,9 @@ case_each_file_outcome_has_its_words_and_exit_code() {
 {"error":"the file is not a readable file in the project's folder","code":"not_a_file"}|2|refused not_a_file the file is not a readable file in the project's folder
 {"error":"the file is larger than the chat carries","code":"too_large"}|2|refused too_large the file is larger than the chat carries
 {"outcome":"limited","retry_after_secs":12,"assumed":false}|2|limited, wait 12 s
-{"outcome":"unknown"}|3|unknown: the post may exist; do not send it again; ask the person to look in the channel
-{"outcome":"somethingelse"}|3|unknown: the post may exist; do not send it again; ask the person to look in the channel
-{"error":"the chat request failed","code":"handler_error"}|3|unknown: the post may exist; do not send it again; ask the person to look in the channel
+{"outcome":"unknown"}|3|unknown: the post may exist; do not send it again; to see whether it went out, run sot-fe chat read --thread 1700000050.000000
+{"outcome":"somethingelse"}|3|unknown: the post may exist; do not send it again; to see whether it went out, run sot-fe chat read --thread 1700000050.000000
+{"error":"the chat request failed","code":"handler_error"}|3|unknown: the post may exist; do not send it again; to see whether it went out, run sot-fe chat read --thread 1700000050.000000
 EOF
     [ -z "$bad" ] || { echo "$bad"; return 1; }
 }
@@ -400,7 +400,7 @@ case_no_answer_to_the_file_post_is_one_request_and_exit_3() {
     stage_reply chat.resolve "$MAPPED"; start_stub_daemon
     run_chat "" SOT_WORKSPACE_ID=$ROW SOT_WORKSPACE_ROOT="$PROJ" STUB_NAME=alpha-h -- --file "$PROJ/figs/fit.png" "the fit"
     local p; p="$(sent chat.post_file)"; stop_stub_daemon
-    [ "$CH_RC" = 3 ] && contains "$CH_OUT" "no answer: the post may exist; do not send it again; ask the person to look in the channel" && [ "$p" = 1 ] \
+    [ "$CH_RC" = 3 ] && contains "$CH_OUT" "no answer: the post may exist; do not send it again; to see whether it went out, run sot-fe chat read" && ! contains "$CH_OUT" "--thread" && [ "$p" = 1 ] \
         || { echo "rc=$CH_RC post_file_requests=$p out=$CH_OUT"; return 1; }
 }
 
@@ -963,6 +963,151 @@ case_pair_verbs_refuse_the_post_flags() {
     [ -z "$bad" ] && [ "$n" = 0 ] || { echo "$bad sent=$n"; return 1; }
 }
 
+# --- chat read -------------------------------------------------------------
+
+RLINE1='1700000100.000100 top replies=2 person "Ada Example" files=none | can you plot the run?'
+RLINE2='1700000500.000400 reply thread=1700000100.000100 session "alpha-h" files=F0FILE:"fit.png" | the fit'
+# The row mapped and the read answered with the JSON object $1; the verb run with the arguments after it.
+read_answered() {
+    local reply="$1"; shift
+    stage_reply chat.resolve "$MAPPED"
+    stage_reply chat.read "{\"v\":1,\"id\":3,\"kind\":\"res\",\"op\":\"chat.read\",\"payload\":$reply}"
+    start_stub_daemon
+    CH_VERB=read run_chat "" SOT_WORKSPACE_ID=$ROW STUB_NAME=alpha-h -- "$@"
+}
+read_field() { jq -r "select(.op==\"chat.read\") | $1" "$WORK/req-$STUBN.log"; }
+# The lines one reply prints, as the verb is run with the arguments; they are the daemon's, as sent.
+case_read_is_one_resolve_then_one_read_with_the_handle_and_prints_the_daemons_lines() {
+    local bad="" args want r d first keys ids got
+    while IFS='|' read -r args want; do
+        # shellcheck disable=SC2086
+        read_answered "$(jq -nc --arg a "$RLINE1" --arg b "$RLINE2" '{lines:[$a,$b]}')" $args
+        r="$(sent chat.resolve)"; d="$(sent chat.read)"
+        first="$(jq -r 'select(.op=="chat.resolve" or .op=="chat.read") | .op' "$WORK/req-$STUBN.log" | head -n 1)"
+        keys="$(read_field '.payload | keys | join(",")')"
+        ids="$(read_field '[.payload.target.row, .payload.target.workspace, .payload.target.channel, .payload.name] | join(" ")')"
+        got="$(read_field '[.payload.thread // "-", .payload.before // "-"] | join(" ")')"
+        stop_stub_daemon
+        { [ "$CH_RC" = 0 ] && [ "$CH_OUT" = "$RLINE1"$'\n'"$RLINE2" ] && [ "$r" = 1 ] && [ "$d" = 1 ] && [ "$first" = chat.resolve ] \
+            && [ "$ids" = "$ROW T0AAAA C0AAAA alpha-h" ] && [ "$keys;$got" = "$want" ]; } \
+            || bad="$bad [$args: rc=$CH_RC resolve=$r read=$d first=$first ids=$ids keys;got=$keys;$got out=$CH_OUT]"
+    done <<'EOF'
+|name,target;- -
+--thread 1700000050.000000|name,target,thread;1700000050.000000 -
+--before 1700000900.000100|before,name,target;- 1700000900.000100
+--thread 1700000050.000000 --before 1700000900.000100|before,name,target,thread;1700000050.000000 1700000900.000100
+EOF
+    [ -z "$bad" ] || { echo "$bad"; return 1; }
+}
+
+case_read_says_where_older_messages_begin_and_when_there_are_none() {
+    local bad="" args filter want
+    # The reply is a jq filter over $a and $b (the two lines), the wanted output has @1 and @2 for them and \n for a line end.
+    while IFS='~' read -r args filter want; do
+        want="${want//@1/$RLINE1}"; want="${want//@2/$RLINE2}"
+        # shellcheck disable=SC2086
+        read_answered "$(jq -nc --arg a "$RLINE1" --arg b "$RLINE2" "$filter")" $args
+        stop_stub_daemon
+        { [ "$CH_RC" = 0 ] && [ "$CH_OUT" = "$(printf '%b' "$want")" ]; } || bad="$bad [$args: rc=$CH_RC out=$CH_OUT]"
+    done <<'EOF'
+~{lines:[$a],more:"1700000100.000100"}~@1\nmore: older messages are not shown; to read them, run sot-fe chat read --before 1700000100.000100
+--thread 1700000050.000000~{lines:[$b],more:"1700000500.000400",limited:true}~@2\nolder messages are hidden by Slack's plan for this workspace\nmore: older messages are not shown; to read them, run sot-fe chat read --thread 1700000050.000000 --before 1700000500.000400
+~{lines:[]}~no message in this channel
+--before 1700000900.000100~{lines:[]}~no message in this channel before 1700000900.000100
+--thread 1700000050.000000~{lines:[]}~no message in thread 1700000050.000000
+--thread 1700000050.000000 --before 1700000900.000100~{lines:[],limited:true}~no message in thread 1700000050.000000 before 1700000900.000100\nolder messages are hidden by Slack's plan for this workspace
+~{lines:[$a],more:"not a time"}~@1
+EOF
+    [ -z "$bad" ] || { echo "$bad"; return 1; }
+}
+
+case_each_read_refusal_has_its_words_and_exit_code() {
+    local bad="" reply want d
+    while IFS='|' read -r reply want; do
+        read_answered "$reply"
+        stop_stub_daemon
+        { [ "$CH_RC" = 2 ] && [ "$CH_OUT" = "$want" ]; } || bad="$bad [$reply: rc=$CH_RC out=$CH_OUT]"
+    done <<'EOF'
+{"error":"unknown op: chat.read"}|refused unsupported the computer that runs your sessions runs an older Ship of Tools, which cannot read the channel back
+{"error":"the request is not valid","code":"bad_request"}|refused bad_request the request is not valid (this session's handle is not its session's, or a time is not a message's time)
+{"error":"the session's project now has another channel","code":"stale_mapping"}|refused stale_mapping the session's project now has another channel
+{"error":"the chat is not available here","code":"unavailable"}|refused unavailable the chat is not available here
+{"error":"the app is not in the channel","code":"not_in_channel"}|refused not_in_channel the app is not in the channel
+{"error":"the chat request failed","code":"handler_error"}|refused handler_error the chat request failed
+EOF
+    # No answer is exit 2, never 3: a read changes nothing. One read request, never a second.
+    stage_reply chat.resolve "$MAPPED"; start_stub_daemon
+    CH_VERB=read run_chat "" SOT_WORKSPACE_ID=$ROW STUB_NAME=alpha-h --
+    d="$(sent chat.read)"; stop_stub_daemon
+    { [ "$CH_RC" = 2 ] && contains "$CH_OUT" "refused: no answer from the computer that runs your sessions within 3s" && contains "$CH_OUT" "Nothing was read." && [ "$d" = 1 ]; } \
+        || bad="$bad [no answer: rc=$CH_RC reads=$d out=$CH_OUT]"
+    # A resolve that maps nothing reads nothing, and a resolve with no answer says so in a read's words.
+    stage_reply chat.resolve '{"v":1,"id":2,"kind":"res","op":"chat.resolve","payload":{"state":"unmapped"}}'; start_stub_daemon
+    CH_VERB=read run_chat "" SOT_WORKSPACE_ID=$ROW STUB_NAME=alpha-h --
+    d="$(sent chat.read)"; stop_stub_daemon
+    { [ "$CH_RC" = 2 ] && [ "$CH_OUT" = "refused unmapped this session's project has no channel" ] && [ "$d" = 0 ]; } || bad="$bad [unmapped: rc=$CH_RC reads=$d out=$CH_OUT]"
+    start_stub_daemon
+    CH_VERB=read run_chat "" SOT_WORKSPACE_ID=$ROW STUB_NAME=alpha-h --
+    d="$(sent chat.read)"; stop_stub_daemon
+    { [ "$CH_RC" = 2 ] && contains "$CH_OUT" "Nothing was read." && [ "$d" = 0 ]; } || bad="$bad [no resolve answer: rc=$CH_RC reads=$d out=$CH_OUT]"
+    [ -z "$bad" ] || { echo "$bad"; return 1; }
+}
+
+case_read_usage_errors_send_nothing_and_exit_1() {
+    local bad="" envs n args
+    stage_reply chat.resolve "$MAPPED"; stage_reply chat.read '{}'; start_stub_daemon
+    for envs in "STUB_NAME=alpha-h" "SOT_WORKSPACE_ID=$ROW"; do
+        # shellcheck disable=SC2086
+        CH_VERB=read run_chat "" $envs --
+        [ "$CH_RC" = 2 ] && contains "$CH_OUT" "Nothing was sent" || bad="$bad [$envs: rc=$CH_RC out=$CH_OUT]"
+    done
+    for args in "hello" "--stdin" "--file x.png" "--slack-workspace T0AAAA" "--thread notats" "--thread 17.5" "--thread 1700000050.00000" "--thread 1700000050.0000000" \
+                "--before notats" "--before 17.5" "--before 1700000050.0000000" "--before" "--thread 1700000050.000000 extra"; do
+        # shellcheck disable=SC2086
+        CH_VERB=read run_chat "text" SOT_WORKSPACE_ID=$ROW STUB_NAME=alpha-h -- $args
+        [ "$CH_RC" = 1 ] || bad="$bad [$args: rc=$CH_RC out=$CH_OUT]"
+    done
+    # --before is the read's alone.
+    CH_VERB=post run_chat "" SOT_WORKSPACE_ID=$ROW STUB_NAME=alpha-h -- hi --before 1700000050.000100
+    { [ "$CH_RC" = 1 ] && contains "$CH_OUT" "ERROR: --before is only for chat read"; } || bad="$bad [post --before: rc=$CH_RC out=$CH_OUT]"
+    CH_VERB=delete run_chat "" SOT_WORKSPACE_ID=$ROW STUB_NAME=alpha-h -- 1700000000.000100 --before 1700000050.000100
+    { [ "$CH_RC" = 1 ] && contains "$CH_OUT" "ERROR: --before is only for chat read"; } || bad="$bad [delete --before: rc=$CH_RC out=$CH_OUT]"
+    n="$(sent_any)"; stop_stub_daemon
+    [ -z "$bad" ] && [ "$n" = 0 ] || { echo "$bad sent=$n"; return 1; }
+}
+
+# A line the daemon sent with a control byte, an escape or a line break in it prints as one line: nothing of it reaches the
+# terminal as a control, and no line starts where the daemon's did not.
+case_a_read_line_with_a_control_byte_prints_as_one_line() {
+    local forged want
+    forged="$(printf '1700000100.000100 top person "x" files=none | a\033[2Jb\007c\r\nforged line\001d\te\177f')"
+    read_answered "$(jq -nc --arg a "$forged" --arg b "$RLINE2" '{lines:[$a,$b]}')"
+    stop_stub_daemon
+    want="$(printf '1700000100.000100 top person "x" files=none | a [2Jb c  forged line d e f\n%s' "$RLINE2")"
+    { [ "$CH_RC" = 0 ] && [ "$CH_OUT" = "$want" ] && [ "$(printf '%s\n' "$CH_OUT" | wc -l | tr -d ' ')" = 2 ]; } \
+        || { echo "rc=$CH_RC out=$(printf '%s' "$CH_OUT" | od -c | head -8)"; return 1; }
+}
+
+# The read's wait is past the daemon's own bounds for it, read from sot-chat's constants, by at least 5 s: the names'
+# and the read's deadlines.
+case_the_read_wait_is_past_the_daemons_own_bounds() {
+    local api="$SCRIPT_DIR/../../rust/chat/src/api.rs" chat="$SCRIPT_DIR/../sot-fe/sot-fe-chat.sh" read names wait
+    secs() { sed -n "s/^pub const $1: Duration = Duration::from_secs(\([0-9]*\));.*/\1/p" "$api"; }
+    read="$(secs READ_DEADLINE)"; names="$(secs NAMES_DEADLINE)"
+    wait="$(sed -n '/^send_chat_read()/,/^}/s/.*TIMEOUT:-\([0-9]*\)}.*/\1/p' "$chat")"
+    [ -n "$read" ] && [ -n "$names" ] && [ -n "$wait" ] && [ "$wait" -ge $((names + read + 5)) ] \
+        || { echo "read=$read names=$names wait=$wait"; return 1; }
+}
+
+# A post that ended with no answer, into a thread, names that thread in the read it points to.
+case_no_answer_to_a_post_in_a_thread_points_to_that_threads_read() {
+    stage_reply chat.resolve "$MAPPED"; start_stub_daemon
+    run_chat "" SOT_WORKSPACE_ID=$ROW STUB_NAME=alpha-h -- --thread 1700000050.000000 "hi"
+    stop_stub_daemon
+    [ "$CH_RC" = 3 ] && contains "$CH_OUT" "no answer: the post may exist; do not send it again; to see whether it went out, run sot-fe chat read --thread 1700000050.000000" \
+        || { echo "rc=$CH_RC out=$CH_OUT"; return 1; }
+}
+
 check "outside a row the verb is refused before an endpoint is found"                       case_outside_a_row_is_refused_before_an_endpoint
 check "a session with no comm handle is refused before an endpoint is found"                case_no_handle_is_refused_before_an_endpoint
 check "one chat.resolve, then one chat.post of kind row with the handle and the thread"     case_one_resolve_then_one_row_post_with_handle_and_thread
@@ -1008,6 +1153,13 @@ check "the text narrows a listing by name as a pairing compares names"          
 check "a listing says when the list was cut, when it is empty, and prints an unknown name as the id" case_channels_says_when_the_list_was_cut_and_when_it_is_empty_or_the_name_is_unknown
 check "each listing failure prints its words and exits 2, a read never being a post that may exist" case_each_channels_refusal_has_its_words_and_exit_code
 check "the listing verbs are refused outside a session and on bad usage, sending nothing"    case_the_listing_verbs_are_refused_outside_a_session_and_on_bad_usage_sending_nothing
+check "a read is one chat.resolve, then one chat.read with the handle, and prints the daemon's lines" case_read_is_one_resolve_then_one_read_with_the_handle_and_prints_the_daemons_lines
+check "a read says where older messages begin, what Slack's plan hides, and when there are none" case_read_says_where_older_messages_begin_and_when_there_are_none
+check "each read refusal prints its words and exits 2, a read never being a post that may exist" case_each_read_refusal_has_its_words_and_exit_code
+check "a read outside a session or with a usage error sends nothing and exits 1"            case_read_usage_errors_send_nothing_and_exit_1
+check "a read line with a control byte or a line break prints as one line"                  case_a_read_line_with_a_control_byte_prints_as_one_line
+check "the read's wait is past the daemon's own bounds, with a margin"                       case_the_read_wait_is_past_the_daemons_own_bounds
+check "no answer to a post in a thread points to that thread's read"                         case_no_answer_to_a_post_in_a_thread_points_to_that_threads_read
 
 echo ""
 echo "$PASS passed, $FAIL failed, $SKIP skipped"

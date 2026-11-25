@@ -513,6 +513,9 @@ pub mod op {
     /// One message of the row's own channel deleted once, never resent: [`crate::ops::ChatDeleteReq`], reply
     /// [`crate::ops::ChatDeleteRes`].
     pub const CHAT_DELETE: &str = "chat.delete";
+    /// A session reads its own channel or one thread of it, one Slack read, changing nothing: [`crate::ops::ChatReadReq`],
+    /// reply [`crate::ops::ChatReadRes`].
+    pub const CHAT_READ: &str = "chat.read";
     /// The bytes of one picture of the channel, as the reply's blob: [`crate::ops::ChatFileReq`], reply
     /// [`crate::ops::ChatFileRes`].
     pub const CHAT_FILE: &str = "chat.file";

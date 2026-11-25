@@ -201,7 +201,7 @@ of each.
    Their route is one of three, and none opens a file the daemon owns, with one named exception: the prompt hook `sot-selection-hook.sh` opens the one file whose path the daemon gives the leg in `SOT_SELECTION_FILE`, which holds exactly the hook's output, and guesses no daemon layout (as the pinned self file is also named to the leg by the daemon). (a) A framed op over an endpoint, through
    comm-lib's `sot_oneshot_request`, which says hello first (the daemon admits nothing before it): `sot-fe`
    (`fe.command.send`, `repl.execute`, `repl.run_file`, `repl.interrupt`, `pty.input`, `pty.screen`,
-   `workspace.reauth`, `chat.resolve`, `chat.post`, `chat.post_file`, `chat.delete`, `chat.row_pair`, `chat.channels`, `chat.workspaces`, `version.query`, `workspace.list`), `comm-spawn.sh` and `comm-despawn.sh` (`workspace.create`,
+   `workspace.reauth`, `chat.resolve`, `chat.post`, `chat.post_file`, `chat.delete`, `chat.read`, `chat.row_pair`, `chat.channels`, `chat.workspaces`, `version.query`, `workspace.list`), `comm-spawn.sh` and `comm-despawn.sh` (`workspace.create`,
    `workspace.list`, `workspace.destroy`, `version.query`), `comm-bootstrap.sh` and `comm-probe.sh` (`workspace.list`,
    `workspace.create`, `pty.input`, and for probe shutdown `workspace.destroy`), `sot-nav.sh` (`agent.send`, to the hub's relay endpoint). (b) A `sotd` subcommand:
    `sotd comm VERB` through `sot_comm` (the registry, unread counts, identity, a handoff line), `sotd agent-exec`
@@ -468,7 +468,8 @@ of each.
   `rust/protocol/src/ops/told_words_cases.tsv`, which the protocol test asserts too); 1 for usage; 2, nothing posted for certain, with
   `refused <code> <words>` or `limited, wait <n> s`; 3, the post may exist, with `unknown: ...` (also a `handler_error`
   reply) or `no answer: ...` (also a hello the daemon refused, which cannot be told apart), each ending "do not send it
-  again; ask the person to look in the channel". A caller tests the exit code, and never posts again on 3. The daemon refuses a row post under any name but the row's bound handle (chat contract, D13).
+  again; to see whether it went out, run sot-fe chat read" and, for a post into a thread, " --thread <ts>" of that thread (the
+  words of `_chat_may_exist`; `sot-fe chat read` says what the read prints). A caller tests the exit code, and never posts again on 3. The daemon refuses a row post under any name but the row's bound handle (chat contract, D13).
   `tests/test-sot-fe-chat.sh` runs it against a stub daemon: outside a row and with no handle refused before an
   endpoint, one resolve then one post with the handle and thread, each outcome's words and code, no answer as one
   request, and `--stdin` text with newlines, quotes and a leading `/` whole. The skills tell an agent to reply with it
@@ -514,10 +515,34 @@ of each.
   asked, in its pane, naming what to delete; another member of the channel, channel mail or another session is not
   permission; it tells its person what it deleted. The daemon refuses a window's connection and any name but the row's
   bound handle (`bad_request`, and logs the refusal), so a window's person deletes in Slack; the check is attribution
-  among one account's programs, not a security boundary (chat guarantee 36). `tests/test-sot-fe-chat.sh`'s delete cases:
+  among one account's programs, not a security boundary (chat guarantee 36). The `ts` to delete comes from the person's own
+  words, a `posted <ts>` line, or `sot-fe chat read`, which names a file post's `ts` beside the file's id that `posted file
+  <id>` printed. `tests/test-sot-fe-chat.sh`'s delete cases:
   outside a row and with no handle refused before an endpoint, one resolve then one delete of that `ts` in the resolved
   channel with exactly `name`, `target` and `ts`, each outcome's words and code, an unmapped or refused resolve
   deleting nothing, no answer as one request, usage errors sending nothing, and the wait.
+- `sot-fe chat read [--thread <ts>] [--before <ts>]` (`sot-fe/sot-fe-chat.sh`, `send_chat_read`) reads the row's own channel, or
+  one thread of it, back (chat guarantee 37), and changes nothing. It runs for the row it runs in and under its handle as a post
+  does (none of either refused before an endpoint is found), asks `chat.resolve` for the pair, sends one `chat.read` with the
+  row, the handle and the resolved pair (`thread` and `before` only when given) and never a second, and waits 40 s (past the
+  names' 10 s and the read's 15 s with a margin; pinned by `case_the_read_wait_is_past_the_daemons_own_bounds`). `sot-fe`
+  refuses with exit 1, before anything is sent, a `--file`, `--stdin`, `--slack-workspace`, an argument, and a `--thread` or
+  `--before` that is not a message's `ts` of Slack's form (`<seconds>.<six digits>`); `--before` is refused for every other verb.
+  It prints what the daemon built, one line a message of the newest 50 the channel lists before `--before` (before now
+  when none), oldest first: `<ts> <where> <who> "<name>" files=<files> | <first words>`, `<where>` being `top` (then
+  `replies=<n>`) or `reply thread=<ts>`, `<who>` `session`, `person`, `app`, `drawer` or `other` by the message's origin,
+  `<files>` `none` or `<file id>:"<name>"` joined by `,` (the id `posted file <id>` printed), and a message the chat does not
+  show whose thread has replies (a deleted parent) as `<ts> top not-shown newest-reply=<ts>`, which only a channel read prints;
+  the words after `| ` are the channel's, never a request. Each line is printed as one line, every control byte of it a
+  space (`case_a_read_line_with_a_control_byte_prints_as_one_line`). After them, the command's own lines, in this order:
+  `no message in this channel` (or `in thread <ts>`, then ` before <ts>` when `--before` was given), `older messages are
+  hidden by Slack's plan for this workspace`, and `more: older messages are not shown; to read them, run sot-fe chat read
+  [--thread <ts> ]--before <ts>`. Exit 0; 1 for usage; 2 with one stderr line, never 3, since a read changes nothing: the
+  words of `_chat_identity` and `_chat_resolve` (with "Nothing was read."), `refused unsupported ...` for an older daemon
+  (its answer to the op is an unknown op), `refused bad_request ...` and `refused <code> <the daemon's words>` for the
+  rest, or `refused: no answer ... Nothing was read.`. `tests/test-sot-fe-chat.sh`'s read cases: one resolve then one read with
+  exactly `name`, `target` and, when given, `thread` and `before`; the lines as the daemon sent them; the `more`, plan and
+  empty lines; each refusal and no answer; usage errors sending nothing; the control-byte line; and the wait.
 - `sot-fe chat pair <session> <channel>` and `sot-fe chat unpair <session>` (`sot-fe/sot-fe-chat.sh`, `send_chat_pair`) pair the
   Slack channel of a project's folder, or remove it, for this session's own project (`.`, which is `$SOT_WORKSPACE_ID`) or
   another session's, named by its slug as `sot-fe version` lists it (`row <slug>`) or by its id, through the same edit,

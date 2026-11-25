@@ -961,3 +961,197 @@ async fn a_filed_mail_names_its_channel_when_the_name_cache_holds_it() {
     assert_eq!(w.filed(), vec![stamp(1)], "the second line is the filing's identity as before");
     stop(chat);
 }
+
+/// A row's connection to the running chat, the temp root its services stand on, and the row's id.
+async fn session(w: &World, chat: &Arc<Chat>) -> (super::chat_ops_tests::Conn, tempfile::TempDir, String) {
+    let root = tempfile::tempdir().unwrap();
+    let mut services = Services::for_test("t", root.path());
+    services.chat = chat.clone();
+    services.workspaces = w.rows.clone();
+    (super::chat_ops_tests::connect(services).await, root, w.rows.list()[0].workspace_id.clone())
+}
+
+/// A session's `chat.read` as the verb sends it.
+fn read_of(row: &str, channel: &str, name: &str, thread: Option<&str>, before: Option<&str>) -> Value {
+    let mut req = json!({"target": super::chat_ops_tests::target(row, channel), "name": name});
+    for (key, value) in [("thread", thread), ("before", before)] {
+        if let Some(value) = value {
+            req[key] = json!(value);
+        }
+    }
+    req
+}
+
+/// The reads the fake's history and replies answered, by path.
+fn reads(fake: &FakeSlack) -> Vec<sot_chat::fake_slack::Seen> {
+    fake.seen().into_iter().filter(|s| s.path().ends_with("/conversations.history") || s.path().ends_with("/conversations.replies")).collect()
+}
+
+fn lines_of(reply: &Value) -> Vec<String> {
+    reply["lines"].as_array().unwrap_or_else(|| panic!("{reply}")).iter().map(|l| l.as_str().unwrap().to_string()).collect()
+}
+
+/// The app's own file share, as Slack stores it: a row's label and comment, the file, in `thread` when given.
+fn stored_share(ts: &str, thread: Option<&str>, comment: &str, file: &str, name: &str) -> Value {
+    let mut share = json!({
+        "ts": ts, "subtype": "file_share", "bot_id": "B0BOT", "user": "U0BOT", "text": format!("alpha-h (row via Ship of Tools): {comment}"),
+        "files": [{"id": file, "name": name, "mimetype": "image/png", "size": 5}],
+    });
+    if let Some(thread) = thread {
+        share["thread_ts"] = json!(thread);
+    }
+    share
+}
+
+/// A session's read of its channel is one scan of the newest fifty messages, oldest first, its deleted parent one
+/// `not-shown` line, and it says where the older ones begin: the next read, before that time, holds the rest and none twice.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_reads_its_own_channel_in_one_scan_and_is_told_where_older_ones_begin() {
+    let w = world(false).await;
+    let chat = w.start(&w.fake).await;
+    let tombstone = json!({"ts": stamp(59), "subtype": "tombstone", "thread_ts": stamp(59), "latest_reply": stamp(90)});
+    let channel = (1..=58).fold(History::new(), |h, n| h.post(&stamp(n))).raw(tombstone).raw(stored_share(&stamp(60), None, "the fit", "F0FILE", "fit.png"));
+    serve(&w.lv, channel);
+    let (mut conn, _root, alpha) = session(&w, &chat).await;
+
+    let first = conn.ask(10, op::CHAT_READ, read_of(&alpha, "C0AAAA", "alpha-h", None, None)).await;
+    let seen = reads(&w.fake);
+    assert_eq!(seen.len(), 1, "one read of Slack");
+    let params: Vec<(&str, Option<String>)> = ["oldest", "inclusive", "limit", "cursor", "ts"].iter().map(|k| (*k, seen[0].param(k))).collect();
+    assert_eq!(params, [("oldest", Some("0.000000".into())), ("inclusive", Some("false".into())), ("limit", Some("50".into())), ("cursor", None), ("ts", None)]);
+    assert!(seen[0].path().ends_with("/conversations.history") && seen[0].param("latest").is_some());
+
+    let lines = lines_of(&first);
+    assert_eq!(lines.len(), 50, "{lines:?}");
+    assert!(lines[0].starts_with(&format!("{} top person \"Name-U0MEM\" files=none | text {}", stamp(11), stamp(11))), "{}", lines[0]);
+    assert_eq!(lines[48], format!("{} top not-shown newest-reply={}", stamp(59), stamp(90)));
+    assert_eq!(lines[49], format!("{} top session \"alpha-h\" files=F0FILE:\"fit.png\" | the fit", stamp(60)));
+    assert_eq!(lines.iter().filter(|l| l.contains("not-shown")).count(), 1);
+    assert_eq!((first["more"].as_str(), first.get("limited")), (Some(stamp(11).as_str()), None), "{first}");
+
+    // The second read, before the oldest the first held, holds the other ten and says nothing is older.
+    let second = conn.ask(11, op::CHAT_READ, read_of(&alpha, "C0AAAA", "alpha-h", None, Some(&stamp(11)))).await;
+    let rest = lines_of(&second);
+    assert_eq!(rest.len(), 10, "{rest:?}");
+    assert_eq!(second.get("more"), None, "{second}");
+    let seen = reads(&w.fake);
+    assert_eq!((seen.len(), seen[1].param("latest")), (2, Some(stamp(11))));
+    let times: Vec<&str> = lines.iter().chain(&rest).map(|l| l.split(' ').next().unwrap()).collect();
+    let mut once = times.clone();
+    once.sort_unstable();
+    once.dedup();
+    assert_eq!((once.len(), times.len()), (60, 60), "a message was read twice or missed");
+    stop(chat);
+}
+
+/// A thread read lists the parent first and then the replies, and a thread Slack does not find is empty, never a refusal.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_reads_a_thread_and_one_slack_does_not_find_is_empty() {
+    let w = world(false).await;
+    let chat = w.start(&w.fake).await;
+    let (q, r1, r2) = ("1700000050.000000", "1700000060.000000", "1700000070.000000");
+    let parent = json!({"ts": q, "thread_ts": q, "user": "U0MEM", "text": "the run", "reply_count": 2, "latest_reply": r2});
+    serve(&w.lv, History::new().raw(parent).reply(q, r1).raw(stored_share(r2, Some(q), "the fit", "F0FILE", "fit.png")));
+    let (mut conn, _root, alpha) = session(&w, &chat).await;
+
+    let found = conn.ask(10, op::CHAT_READ, read_of(&alpha, "C0AAAA", "alpha-h", Some(q), None)).await;
+    let seen = reads(&w.fake);
+    assert!(seen[0].path().ends_with("/conversations.replies") && seen[0].param("ts").as_deref() == Some(q), "{:?}", seen[0].path());
+    assert_eq!(
+        lines_of(&found),
+        [
+            format!("{q} top replies=2 person \"Name-U0MEM\" files=none | the run"),
+            format!("{r1} reply thread={q} person \"Name-U0MEM\" files=none | text {r1}"),
+            format!("{r2} reply thread={q} session \"alpha-h\" files=F0FILE:\"fit.png\" | the fit"),
+        ]
+    );
+    assert_eq!(found.get("more"), None, "{found}");
+
+    // A thread Slack answers `thread_not_found` reads as no message, with no refusal.
+    let none = conn.ask(11, op::CHAT_READ, read_of(&alpha, "C0AAAA", "alpha-h", Some("1700000999.000100"), None)).await;
+    assert_eq!(none, json!({"lines": []}));
+    assert_eq!(reads(&w.fake).len(), 2);
+    stop(chat);
+}
+
+/// A thread of more than 50 replies is followed through its `more` time: the thread's first message heads every page, and
+/// each reply is on one page only.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_thread_followed_through_its_more_time_lists_each_reply_once_and_its_first_message_on_every_page() {
+    let w = world(false).await;
+    let chat = w.start(&w.fake).await;
+    let q = "1700000050.000000";
+    let reply = |n: u32| format!("17000001{n:02}.000100");
+    let parent = json!({"ts": q, "thread_ts": q, "user": "U0MEM", "text": "the run", "reply_count": 60, "latest_reply": reply(60)});
+    serve(&w.lv, (1..=60).fold(History::new().raw(parent), |h, n| h.reply(q, &reply(n))));
+    let (mut conn, _root, alpha) = session(&w, &chat).await;
+
+    let first = conn.ask(10, op::CHAT_READ, read_of(&alpha, "C0AAAA", "alpha-h", Some(q), None)).await;
+    let page_one = lines_of(&first);
+    assert_eq!((page_one.len(), first["more"].as_str()), (51, Some(reply(11).as_str())), "{first}");
+    let second = conn.ask(11, op::CHAT_READ, read_of(&alpha, "C0AAAA", "alpha-h", Some(q), first["more"].as_str())).await;
+    let page_two = lines_of(&second);
+    assert_eq!((page_two.len(), second.get("more")), (11, None), "{second}");
+    for page in [&page_one, &page_two] {
+        assert!(page[0].starts_with(&format!("{q} top replies=60 person ")), "the first message heads the page: {}", page[0]);
+    }
+    let replies: Vec<&str> = page_one.iter().chain(&page_two).map(|l| l.split(' ').next().unwrap()).filter(|t| *t != q).collect();
+    let mut once = replies.clone();
+    once.sort_unstable();
+    once.dedup();
+    assert_eq!((once.len(), replies.len()), (60, 60), "a reply was read twice or missed");
+    stop(chat);
+}
+
+/// A name that is not the row's bound handle, another project's channel, a row that is gone and a request that is none
+/// are each refused before Slack is asked.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_read_under_another_name_or_of_another_projects_channel_reaches_no_slack_call() {
+    let w = world(false).await;
+    let chat = w.start(&w.fake).await;
+    let (mut conn, _root, alpha) = session(&w, &chat).await;
+    let code = |reply: &Value| super::chat_ops_tests::code(reply).to_string();
+    for (n, name) in ["someone-else", "ALPHA-H", " alpha-h", ""].into_iter().enumerate() {
+        let reply = conn.ask(10 + n as u64, op::CHAT_READ, read_of(&alpha, "C0AAAA", name, None, None)).await;
+        assert_eq!((code(&reply), reply.get("lines")), ("bad_request".to_string(), None), "name {name:?}: {reply}");
+    }
+    let other = conn.ask(20, op::CHAT_READ, read_of(&alpha, "C0BBBB", "alpha-h", None, None)).await;
+    assert_eq!(code(&other), "stale_mapping");
+    let gone = conn.ask(21, op::CHAT_READ, read_of("ws-gone-0000", "C0AAAA", "alpha-h", None, None)).await;
+    assert_eq!(code(&gone), "stale_row");
+    let not_a_time = conn.ask(22, op::CHAT_READ, json!({"target": super::chat_ops_tests::target(&alpha, "C0AAAA"), "name": "alpha-h", "before": "17.5"})).await;
+    assert_eq!(code(&not_a_time), "bad_request");
+    assert_eq!(reads(&w.fake).len(), 0, "a refused read reached Slack");
+    stop(chat);
+}
+
+/// Slack's share of a file named no message time, so `sot-fe chat post --file` printed only the file's id; the read of the
+/// thread names the id beside the message's time, and that time is the delete's.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_file_post_that_names_no_time_is_found_by_a_read_and_deleted() {
+    let q = "1700000050.000000";
+    let w = world(false).await;
+    w.lv.no_share_ts.store(true, Ordering::SeqCst);
+    std::fs::write(std::path::Path::new(&w.folder).join("fig.png"), b"\x89PNG\r\n\x1a\n a row's synthetic figure").unwrap();
+    let chat = w.start(&w.fake).await;
+    let (mut conn, _root, alpha) = session(&w, &chat).await;
+    let target = super::chat_ops_tests::target(&alpha, "C0AAAA");
+
+    let posted = conn.ask(10, op::CHAT_POST_FILE, json!({"target": target, "thread": q, "kind": "row", "name": "alpha-h", "node_id": "files:fig.png", "comment": "the fit"})).await;
+    assert_eq!(posted, json!({"outcome": "posted", "file": "F0FILE"}), "the share named no time");
+
+    // As Slack stores that share: the app's own file_share in the thread, under a time the post never heard.
+    let at = "1700000800.000300";
+    let parent = json!({"ts": q, "thread_ts": q, "user": "U0MEM", "text": "the run", "reply_count": 1, "latest_reply": at});
+    serve(&w.lv, History::new().raw(parent).raw(stored_share(at, Some(q), "the fit", "F0FILE", "fig.png")));
+    let read = conn.ask(11, op::CHAT_READ, read_of(&alpha, "C0AAAA", "alpha-h", Some(q), None)).await;
+    let found: Vec<String> = lines_of(&read).into_iter().filter(|l| l.contains("F0FILE")).collect();
+    assert_eq!(found, [format!("{at} reply thread={q} session \"alpha-h\" files=F0FILE:\"fig.png\" | the fit")]);
+
+    let time = found[0].split(' ').next().unwrap();
+    let deleted = conn.ask(12, op::CHAT_DELETE, json!({"target": target, "name": "alpha-h", "ts": time})).await;
+    assert_eq!(deleted, json!({"outcome": "deleted"}));
+    let sent = w.fake.seen().into_iter().rfind(|s| s.path().ends_with("/chat.delete")).and_then(|s| s.json()).unwrap();
+    assert_eq!(sent, json!({"channel": "C0AAAA", "ts": at}));
+    stop(chat);
+}
