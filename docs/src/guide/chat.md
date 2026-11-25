@@ -330,7 +330,10 @@ If you ask a session's agent to pair a project with a Slack channel, or to unpai
 <channel>` or `sot-fe chat unpair <session>` in the session, where `<session>` is `.` for the agent's own project or
 another session's name or id (the names `sot-fe version` lists as `row <name>`), and `<channel>` is the channel's name, with or without `#`, or its ID, the
 last part of its link in Slack. A name that more than one channel has, or that no channel the Slack app can see has (a private
-channel shows only once the app is in it), is refused with what to do. The command makes the same change to the chat's settings file
+channel shows only once the app is in it), is refused with what to do, and the agent can list the channels the Slack app can see
+(`sot-fe chat channels`, and the connected workspaces with `sot-fe chat workspaces`) to compare the name you gave with what exists
+and to suggest the nearest names; it lists the private channels the Slack app is in too. The agent's instructions are to pair no channel but the one you named
+without your yes. The command makes the same change to the chat's settings file
 as the channel list does ([Change or remove a project's
 channel](chat-setup.md#Change-or-remove-a-project's-channel)): after a pair the project's sessions post to that channel and,
 where the chat delivers mail, its new posts reach them as mail; after an unpair they no longer do either. A pair joins a

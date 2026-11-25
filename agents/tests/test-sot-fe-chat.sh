@@ -734,10 +734,10 @@ case_a_channel_not_found_on_a_hub_of_several_lists_the_workspaces_and_the_app() 
         want="${want//MORE/$more}"
         { [ "$CH_RC" = 2 ] && [ "$CH_OUT" = "$want" ] && [ "$n" = 1 ]; } || bad="$bad [$refusal $flags $w: rc=$CH_RC reads=$n out=$CH_OUT]"
     done <<'EOF2'
-no_such_channel||two|refused no_such_channel no channel #General that your Slack app can see in Alpha Lab (T0AAAA): a private channel shows only once the app is in it (in that channel in Slack, type /invite @alpha-app), and in a workspace of over 1,000 channels name it by its IDMORE
-no_such_channel|--slack-workspace T0BBBB|two|refused no_such_channel no channel #General that your Slack app can see in Beta Lab (T0BBBB): a private channel shows only once the app is in it (in that channel in Slack, type /invite @beta-app), and in a workspace of over 1,000 channels name it by its IDMORE
+no_such_channel||two|refused no_such_channel no channel #General that your Slack app can see in Alpha Lab (T0AAAA): a private channel shows only once the app is in it (in that channel in Slack, type /invite @alpha-app), and in a workspace of over 1,000 channels name it by its ID; to see the channels your Slack app can see, run sot-fe chat channelsMORE
+no_such_channel|--slack-workspace T0BBBB|two|refused no_such_channel no channel #General that your Slack app can see in Beta Lab (T0BBBB): a private channel shows only once the app is in it (in that channel in Slack, type /invite @beta-app), and in a workspace of over 1,000 channels name it by its ID; to see the channels your Slack app can see, run sot-fe chat channels --slack-workspace T0BBBBMORE
 not_in_channel||two|refused not_in_channel your Slack app is not in that channel and could not join it: in that channel in Slack, type /invite @alpha-app, then run this again; this computer connects these Slack workspaces: T0AAAA (Alpha Lab), T0BBBB (Beta Lab): name another with --slack-workspace <id>
-no_such_channel||one|refused no_such_channel no channel #General that your Slack app can see in Slack workspace T0AAAA: a private channel shows only once the app is in it (in that channel in Slack, type /invite @your Slack app's name), and in a workspace of over 1,000 channels name it by its ID
+no_such_channel||one|refused no_such_channel no channel #General that your Slack app can see in Slack workspace T0AAAA: a private channel shows only once the app is in it (in that channel in Slack, type /invite @your Slack app's name), and in a workspace of over 1,000 channels name it by its ID; to see the channels your Slack app can see, run sot-fe chat channels
 unavailable|--slack-workspace T0ZZZZ|two|refused unavailable the Slack workspace T0ZZZZ is not connected on the computer that runs your sessionsMORE
 unavailable|--slack-workspace T0BBBB|two|refused unavailable the chat does not run on the computer that runs your sessions, or is stopped there
 not_in_channel||none|refused not_in_channel your Slack app is not in that channel and could not join it: in that channel in Slack, type /invite @your Slack app's name, then run this again
@@ -759,6 +759,136 @@ case_a_capitalized_name_read_as_an_id_says_so() {
         { [ "$CH_RC" = 2 ] && contains "$CH_OUT" "$want: a private channel shows only once" && { [ "$channel" != general ] || ! contains "$CH_OUT" "read as a channel ID"; }; } || bad="$bad [$channel: rc=$CH_RC out=$CH_OUT]"
     done
     [ -z "$bad" ] || { echo "$bad"; return 1; }
+}
+
+# --- chat workspaces and chat channels -------------------------------------
+
+# One field of the logged request of op $1.
+listed_field() { jq -r "select(.op==\"$1\") | $2" "$WORK/req-$STUBN.log"; }
+
+WS_TWO='{"v":1,"id":4,"kind":"res","op":"chat.workspaces","payload":{"default":"T0AAAA","workspaces":[{"id":"T0AAAA","name":"Alpha Lab","running":true},{"id":"T0BBBB","running":false}]}}'
+LISTING='{"workspace":"T0AAAA","channels":[{"id":"C0PUB","name":"general","private":false,"member":true,"taken":true},{"id":"C0FREE","name":"Random-Talk","private":false,"member":false},{"id":"G0IN","name":"inside","private":true,"member":true}]}'
+
+# `chat workspaces` is one chat.workspaces and prints one line for each workspace; it sends no chat.channels.
+case_workspaces_is_one_read_and_prints_one_line_each() {
+    stage_reply chat.workspaces "$WS_TWO"; start_stub_daemon
+    CH_VERB=workspaces run_chat "" SOT_WORKSPACE_ID=$ROW STUB_NAME=alpha-h --
+    local w c; w="$(sent chat.workspaces)"; c="$(sent chat.channels)"; stop_stub_daemon
+    local want; want="$(printf '%s\n' 'T0AAAA default running Alpha Lab' 'T0BBBB other stopped (unnamed)')"
+    { [ "$CH_RC" = 0 ] && [ "$CH_OUT" = "$want" ] && [ "$w" = 1 ] && [ "$c" = 0 ]; } || { echo "rc=$CH_RC out=$CH_OUT workspaces=$w channels=$c"; return 1; }
+}
+
+# A channels listing is ONE chat.channels with the row and the handle (and the workspace when named), then one read of the
+# workspace's name; every channel is one line of the same five fields.
+case_channels_sends_one_request_with_the_row_and_handle_and_prints_one_line_each() {
+    local bad="" flags ch ws keys by_row by_name out want
+    for flags in "" "--slack-workspace T0BBBB"; do
+        stage_reply chat.channels "{\"v\":1,\"id\":3,\"kind\":\"res\",\"op\":\"chat.channels\",\"payload\":$LISTING}"
+        stage_reply chat.workspaces "$WS_TWO"; start_stub_daemon
+        CH_VERB=channels run_chat "" SOT_WORKSPACE_ID=$ROW STUB_NAME=alpha-h -- $flags
+        ch="$(sent chat.channels)"; ws="$(listed_field chat.channels '.payload.workspace // "none"')"; keys="$(listed_field chat.channels '.payload | keys | join(",")')"
+        by_row="$(listed_field chat.channels .payload.by.row)"; by_name="$(listed_field chat.channels .payload.by.name)"; stop_stub_daemon
+        out="$CH_OUT"; want="$(printf '%s\n' 'workspace T0AAAA Alpha Lab' 'C0PUB #general public app-in taken' 'C0FREE #Random-Talk public app-out free' 'G0IN #inside private app-in free')"
+        local want_ws=none want_keys="by"; [ -z "$flags" ] || { want_ws=T0BBBB; want_keys="by,workspace"; }
+        { [ "$CH_RC" = 0 ] && [ "$out" = "$want" ] && [ "$ch" = 1 ] && [ "$by_row" = "$ROW" ] && [ "$by_name" = alpha-h ] && [ "$ws" = "$want_ws" ] && [ "$keys" = "$want_keys" ]; } \
+            || bad="$bad [$flags: rc=$CH_RC out=$out requests=$ch by=$by_row/$by_name ws=$ws keys=$keys]"
+    done
+    [ -z "$bad" ] || { echo "$bad"; return 1; }
+}
+
+# The text narrows to the names that contain it, a leading # dropped and capitals ignored; the whole list prints without it.
+case_channels_text_narrows_by_name_as_a_pairing_compares_names() {
+    local bad="" text want
+    while IFS='|' read -r text want; do
+        stage_reply chat.channels "{\"v\":1,\"id\":3,\"kind\":\"res\",\"op\":\"chat.channels\",\"payload\":$LISTING}"
+        stage_reply chat.workspaces "$WS_TWO"; start_stub_daemon
+        CH_VERB=channels run_chat "" SOT_WORKSPACE_ID=$ROW STUB_NAME=alpha-h -- "$text"
+        stop_stub_daemon
+        want="$(printf '%b' "workspace T0AAAA Alpha Lab\n$want")"
+        { [ "$CH_RC" = 0 ] && [ "$CH_OUT" = "$want" ]; } || bad="$bad [$text: rc=$CH_RC out=$CH_OUT]"
+    done <<'EOF2'
+#GEN|C0PUB #general public app-in taken
+random|C0FREE #Random-Talk public app-out free
+Talk|C0FREE #Random-Talk public app-out free
+n|C0PUB #general public app-in taken\nC0FREE #Random-Talk public app-out free\nG0IN #inside private app-in free
+zzz|no channel name contains "zzz"
+#|C0PUB #general public app-in taken\nC0FREE #Random-Talk public app-out free\nG0IN #inside private app-in free
+EOF2
+    [ -z "$bad" ] || { echo "$bad"; return 1; }
+}
+
+# A list Slack cut at its bound ends with one line that says so and that an ID still pairs; a workspace with no name, or one
+# whose name could not be read, is the id alone; a workspace with no channel says so.
+case_channels_says_when_the_list_was_cut_and_when_it_is_empty_or_the_name_is_unknown() {
+    local bad="" cut='{"workspace":"T0AAAA","more":true,"channels":[{"id":"C0PUB","name":"general","private":false,"member":true}]}' empty='{"workspace":"T0BBBB","channels":[]}' out
+    stage_reply chat.channels "{\"v\":1,\"id\":3,\"kind\":\"res\",\"op\":\"chat.channels\",\"payload\":$cut}"; start_stub_daemon
+    CH_VERB=channels run_chat "" SOT_WORKSPACE_ID=$ROW STUB_NAME=alpha-h --
+    stop_stub_daemon
+    out="$(printf '%s\n' 'workspace T0AAAA' 'C0PUB #general public app-in free' "Slack's list was cut after 1 channels; a channel not shown here can still be paired by its ID (the C or G code ending its link in Slack)")"
+    { [ "$CH_RC" = 0 ] && [ "$CH_OUT" = "$out" ]; } || bad="$bad [cut: rc=$CH_RC out=$CH_OUT]"
+    stage_reply chat.channels "{\"v\":1,\"id\":3,\"kind\":\"res\",\"op\":\"chat.channels\",\"payload\":$empty}"; stage_reply chat.workspaces "$WS_TWO"; start_stub_daemon
+    CH_VERB=channels run_chat "" SOT_WORKSPACE_ID=$ROW STUB_NAME=alpha-h --
+    stop_stub_daemon
+    out="$(printf '%s\n' 'workspace T0BBBB' 'your Slack app can see no channel here')"
+    { [ "$CH_RC" = 0 ] && [ "$CH_OUT" = "$out" ]; } || bad="$bad [empty: rc=$CH_RC out=$CH_OUT]"
+    [ -z "$bad" ] || { echo "$bad"; return 1; }
+}
+
+# Every failure of a read is exit 2 with its words, and a read changes nothing; an older daemon's answer says it runs an older
+# Ship of Tools.
+case_each_channels_refusal_has_its_words_and_exit_code() {
+    local bad="" payload flags want n
+    while IFS='|' read -r payload flags want; do
+        stage_reply chat.channels "{\"v\":1,\"id\":3,\"kind\":\"res\",\"op\":\"chat.channels\",\"payload\":$payload}"
+        stage_reply chat.workspaces "$WS_TWO"; start_stub_daemon
+        CH_VERB=channels run_chat "" SOT_WORKSPACE_ID=$ROW STUB_NAME=alpha-h -- $flags
+        n="$(sent chat.channels)"; stop_stub_daemon
+        want="${want//MORE/; this computer connects these Slack workspaces: T0AAAA (Alpha Lab), T0BBBB: name another with --slack-workspace <id>}"
+        { [ "$CH_RC" = 2 ] && [ "$CH_OUT" = "$want" ] && [ "$n" = 1 ]; } || bad="$bad [$payload $flags: rc=$CH_RC requests=$n out=$CH_OUT]"
+    done <<'EOF2'
+{"error":"the request is not valid","code":"bad_request"}||refused bad_request the computer that runs your sessions runs an older Ship of Tools, which cannot tell a session which channels its Slack app can see, or this session's handle is not its session's (sot-fe version lists the sessions)
+{"error":"x","code":"stale_row"}||refused stale_row this session is gone from the computer that runs your sessions, or its project folder cannot be reached
+{"error":"x","code":"unavailable"}||refused unavailable the chat does not run on the computer that runs your sessions, or is stopped there
+{"error":"x","code":"unavailable"}|--slack-workspace T0BBBB|refused unavailable the chat does not run on the computer that runs your sessions, or is stopped there
+{"error":"x","code":"unavailable"}|--slack-workspace T0ZZZZ|refused unavailable the Slack workspace T0ZZZZ is not connected on the computer that runs your sessionsMORE
+{"error":"Slack asked for a pause; try again in a moment","code":"limited"}||refused limited Slack asked for a pause; try again in a moment
+{"error":"the chat is busy; try again in a moment","code":"busy"}||refused busy the chat is busy; try again in a moment
+{"error":"the chat request failed","code":"failed"}||refused failed the chat request failed
+{"error":"unknown op: chat.channels"}||refused unsupported the computer that runs your sessions runs an older Ship of Tools, which cannot tell a session which channels its Slack app can see
+EOF2
+    # No answer at all is one request and exit 2: a read is never a post that may exist.
+    start_stub_daemon
+    CH_VERB=channels run_chat "" SOT_WORKSPACE_ID=$ROW STUB_NAME=alpha-h --
+    n="$(sent chat.channels)"; stop_stub_daemon
+    { [ "$CH_RC" = 2 ] && contains "$CH_OUT" "refused: no answer from the computer that runs your sessions within 3s" && contains "$CH_OUT" "Nothing was changed." && [ "$n" = 1 ]; } || bad="$bad [no answer: rc=$CH_RC requests=$n out=$CH_OUT]"
+    # The workspaces read: the same words for its failures.
+    stage_reply chat.workspaces '{"v":1,"id":4,"kind":"res","op":"chat.workspaces","payload":{"error":"x","code":"unavailable"}}'; start_stub_daemon
+    CH_VERB=workspaces run_chat "" SOT_WORKSPACE_ID=$ROW STUB_NAME=alpha-h --
+    stop_stub_daemon
+    { [ "$CH_RC" = 2 ] && [ "$CH_OUT" = "refused unavailable the chat does not run on the computer that runs your sessions, or is stopped there" ]; } || bad="$bad [workspaces unavailable: rc=$CH_RC out=$CH_OUT]"
+    [ -z "$bad" ] || { echo "$bad"; return 1; }
+}
+
+# Outside a session, or with no handle, nothing is sent; the post flags, a second text and a workspace that is no id are usage
+# errors that send nothing; --slack-workspace is the pair and channels verbs' alone.
+case_the_listing_verbs_are_refused_outside_a_session_and_on_bad_usage_sending_nothing() {
+    local bad="" args envs n
+    stage_reply chat.channels "{\"v\":1,\"id\":3,\"kind\":\"res\",\"op\":\"chat.channels\",\"payload\":$LISTING}"; stage_reply chat.workspaces "$WS_TWO"; start_stub_daemon
+    for verb in channels workspaces; do
+        for envs in "STUB_NAME=alpha-h" "SOT_WORKSPACE_ID=$ROW"; do
+            # shellcheck disable=SC2086
+            CH_VERB=$verb run_chat "" $envs --
+            { [ "$CH_RC" = 2 ] && contains "$CH_OUT" "Nothing was sent"; } || bad="$bad [$verb $envs: rc=$CH_RC out=$CH_OUT]"
+        done
+    done
+    for args in "channels a b" "channels --thread $TS" "channels --stdin" "channels --file x.png" "channels --slack-workspace bad" "channels --slack-workspace t0aaaa" \
+                "workspaces extra" "workspaces --slack-workspace T0AAAA" "workspaces --stdin"; do
+        # shellcheck disable=SC2086
+        CH_VERB=${args%% *} run_chat "text" SOT_WORKSPACE_ID=$ROW STUB_NAME=alpha-h -- ${args#* }
+        [ "$CH_RC" = 1 ] || bad="$bad [$args: rc=$CH_RC out=$CH_OUT]"
+    done
+    n="$(sent_any)"; stop_stub_daemon
+    [ -z "$bad" ] && [ "$n" = 0 ] || { echo "$bad sent=$n"; return 1; }
 }
 
 # Outside a row or with no handle nothing is sent, and the post verb's flags, a missing or extra session and a flag
@@ -834,6 +964,12 @@ check "each pair refusal prints its words and exits with its code"              
 check "a channel not found lists the workspaces and the app from one chat.workspaces read" case_a_channel_not_found_on_a_hub_of_several_lists_the_workspaces_and_the_app
 check "a capitalized name read as an ID says so in the refusal" case_a_capitalized_name_read_as_an_id_says_so
 check "the pairing verbs refuse the post flags and a missing row or handle, sending nothing" case_pair_verbs_refuse_the_post_flags
+check "the workspaces verb is one chat.workspaces and prints one line for each workspace" case_workspaces_is_one_read_and_prints_one_line_each
+check "a channels listing is one chat.channels with the row and the handle, and prints one line of five fields for each channel" case_channels_sends_one_request_with_the_row_and_handle_and_prints_one_line_each
+check "the text narrows a listing by name as a pairing compares names"                      case_channels_text_narrows_by_name_as_a_pairing_compares_names
+check "a listing says when the list was cut, when it is empty, and prints an unknown name as the id" case_channels_says_when_the_list_was_cut_and_when_it_is_empty_or_the_name_is_unknown
+check "each listing failure prints its words and exits 2, a read never being a post that may exist" case_each_channels_refusal_has_its_words_and_exit_code
+check "the listing verbs are refused outside a session and on bad usage, sending nothing"    case_the_listing_verbs_are_refused_outside_a_session_and_on_bad_usage_sending_nothing
 
 echo ""
 echo "$PASS passed, $FAIL failed, $SKIP skipped"

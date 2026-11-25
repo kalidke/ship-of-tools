@@ -1350,6 +1350,20 @@ owned by `docs/CLAUDE.md`.
 
 ## chat
 
+- **CHAT-LIST-UNMEASURED** [note] A session's listing of the Slack workspaces and channels it could pair a project with (`sot-fe chat
+  workspaces` and `sot-fe chat channels`, the daemon's `chat.channels` with `by`, chat guarantee 30), asked by the maintainer on 2026-11-25
+  after a first pairing in use was refused for a channel name the hub's Slack app could not see, is proved against the fake Slack only: no
+  listing has run against real Slack. The checks are made on the first release candidate that carries it, on a live hub: a listing
+  shows the public channels, the private ones the app is in, and no private one it is not in, and marks the channel a project is
+  paired with `taken`; a workspace of over 1,000 channels is cut and says so.
+- **CHAT-LIST-READS-ARE-UNBOUNDED** [note] From reading the code, not seen in use: each session's listing reads up to five pages of
+  Slack's channel list (`Api::channels`), a rate-limit answer to any read pauses every read of that workspace until it passes (the
+  windows' history reads and the delivery's passes too), and nothing bounds how often a session lists. The skill tells a session to list
+  once before a pairing; no limit is built.
+- **CHAT-LIST-SHOWS-PRIVATE-CHANNELS-TO-SESSIONS** [note] A session's `chat.channels` lists the private channels the Slack app is in,
+  by name, to any session of its computer, as the window's channel list shows them to a person. A session is told
+  by its skill not to repeat them to anyone but the person, and the daemon cannot check that; the handle check is attribution among
+  one account's programs, not a security boundary (chat guarantee 30). No limit is built.
 - **CHAT-SESSION-PAIRING-CHURN** [note] From reading the code of a session's pairing, not seen in use: each changed pairing, a
   window's or a session's (`chat.row_pair`, `rust/backend/src/chat/setup.rs`), restarts its Slack workspace, so every window
   watching a channel of it resyncs and each of its delivering channels owes a pass, and nothing bounds how often a session

@@ -679,6 +679,21 @@ impl From<ConfigError> for PairError {
     }
 }
 
+/// Whether another folder's mapping of a channel refuses a pairing by `by` as `ChannelTaken`: a window's takes over the channel
+/// of a folder that is gone, a session's takes nothing (so [`held_channels`] is every mapping's channel).
+fn takes(by: Pairer, folder_exists: bool) -> bool {
+    folder_exists || by == Pairer::Session
+}
+
+/// The channels `text`'s mappings hold, in whatever workspace and whether or not their folder exists: the ones a session's
+/// pairing is refused as `ChannelTaken` (the asking folder's own included, which the pairing answers `unchanged`, or
+/// `FolderPaired` from another workspace). A text that is no TOML is refused as the load refuses it.
+pub fn held_channels(text: &str) -> Result<Vec<String>, ConfigError> {
+    let mappings = parse_table(text)?.remove("mapping");
+    let listed = mappings.iter().filter_map(toml::Value::as_array).flatten();
+    Ok(listed.filter_map(|m| m.get("channel")?.as_str()).map(str::to_string).collect())
+}
+
 /// `chat.toml`'s text with `folder` paired with `target`'s channel in `target`'s workspace, or unpaired for `None`;
 /// `None` when nothing changes (the folder already maps that workspace and that channel: the same channel id in another
 /// workspace is a change). A text the load refuses is refused as it stands and never rewritten. The folder's own
@@ -726,7 +741,7 @@ pub fn pair(
             return Err(PairError::FolderPaired(in_workspace, c));
         }
         if own || channel == Some(c.as_str()) {
-            if !own && (canon(&f).is_some() || by == Pairer::Session) {
+            if !own && takes(by, canon(&f).is_some()) {
                 return Err(PairError::ChannelTaken);
             }
             dropped.push(c);

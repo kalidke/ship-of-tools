@@ -4,8 +4,9 @@
 //! workspace or unmaps it, rewrites `chat.toml` and reloads; `chat.row_pair`, a session's own pairing of a folder, which
 //! makes the same edit, write and reload through the same core; and `chat.workspaces`, the connected workspaces. The first
 //! three are jobs taken from a window's connection only (a row's agent has no use for them, and no token goes on a
-//! command line); `chat.row_pair` is any connection's, attributed by its `by`; `chat.workspaces` is a read any connection
-//! may make. The edit of a file and the reload that follows it hold the setup lock together, so two pairings and a connect
+//! command line), except that `chat.channels` also answers a session that names itself by `by`, so it can compare a name
+//! it was given with the channels that exist; `chat.row_pair` is any connection's, attributed by its `by`;
+//! `chat.workspaces` is a read any connection may make. The edit of a file and the reload that follows it hold the setup lock together, so two pairings and a connect
 //! never lose one another's change. A token is a `Secret` from its decode on: no log line, reply or error here carries a
 //! byte of one, and no request payload is logged.
 
@@ -330,22 +331,32 @@ fn save_tokens(env: &Env, workspace: &str, bot: &Secret, user: &Secret, app: &Se
     Ok(())
 }
 
-/// `chat.channels`: the channels the app of the request's workspace (absent: `chat.toml`'s) can see, with whether it is in
-/// each; the daemon's own list, whole or an error. A workspace whose listener does not run is `unavailable`.
-pub(crate) async fn channels(req_id: u64, payload: serde_json::Value, chat: &Arc<Chat>, window: bool) -> Result<HandlerOutput> {
+/// `chat.channels`: the channels the app of the request's workspace (absent: `chat.toml`'s, whoever asks, as a pairing's is) can
+/// see, with whether it is in each; the daemon's own list, whole or an error. A workspace whose listener does not run is
+/// `unavailable`. A window asks with no `by`. A session asks with its `by`, checked as `chat.row_pair`'s is (`bad_request`, a
+/// handle not its row's); its reply names the workspace and marks each channel some mapping of `chat.toml` as it stands now
+/// holds, `taken` ([`config::held_channels`]). Any other connection with no `by` is `bad_request`. A listing calls only Slack's
+/// list and writes and joins nothing.
+pub(crate) async fn channels(req_id: u64, payload: serde_json::Value, chat: &Arc<Chat>, rows: &Workspaces, window: bool) -> Result<HandlerOutput> {
     const NAME: &str = op::CHAT_CHANNELS;
     let listed = async {
-        if !window {
+        let req = decode::<ChatChannelsReq>(payload)?;
+        if !window && req.by.is_none() {
             return Err(ChatCode::BadRequest);
         }
-        let req = decode::<ChatChannelsReq>(payload)?;
+        if req.by.as_ref().is_some_and(|by| !is_bound(&by.name, &by.row, rows)) {
+            return Err(ChatCode::BadRequest);
+        }
         // The request's workspace, else `chat.toml`'s (C4), fixed whatever runs.
         let workspace = req.workspace.or_else(|| chat.default_workspace()).ok_or(ChatCode::Unavailable)?;
         let api = chat.service_of(&workspace).ok_or(ChatCode::Unavailable)?.api().map_err(|_| ChatCode::Unavailable)?;
+        // The file as it stands now, read as a pairing reads it (its `edit`), before Slack is asked: a listing that will be refused
+        // reads no page of Slack's list.
+        let held = if req.by.is_some() { held_in_file(chat).await? } else { Vec::new() };
         let list = api.channels().await.map_err(|e| code_of(&e))?;
         // An entry whose id the wire refuses is left out, as the call leaves out one with no id.
-        let channels = list.channels.into_iter().filter_map(info).collect();
-        Ok(ChatChannelsRes { channels, more: list.more })
+        let channels = list.channels.into_iter().filter_map(|c| info(c, &held)).collect();
+        Ok(ChatChannelsRes { channels, more: list.more, workspace: req.by.map(|_| workspace) })
     };
     match listed.await {
         Ok(res) => reply(req_id, NAME, &res),
@@ -353,8 +364,23 @@ pub(crate) async fn channels(req_id: u64, payload: serde_json::Value, chat: &Arc
     }
 }
 
-fn info(c: Channel) -> Option<ChatChannelInfo> {
-    Some(ChatChannelInfo { id: ChatChannel::try_from(c.id).ok()?, name: c.name, private: c.private, member: c.member })
+/// [`config::held_channels`] of `chat.toml` as it stands now; a file that cannot be read or is no TOML is `failed`, logged by its kind.
+async fn held_in_file(chat: &Arc<Chat>) -> Result<Vec<String>, ChatCode> {
+    let env = chat.env.clone();
+    let read = tokio::task::spawn_blocking(move || {
+        let dir = config::config_dir(&env).ok_or_else(|| "no config folder".to_string())?;
+        let text = config::read_file(&dir.join(config::CONFIG_FILE)).map_err(|e| format!("{:?}", e.kind()))?;
+        config::held_channels(&text).map_err(|e| format!("{e:?}"))
+    });
+    read.await.unwrap_or(Err("the read's task ended".into())).map_err(|why| {
+        tracing::warn!(%why, "project chat: a session's listing could not read chat.toml");
+        ChatCode::Failed
+    })
+}
+
+fn info(c: Channel, held: &[String]) -> Option<ChatChannelInfo> {
+    let taken = held.contains(&c.id);
+    Some(ChatChannelInfo { id: ChatChannel::try_from(c.id).ok()?, name: c.name, private: c.private, member: c.member, taken })
 }
 
 /// `chat.pair`: the row's folder paired with `channel` of the request's workspace (absent: `chat.toml`'s), or unpaired when

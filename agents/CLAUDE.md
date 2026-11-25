@@ -201,7 +201,7 @@ of each.
    Their route is one of three, and none opens a file the daemon owns, with one named exception: the prompt hook `sot-selection-hook.sh` opens the one file whose path the daemon gives the leg in `SOT_SELECTION_FILE`, which holds exactly the hook's output, and guesses no daemon layout (as the pinned self file is also named to the leg by the daemon). (a) A framed op over an endpoint, through
    comm-lib's `sot_oneshot_request`, which says hello first (the daemon admits nothing before it): `sot-fe`
    (`fe.command.send`, `repl.execute`, `repl.run_file`, `repl.interrupt`, `pty.input`, `pty.screen`,
-   `workspace.reauth`, `chat.resolve`, `chat.post`, `chat.post_file`, `chat.delete`, `chat.row_pair`, `chat.workspaces`, `version.query`, `workspace.list`), `comm-spawn.sh` and `comm-despawn.sh` (`workspace.create`,
+   `workspace.reauth`, `chat.resolve`, `chat.post`, `chat.post_file`, `chat.delete`, `chat.row_pair`, `chat.channels`, `chat.workspaces`, `version.query`, `workspace.list`), `comm-spawn.sh` and `comm-despawn.sh` (`workspace.create`,
    `workspace.list`, `workspace.destroy`, `version.query`), `comm-bootstrap.sh` and `comm-probe.sh` (`workspace.list`,
    `workspace.create`, `pty.input`, and for probe shutdown `workspace.destroy`), `sot-nav.sh` (`agent.send`, to the hub's relay endpoint). (b) A `sotd` subcommand:
    `sotd comm VERB` through `sot_comm` (the registry, unread counts, identity, a handoff line), `sotd agent-exec`
@@ -565,6 +565,31 @@ of each.
   `case_a_channel_not_found_on_a_hub_of_several_lists_the_workspaces_and_the_app` and `case_pair_verbs_refuse_the_post_flags`. Lines the
   chat verbs share and that name project words: the refusals of `_chat_identity` (the unset `SOT_WORKSPACE_ID`, "comm handle") and the line
   `_need_endpoint` prints when no daemon is found, which every `sot-fe` verb prints.
+- `sot-fe chat workspaces` and `sot-fe chat channels [<text>]` (`sot-fe/sot-fe-chat.sh`, `send_chat_workspaces` and
+  `send_chat_channels`) are the reads a pairing's words can be compared with (the maintainer asked on 2026-11-25, after a first pairing
+  in use was refused for a channel name the hub's Slack app could not see, that a session can list the available workspaces and channels).
+  They sit beside `chat pair` as its two nouns: `channels` is what `pair` names, `workspaces` is what `--slack-workspace` names. Each needs the row
+  and the handle (refused before an endpoint is found), sends ONE `chat.workspaces`, or ONE `chat.channels` with `by` (this session's row and
+  handle) and the workspace when `--slack-workspace <id>` names one (chat guarantee 30 says which workspace the daemon lists
+  otherwise), and changes nothing in Slack or `chat.toml`, so every failure is exit 2 with `refused <code> <words>` and no verb here has an exit 3
+  (no answer is `refused: no answer ... Nothing was changed.`). `workspaces` prints `<id> default|other running|stopped <name>`, the name last
+  (`(unnamed)` when Slack gave none). `channels` prints `workspace <id> <name>` (the workspace a `chat pair` with none named goes to, `chat.toml`'s default, or the one `--slack-workspace` names, whichever project asks; one more `chat.workspaces` read gives the name, else the id alone),
+  then one line for each channel in the same five fields, `<id> #<name> public|private app-in|app-out free|taken` (`taken`: any mapping of `chat.toml` holds the channel, a gone folder's and another workspace's included, so another project's pairing of it is refused `channel_taken`; the asking project's own is `taken` too, and a pairing of it is answered `unchanged`), then, when the text
+  matches none of them, `no channel name contains "<text>"` (`your Slack app can see no channel here` with no text), and, when Slack's list was cut
+  at its bound, a last line that says a channel not shown can still be paired by its ID. `<text>` keeps the names that contain it, a leading `#`
+  dropped and ASCII capitals ignored as `Api`'s `named` compares a name for a pairing (quote one that begins with `#`); a second argument is exit 1.
+  `--slack-workspace` is the pair and channels verbs' alone. The wait is 90 s (five pages of Slack's list, each within a read's 15 s;
+  `--timeout` changes it) and a workspaces read's 10 s. `bad_request` is what a daemon older than the listing answers any session's
+  `chat.channels` with, and also what a handle that is not the row's gets, so its words say both; `unavailable` says the chat does not run there or is stopped, as the pair verb's does, and with a named workspace the
+  computer does not connect says that, as the pair verb's does. The `no_such_channel` refusal of `chat pair` ends its words with
+  `; to see the channels your Slack app can see, run sot-fe chat channels` (with `--slack-workspace <id>` after it when the pair named one).
+  The skill `sot-chat-pair` (its Codex copy is byte-identical) tells a session to list first when a person names a channel by name or a pairing was
+  refused as `no_such_channel` or `several_channels`, to pair by the ID the listing printed, always with `--slack-workspace <the listed workspace's ID>`, to tell the person the nearest names when theirs is not listed, and never to pair another
+  channel than the one the person named without the person's yes. `tests/test-sot-fe-chat.sh`'s cases:
+  `case_workspaces_is_one_read_and_prints_one_line_each`,
+  `case_channels_sends_one_request_with_the_row_and_handle_and_prints_one_line_each`, `case_channels_text_narrows_by_name_as_a_pairing_compares_names`,
+  `case_channels_says_when_the_list_was_cut_and_when_it_is_empty_or_the_name_is_unknown`, `case_each_channels_refusal_has_its_words_and_exit_code`
+  and `case_the_listing_verbs_are_refused_outside_a_session_and_on_bad_usage_sending_nothing`.
 - `show-result` opens no `.html` or `.htm` page (the maintainer, 2026-10-31: pages went to the browser, not to the
   Queue): for a page under the calling row's project folder (`SOT_WORKSPACE_ROOT`) it prints the line that offers it,
   `Page: <absolute path>` on the session's closing marker, and exits 0; a page elsewhere, which the Queue cannot open,

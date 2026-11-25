@@ -35,6 +35,8 @@
 #   sot-fe chat delete <ts> [--timeout <s>]
 #   sot-fe chat pair <session> <channel> [--slack-workspace <id>] [--timeout <s>]
 #   sot-fe chat unpair <session> [--timeout <s>]
+#   sot-fe chat workspaces [--timeout <s>]
+#   sot-fe chat channels [--slack-workspace <id>] [<text>] [--timeout <s>]
 #
 #   preview  — preview <path> and expand the file tree to it. If the FE is
 #              already on <workspace> it happens at once; otherwise it is
@@ -197,6 +199,16 @@
 #              when they will), `unpaired <folder> from <channel> in <workspace>` or `unchanged: ...` and exits 0; 1 for
 #              usage; 2 with `refused <code> <words>` (nothing changed); 3 with `unknown: ...` or `no answer: ...` (it may
 #              have been made: run it again, which says what is there now).
+#              `chat workspaces` and `chat channels [<text>]` read what a pairing can name, and change nothing: ONE
+#              `chat.workspaces`, or ONE `chat.channels` naming this session's row and handle. `workspaces` prints one line for
+#              each connected Slack workspace, `<id> default|other running|stopped <name>`. `channels` prints
+#              `workspace <id> <name>` (the default workspace, the one `workspaces` marks `default` and
+#              `chat pair` takes when none is named, or the one `--slack-workspace <id>` names), then one line for each channel the Slack app can see, `<id> #<name>
+#              public|private app-in|app-out free|taken` (`taken`: a project of this computer holds it, the asking project's own included, so another
+#              project's pairing of it is refused), those whose name contains <text> when it is given (a leading `#` dropped, capitals ignored), and a last
+#              line when Slack's list was cut, which says a channel not shown can still be paired by its ID. Exit 0; 1 for usage;
+#              2 with `refused <code> <words>`. Use it to compare a name a person gave
+#              with what exists before a `chat pair` (the sot-chat-pair skill says how).
 #   version  — what build the daemon at --endpoint is, plus every attached
 #              frontend and every capsule row's own PHASE, verbatim (ADR
 #              0030 §8 decision 31, ADR 0043 decision 31). One
@@ -291,7 +303,7 @@ FILE_SET=false
 TIMEOUT=""     # repl: wall-clock budget in seconds
 CODE=""        # repl eval: code (else read stdin)
 READ_STDIN=false
-SLACK_WS=""      # chat pair: the Slack workspace of the channel
+SLACK_WS=""      # chat pair, chat channels: the Slack workspace of the channel
 ORIGIN=""      # repl: label shown in the user's drawer (default "session"); type: the controller id (default: the caller's comm handle, else "sot-fe")
 ROI=""         # preview: source-px rect "x,y,w,h" to frame the image at (ADR-0022 vocab)
 CAPTION=""     # preview/reveal: figure caption rendered under the image
@@ -337,7 +349,7 @@ while [ $# -gt 0 ]; do
                     FILE="$2"; FILE_SET=true; shift 2 ;;
         --stdin)    READ_STDIN=true; shift ;;
         --slack-workspace)
-                    [ "$CMD" = chat ] || { echo "ERROR: --slack-workspace is only for chat pair" >&2; exit 1; }
+                    [ "$CMD" = chat ] || { echo "ERROR: --slack-workspace is only for chat pair and chat channels" >&2; exit 1; }
                     [[ "${2:-}" =~ ^[A-Z][A-Z0-9]{0,31}$ ]] || { echo "ERROR: --slack-workspace expects a Slack workspace ID like T0123ABCD, got '${2:-}'" >&2; exit 1; }
                     SLACK_WS="$2"; shift 2 ;;
         --origin)   ORIGIN="$2"; shift 2 ;;
@@ -582,7 +594,7 @@ case "$CMD" in
         send_workspace_reauth "$ACCOUNT"
         ;;
     chat)
-        [ -z "$SLACK_WS" ] || [ "${POS[0]:-}" = pair ] || { echo "ERROR: --slack-workspace is only for chat pair" >&2; exit 1; }
+        [ -z "$SLACK_WS" ] || [ "${POS[0]:-}" = pair ] || [ "${POS[0]:-}" = channels ] || { echo "ERROR: --slack-workspace is only for chat pair and chat channels" >&2; exit 1; }
         if [ "${POS[0]:-}" = delete ]; then
             # Only a message's ts: no thread, file or text, and one argument, which must be a ts.
             if [ "${#POS[@]}" -ne 2 ] || [ -n "$THREAD" ] || [ "$FILE_SET" = true ] || [ "$READ_STDIN" = true ]; then
@@ -605,7 +617,20 @@ case "$CMD" in
             fi
             exit
         fi
-        [ "${POS[0]:-}" = post ] || { echo "usage: sot-fe chat post [--thread <ts>] (<text> | --stdin) [--timeout <s>]  or  sot-fe chat post [--thread <ts>] --file <path> [<comment> | --stdin] [--timeout <s>]  or  sot-fe chat delete <ts> [--timeout <s>]  or  sot-fe chat pair <session> <channel> [--slack-workspace <id>] [--timeout <s>]  or  sot-fe chat unpair <session> [--timeout <s>]" >&2; exit 1; }
+        if [ "${POS[0]:-}" = workspaces ] || [ "${POS[0]:-}" = channels ]; then
+            if [ -n "$THREAD" ] || [ "$FILE_SET" = true ] || [ "$READ_STDIN" = true ]; then
+                echo "ERROR: --thread, --file and --stdin are only for chat post" >&2; exit 1
+            fi
+            if [ "${POS[0]}" = workspaces ]; then
+                [ "${#POS[@]}" -eq 1 ] || { echo "usage: sot-fe chat workspaces [--timeout <s>]" >&2; exit 1; }
+                send_chat_workspaces
+            else
+                [ "${#POS[@]}" -le 2 ] || { echo "usage: sot-fe chat channels [--slack-workspace <id>] [<text>] [--timeout <s>]  — one text; quote one that begins with #" >&2; exit 1; }
+                send_chat_channels "$SLACK_WS" "${POS[1]:-}"
+            fi
+            exit
+        fi
+        [ "${POS[0]:-}" = post ] || { echo "usage: sot-fe chat post [--thread <ts>] (<text> | --stdin) [--timeout <s>]  or  sot-fe chat post [--thread <ts>] --file <path> [<comment> | --stdin] [--timeout <s>]  or  sot-fe chat delete <ts> [--timeout <s>]  or  sot-fe chat pair <session> <channel> [--slack-workspace <id>] [--timeout <s>]  or  sot-fe chat unpair <session> [--timeout <s>]  or  sot-fe chat workspaces [--timeout <s>]  or  sot-fe chat channels [--slack-workspace <id>] [<text>] [--timeout <s>]" >&2; exit 1; }
         if [ "$FILE_SET" = true ]; then
             [ -n "$FILE" ] || { echo "usage: sot-fe chat post [--thread <ts>] --file <path> [<comment> | --stdin] [--timeout <s>]  — name the file" >&2; exit 1; }
             if [ "$READ_STDIN" = true ]; then

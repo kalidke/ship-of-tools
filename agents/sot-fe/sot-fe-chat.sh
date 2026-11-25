@@ -1,6 +1,7 @@
 # sot-fe's reply in the row's channel: `chat post`, one `chat.post` (or, with --file, one `chat.post_file`) of kind `row`
 # into the current thread; `chat delete`, one `chat.delete` of a message the hub's Slack app posted there; and
-# `chat pair` and `chat unpair`, one `chat.row_pair` that pairs a project folder with a channel or removes its channel.
+# `chat pair` and `chat unpair`, one `chat.row_pair` that pairs a project folder with a channel or removes its channel;
+# and `chat workspaces` and `chat channels`, the reads of what a pairing can name (one `chat.workspaces`, one `chat.channels`).
 # Sourced by sot-fe; defines functions only.
 
 # The row's own handle, as comm-context.sh gives it ("" when the session has not joined). In its own subshell, never
@@ -326,7 +327,7 @@ _chat_paired() {
                 _chat_workspaces_read
                 # A name typed in capitals that begins with C or G reads as an ID, which no channel has.
                 caps=""; [[ "$CHAT_CHANNEL" =~ ^[CG][A-Z0-9]{0,31}$ ]] && caps="; $CHAT_CHANNEL was read as a channel ID, and a channel name is typed in lowercase"
-                words="no channel $CHAT_CHANNEL that your Slack app can see in $CHAT_AT$caps: a private channel shows only once the app is in it (in that channel in Slack, type /invite @$CHAT_APP), and in a workspace of over 1,000 channels name it by its ID$CHAT_MORE" ;;
+                words="no channel $CHAT_CHANNEL that your Slack app can see in $CHAT_AT$caps: a private channel shows only once the app is in it (in that channel in Slack, type /invite @$CHAT_APP), and in a workspace of over 1,000 channels name it by its ID; to see the channels your Slack app can see, run sot-fe chat channels${CHAT_WS:+ --slack-workspace $CHAT_WS}$CHAT_MORE" ;;
             not_in_channel)
                 _chat_workspaces_read
                 words="your Slack app is not in that channel and could not join it: in that channel in Slack, type /invite @$CHAT_APP, then run this again$CHAT_MORE" ;;
@@ -364,4 +365,90 @@ _chat_paired() {
             exit 3
             ;;
     esac
+}
+
+# The workspaces and channels a pairing can name. Both are reads: nothing is written, joined or changed, so a failure is exit 2
+# with `refused <code> <words>` and there is no exit 3.
+
+# $1=the reply of a read (empty for none), $2=what the read was of. Prints the refusal's words and exits 2 for no answer or
+# an error; returns 0 for a reply that holds none. `bad_request` is what a daemon older than the listing answers any
+# session's `chat.channels` with, and also what a handle that is not this session's gets.
+_chat_read_failed() {
+    local resp="$1" err code words
+    if [ -z "$resp" ]; then
+        echo "refused: no answer from the computer that runs your sessions within ${SEND_TIMEOUT}s (via $ENDPOINT). Nothing was changed." >&2
+        exit 2
+    fi
+    err="$(printf '%s' "$resp" | jq -r '.payload.error // empty')"
+    [ -n "$err" ] || return 0
+    case "$err" in
+        "unknown op"*)
+            echo "refused unsupported the computer that runs your sessions runs an older Ship of Tools, which cannot tell a session $2" >&2
+            exit 2 ;;
+    esac
+    code="$(printf '%s' "$resp" | jq -r '.payload.code // "?"')"
+    case "$code" in
+        bad_request) words="the computer that runs your sessions runs an older Ship of Tools, which cannot tell a session $2, or this session's handle is not its session's (sot-fe version lists the sessions)" ;;
+        stale_row)   words="this session is gone from the computer that runs your sessions, or its project folder cannot be reached" ;;
+        unavailable)
+            words="the chat does not run on the computer that runs your sessions, or is stopped there"
+            # A workspace the request named that the computer does not connect is not a chat that does not run.
+            if [ -n "$CHAT_WS" ]; then
+                _chat_workspaces_read
+                [ "$CHAT_KNOWN" = true ] || words="the Slack workspace $CHAT_WS is not connected on the computer that runs your sessions$CHAT_MORE"
+            fi ;;
+        *)           words="$err" ;;
+    esac
+    _chat_refused "$code" "$words"
+}
+
+# `sot-fe chat workspaces`: one line for each Slack workspace the computer that runs your sessions connects, `<id> default|other
+# running|stopped <name>`, the name last (`(unnamed)` when Slack gave none).
+send_chat_workspaces() {
+    local resp
+    CHAT_WS=""
+    _chat_identity
+    _need_endpoint
+    export SEND_TIMEOUT="${TIMEOUT:-10}"
+    resp="$(_chat_ask chat.workspaces '{"v":1,"id":4,"kind":"req","op":"chat.workspaces","payload":{}}')"
+    _chat_read_failed "$resp" "which Slack workspaces it connects"
+    printf '%s' "$resp" | jq -r '.payload as $p | $p.workspaces[]
+        | "\(.id) \(if .id == $p.default then "default" else "other" end) \(if .running then "running" else "stopped" end) \(.name // "(unnamed)")"'
+}
+
+# $1=a Slack workspace id, $2=the workspace's name as `chat.workspaces` gives it, "" when it gives none or does not answer.
+_chat_workspace_name() {
+    local resp
+    export SEND_TIMEOUT="${TIMEOUT:-10}"
+    resp="$(_chat_ask chat.workspaces '{"v":1,"id":4,"kind":"req","op":"chat.workspaces","payload":{}}')"
+    [ -n "$resp" ] || return 0
+    jq -r --arg ws "$1" '[.payload.workspaces[]? | select(.id == $ws) | .name // empty][0] // empty' <<<"$resp"
+}
+
+# `sot-fe chat channels [<text>]`, $1=a Slack workspace id or "" (the default one, as `chat pair` takes), $2=the text a
+# channel's name must contain ("" for all). First `workspace <id> <name>`, then one line for each channel the Slack app can see,
+# `<id> #<name> public|private app-in|app-out free|taken`; `taken` is a channel a project of this computer holds, the asking
+# project's own included (a pairing of another project's is refused). The text is read as a pairing reads a name: a leading `#` dropped, capitals ignored.
+send_chat_channels() {
+    local workspace="$1" narrow="$2" req resp ws
+    CHAT_WS="$workspace"
+    _chat_identity
+    _need_endpoint
+    req="$({ sot_json_escape "$CHAT_ROW"; sot_json_escape "$CHAT_HANDLE"; sot_json_escape "$workspace"; } \
+        | jq -cn 'input as $row | input as $name | input as $ws
+            | {v:1, id:3, kind:"req", op:"chat.channels",
+               payload: ({by:{row:$row, name:$name}} + (if $ws == "" then {} else {workspace:$ws} end))}')"
+    # Past the daemon's own bound: up to five pages of Slack's list, each within a read's 15 s (sot-chat's READ_DEADLINE).
+    export SEND_TIMEOUT="${TIMEOUT:-90}"
+    resp="$(_chat_ask chat.channels "$req")"
+    _chat_read_failed "$resp" "which channels its Slack app can see"
+    ws="$(printf '%s' "$resp" | jq -r '.payload.workspace // empty')"
+    { printf '%s\n' "$resp"; sot_json_escape "$narrow"; sot_json_escape "$(_chat_workspace_name "$ws")"; } \
+        | jq -rn 'input as $r | input as $q | input as $name
+            | ($q | ltrimstr("#") | ascii_downcase) as $q | $r.payload as $p
+            | [$p.channels[] | select(.name | ascii_downcase | contains($q))] as $shown
+            | "workspace \($p.workspace)\(if $name == "" then "" else " " + $name end)",
+              ($shown[] | "\(.id) #\(.name) \(if .private then "private" else "public" end) \(if .member then "app-in" else "app-out" end) \(if .taken then "taken" else "free" end)"),
+              (if ($shown | length) > 0 then empty elif $q == "" then "your Slack app can see no channel here" else "no channel name contains \"\($q)\"" end),
+              (if $p.more then "Slack'"'"'s list was cut after \($p.channels | length) channels; a channel not shown here can still be paired by its ID (the C or G code ending its link in Slack)" else empty end)'
 }

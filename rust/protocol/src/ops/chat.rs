@@ -339,10 +339,14 @@ fn unread_list<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Vec<Chat
 }
 
 /// `chat.channels`: the channels the picker offers, of `workspace` (absent: `chat.toml`'s own, as an older window asks).
+/// A session's request carries `by`, who asks (checked as a `chat.row_pair`'s is); with no `workspace` it means the
+/// asking project's own workspace, else `chat.toml`'s, and its reply says which and marks each taken channel.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChatChannelsReq {
     #[serde(default, deserialize_with = "workspace_id", skip_serializing_if = "Option::is_none")]
     pub workspace: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<ChatAsker>,
 }
 
 /// An optional workspace a request names: when present, an id within `MAX_ID`; absent or null is none.
@@ -402,7 +406,8 @@ fn workspace_list<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<ChatWork
     Ok(all.into_iter().filter_map(|v| serde_json::from_value(v).ok()).take(MAX_WORKSPACES).collect())
 }
 
-/// One listed channel: its id, its name as the daemon cleaned it, whether it is private, whether the app is in it.
+/// One listed channel: its id, its name as the daemon cleaned it, whether it is private, whether the app is in it, and,
+/// in a session's list only, whether a project of this computer is paired with it (`taken`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChatChannelInfo {
     pub id: ChatChannel,
@@ -410,15 +415,20 @@ pub struct ChatChannelInfo {
     pub name: String,
     pub private: bool,
     pub member: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub taken: bool,
 }
 
-/// Reply to `chat.channels`, at most `MAX_LISTED` entries; `more`: the list was cut there.
+/// Reply to `chat.channels`, at most `MAX_LISTED` entries; `more`: the list was cut there. A session's reply also names
+/// the `workspace` the list is of.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChatChannelsRes {
     #[serde(deserialize_with = "at_most::<_, _, MAX_LISTED>")]
     pub channels: Vec<ChatChannelInfo>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub more: bool,
+    #[serde(default, deserialize_with = "workspace_id", skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
 }
 
 /// `chat.pair`: map the row's folder to `channel` of `workspace` (absent: `chat.toml`'s own, as an older window asks), or,

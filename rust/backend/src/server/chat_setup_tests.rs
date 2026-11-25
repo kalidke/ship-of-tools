@@ -766,6 +766,134 @@ async fn the_channel_list_needs_a_running_service_and_a_window() {
     );
 }
 
+/// A session's `chat.channels`: who asks, and the workspace when it names one.
+fn listing(by_row: &str, handle: &str, workspace: Option<&str>) -> Value {
+    let mut v = json!({"by": {"row": by_row, "name": handle}});
+    if let Some(w) = workspace {
+        v["workspace"] = json!(w);
+    }
+    v
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_lists_the_channels_with_the_taken_one_marked_and_nothing_is_changed() {
+    let channels = [("C0PUB", "general", false, true), ("C0FREE", "random", false, false), ("G0IN", "inside", true, true), ("G0PRIV", "secret", true, false)];
+    let w = world(Some(fresh()), &channels).await;
+    w.rows.set_agent_handle(&w.ids[0], "alpha-h").unwrap();
+    w.rows.set_agent_handle(&w.ids[1], "beta-h").unwrap();
+    assert_eq!(connect_window(w.services.clone()).await.pair(&w.ids[0], Some("C0PUB")).await, json!({}));
+    let (before, starts, mut cli) = (w.file(), w.starts(), connect(w.services.clone()).await);
+    // Beta, whose project has no channel, lists the default workspace; alpha's channel is marked as taken. The private channel
+    // the app is not in is not listed, as the window's list leaves it out.
+    let listed = cli.ask(30, op::CHAT_CHANNELS, listing(&w.ids[1], "beta-h", None)).await;
+    assert_eq!(
+        listed,
+        json!({"workspace": "T0AAAA", "channels": [
+            {"id": "C0PUB", "name": "general", "private": false, "member": true, "taken": true},
+            {"id": "C0FREE", "name": "random", "private": false, "member": false},
+            {"id": "G0IN", "name": "inside", "private": true, "member": true},
+        ]}),
+    );
+    // Alpha, which has the channel, lists the same; the workspace may be named, and is then the one asked.
+    assert_eq!(cli.ask(31, op::CHAT_CHANNELS, listing(&w.ids[0], "alpha-h", None)).await, listed);
+    assert_eq!(cli.ask(32, op::CHAT_CHANNELS, listing(&w.ids[0], "alpha-h", Some("T0AAAA"))).await, listed);
+    assert_eq!((w.file(), w.starts(), w.calls("/conversations.join")), (before, starts, 0), "a listing writes, reloads and joins nothing");
+    // A window's request is answered as it was: no workspace, no mark.
+    let window = connect_window(w.services.clone()).await.ask(33, op::CHAT_CHANNELS, json!({})).await;
+    assert_eq!(window["channels"][0], json!({"id": "C0PUB", "name": "general", "private": false, "member": true}), "{window}");
+    assert!(window.get("workspace").is_none(), "{window}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_listing_is_refused_for_a_handle_not_its_rows_a_stopped_chat_or_a_workspace_not_connected() {
+    let w = world(Some(fresh()), &[public("C0PUB", true)]).await;
+    w.rows.set_agent_handle(&w.ids[1], "beta-h").unwrap();
+    let mut cli = connect(w.services.clone()).await;
+    let beta = w.ids[1].as_str();
+    // Who asks: another's handle, none, a row that is gone, and a `by` that does not decode: each `bad_request`.
+    for payload in [listing(beta, "alpha-h", None), listing(beta, "", None), listing("ws-gone-0000", "beta-h", None), json!({"by": {"row": beta}})] {
+        assert_eq!(code(&cli.ask(30, op::CHAT_CHANNELS, payload.clone()).await), "bad_request", "{payload}");
+    }
+    assert_eq!(code(&cli.ask(31, op::CHAT_CHANNELS, listing(beta, "beta-h", Some("T0ZZZZ"))).await), "unavailable", "a workspace this computer does not connect");
+    assert_eq!(w.calls("/conversations.list") + w.calls("/conversations.info"), 0, "a refused listing reached no call");
+    // A daemon that never was the hub; a chat that is stopped.
+    let other = world_on(Home::new(Some("elsewhere")), &[], None, None).await;
+    other.rows.set_agent_handle(&other.ids[1], "beta-h").unwrap();
+    let mut away = connect(other.services.clone()).await;
+    assert_eq!(code(&away.ask(32, op::CHAT_CHANNELS, listing(&other.ids[1], "beta-h", None)).await), "unavailable");
+    w.services.chat.stop_for_test();
+    assert_eq!(code(&cli.ask(33, op::CHAT_CHANNELS, listing(beta, "beta-h", None)).await), "unavailable");
+}
+
+/// A `chat.toml` a session's listing cannot read as TOML is `failed` before any page of Slack's list is read.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_listing_is_failed_before_slack_when_chat_toml_is_no_toml() {
+    let w = world(Some(fresh()), &[public("C0PUB", true)]).await;
+    w.rows.set_agent_handle(&w.ids[1], "beta-h").unwrap();
+    let mut cli = connect(w.services.clone()).await;
+    assert_eq!(cli.ask(30, op::CHAT_CHANNELS, listing(&w.ids[1], "beta-h", None)).await["channels"][0]["taken"], Value::Null, "a readable file lists");
+    let before = w.calls("/conversations.list");
+    w.home.write(CONFIG_FILE, "workspace = \n# a hand edit in progress\n");
+    assert_eq!(code(&cli.ask(31, op::CHAT_CHANNELS, listing(&w.ids[1], "beta-h", None)).await), "failed");
+    assert_eq!(w.calls("/conversations.list"), before, "a page of Slack's list was read for a listing that fails");
+    // A window's list reads no file.
+    assert_eq!(connect_window(w.services.clone()).await.ask(32, op::CHAT_CHANNELS, json!({})).await["channels"][0]["name"], "general");
+}
+
+/// With no workspace named a listing is of the workspace a pairing with none named goes to, `chat.toml`'s, whichever workspace
+/// the asking project is paired in; naming one lists that one.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_listing_with_no_workspace_is_of_the_default_even_when_its_project_is_paired_elsewhere() {
+    let t = two().await;
+    let mut win = connect_window(t.services.clone()).await;
+    assert_eq!(win.ask(2, op::CHAT_CONNECT, t.connect_req(A)).await["workspace"], A);
+    assert_eq!(win.ask(3, op::CHAT_CONNECT, t.connect_req(B)).await["workspace"], B);
+    assert_eq!(win.ask(4, op::CHAT_PAIR, json!({"row": t.ids[1], "workspace": B, "channel": "C0BBBB01"})).await, json!({}));
+    t.rows.set_agent_handle(&t.ids[1], "beta-h").unwrap();
+    let mut cli = connect(t.services.clone()).await;
+    let names = |v: &Value| v["channels"].as_array().unwrap().iter().map(|c| (c["name"].as_str().unwrap().to_string(), c["taken"] == true)).collect::<Vec<_>>();
+    // Beta's project is paired in B, and lists A's channels, none taken, under A's id.
+    let own = cli.ask(30, op::CHAT_CHANNELS, listing(&t.ids[1], "beta-h", None)).await;
+    assert_eq!((own["workspace"].as_str(), names(&own)), (Some(A), vec![("alpha-one".to_string(), false), ("alpha-two".to_string(), false)]), "{own}");
+    // Naming B lists B, its own channel taken.
+    let named = cli.ask(31, op::CHAT_CHANNELS, listing(&t.ids[1], "beta-h", Some(B))).await;
+    assert_eq!((named["workspace"].as_str(), names(&named)), (Some(B), vec![("beta-one".to_string(), true)]), "{named}");
+}
+
+/// `taken` is the pairing's rule: a channel held by a mapping whose folder is gone, and a channel id held in another
+/// workspace, are listed taken and refused `channel_taken` by a session's pairing.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_listing_marks_a_channel_taken_as_a_pairing_refuses_it_gone_folders_and_other_workspaces_included() {
+    let t = two().await;
+    let mut win = connect_window(t.services.clone()).await;
+    assert_eq!(win.ask(2, op::CHAT_CONNECT, t.connect_req(A)).await["workspace"], A);
+    assert_eq!(win.ask(3, op::CHAT_CONNECT, t.connect_req(B)).await["workspace"], B);
+    t.teams.channels(A, &[("C0BBBB01", "shared", false, true)]);
+    t.rows.set_agent_handle(&t.ids[0], "alpha-h").unwrap();
+    t.rows.set_agent_handle(&t.ids[1], "beta-h").unwrap();
+    let mut cli = connect(t.services.clone()).await;
+    let taken = |v: &Value| v["channels"].as_array().unwrap().iter().map(|c| (c["id"].as_str().unwrap().to_string(), c["taken"] == true)).collect::<Vec<_>>();
+    let want = |a: bool, b: bool, c: bool| vec![("C0AAAA01".to_string(), a), ("C0AAAA02".to_string(), b), ("C0BBBB01".to_string(), c)];
+    // Beta holds B's channel, whose id A lists too: alpha, unpaired, sees it taken in A, and its pairing is refused.
+    assert_eq!(win.ask(4, op::CHAT_PAIR, json!({"row": t.ids[1], "workspace": B, "channel": "C0BBBB01"})).await, json!({}));
+    let listed = cli.ask(30, op::CHAT_CHANNELS, listing(&t.ids[0], "alpha-h", Some(A))).await;
+    assert_eq!(taken(&listed), want(false, false, true), "{listed}");
+    let refused = cli.row_pair(row_pair_in(A, &t.ids[0], "alpha-h", "alpha", "C0BBBB01")).await;
+    assert_eq!(code(&refused), "channel_taken", "{refused}");
+    // Alpha holds an A channel and its folder is then gone: beta, unpaired again, sees it taken, and its pairing is refused.
+    assert_eq!(win.ask(5, op::CHAT_PAIR, json!({"row": t.ids[1], "channel": null})).await, json!({}));
+    assert_eq!(win.ask(6, op::CHAT_PAIR, json!({"row": t.ids[0], "workspace": A, "channel": "C0AAAA01"})).await, json!({}));
+    std::fs::remove_dir(&t.folders[0]).unwrap();
+    // A window's pairing and its unpairing reload the chat, which then ignores the mapping of the folder that is gone: the
+    // file still holds it, and the listing reads the file, not the load.
+    assert_eq!(win.ask(7, op::CHAT_PAIR, json!({"row": t.ids[1], "workspace": A, "channel": "C0AAAA02"})).await, json!({}));
+    assert_eq!(win.ask(8, op::CHAT_PAIR, json!({"row": t.ids[1], "channel": null})).await, json!({}));
+    let listed = cli.ask(31, op::CHAT_CHANNELS, listing(&t.ids[1], "beta-h", Some(A))).await;
+    assert_eq!(taken(&listed), want(true, false, false), "{listed}");
+    let refused = cli.row_pair(row_pair_in(A, &t.ids[1], "beta-h", "beta", "C0AAAA01")).await;
+    assert_eq!(code(&refused), "channel_taken", "{refused}");
+}
+
 // ---- the connect ----
 
 /// Fixture tokens are made at run time, so no token literal is in the tree.

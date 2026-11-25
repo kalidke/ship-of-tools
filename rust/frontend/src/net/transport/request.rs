@@ -594,7 +594,7 @@ pub(super) async fn send_request<W: AsyncWrite + Unpin>(
         }
         OutgoingReq::ChatChannels { workspace } => {
             let kind = PendingKind::ChatChannels { workspace: workspace.clone() };
-            send_chat(&mut tx, pending, id, op::CHAT_CHANNELS, sot_protocol::ops::ChatChannelsReq { workspace }, Some(kind)).await?
+            send_chat(&mut tx, pending, id, op::CHAT_CHANNELS, sot_protocol::ops::ChatChannelsReq { workspace, by: None }, Some(kind)).await?
         }
         OutgoingReq::ChatPair { row, workspace, channel } => {
             let kind = PendingKind::ChatPair { row: row.clone(), channel: channel.clone() };

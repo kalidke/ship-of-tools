@@ -150,7 +150,7 @@ name is in this crate's one op table.
     Slack does not tell their app; its person keeps the app connected now by pasting that app's tokens, which are asked
     about only then, and needs a newer window to replace it (tests
     `a_connect_that_would_replace_the_connected_app_asks_first_and_older_shapes_still_decode`,
-    `every_request_reply_and_event_keeps_its_shape`, `every_code_has_its_one_text`). `chat.channels {workspace?}` answers `{channels: [{id, name, private, member}], more}`, `chat.pair {row,
+    `every_request_reply_and_event_keeps_its_shape`, `every_code_has_its_one_text`). `chat.channels {workspace?, by?}` answers `{channels: [{id, name, private, member, taken?}], more, workspace?}` (`by` is `{row, name}`, a session's asker as `chat.row_pair`'s; `workspace` and `taken` are a session's reply alone, each absent otherwise and when false), `chat.pair {row,
     workspace?, channel?}` answers `{}` (an absent or null `channel` unpairs the row's folder), and `chat.workspaces {}` (a
     read, any connection's) answers `{default, workspaces: [{id, name?, running, app_name?, app_id?, unread?}]}`, the
     last three only while the workspace runs, of the Slack app it is connected to, each absent while not known and from an

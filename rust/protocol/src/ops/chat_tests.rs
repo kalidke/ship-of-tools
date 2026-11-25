@@ -157,8 +157,13 @@ fn every_request_reply_and_event_keeps_its_shape() {
     // A reply of this branch's first form, which no release sent: its `unread` is an unknown field, ignored.
     let first: ChatConnectRes = serde_json::from_value(json!({"workspace": "T1", "unread": [{"id": "G0PRIVATE1"}]})).unwrap();
     assert_eq!(first, ChatConnectRes { workspace: "T1".into(), name: None });
-    pinned(ChatChannelsReq { workspace: None }, json!({}));
-    pinned(ChatChannelsReq { workspace: Some("T1".into()) }, json!({"workspace": "T1"}));
+    pinned(ChatChannelsReq { workspace: None, by: None }, json!({}));
+    pinned(ChatChannelsReq { workspace: Some("T1".into()), by: None }, json!({"workspace": "T1"}));
+    // A session's listing names who asks, as a session's pairing does; no `by` is a window's, written as it always was.
+    pinned(
+        ChatChannelsReq { workspace: None, by: Some(ChatAsker { row: "ws-a-1".into(), name: "alpha-h".into() }) },
+        json!({"by": {"row": "ws-a-1", "name": "alpha-h"}}),
+    );
     pinned(ChatWorkspacesReq {}, json!({}));
     let unread = |id: &str, name: Option<&str>| ChatUnread { id: ChatChannel::try_from(id.to_string()).unwrap(), name: name.map(str::to_string) };
     let info = |id: &str, running| ChatWorkspaceInfo { id: id.into(), name: None, running, app_name: None, app_id: None, unread: None };
@@ -207,12 +212,22 @@ fn every_request_reply_and_event_keeps_its_shape() {
     assert_eq!(read(json!([])), Some(Vec::new()), "an empty list is known, and says the app reads every mapped channel");
     pinned(
         ChatChannelsRes {
-            channels: vec![ChatChannelInfo { id: channel("C1"), name: "general".into(), private: false, member: true }],
+            channels: vec![ChatChannelInfo { id: channel("C1"), name: "general".into(), private: false, member: true, taken: false }],
             more: true,
+            workspace: None,
         },
         json!({"channels": [{"id": "C1", "name": "general", "private": false, "member": true}], "more": true}),
     );
-    pinned(ChatChannelsRes { channels: vec![], more: false }, json!({"channels": []}));
+    pinned(ChatChannelsRes { channels: vec![], more: false, workspace: None }, json!({"channels": []}));
+    // A session's list names its workspace and marks a taken channel; neither is written for a window's.
+    pinned(
+        ChatChannelsRes {
+            channels: vec![ChatChannelInfo { id: channel("C1"), name: "general".into(), private: true, member: false, taken: true }],
+            more: false,
+            workspace: Some("T1".into()),
+        },
+        json!({"channels": [{"id": "C1", "name": "general", "private": true, "member": false, "taken": true}], "workspace": "T1"}),
+    );
     pinned(ChatPairReq { row: "ws-a-1".into(), workspace: None, channel: Some(channel("C1")) }, json!({"row": "ws-a-1", "channel": "C1"}));
     pinned(ChatPairReq { row: "ws-a-1".into(), workspace: None, channel: None }, json!({"row": "ws-a-1", "channel": null}));
     pinned(
@@ -351,8 +366,8 @@ fn the_wrong_app_reason_is_pinned_on_the_wire() {
 /// would be six bytes each), fits one frame; the decoder bounds the entries and the name, not the escaped size.
 #[test]
 fn a_full_channel_list_fits_the_envelope() {
-    let entry = ChatChannelInfo { id: channel(&"C".repeat(64)), name: "\"".repeat(MAX_NAME), private: true, member: true };
-    let full = ChatChannelsRes { channels: vec![entry; MAX_LISTED], more: true };
+    let entry = ChatChannelInfo { id: channel(&"C".repeat(64)), name: "\"".repeat(MAX_NAME), private: true, member: true, taken: true };
+    let full = ChatChannelsRes { channels: vec![entry; MAX_LISTED], more: true, workspace: Some("T".repeat(MAX_ID)) };
     let bytes = serde_json::to_vec(&full).unwrap().len();
     assert!(bytes < crate::codec::MAX_ENVELOPE_BYTES, "{bytes} bytes of a full list");
 }

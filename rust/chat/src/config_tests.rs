@@ -823,6 +823,16 @@ fn a_sessions_pairing_never_moves_a_folder_or_takes_a_held_channel() {
     assert_eq!(Config::parse(&off, &rows).unwrap().mappings().count(), 0);
 }
 
+/// The channels a listing marks taken are those a session's pairing is refused as `ChannelTaken`: every mapping's, a gone
+/// folder's and another workspace's included, and a text that is no TOML is refused.
+#[test]
+fn held_channels_are_every_mappings_whatever_its_folder_or_workspace() {
+    let text = format!("workspace = \"T0AAAA\"\nchannels = [\"C0AAAA\", \"C0CCCC\", \"C0BBBB\"]\n{}{}[[mapping]]\nfolder = \"/work/z\"\nworkspace = \"T0ZZZZ\"\nchannel = \"C0BBBB\"\n", mapping("/work/gone", "C0CCCC"), mapping("/work/a", "C0AAAA"));
+    assert_eq!(crate::config::held_channels(&text).unwrap(), ["C0CCCC", "C0AAAA", "C0BBBB"]);
+    assert_eq!(crate::config::held_channels("workspace = \"T0AAAA\"\n").unwrap(), Vec::<String>::new());
+    assert!(matches!(crate::config::held_channels("workspace = "), Err(E::Malformed(_))));
+}
+
 fn pair_in(text: &str, by: Pairer, folder: &str, target: (&str, &str)) -> Result<Option<String>, PairError> {
     pair(text, folder, Some(target), None, &rows, by)
 }
