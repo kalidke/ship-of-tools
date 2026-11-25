@@ -495,7 +495,7 @@ written plan; the paging between workspaces with Left and Right is gone; proved 
 window, CHAT-PICKER-TREE-NOT-SEEN); and, on `main` since 2026-11-25 and used by no person, the daemon's log carries
 one line for each post or file post that ends unknown, with the Slack step and a fixed code for why (a session had seen
 a post end unknown with nothing to say which failure it was; CHAT-POST-UNKNOWN-NOT-READ-BACK, whose second half, a
-session reading its channel back, is not built); and, the same day and used by no person, three chat words a session found
+session reading its channel back, is not built, though the read's lines and payloads are, called by nothing yet); and, the same day and used by no person, three chat words a session found
 unclear (a pairing that delivers says new posts reach this project's session when it is the session's own, an unpairing says a
 delivering channel's posts no longer reach it, and a chat mail's first line names the channel as `#<name> (<id>)` when the
 daemon's name cache holds it);

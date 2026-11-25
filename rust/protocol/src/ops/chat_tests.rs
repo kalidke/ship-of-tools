@@ -1018,3 +1018,41 @@ fn a_row_pairings_refusal_bodies_keep_their_shape_and_an_older_reader_reads_the_
         assert_eq!(r.code, Some(ChatCode::Other), "{later}");
     }
 }
+
+#[test]
+fn the_read_pair_keeps_its_shape_and_its_bounds() {
+    let (t, b) = ("1700000100.000100", "1700000200.000200");
+    pinned(ChatReadReq { target: target(), name: "build-7".into(), thread: None, before: None }, json!({"target": target_json(), "name": "build-7"}));
+    pinned(
+        ChatReadReq { target: target(), name: "build-7".into(), thread: Some(ts(t)), before: Some(ts(b)) },
+        json!({"target": target_json(), "name": "build-7", "thread": t, "before": b}),
+    );
+    pinned(ChatReadRes { lines: vec![], more: None, limited: false }, json!({"lines": []}));
+    pinned(
+        ChatReadRes { lines: vec![format!("{t} top person \"Ada\" files=none |")], more: Some(ts(t)), limited: true },
+        json!({"lines": [format!("{t} top person \"Ada\" files=none |")], "more": t, "limited": true}),
+    );
+
+    let req = |name: String, extra: Value| {
+        let mut v = json!({"target": target_json(), "name": name});
+        v.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        serde_json::from_value::<ChatReadReq>(v).is_ok()
+    };
+    assert!(req("n".repeat(160), json!({})));
+    assert!(!req(String::new(), json!({})), "an empty handle never decodes");
+    assert!(!req("n".repeat(161), json!({})));
+    for bad in ["1700000100.00010", "17.5", ""] {
+        assert!(!req("n".into(), json!({"thread": bad})), "thread {bad:?}");
+        assert!(!req("n".into(), json!({"before": bad})), "before {bad:?}");
+    }
+
+    let res = |n: usize, len: usize| serde_json::from_value::<ChatReadRes>(json!({"lines": vec!["l".repeat(len); n]})).is_ok();
+    assert!(res(MAX_CHAT_READ as usize + 1, MAX_READ_LINE));
+    assert!(!res(MAX_CHAT_READ as usize + 2, 1), "52 lines");
+    assert!(!res(1, MAX_READ_LINE + 1), "a 4097-byte line");
+
+    // The worst reply, every byte a character JSON escapes twice, fits one frame.
+    let full = ChatReadRes { lines: vec!["\"".repeat(MAX_READ_LINE); MAX_CHAT_READ as usize + 1], more: Some(ts(t)), limited: true };
+    let bytes = serde_json::to_vec(&full).unwrap().len();
+    assert!(bytes < crate::codec::MAX_ENVELOPE_BYTES, "{bytes} bytes of a full read");
+}

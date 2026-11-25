@@ -24,6 +24,11 @@ pub const MAX_TOKEN: usize = 512;
 pub const MAX_CHAT_FILE: usize = 16 * 1024 * 1024;
 /// The largest thumbnail a `chat.file` reply carries for the `thumb` variant, in bytes.
 pub const MAX_THUMB: usize = 256 * 1024;
+/// The most messages one `chat.read` asks Slack for, and so the most lines of a channel's read (a thread's adds its first
+/// message above them).
+pub const MAX_CHAT_READ: u16 = 50;
+/// The most bytes of one line of a `chat.read` reply.
+pub const MAX_READ_LINE: usize = 4096;
 /// A `chat.post_file` node id (`files:<rel>`): the project-relative name of the file to post.
 pub const MAX_NODE_ID: usize = 4096;
 /// The most channels a `several_channels` refusal names.
@@ -771,6 +776,42 @@ pub enum ChatDeleteRes {
     /// Also what a reader takes an outcome added later for.
     #[serde(other)]
     Unknown,
+}
+
+/// `chat.read`: a session's read of its own project's channel, or of one thread of it, as the daemon's words. `name` is the
+/// row's bound handle, checked as a delete's is (attribution among one account's programs, not authentication). `thread`
+/// reads that thread; `before` reads the messages Slack lists strictly before it (absent: before now). The channel is the
+/// target's, which the daemon rechecks against the row's mapping.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChatReadReq {
+    pub target: ChatTarget,
+    #[serde(deserialize_with = "some_within::<_, MAX_NAME>")]
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread: Option<Ts>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before: Option<Ts>,
+}
+
+/// Reply to `chat.read`: one line a message, oldest first, built by the daemon so every word of channel text is escaped
+/// once. `more` is the oldest message the read held, when older ones exist (the next read's `before`); `limited`: Slack's
+/// plan hides older messages.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChatReadRes {
+    #[serde(deserialize_with = "read_lines")]
+    pub lines: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub more: Option<Ts>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub limited: bool,
+}
+
+/// At most `MAX_CHAT_READ` lines and the thread's first message, each at most `MAX_READ_LINE` bytes.
+fn read_lines<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
+    #[derive(Deserialize)]
+    struct Line(#[serde(deserialize_with = "within::<_, MAX_READ_LINE>")] String);
+    let lines = at_most::<_, Line, { MAX_CHAT_READ as usize + 1 }>(d)?;
+    Ok(lines.into_iter().map(|Line(l)| l).collect())
 }
 
 /// The session a `chat.row_pair` comes from: the row it runs in and the handle bound to that row, checked as a row post's

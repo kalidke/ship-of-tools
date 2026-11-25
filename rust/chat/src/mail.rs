@@ -1,13 +1,14 @@
-//! One channel record as the body of one mail message, and the one reader of that body. Pure: no clock, no file, no
-//! network, no log. Channel text is untrusted, so every field taken from the record passes through `esc`, and every line
-//! of the channel's text starts with `| `: no post can pose as a poll line, a header, a file line, a ts line or a wake
-//! line, or reach a terminal as a control character.
+//! One channel record as the body of one mail message, and the one reader of that body; and a session's read of its
+//! channel as one line a message (`read_lines`). Pure: no clock, no file, no network, no log. Channel text is untrusted, so
+//! every field taken from the record passes through `esc`, and every line of the channel's text starts with `| `: no post
+//! can pose as a poll line, a header, a file line, a ts line or a wake line, or reach a terminal as a control character.
 
 use std::fmt::Write;
 
 use sot_protocol::chat::{text_segments, ChatRecord, Origin, TextSegment, Ts};
 use sot_protocol::page_reply::unsafe_char;
 
+use crate::api::ScanPage;
 use crate::config::is_slack_id;
 use crate::normalize::ts_key;
 
@@ -132,6 +133,68 @@ fn esc(s: &str, quoted: bool) -> String {
         }
     }
     out
+}
+
+/// A session's read of a channel (`thread` false) or one thread: one line a message of the page, oldest first by `ts`, each
+/// `<ts> <where> <who> "<name>" files=<files> | <first words>`. `where` is `top` (with ` replies=<n>` when Slack counts
+/// them) or `reply thread=<ts>`; `who` comes from the origin alone, never the text or the name: `session`, `person`, `app`,
+/// `drawer` or `other`; a message the chat cannot read ends ` unreadable` in place of `| ` and its words. A channel read also
+/// lists, in its place, each message Slack lists with replies that is no record (most often a deleted parent) as
+/// `<ts> top not-shown newest-reply=<ts>`. Every field passes `esc` and the words are one run of single spaces, so a line
+/// is one line that starts with its own `ts`, and holds no text of the channel before its `| `; a name is cut at 40
+/// characters, a file's id at 32, the words at 100, each cut marked `...`; at most four files are named, the rest counted.
+pub fn read_lines(page: &ScanPage, thread: bool) -> Vec<String> {
+    let mut lines: Vec<((u128, u32), String)> = page.records.iter().map(|r| (ts_key(&r.ts), read_line(r))).collect();
+    if !thread {
+        for (ts, newest) in page.threads.iter().filter(|(ts, _)| page.records.iter().all(|r| r.ts != *ts)) {
+            lines.push((ts_key(ts), format!("{} top not-shown newest-reply={}", ts.as_str(), newest.as_str())));
+        }
+    }
+    lines.sort_by_key(|(key, _)| *key);
+    lines.into_iter().map(|(_, line)| line).collect()
+}
+
+fn read_line(r: &ChatRecord) -> String {
+    let place = if ts_key(&r.thread_ts) == ts_key(&r.ts) {
+        match r.reply_count {
+            0 => "top".to_string(),
+            n => format!("top replies={n}"),
+        }
+    } else {
+        format!("reply thread={}", r.thread_ts.as_str())
+    };
+    let who = match r.origin {
+        Origin::Row => "session",
+        Origin::Member => "person",
+        Origin::Bot => "app",
+        Origin::Drawer => "drawer",
+        Origin::Other => "other",
+    };
+    let author = if r.author.name.is_empty() { &r.author.id } else { &r.author.name };
+    let mut files: Vec<String> = r.files.iter().take(4).map(|f| format!("{}:\"{}\"", shown(&f.id, 32, true), shown(&f.name, 40, true))).collect();
+    let left = r.files.len().saturating_sub(4) as u64 + u64::from(r.files_omitted);
+    if left > 0 {
+        files.push(format!("+{left}"));
+    }
+    let files = if files.is_empty() { "none".to_string() } else { files.join(",") };
+    let words = decoded(r).split_whitespace().collect::<Vec<_>>().join(" ");
+    let tail = if r.omitted {
+        " unreadable".to_string()
+    } else if words.is_empty() {
+        " |".to_string()
+    } else {
+        let more = if r.truncated && words.chars().count() <= 100 { "..." } else { "" };
+        format!(" | {}{more}", shown(&words, 100, false))
+    };
+    format!("{} {place} {who} \"{}\" files={files}{tail}", r.ts.as_str(), shown(author, 40, true))
+}
+
+/// `s` cut to `max` characters, escaped as `esc` does, and ended `...` when it was cut. A `quoted` field also hides `|`
+/// (the mail body's fields do not), so the first ` | ` of a read line is the bar before its words, never inside a name.
+fn shown(s: &str, max: usize, quoted: bool) -> String {
+    let cut = s.chars().nth(max).map(|_| s.chars().take(max).collect::<String>());
+    let text = esc(cut.as_deref().unwrap_or(s), quoted);
+    format!("{}{}", if quoted { text.replace('|', "<U+007C>") } else { text }, if cut.is_some() { "..." } else { "" })
 }
 
 /// The identity a body names, read from its first two lines alone and only in the form `body` writes: a first line

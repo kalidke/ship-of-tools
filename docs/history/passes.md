@@ -3546,3 +3546,11 @@ the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the sa
       posts no longer reach the session as mail, and a chat mail's first line names its channel by name when the daemon's
       name cache holds it, with no call at filing time. The wire is unchanged.
     - The mail's worst case in the poll test now carries a name at its bound.
+- A session's read of its channel, the lines and payloads, 2026-11-25: the third landing of the same plan, pure
+    preparation that nothing calls yet.
+    - `mail::read_lines` builds one line a message of a scan page, oldest first, with every field of channel text
+      passing the mail body's one escape and the words made one run of single spaces, and lists a message Slack lists
+      with replies and the chat does not show (a deleted parent) as one `not-shown` line; wire gains `ChatReadReq` and
+      `ChatReadRes` with their bounds, and no op.
+    - The tests were mutated once: without the whitespace collapse two fail, and with a file id cut at 64 instead of
+      32 the worst line passes 4096 bytes and its test fails.
