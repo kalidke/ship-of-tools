@@ -379,14 +379,7 @@ pub(in crate::ui) fn picker_key(state: &mut State, key: &KeyPress<'_>, label: &s
     if let Some(arrow) = picker_arrow(key.action, key.event.repeat) {
         match arrow {
             PickerArrow::Choose { down } => state.chat.picker_step(down),
-            PickerArrow::Workspace { next } => {
-                let mut refused = None;
-                state.with_chat(|c, _| c.picker_move(next).unwrap_or_else(|words| {
-                    refused = Some(words);
-                    Vec::new()
-                }));
-                refused.into_iter().for_each(|words| state.status.set(words));
-            }
+            PickerArrow::Workspace { next } => state.with_chat(|c, _| c.picker_move(next)),
             PickerArrow::Held => {}
         }
         prompt_done(state, label);

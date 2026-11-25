@@ -759,15 +759,12 @@ impl ChatDrawer {
         Ok(vec![(row.host.clone(), OutgoingReq::ChatWorkspaces)])
     }
 
-    /// Left (`next` false) or Right in the picker: the previous or next workspace's channels, asked once it shows. Refused
-    /// while a pair is in flight, whose answer the shown workspace's words must still fit.
-    pub(in crate::ui) fn picker_move(&mut self, next: bool) -> Result<Vec<Out>, &'static str> {
-        if self.pair_sent.is_some() {
-            return Err("setting this project's channel…");
-        }
-        let Some(p) = self.picker_mut() else { return Ok(Vec::new()) };
+    /// Left (`next` false) or Right in the picker: the previous or next workspace's channels, asked when it has no list yet or
+    /// its list failed.
+    pub(in crate::ui) fn picker_move(&mut self, next: bool) -> Vec<Out> {
+        let Some(p) = self.picker_mut() else { return Vec::new() };
         let host = p.row.host.clone();
-        Ok(p.move_by(next).map(|w| vec![(host, OutgoingReq::ChatChannels { workspace: Some(w) })]).unwrap_or_default())
+        p.move_by(next).map(|w| vec![(host, OutgoingReq::ChatChannels { workspace: Some(w) })]).unwrap_or_default()
     }
 
     /// The picker ends, and the channel's view returns.
@@ -846,7 +843,7 @@ impl ChatDrawer {
             Some(ChatReply::Refused(ChatCode::NoSuchChannel)) if ours => self.picker().map(Picker::no_such_channel),
             Some(reply) => {
                 let app = match self.picker().filter(|_| ours) {
-                    Some(p) => p.invite_app(),
+                    Some(p) => p.pair_app(),
                     None => self.app_name(host, self.owner.target().filter(|t| t.row == row).map(|t| t.workspace.as_str())),
                 };
                 pair_words(reply, private, &app, host)
