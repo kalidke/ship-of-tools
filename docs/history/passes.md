@@ -3488,7 +3488,8 @@ the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the sa
       behind the continuation prefix; a session's deletes of its own posts (19 deleted, 11 already gone) and a
       session's pairing of a project with a channel, after a first try refused for a name the Slack app could
       not see; and, by the maintainer at the window computer, a page of large tables arriving at once on a
-      return, a previewed file replaced while shown, a drawing on a PDF page that reached the session with its
+      return, a previewed file replaced while shown and while its session was off screen, a new session first in
+      the strip and a session typed into moving up, a drawing on a PDF page that reached the session with its
       file and page, and text on a PDF page copied through a real clipboard.
     - Found by that use, each an item for the next candidate: a post that shares a file cannot be deleted
       (CHAT-DELETE-CANNOT-REACH-A-FILE-POST); a post that ended unknown had not posted, and a session cannot

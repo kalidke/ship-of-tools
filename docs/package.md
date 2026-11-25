@@ -205,7 +205,7 @@ what is left of it is open (a pane full of wide rows, a row that alone costs mor
 seconds until every row is shaped, PREVIEW-TABLES-FIRST-VIEW-SHAPES-ALL and PREVIEW-TABLE-PADDING-AMPLIFIES; a
 return renders the session's whole parked document again before its
 first frame, PREVIEW-DOCUMENT-RESHAPED-AT-EVERY-ARRIVAL). Also on `main` past the release, asked by the maintainer on
-2026-11-22 and used by no person yet: a new session starts first in the session strip's recent order, and a session
+2026-11-22 and used by him on the candidate (a new session started first, and typing into a later one moved it up): a new session starts first in the session strip's recent order, and a session
 with no agent is placed by its creation where it sorted last; typing into any session's terminal, by a person or by
 another session, moves it, at most 10 s behind, where what a program prints does not
 (RECENT-ORDER-LEAVES-SESSIONS-WITHOUT-AN-AGENT, Closed; mail moves a session only through what follows it, the
@@ -222,8 +222,8 @@ judged against the install (UPDATE-STATE-NOT-SHOWN and UPDATE-MARK-WINDOW-ONLY-C
 under a virtual display only, used by no person; on a Mac that runs its own sessions no way is known to follow the
 ready words, MAC-NO-QUIT-KEEPING-SESSIONS, a note from reading code); and the fix for a fault the maintainer reported
 on 2026-11-22, that markdown files in the preview did not update when new versions appeared, in two halves, the first
-used by the maintainer on the candidate (a previewed file replaced while shown drew its new version), the second by
-no person: the daemon tells a file's burst of changes once, when the burst closes, by whether the file then
+both used by the maintainer on the candidate (a previewed file replaced while shown drew its new version, and one
+replaced while its session was off screen was current on his return): the daemon tells a file's burst of changes once, when the burst closes, by whether the file then
 exists, so a file replaced by a removal and a create is fetched again where the window had been told only the removal
 (PREVIEW-REPLACED-FILE-TOLD-REMOVED, Closed; it takes effect when a computer's daemon runs it, the wire unchanged),
 and a return to a session sends one read of the file its preview shows and draws the reply only when it differs, so
