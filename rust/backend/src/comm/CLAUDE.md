@@ -267,7 +267,7 @@ Waking:
   read in a hundred while the name flips, measured in review); what is read is still a regular file of at most 64
   bytes, and the row's own session can write any id there itself, so nothing is gained by it. A file
   that is absent, is one of those, or holds anything but one conversation id runs nothing: the mail stays unread for
-  the row's next poll, and the daemon says so in its log once per unread episode, never per look. A row that is not
+  the row's next poll, and the daemon says so in its log once per unread episode, never per look; for a leg with no marker the line's reason says its agent started without Ship of Tools' Codex hooks, that `sot-fe restart` starts it again, and that it then has them only if this computer's install starts Codex with them (`wake/codex.rs`, `UNHOOKED`; the line's own words, "no conversation to ask", are the same, and a test counts them). A row that is not
   Ready is asked nothing and nothing is logged.
   One request per unread episode. What was asked is in the tick task's memory (the handle, the conversation, the
   inbox's line count then). After a request Codex acknowledged, and after one whose outcome is unclear, nothing more is

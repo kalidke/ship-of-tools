@@ -131,7 +131,7 @@ show-result <path>
 For files inside a workspace, `sot-fe preview <workspace> <path>` badges the FE
 without force-switching the user's current view. Full verb/flag list:
 `sot-fe --help` (`goto`, `mode`, `notify`, `open-url`, `repl run|eval|
-interrupt|status`, `type`, `screen`, ...).
+interrupt|status`, `type`, `screen`, `restart`, ...).
 
 ## Typing into / reading a sibling row
 
@@ -140,3 +140,22 @@ into another session's pane (`pty.input`); `sot-fe screen <workspace>` prints
 its current screen, no scrollback (`pty.screen`). **Read before you write:**
 never send `type` — not even a bare Enter — to a pane you haven't just read
 with `screen`; a blind keystroke can end a session instead of advancing it.
+
+## Starting a Codex session's agent again
+
+`sot-fe restart <session>` starts the Codex agent of a session that Sessions
+mode marks `[not woken by mail]`, or that `sotd status` lists as not woken by
+mail, again under this computer's Ship of Tools, in a new conversation that
+begins by reading its handoff and its mail. Mail wakes the session afterward
+only if this computer's install starts Codex with its hooks: look at the mark
+again, and if it is still there, run the installer on that computer and check
+that its Codex accepts `--no-daemon`; running restart again helps nothing and
+ends another conversation. It ends the session's Codex program (text typed in
+its input and not sent is lost). It is refused for a session that is not so
+marked, for your own session by any name, and while the session is in a turn:
+run it when the session is at rest, since the turn check reads the session's
+registry entry, which an agent started before the update may not reach (a
+running turn would then end with it) or may keep set after an Escape (the
+session then reads as in a turn until another turn ends). Run it only when your
+person asks, naming the session. Exit 0 restarted; 2 nothing changed; 3
+something changed or may have: look at the session before you run it again.

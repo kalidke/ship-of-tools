@@ -111,7 +111,8 @@ Supervisor:
   typed (a slug or an id, never the default row) and refuses, each before any effect and in this order:
   `unknown_workspace`; `own_session` (the request's `by` is a claim of the asker's own row id, as a `pty.input` origin is,
   and the row it names, resolved like the session, is refused whatever name the session was given; a client
-  that leaves `by` out is not refused, so this is a convention, not a check of who asks); `not_codex`
+  that leaves `by` out is not refused, so this is a convention, not a check of who asks; the CLI, `sot-fe restart` of agents'
+  contract, sends `$SOT_WORKSPACE_ID`); `not_codex`
   (any other kind, `none` included); `not_ready` (a shown phase other than `ready`: a row that was never started, ended,
   queued or unreachable is opened from the window, which starts it); `not_needed` (messaging's `not_woken_by_mail` does not
   hold for the row's folder, so a restart is not needed and would end its conversation); `busy` (this
@@ -129,7 +130,7 @@ Supervisor:
   Limits. `restarted` says the agent was started again, not that mail now wakes it: the new leg is hooked only where this
   computer's install lets its launcher stamp the marker (the plugin cache with one version, the selection script, a Codex
   that accepts `--no-daemon`), so on a computer where it cannot the session is marked again, and each run ends another
-  conversation. The busy check rests on the `floor` fact reaching the row's own registry entry, which
+  conversation; the CLI's success line says so. The busy check rests on the `floor` fact reaching the row's own registry entry, which
   the global work-state hooks write; for an agent started before the update that is unmeasured (a leg that ran without
   `--no-daemon` may keep its session in Codex's shared background server, where its hooks may run in another environment and
   write another handle's entry or none, and then `busy` never refuses), and a leg of 0.7.3 whose turn an Escape ended keeps

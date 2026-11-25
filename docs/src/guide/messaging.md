@@ -84,6 +84,19 @@ are not installed or Codex does not accept `--no-daemon`. Sessions mode marks
 such a session `[not woken by mail]`. Mail wakes it once its agent is started
 again with the hooks.
 
+`sot-fe restart <session>`, run in a shell or a session on the computer that
+runs it, ends the session's Codex program and starts it again under that
+computer's Ship of Tools, in a new conversation that begins by reading the
+session's handoff and its mail. The earlier conversation stays in Codex's own
+history. Anything typed in the session's input and not sent is lost. It is
+refused for a session that is not marked, for the session that runs the command,
+and while the session is in a turn: run it when the session is at rest. Name the
+session as `sot-fe version` lists it after `row`, or by its id. The new agent
+has the hooks only if this computer's install starts Codex with them, so look at
+the mark again afterward. If the session is still marked, run the installer on
+that computer and check that its Codex accepts `--no-daemon`; running restart
+again helps nothing and ends another conversation.
+
 ## What travels with it
 
 The same registry that routes messages carries each session's work state

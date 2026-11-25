@@ -34,6 +34,7 @@ use std::collections::HashSet;
 use std::ffi::OsString;
 
 use super::*;
+use crate::agents::selection::leg_hooked;
 
 /// The launcher and Codex's queue command together. The command returned in under a second in every trial; the
 /// launcher asks the binary's help first, and both start a runtime.
@@ -84,6 +85,10 @@ enum Look {
     Asked(Asked),
 }
 
+/// Why an unhooked leg (no marker, agents' `leg_hooked`) names no conversation, and what starts its agent again and
+/// when that gives it the hooks.
+const UNHOOKED: &str = "its agent started without Ship of Tools' Codex hooks, so it names none; sot-fe restart starts it again, and it then has them only if this computer's install starts Codex with them (the installer, and a Codex that accepts --no-daemon)";
+
 /// The longest binding file read: an id, its newline, and room to see that there is more.
 const BINDING_MAX: u64 = 64;
 
@@ -109,7 +114,7 @@ fn binding(state_dir: &Path) -> Result<String, &'static str> {
 /// nothing more. Rows' listing marks a Ready such session (`not_woken_by_mail`), and the wake's log says the same for
 /// mail waiting on it.
 pub(crate) fn not_woken_by_mail(state_dir: &Path) -> bool {
-    !crate::agents::selection::leg_hooked(state_dir) && binding(state_dir).is_err()
+    !leg_hooked(state_dir) && binding(state_dir).is_err()
 }
 
 /// Blocking: a status round trip to the row and, when a request goes, the queue command's whole run. The command is
@@ -131,7 +136,7 @@ fn look(home: &Path, handle: &str, state_dir: &Path, cwd: &Path, prior: Option<A
     }
     let thread = match binding(state_dir) {
         Ok(thread) => thread,
-        Err(why) => return Look::Unbound(why),
+        Err(why) => return Look::Unbound(if leg_hooked(state_dir) { why } else { UNHOOKED }),
     };
     if judge(&|| Some(thread.clone())) != Verdict::Ask {
         return Look::Skip;

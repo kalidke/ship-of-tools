@@ -1,4 +1,4 @@
-# sot-fe's verbs on a sibling row: type into it, read its screen, move it to another account.
+# sot-fe's verbs on a sibling row: type into it, read its screen, move it to another account, start its Codex agent again.
 # Sourced by sot-fe; defines functions only.
 
 # Portable base64 encode with NO embedded newlines. GNU coreutils' `base64`
@@ -145,4 +145,59 @@ send_workspace_reauth() {
     fi
     printf '%s' "$resp" | jq -r '"ok \(.payload.code) account=\(.payload.account) workspace=\(.payload.workspace_id)"'
     echo "note: this session's leg is being replaced now -- everything in flight dies with it, and the resumed session starts on /sot-session-start." >&2
+}
+
+# A marked Codex session's agent started again under this computer's Ship of Tools, in a new conversation (op
+# workspace.restart). $1 = the session as typed: its slug as `version` lists it after `row`, or its id. ONE request,
+# never sent again: a second run starts another new conversation. The calling session's own row is refused here (`.` and
+# $SOT_WORKSPACE_ID) before an endpoint is found, and its row id rides as `by`, so the daemon refuses that row by any name
+# (`own_session`). Exits 0 restarted (not that mail now wakes the session: that needs this computer's install to start Codex
+# with its hooks, which the line says); 2 nothing was restarted (every refusal); 3 the agent was, or may have been, stopped.
+send_workspace_restart() {
+    local session="$1" req resp err code outcome slug detail look
+    if [ "$session" = . ] || { [ -n "${SOT_WORKSPACE_ID:-}" ] && [ "$session" = "$SOT_WORKSPACE_ID" ]; }; then
+        echo "ERROR: a session cannot restart its own agent. Ask its person to run this in another session or a shell on this computer. Nothing was sent." >&2
+        exit 2
+    fi
+    _need_endpoint
+    # The session as typed is free text and reaches jq on stdin, as a JSON string.
+    # The row this session runs in (empty outside one) rides as `by`: the daemon refuses the asker's own row by any name.
+    req="$({ sot_json_escape "$session"; sot_json_escape "${SOT_WORKSPACE_ID:-}"; } | jq -cn 'input as $s | input as $by | {v:1, id:2, kind:"req", op:"workspace.restart", payload:({session:$s} + (if $by == "" then {} else {by:$by} end))}')"
+    export SEND_TIMEOUT="${TIMEOUT:-60}"
+    look="Look at the session before you run this again: a second run starts another new conversation."
+    resp="$(sot_send "$req" workspace.restart || true)"
+    if [ -z "$resp" ]; then
+        echo "no answer: the daemon did not answer within $SEND_TIMEOUT s, so $session's agent may have been started again. $look" >&2
+        exit 3
+    fi
+    err="$(printf '%s' "$resp" | jq -r '.payload.error // empty')"
+    if [ -n "$err" ]; then
+        code="$(printf '%s' "$resp" | jq -r '.payload.code // empty')"
+        case "$code" in
+            handler_error)
+                echo "unknown: the daemon failed while it restarted $session's agent, which may have been stopped or started again. $look" >&2
+                exit 3 ;;
+            "")
+                echo "refused unsupported: the computer that runs your sessions runs an older Ship of Tools that cannot restart a session's agent. Nothing was restarted." >&2
+                exit 2 ;;
+        esac
+        echo "refused $code: ${err%.}. Nothing was restarted." >&2
+        exit 2
+    fi
+    outcome="$(printf '%s' "$resp" | jq -r '.payload.outcome // empty')"
+    slug="$(printf '%s' "$resp" | jq -r '.payload.slug // empty')"
+    detail="$(printf '%s' "$resp" | jq -r '.payload.detail // empty')"
+    case "$outcome" in
+        restarted)
+            echo "restarted $slug: its Codex agent was started again under this computer's Ship of Tools, in a new conversation that begins by reading its handoff and its mail. Look at its mark again in the window or in sotd status: if it still reads not woken by mail, this computer's install does not start Codex with its hooks, so run the installer on this computer and check that its Codex accepts --no-daemon. Do not run this again for that: it ends another conversation and changes nothing." ;;
+        stop_failed)
+            echo "unknown: $slug's agent may still be the one it had: its stop did not finish ($detail). $look" >&2
+            exit 3 ;;
+        not_started)
+            echo "not started: $slug's Codex program ended and was not started again ($detail). Opening the session in the window starts it." >&2
+            exit 3 ;;
+        *)
+            echo "unknown: the daemon's answer named no outcome, so $session's agent may have been started again. $look" >&2
+            exit 3 ;;
+    esac
 }

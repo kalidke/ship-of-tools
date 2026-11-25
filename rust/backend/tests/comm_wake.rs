@@ -474,7 +474,8 @@ async fn listed_not_woken(row: &mut Row, ws: &str) -> bool {
 
 /// A Ready Codex session whose leg has neither the hook marker nor a binding is listed `not_woken_by_mail` (the stand-in
 /// plus the real `ccx` with no plugin cache writes no marker); once its session names a conversation it is not. The
-/// Claude row of the harness is never marked. Red before the change: the list has no such field.
+/// Claude row of the harness is never marked. Red before the change: the list has no such field. Mail to it is logged once
+/// as waiting, with the words that name `sot-fe restart`.
 #[tokio::test]
 async fn a_codex_session_that_names_no_conversation_is_listed_not_woken_by_mail_until_it_does() {
     let _serial = SERIAL.lock().await;
@@ -483,6 +484,11 @@ async fn a_codex_session_that_names_no_conversation_is_listed_not_woken_by_mail_
     let main = row.ws.clone();
     assert!(listed_not_woken(&mut row, &cx.ws).await, "an unhooked Codex session with no binding is not marked");
     assert!(!listed_not_woken(&mut row, &main).await, "a Claude session is marked");
+    append_mail_to(&row.env, CODEX, 1);
+    two_looks(&row).await;
+    let log = daemon_log(&row.env);
+    assert_eq!(log.matches("sot-fe restart").count(), 1, "the wake's log does not say how to start the agent again, once");
+    assert!(log.contains("only if this computer's install starts Codex with them (the installer, and a Codex that accepts --no-daemon)"), "the wake's log promises more than a restart can: {log}");
     cx.bind(&format!("{THREAD}\n")).await;
     assert!(!listed_not_woken(&mut row, &cx.ws).await, "a session that named its conversation is still marked");
     assert!(!listed_not_woken(&mut row, &main).await, "a Claude session is marked");

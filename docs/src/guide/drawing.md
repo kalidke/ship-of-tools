@@ -195,7 +195,8 @@ drawing. Every session started on 0.7.0 stays in this state after the update to 
 a Codex session launched without the selection hook answers `held` for either text or a drawing.
 
 End the session (`Shift+d` twice on it in Sessions mode) and start a new one in the same folder, then select or draw
-again. Use `/resume` in the new session to return to an earlier conversation. If a new session still says `held`,
+again. For a Codex session marked `[not woken by mail]`, `sot-fe restart <session>` on the computer that runs it does the same
+without a new session (see [Messaging](messaging.md)). Use `/resume` in the new session to return to an earlier conversation. If a new session still says `held`,
 run the installer on the computer running the session, then restart the session and share the text or drawing again.
 Codex also needs a version that accepts `--no-daemon` for that launch. See [Updating](updating.md).
 

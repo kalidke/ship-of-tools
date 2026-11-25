@@ -464,6 +464,8 @@ jobs:
           bash test-sot-fe-version.sh
           # reauth moves only the row it runs in; a second argument or a missing row id sends nothing.
           bash test-sot-fe-reauth.sh
+          # restart asks for a Codex session's agent once, never the caller's own, and tells each outcome by its exit code.
+          bash test-sot-fe-restart.sh
           # chat post replies for the row it runs in: one resolve, one post, never a second send, free text on stdin.
           bash test-sot-fe-chat.sh
           # goto switches the window and starts nothing: --boot is refused as an unknown flag.

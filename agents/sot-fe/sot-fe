@@ -30,6 +30,7 @@
 #   sot-fe screen <workspace>                      [--timeout <s>]
 #   sot-fe version                                 [--endpoint <ep>] [--timeout <s>]
 #   sot-fe reauth <account>                        [--timeout <s>]
+#   sot-fe restart <session>                       [--timeout <s>]
 #   sot-fe chat post [--thread <ts>] (<text> | --stdin) [--timeout <s>]
 #   sot-fe chat post [--thread <ts>] --file <path> [<comment> | --stdin] [--timeout <s>]
 #   sot-fe chat delete <ts> [--timeout <s>]
@@ -168,6 +169,21 @@
 #              `reauth` skill first: everything in flight dies with the leg,
 #              and the new account has no server-side cache for the
 #              conversation.
+#   restart  — start the Codex agent of a session that Sessions mode marks [not woken by mail] (or `sotd status` lists
+#              so) again under this computer's Ship of Tools, in a new conversation. Mail wakes the session afterward
+#              only if this computer's install starts Codex with its hooks: look at the mark again, and if it is still
+#              there, run the installer on that computer and check that its Codex accepts `--no-daemon`; running restart
+#              again helps nothing and ends another conversation. It is refused for any session not so marked, for the
+#              calling session's own (by any name) and during a turn: run it when the session is at rest, since the
+#              turn check reads the session's registry entry, which an agent started before the update may not reach
+#              (a running turn would then end with it) or may keep set after an Escape (the session then reads as in a
+#              turn until another turn ends). <session> is its slug as `version` lists it after `row`, or its id. It ends
+#              the session's Codex program (text typed in its input and not sent is lost) and sends ONE
+#              `workspace.restart`, never twice: a second run starts another new conversation. Run it only when the
+#              session's person asked, naming the session. Prints `restarted <slug>: ...` and exits 0; 1 for usage; 2
+#              with `refused <code>: ...` or the refusal of the calling session's own (nothing was restarted); 3 with
+#              `unknown: ...`, `not started: ...` or `no answer: ...` (the agent was or may have been stopped: look at
+#              the session before running it again). Waits 60 s (--timeout <s> changes it).
 #   chat     — `chat post` replies in the channel this row is mapped to, under this session's comm handle and for the
 #              row it runs in (`$SOT_WORKSPACE_ID`; outside a row it is refused before an endpoint is found). It
 #              asks the daemon `chat.resolve` for the row's channel, then sends ONE `chat.post` of kind `row`, into
@@ -604,6 +620,10 @@ case "$CMD" in
         ACCOUNT="${POS[0]:-}"
         [ -n "$ACCOUNT" ] || { echo "usage: sot-fe reauth <account> [--timeout <s>]  -- name the account; this verb never guesses which login was meant" >&2; exit 1; }
         send_workspace_reauth "$ACCOUNT"
+        ;;
+    restart)
+        [ "${#POS[@]}" -eq 1 ] || { echo "usage: sot-fe restart <session> [--timeout <s>]  -- name the session as sot-fe version lists it, or by its id" >&2; exit 1; }
+        send_workspace_restart "${POS[0]}"
         ;;
     chat)
         [ -z "$SLACK_WS" ] || [ "${POS[0]:-}" = pair ] || [ "${POS[0]:-}" = channels ] || { echo "ERROR: --slack-workspace is only for chat pair and chat channels" >&2; exit 1; }

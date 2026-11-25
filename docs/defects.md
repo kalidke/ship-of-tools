@@ -485,7 +485,7 @@ owned by `docs/CLAUDE.md`.
   resumed inside Codex, which no one has seen done. Neither a notice nor a restart is built or decided.
   Built: Sessions mode marks such a session `[not woken by mail]`, from `workspace.list`'s `not_woken_by_mail` (a Ready
   Codex session whose binding names no conversation and whose agent was not launched with the Codex hooks); seen by no
-  person.
+  person; and `sot-fe restart <session>` starts such a session's agent again, in a new conversation.
 - **EDITOR-MODE-TYPED-AS-COMMANDS** [note] The free-prompt test (`comm/wake/screen.rs`) does not read Claude Code's
   editor mode. In its vim editor mode left in NORMAL mode, the wake's line and a page reply are read as commands: the
   typed-line gate withholds Enter, but the box can keep an altered remnant, without its mark, that the person's next

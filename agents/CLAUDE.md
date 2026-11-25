@@ -201,7 +201,7 @@ of each.
    Their route is one of three, and none opens a file the daemon owns, with one named exception: the prompt hook `sot-selection-hook.sh` opens the one file whose path the daemon gives the leg in `SOT_SELECTION_FILE`, which holds exactly the hook's output, and guesses no daemon layout (as the pinned self file is also named to the leg by the daemon). (a) A framed op over an endpoint, through
    comm-lib's `sot_oneshot_request`, which says hello first (the daemon admits nothing before it): `sot-fe`
    (`fe.command.send`, `repl.execute`, `repl.run_file`, `repl.interrupt`, `pty.input`, `pty.screen`,
-   `workspace.reauth`, `chat.resolve`, `chat.post`, `chat.post_file`, `chat.delete`, `chat.read`, `chat.row_pair`, `chat.channels`, `chat.workspaces`, `version.query`, `workspace.list`), `comm-spawn.sh` and `comm-despawn.sh` (`workspace.create`,
+   `workspace.reauth`, `workspace.restart`, `chat.resolve`, `chat.post`, `chat.post_file`, `chat.delete`, `chat.read`, `chat.row_pair`, `chat.channels`, `chat.workspaces`, `version.query`, `workspace.list`), `comm-spawn.sh` and `comm-despawn.sh` (`workspace.create`,
    `workspace.list`, `workspace.destroy`, `version.query`), `comm-bootstrap.sh` and `comm-probe.sh` (`workspace.list`,
    `workspace.create`, `pty.input`, and for probe shutdown `workspace.destroy`), `sot-nav.sh` (`agent.send`, to the hub's relay endpoint). (b) A `sotd` subcommand:
    `sotd comm VERB` through `sot_comm` (the registry, unread counts, identity, a handoff line), `sotd agent-exec`
@@ -623,6 +623,23 @@ of each.
   `Page: <absolute path>` on the session's closing marker, and exits 0; a page elsewhere, which the Queue cannot open,
   is refused with exit 2. It runs no `sot-fe` for a page; a session opens one only when its person asks, with
   `sot-fe docs`. Everything else badges through `sot-fe preview` as before. `tests/test-show-result.sh`.
+- `sot-fe restart <session>` (`sot-fe/sot-fe-row.sh`, `send_workspace_restart`): the words and exit codes of rows' `workspace.restart`,
+  which starts a marked Ready Codex session's agent again under this computer's Ship of Tools, in a new conversation (the
+  daemon's rules are rows'). `<session>` is as typed, a slug as `sot-fe version` lists it after `row`, or an id. The verb
+  refuses `.` and the caller's own `$SOT_WORKSPACE_ID` before an endpoint is found (exit 2, nothing sent), takes exactly
+  one argument (else the usage, exit 1), and sends ONE request, never a second, waiting 60 s (`--timeout`). The request
+  carries `$SOT_WORKSPACE_ID` as `by` when it is set, so the daemon refuses the caller's own row by any name (`own_session`;
+  the id is the caller's claim, as a `pty.input` origin is). A refusal of the daemon prints `refused <code>: <the daemon's
+  words> Nothing was restarted.` and exits 2; an older daemon's unknown-op answer is `refused unsupported: ...` (exit 2).
+  `restarted <slug>: ...` exits 0; its line says the agent was started again and not that mail now wakes it: that needs this
+  computer's install to start Codex with its hooks, so the line tells the person to look at the mark again, to run the
+  installer and check that Codex accepts `--no-daemon` if it is still there, and not to run this again for that. A stop that
+  did not finish (`unknown: ...`), an agent that was stopped and not started (`not started: ...`), a daemon failure after the
+  send began and no answer (`no answer: ...`) exit 3: the agent was or may have been stopped, and a second run starts
+  another new conversation. A session runs it only on its person's word, naming the session, and never for its own (the
+  skills say so); the daemon refuses a session in a turn only while the registry is readable and the leg's hooks reach its
+  own entry (rows' contract, Limits of `workspace.restart`), so the help and the skills say to run it when the session is
+  at rest. `tests/test-sot-fe-restart.sh`, against a stub daemon, is in the Windows agents job of `release-gate.yml`.
 - Still elsewhere, listed so a reader finds them: the shell daemon client `comm/lib/comm-lib-client.sh`
   (`sot_daemon_endpoint`, `sot_relay_endpoint`, `sot_oneshot_request`, `sot_pty_input`); the hooks' scripts, the Codex
   skills and plugin, and the two messaging skills (`sot-comm`, `sot-session-start`) in `comm/work_state/` and
@@ -678,7 +695,7 @@ One test per guarantee, named for it; `cargo test -p sot-backend agents::` runs 
 | 6 | `folder_trust::tests::*` (`two_preparations_never_share_a_temporary_name`, `the_restart_asks_the_scope_the_record_uses`), `trust_declaration::tests::*`, `env::trust_declaration_controls::*`, `env::trust_scope_controls::*` (`a_recorded_or_already_trusted_preparation_is_one_info_line_naming_the_file`, `a_claude_preparation_marks_its_trust_file_and_no_other_file`), `env::trust_config_controls::*`; the layer: `folder_trust::tests::the_layer_is_recorded_wherever_it_lies_once_a_prefix_is_declared`, `the_layer_is_recorded_beside_what_the_file_already_holds`, `no_declaration_or_a_relative_one_records_no_layer`, `env::trust_scope_controls::a_declared_box_records_the_ready_layer_beside_the_row_and_an_undeclared_one_neither`, `a_layer_that_is_not_ready_is_not_recorded`, `the_layer_is_recorded_under_the_spelling_its_add_dir_carries` (Unix); `tests/trust_declare.rs`, `tests/trust_premises.rs` |
 | 7 | `argv::tests::the_layer_rides_the_recipe_and_a_plain_claude_has_none`, `a_layer_without_the_bootstrap_skill_is_left_out_and_the_prompt_goes_with_it`, `the_layer_reaches_the_capsule_leg_the_reauth_leg_and_agent_exec`, `a_callers_settings_json_is_merged_with_the_recipes_hooks`, `layer::tests::*` (`the_selection_hook_rides_the_recipe`); `tests/agent_exec.rs::agent_exec_claude_carries_the_layer_when_installed`; `tests/test-hook-commands.sh` (all six Claude commands, including the selection command with its script present or missing, and the serialized Codex command draining a long prompt silently with the script or row path missing); `tests/test-selection-hook.sh` (the script's rows: unset, empty, missing, a directory, an empty file, the rendering byte for byte, a path with a space, unreadable, a 1 MiB input on stdin; laid flat and executable in the staged bin, and the serialized Codex command delivering the selection from the runtime comm home); `comm/tests/test-session-start-hook.sh` (the hook's output names the handle and the handoff, exits 0 with none, prints and joins nothing with hooks off); `a_recipe_hook_the_caller_already_has_is_not_added_twice`, `a_callers_settings_of_another_shape_is_passed_as_given`; `test/layer_tests.jl`, `test/protect_tests.jl` ("the mail check and the subagent guard stay in the user's settings"). A leg that carries the layer was proved at its argv, not by running Claude Code |
 | 8 | `test/protect_tests.jl` (a person's skill, a symlinked skills folder, every configuration folder, a person's hook), `test/claude_hooks_tests.jl` (the settings retirement), `test/install_tests.jl` and `test/publish_tests.jl` (shared command preflight, replacement and cleanup) |
-| 9 | `tests/test-tools-wire-only.sh`, `tests/test-spawn-remote-no-local-row.sh`, `tests/test-sot-fe-endpoint-once.sh`, `tests/test-sot-fe-chat.sh` (the chat ops) |
+| 9 | `tests/test-tools-wire-only.sh`, `tests/test-spawn-remote-no-local-row.sh`, `tests/test-sot-fe-endpoint-once.sh`, `tests/test-sot-fe-chat.sh` (the chat ops), `tests/test-sot-fe-restart.sh` (`workspace.restart`) |
 | 10 | `tests/test-ccb-agent-exec.sh`, `tests/test-ccx-launch.sh`, `tests/test-ccx-resume-default.sh` |
 | 11 | the hosted run of `scripts/tests/under-bash.sh`; `test/skills_tests.jl` ("a launcher's Windows shim refuses at once and names Git Bash") |
 | 12 | `tests/test-crlf-gh-auth.sh` |
