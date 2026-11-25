@@ -1,12 +1,13 @@
-//! The channel picker: the list a person chooses a project's channel from (`chat.workspaces`, then `chat.channels` of one
-//! Slack workspace, then one `chat.pair`), narrowed by typing, one workspace's list at a time with Left and Right between
-//! them; each list is kept from its ask, so a workspace shown again needs no second read. It holds the lists and the cursor (a `TreeView`, its entries drawn as the nav pane draws its tree rows) and sends nothing; `ChatDrawer` sends what it returns, holds the one pair in
-//! flight and parks the channel's view behind it, as behind any of its modal screens. Also here: `Body`, what a modal
-//! screen draws.
+//! The channel picker: the list a person chooses a project's channel from (`chat.workspaces`, then `chat.channels` of each
+//! Slack workspace a person opens, then one `chat.pair`), narrowed by typing. Every running workspace is a row that opens in
+//! place into its channels, as the nav pane's trees do (Right opens, Left closes); each list is kept from its ask. It holds
+//! the lists and the cursor (a `TreeView`, its rows drawn as the nav pane draws its tree rows) and sends nothing;
+//! `ChatDrawer` sends what it returns, holds the one pair in flight and parks the channel's view behind it, as behind any of
+//! its modal screens. Also here: `Body`, what a modal screen draws.
 
 use sot_protocol::ops::{ChatChannel, ChatChannelInfo, ChatChannelsRes, ChatCode, ChatWorkspaceInfo, ChatWorkspacesRes};
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use sot_protocol::TreeNode;
 
@@ -21,17 +22,14 @@ use crate::ui::ResultRowIdentity;
 pub(super) fn invite(name: &str) -> String {
     format!("in that channel in Slack, type /invite @{name}")
 }
-/// Why a private channel is missing from a list and what to type in Slack (`name`, the person's app): Slack lists a private
-/// channel only to an app that is in it.
-fn private_words(name: &str) -> String {
-    format!("A private channel is listed only once someone in it invites your Slack app: {}, then open this list again.", invite(name))
+/// Why a private channel is missing from a list and what to type in Slack (`name`, the person's app; `workspace`, which
+/// workspace's app that is when several run): Slack lists a private channel only to an app that is in it.
+fn private_words(name: &str, workspace: Option<&str>) -> String {
+    let place = workspace.map_or_else(|| ":".to_string(), |w| format!(". For {w}:"));
+    format!("A private channel is listed only once someone in it invites your Slack app{place} {}, then press Esc and open this list again.", invite(name))
 }
-/// The guide, its keys naming Left and Right when the list can move between workspaces (`several`).
-fn guide(several: bool) -> String {
-    let moving = if several { " Left and Right for another Slack workspace," } else { "" };
-    format!("Type to narrow the list, Up and Down to choose,{moving} Enter to pick, Esc to close. Picking a public channel your Slack app is not in makes it join, \
-and Slack then shows that it joined.")
-}
+/// The guide.
+const GUIDE: &str = "Type to narrow the channels of the open workspaces, Up and Down to choose, Right to open a Slack workspace and Left to close it, Enter to pick, Esc to close. Picking a public channel your Slack app is not in makes it join, and Slack then shows that it joined.";
 /// What an older computer's picker says: whose channels these are, that its Ship of Tools connects one workspace and who can
 /// change that, and what "your Slack app" reads, with what it is unless the head's first words said so (`glossed`).
 fn head_one(c: &str, glossed: bool) -> String {
@@ -76,6 +74,26 @@ pub(super) enum Pick {
 /// What a workspace not asked yet shows.
 static READING: List = List::Reading;
 
+/// The row id of workspace `ws` (empty for an older computer's one); a channel's row id continues it after a `/`.
+fn ws_id(ws: &Option<String>) -> String {
+    format!("chat-ws:{}", ws.as_deref().unwrap_or_default())
+}
+
+/// A row's node payload: the workspace and the channel it names, when it names them.
+fn payload(ws: Option<&str>, channel: Option<&str>) -> serde_json::Map<String, serde_json::Value> {
+    [("workspace", ws), ("channel", channel)].into_iter().filter_map(|(k, v)| Some((k.to_string(), v?.into()))).collect()
+}
+
+/// One row of the picker's tree at `depth`.
+fn row(id: String, label: String, kind: &str, depth: usize, payload: serde_json::Map<String, serde_json::Value>) -> TreeRow {
+    TreeRow { node: TreeNode { id, label, kind: kind.into(), has_children: false, badges: Vec::new(), payload }, depth, expanded: false }
+}
+
+/// The workspace a row names (`None`: an older computer's one, or a row of none).
+fn workspace_of(row: &TreeRow) -> Option<String> {
+    row.node.payload.get("workspace").and_then(|w| w.as_str()).map(str::to_string)
+}
+
 enum List {
     Reading,
     Listed { channels: Vec<ChatChannelInfo>, more: bool },
@@ -88,25 +106,29 @@ enum Places {
     Asking,
     /// The computer's Ship of Tools predates several workspaces: its one list, named by no workspace.
     Older,
-    /// The running workspaces, in the daemon's order (by name), and the one shown.
-    Known { running: Vec<ChatWorkspaceInfo>, at: usize },
+    /// The running workspaces, in the daemon's order (by name).
+    Known(Vec<ChatWorkspaceInfo>),
     /// None runs, or the list of them could not be read: the words, and the Connect step alone.
     Nowhere(String),
 }
 
 pub(super) struct Picker {
     pub(super) row: ResultRowIdentity,
-    /// The row has a channel: the list begins with `No channel for this project`.
+    /// The row has a channel: the list offers `No channel for this project` after its workspaces.
     mapped: bool,
     filter: String,
-    /// The entries as the list draws them, one leaf row each, and the cursor on one of them.
+    /// The rows as the list draws them (workspaces, their channels and notes, then the project's own rows), and the cursor on one.
     tree: TreeView,
-    /// A key moved the cursor since it last went to the first channel: a list answered again then leaves it on its row.
-    moved: bool,
+    /// The list of the workspace the picker opened on, when it first arrives, moves the cursor to its first channel, unless a
+    /// key moved it first.
+    land: bool,
+    /// The workspaces shown open (`None`: an older computer's one).
+    open: HashSet<Option<String>>,
     /// Each workspace's list from the moment it was asked (`None`: an older computer's one), kept while the picker is open.
     lists: HashMap<Option<String>, List>,
     places: Places,
-    /// The workspace to open on, when it runs: the row's, or the one just connected.
+    /// The workspace to open on, when it runs: the row's, or the one just connected; once the workspaces are known, the one
+    /// the picker opened on.
     start: Option<String>,
     /// The Connect step of a row whose workspace failed opened it, to move the project into another workspace.
     away: bool,
@@ -136,7 +158,7 @@ pub(super) fn link_target(text: &str) -> Option<(Option<String>, ChatChannel)> {
 
 impl Picker {
     pub(super) fn new(row: ResultRowIdentity, mapped: bool, app: String) -> Self {
-        Picker { row, mapped, filter: String::new(), tree: TreeView::new(), moved: false, lists: HashMap::new(), places: Places::Asking, start: None, away: false, sent: None, app, current: None }
+        Picker { row, mapped, filter: String::new(), tree: TreeView::new(), land: false, open: HashSet::new(), lists: HashMap::new(), places: Places::Asking, start: None, away: false, sent: None, app, current: None }
     }
 
     /// The row's channel now (its workspace, id and label), which the head names when the list shown lacks it.
@@ -145,20 +167,21 @@ impl Picker {
     }
 
     /// The words for a row's channel the whole list of its workspace lacks: Slack lists a private channel only to an app in
-    /// it, so the connected app is not in it (none when the list was cut, or is another workspace's).
+    /// it, so the connected app is not in it (none when the list was cut or is not held).
     fn missing_words(&self) -> Option<String> {
         let (workspace, id, label) = self.current.as_ref()?;
-        let List::Listed { channels, more: false } = self.list() else { return None };
-        let here = self.asked().is_none_or(|w| &w == workspace);
-        (here && !channels.iter().any(|c| &c.id == id)).then(|| {
-            format!("This project's channel, {label}, is not in this list: your Slack app (the bot that reads the channel and posts for your agents) is not in it, so this panel cannot show it. To keep it, {}, then press Esc. To change it, pick another channel below.\n\n", invite(&self.invite_app()))
+        // An older computer's one list is kept under no workspace, whatever workspace the row names.
+        let key = (!matches!(self.places, Places::Older)).then(|| workspace.clone());
+        let Some(List::Listed { channels, more: false }) = self.lists.get(&key) else { return None };
+        (!channels.iter().any(|c| &c.id == id)).then(|| {
+            format!("This project's channel, {label}, is not in this list: your Slack app (the bot that reads the channel and posts for your agents) is not in it, so this panel cannot show it. To keep it, {}, then press Esc. To change it, pick another channel below.\n\n", invite(&self.app_of(key.as_deref())))
         })
     }
 
-    /// The Slack app an invite names: the shown workspace's, by the name Slack gives its bot when the hub gave one, else the
-    /// person's (`app`).
-    pub(super) fn invite_app(&self) -> String {
-        self.app_of(self.asked().as_deref())
+    /// The Slack app an invite names: the cursor's workspace's, by the name Slack gives its bot when the hub gave one, else
+    /// the person's (`app`).
+    fn invite_app(&self) -> String {
+        self.app_of(self.here().as_deref())
     }
 
     /// The Slack app an invite names in workspace `ws`: the one its entry names, else the person's.
@@ -176,9 +199,28 @@ impl Picker {
         self.app_of(self.pair_workspace().as_deref())
     }
 
-    /// The shown workspace's list: reading until its answer, and before any is asked.
-    fn list(&self) -> &List {
-        self.lists.get(&self.asked()).unwrap_or(&READING)
+    /// The row under the cursor.
+    fn cursor_row(&self) -> Option<&TreeRow> {
+        self.tree.rows().get(self.tree.selected())
+    }
+
+    /// The workspace the cursor is in: the one its row names, else the one the picker opened on.
+    fn here(&self) -> Option<String> {
+        self.cursor_row().and_then(workspace_of).or_else(|| self.start.clone())
+    }
+
+    /// The workspace `No channel for this project` unpairs in: the project's own when it runs, else the one the picker opened on.
+    fn unpair_workspace(&self) -> Option<String> {
+        self.current.as_ref().map(|c| c.0.clone()).filter(|w| self.info(Some(w)).is_some()).or_else(|| self.start.clone())
+    }
+
+    /// The workspace rows, in order: each running workspace by its name, or an older computer's one.
+    fn spaces(&self) -> Vec<(Option<String>, String)> {
+        match &self.places {
+            Places::Known(running) => running.iter().map(|w| (Some(w.id.clone()), workspace_label(&w.id, w.name.as_deref()))).collect(),
+            Places::Older => vec![(None, "your connected Slack workspace".to_string())],
+            _ => Vec::new(),
+        }
     }
 
     /// The picker opening on `start` when that workspace runs.
@@ -199,36 +241,16 @@ impl Picker {
         computer(&self.row.host)
     }
 
-    /// The workspace shown, when the computer has several (`None`: an older computer's one, or none yet).
-    pub(super) fn asked(&self) -> Option<String> {
-        match &self.places {
-            Places::Known { running, at } => running.get(*at).map(|w| w.id.clone()),
-            _ => None,
-        }
-    }
-
     /// The running workspace `ws`, when there is one.
     fn info(&self, ws: Option<&str>) -> Option<&ChatWorkspaceInfo> {
         match &self.places {
-            Places::Known { running, .. } => running.iter().find(|w| Some(w.id.as_str()) == ws),
+            Places::Known(running) => running.iter().find(|w| Some(w.id.as_str()) == ws),
             _ => None,
         }
-    }
-
-    fn shown(&self) -> Option<&ChatWorkspaceInfo> {
-        match &self.places {
-            Places::Known { running, at } => running.get(*at),
-            _ => None,
-        }
-    }
-
-    /// The name of the workspace shown, as a sentence says it.
-    fn shown_words(&self) -> String {
-        self.shown().map_or_else(String::new, |w| workspace_words(&w.id, w.name.as_deref()))
     }
 
     fn several(&self) -> bool {
-        matches!(&self.places, Places::Known { running, .. } if running.len() > 1)
+        matches!(&self.places, Places::Known(running) if running.len() > 1)
     }
 
     /// The answer to `chat.workspaces`: the workspace whose channels are asked next (`Some(None)`: an older computer's one
@@ -252,12 +274,14 @@ impl Picker {
                         .flatten()
                         .find_map(|want| running.iter().position(|w| w.id == want))
                         .unwrap_or(0);
-                    self.places = Places::Known { running, at };
-                    Some(self.asked())
+                    self.start = Some(running[at].id.clone());
+                    self.places = Places::Known(running);
+                    Some(self.start.clone())
                 }
             }
             ChatReply::Unsupported => {
                 self.places = Places::Older;
+                self.start = None;
                 Some(None)
             }
             ChatReply::Refused(code) => {
@@ -265,83 +289,108 @@ impl Picker {
                 None
             }
         };
-        // The workspace asked next has its list kept from now on, reading.
+        // The workspace asked next is open, with its list kept from now on, reading; the cursor starts on its row.
         if let Some(ws) = &next {
             self.lists.insert(ws.clone(), List::Reading);
+            self.open.insert(ws.clone());
+            self.land = true;
         }
         self.install();
+        if let Some(ws) = &next {
+            self.select(&ws_id(ws));
+        }
         next
     }
 
-    /// Left (`next` false) or Right: the previous or the next running workspace, without wrapping; the workspace to ask, or
-    /// `None` at an end, with one workspace, for an older computer, or for a workspace already listed or being read (a failed
-    /// list is asked again). The filter stays; the cursor goes home.
-    pub(super) fn move_by(&mut self, next: bool) -> Option<String> {
-        let Places::Known { running, at } = &mut self.places else { return None };
-        let to = if next { (*at + 1 < running.len()).then_some(*at + 1) } else { at.checked_sub(1) }?;
-        *at = to;
-        let ws = self.asked();
-        let ask = matches!(self.lists.get(&ws), None | Some(List::Failed(_)));
-        if ask {
-            self.lists.insert(ws.clone(), List::Reading);
-        }
-        // The other workspace's rows may hold the row the cursor is on (Connect's id is the same in each).
-        self.moved = false;
-        self.install();
-        ask.then_some(ws).flatten()
-    }
-
-    /// The entries, in order: `No channel for this project` only over an empty filter (a narrowed list never unpairs), the
-    /// channels by name, and the Connect step last over an empty filter (a list that failed offers it alone). Each is one leaf
-    /// row, its mark after its label.
+    /// The rows: each workspace, its channels beneath it when it is open (a note says what its list holds until it holds
+    /// channels), then `No channel for this project` over an empty filter on a mapped row, and the Connect step last over an
+    /// empty filter (alone when no workspace runs or the workspaces could not be read). Each is one tree row, its mark after
+    /// its label; the filter narrows the channels of the open workspaces.
     fn rows(&self) -> Vec<TreeRow> {
         let plain = self.filter.is_empty();
-        let workspace = self.asked();
-        let at = workspace.clone().unwrap_or_default();
-        let payload = |channel: Option<&ChatChannel>| {
-            let mut p = serde_json::Map::new();
-            if let Some(w) = &workspace {
-                p.insert("workspace".into(), w.clone().into());
+        let spaces = self.spaces();
+        let mut out = Vec::new();
+        for (ws, label) in &spaces {
+            let open = self.open.contains(ws);
+            let mut r = row(ws_id(ws), label.clone(), "chat_workspace", 0, payload(ws.as_deref(), None));
+            (r.node.has_children, r.expanded) = (true, open);
+            out.push(r);
+            if open {
+                out.extend(self.children(ws));
             }
-            if let Some(c) = channel {
-                p.insert("channel".into(), c.as_str().into());
-            }
-            p
-        };
-        let leaf = |id: String, label: String, mark: &str, kind: &str, payload| {
-            let label = if mark.is_empty() { label } else { format!("{label} · {mark}") };
-            TreeRow { node: TreeNode { id, label, kind: kind.into(), has_children: false, badges: Vec::new(), payload }, depth: 0, expanded: false }
-        };
-        let again = plain.then(|| match self.places {
-            Places::Older => leaf("chat:connect".into(), "Connect Slack again".into(), "connect again with new Slack codes (same workspace)", "chat_connect", Default::default()),
-            _ => leaf("chat:connect".into(), "Connect a Slack workspace".into(), "add a Slack workspace, or give one new Slack codes", "chat_connect", Default::default()),
-        });
-        if matches!(self.places, Places::Nowhere(_)) {
-            return again.into_iter().collect();
         }
-        let channels = match self.list() {
-            List::Listed { channels, .. } => channels,
-            List::Failed(_) => return again.into_iter().collect(),
-            List::Reading => return Vec::new(),
+        if plain && self.mapped && !spaces.is_empty() {
+            out.push(row("chat:none".into(), "No channel for this project".into(), "chat_unpair", 0, payload(self.unpair_workspace().as_deref(), None)));
+        }
+        if plain && !matches!(self.places, Places::Asking) {
+            let (label, mark) = match self.places {
+                Places::Older => ("Connect Slack again", "connect again with new Slack codes (same workspace)"),
+                _ => ("Connect a Slack workspace", "add a Slack workspace, or give one new Slack codes"),
+            };
+            out.push(row("chat:connect".into(), format!("{label} · {mark}"), "chat_connect", 0, Default::default()));
+        }
+        out
+    }
+
+    /// The rows beneath the open workspace `ws`: its channels by name, or a note on what its list holds.
+    fn children(&self, ws: &Option<String>) -> Vec<TreeRow> {
+        let at = ws_id(ws);
+        let note = |tag: &str, text: &str| row(format!("{at}/({tag})"), text.to_string(), "chat_note", 1, Default::default());
+        let (channels, more) = match self.lists.get(ws).unwrap_or(&READING) {
+            List::Listed { channels, more } => (channels, *more),
+            List::Failed(_) => return vec![note("note", "could not list its channels")],
+            List::Reading => return vec![note("note", "reading its channels…")],
         };
         let needle = self.filter.strip_prefix('#').unwrap_or(&self.filter).to_lowercase();
         let mut shown: Vec<&ChatChannelInfo> = channels.iter().filter(|c| c.name.to_lowercase().contains(&needle)).collect();
         shown.sort_by_key(|c| c.name.to_lowercase());
-        let mut out = Vec::new();
-        if plain && self.mapped {
-            out.push(leaf("chat:none".into(), "No channel for this project".into(), "", "chat_unpair", payload(None)));
-        }
-        out.extend(shown.into_iter().map(|c| {
+        let mut out: Vec<TreeRow> = shown.into_iter().map(|c| {
             let mark = match (c.private, c.member) {
                 (false, true) => "",
-                (false, false) => "your Slack app joins it when you pick it",
+                (false, false) => " · your Slack app joins it when you pick it",
                 // Slack lists a private channel only when the app is in it.
-                (true, _) => "private; your Slack app is in it",
+                (true, _) => " · private; your Slack app is in it",
             };
-            leaf(format!("chat-ws:{at}/{}", c.id.as_str()), format!("#{}", cell_row(&c.name)), mark, "chat_channel", payload(Some(&c.id)))
-        }));
-        out.extend(again);
+            row(format!("{at}/{}", c.id.as_str()), format!("#{}{mark}", cell_row(&c.name)), "chat_channel", 1, payload(ws.as_deref(), Some(c.id.as_str())))
+        }).collect();
+        if out.is_empty() {
+            out.push(note("note", if channels.is_empty() { "no channel your Slack app can see" } else { "no channel matches" }));
+        }
+        if more {
+            out.push(note("more", "More channels exist than are listed: paste a channel's link to pick one."));
+        }
         out
+    }
+
+    /// Right (or Enter) on a closed workspace opens it: the workspace to ask (`Some(None)`: an older computer's one), when it
+    /// has no list yet or its list failed.
+    pub(super) fn open(&mut self) -> Option<Option<String>> {
+        let ws = self.cursor_row().filter(|r| r.node.kind == "chat_workspace").map(workspace_of)?;
+        if !self.open.insert(ws.clone()) {
+            return None;
+        }
+        let ask = matches!(self.lists.get(&ws), None | Some(List::Failed(_)));
+        if ask {
+            self.lists.insert(ws.clone(), List::Reading);
+        }
+        self.install();
+        ask.then_some(ws)
+    }
+
+    /// Left: an open workspace closes, a row beneath one goes to its workspace's row, and a row at the top does nothing.
+    pub(super) fn close(&mut self) {
+        let at = self.tree.selected();
+        let Some(row) = self.cursor_row() else { return };
+        if row.depth > 0 {
+            if let Some(parent) = self.tree.rows()[..at].iter().rposition(|r| r.depth == 0) {
+                self.tree.select(parent);
+            }
+        } else if row.node.kind == "chat_workspace" {
+            let ws = workspace_of(row);
+            if self.open.remove(&ws) {
+                self.install();
+            }
+        }
     }
 
     /// What Enter on `row` does.
@@ -356,25 +405,34 @@ impl Picker {
         }
     }
 
-    /// Where the cursor begins: on the first channel, so a mapped row's Enter never unpairs by being pressed first.
-    fn home(&self) -> usize {
-        usize::from(self.filter.is_empty() && self.mapped)
-    }
-
-    /// The entries as they stand, drawn from `rows`: the cursor stays on its row when a key put it there and the row is
-    /// still there; otherwise it goes to the first channel.
-    fn install(&mut self) {
-        let before = self.tree.rows().get(self.tree.selected()).map(|r| r.node.id.clone());
-        self.tree.set_flat(self.rows());
-        let kept = self.moved && before.is_some_and(|id| self.tree.rows().get(self.tree.selected()).is_some_and(|r| r.node.id == id));
-        if !kept {
-            self.moved = false;
-            self.tree.select_clamped(self.home());
+    /// Put the cursor on the row with id `id`, when there is one.
+    fn select(&mut self, id: &str) {
+        if let Some(at) = self.tree.rows().iter().position(|r| r.node.id == id) {
+            self.tree.select(at);
         }
     }
 
-    /// A channel list's answer, kept for the workspace it answers when this picker asked it (shown when that is the workspace
-    /// shown); one this picker never asked is dropped.
+    /// The entries as they stand, drawn from `rows`: the cursor stays on its row; a row that went sends it to its workspace's
+    /// row, else to the first.
+    fn install(&mut self) {
+        let at = self.tree.selected();
+        let id = self.cursor_row().map(|r| r.node.id.clone());
+        let parent = self.tree.rows().get(..=at).and_then(|up| up.iter().rev().find(|r| r.depth == 0)).map(|r| r.node.id.clone());
+        self.open.iter().for_each(|ws| self.tree.mark_expanded(&ws_id(ws)));
+        self.tree.set_flat(self.rows());
+        if self.cursor_row().map(|r| &r.node.id) != id.as_ref() {
+            parent.iter().for_each(|p| self.select(p));
+        }
+    }
+
+    /// Put the cursor on the first channel shown, else on the first row.
+    fn first_channel(&mut self) {
+        self.tree.select_clamped(self.tree.rows().iter().position(|r| r.node.kind == "chat_channel").unwrap_or(0));
+    }
+
+    /// A channel list's answer, kept for the workspace it answers when this picker asked it (shown when that workspace is
+    /// open); one this picker never asked is dropped. The first list of the workspace the picker opened on takes the cursor
+    /// to its first channel, unless a key moved it first.
     pub(super) fn on_channels(&mut self, workspace: Option<&str>, reply: ChatReply<ChatChannelsRes>) {
         let key = workspace.map(str::to_string);
         if !self.lists.contains_key(&key) {
@@ -386,8 +444,14 @@ impl Picker {
             ChatReply::Unsupported => List::Failed(format!("Ship of Tools on {} is too old to list channels: update it", self.c())),
             ChatReply::Refused(code) => List::Failed(format!("could not list the channels{of}: {}", code.text())),
         };
-        self.lists.insert(key, list);
+        self.lists.insert(key.clone(), list);
         self.install();
+        if self.land {
+            self.land = false;
+            let rows = self.tree.rows();
+            let first = rows.iter().position(|r| r.node.id == ws_id(&key)).map(|i| i + 1).filter(|&i| rows.get(i).is_some_and(|r| r.node.kind == "chat_channel"));
+            first.iter().for_each(|&i| self.tree.select(i));
+        }
     }
 
     pub(super) fn edit(&mut self, edit: Edit) {
@@ -396,20 +460,27 @@ impl Picker {
             Edit::Backspace => drop(self.filter.pop()),
             _ => return,
         }
-        self.moved = false;
+        self.land = false;
         self.install();
+        self.first_channel();
     }
 
     pub(super) fn step(&mut self, down: bool) {
         let from = self.tree.selected();
         if down { self.tree.move_down() } else { self.tree.move_up() }
-        self.moved |= self.tree.selected() != from;
+        if self.tree.selected() != from {
+            self.land = false;
+        }
     }
 
     /// Enter: the entry under the cursor. The drawer sends it, one pair at a time.
     pub(super) fn enter(&mut self) -> Option<Pick> {
-        let pick = Self::pick_of(self.tree.rows().get(self.tree.selected())?)?;
-        self.sent = Some(self.asked());
+        let pick = Self::pick_of(self.cursor_row()?)?;
+        // The pair goes to the workspace the picked row names.
+        self.sent = match &pick {
+            Pick::Channel(_, ws) | Pick::Unpair(ws) => Some(ws.clone()),
+            Pick::Reconnect => None,
+        };
         Some(pick)
     }
 
@@ -417,21 +488,21 @@ impl Picker {
     /// computer runs (one it is not connected to is refused, never paired elsewhere); any other paste is refused whole.
     pub(super) fn paste(&mut self, text: &str) -> Result<Pick, String> {
         let (team, channel) = link_target(text).ok_or("not pasted: that is not a Slack channel link")?;
-        // Until the workspaces are known, a link's workspace could not be told from the one shown.
+        // Until the workspaces are known, a link's workspace could not be told from the cursor's.
         match &self.places {
             Places::Asking => return Err(format!("not pasted: still reading which Slack workspaces the chat on {} is connected to; paste it again in a moment", self.c())),
             Places::Nowhere(_) => return Err(format!("not pasted: no Slack workspace is running on {} right now", self.c())),
             _ => {}
         }
         let workspace = match (&self.places, team) {
-            (Places::Known { running, .. }, Some(team)) if running.iter().any(|w| w.id == team) => Some(team),
-            (Places::Known { .. }, Some(_)) => {
+            (Places::Known(running), Some(team)) if running.iter().any(|w| w.id == team) => Some(team),
+            (Places::Known(_), Some(_)) => {
                 return Err(format!(
                     "not pasted: that channel is in a Slack workspace the chat on {} is not connected to; to connect it, choose Connect a Slack workspace at the end of this list",
                     self.c()
                 ))
             }
-            _ => self.asked(),
+            _ => self.here(),
         };
         self.sent = Some(workspace.clone());
         Ok(Pick::Channel(channel, workspace))
@@ -457,67 +528,52 @@ impl Picker {
     pub(super) fn no_such_channel(&self) -> String {
         let ws = self.pair_workspace();
         let name = self.info(ws.as_deref()).map_or_else(|| "this Slack workspace".into(), |w| workspace_words(&w.id, w.name.as_deref()));
-        let others = if self.several() { "; Left and Right show the channels of the other Slack workspaces" } else { "" };
+        let others = if self.several() { "; Right on another Slack workspace in this list shows its channels" } else { "" };
         format!("not set: that channel is not in {name}{others}; if it is a private channel, your Slack app is not in it: {}, then pick it again", invite(&self.pair_app()))
     }
 
     pub(super) fn title(&self) -> String {
         let filter = if self.filter.is_empty() { String::new() } else { format!("  filter: {}", cell_row(&self.filter)) };
-        let place = match &self.places {
-            Places::Known { running, at } => {
-                let w = &running[*at];
-                let of = if running.len() > 1 { format!(" ({} of {})", at + 1, running.len()) } else { String::new() };
-                format!(" · {}{of}", workspace_label(&w.id, w.name.as_deref()))
-            }
-            _ => String::new(),
-        };
-        format!(" chat · choose this project's channel{place}{filter} ")
+        format!(" chat · choose this project's channel{filter} ")
     }
 
-    /// The listed head: the row's channel when the list lacks it, whose channels these are, how to reach the others, what
-    /// your Slack app is, and why a private channel may be missing.
+    /// The listed head: the words of each list refused, the row's channel when its workspace's list lacks it, whose channels
+    /// these are, what your Slack app is, and why a private channel may be missing.
     fn listed_head(&self) -> String {
-        let private = private_words(&self.invite_app());
+        // With several workspaces the invite says whose Slack app it names: the cursor's workspace's.
+        let whose = self.info(self.here().as_deref()).filter(|_| self.several()).map(|w| workspace_words(&w.id, w.name.as_deref()));
+        let private = private_words(&self.invite_app(), whose.as_deref());
         // `your Slack app` is said what it is at its first use: in the missing channel's words when they lead.
         let missing = self.missing_words();
         let app = if missing.is_some() { "your Slack app" } else { APP_IS };
+        let refused: String = self.spaces().iter().filter_map(|(ws, _)| match self.lists.get(ws) {
+            Some(List::Failed(words)) => Some(format!("{words}\n\n")),
+            _ => None,
+        }).collect();
         let head = match &self.places {
-            Places::Known { running, .. } if running.len() > 1 => format!(
-                "These are the channels of {} that {app} can see, one of the {} Slack workspaces the chat on {} is connected to. The list shows one workspace at a time: Left and Right move between them, and Connect a Slack workspace is at the end of each. {APP_IN} {private}",
-                self.shown_words(),
+            Places::Known(running) if running.len() > 1 => format!(
+                "These are the {} Slack workspaces the chat on {} is connected to, each with the channels {app} can see in it, and Connect a Slack workspace is at the end. {APP_IN} {private}",
                 running.len(),
                 self.c()
             ),
-            Places::Known { .. } => format!(
+            Places::Known(running) => format!(
                 "These are the channels of {} that {app} can see. {APP_IN} {private} To add another Slack workspace, choose Connect a Slack workspace at the end of this list.",
-                self.shown_words()
+                workspace_words(&running[0].id, running[0].name.as_deref())
             ),
             _ => format!("{} {private}", head_one(&self.c(), missing.is_none())),
         };
-        format!("{}{head}", missing.unwrap_or_default())
+        format!("{refused}{}{head}", missing.unwrap_or_default())
     }
 
     pub(super) fn body(&self) -> Body {
-        let rows = self.tree.rows();
-        let (head, guide) = match (&self.places, self.list()) {
-            (Places::Asking, _) => (format!("reading which Slack workspaces the chat on {} is connected to…", self.c()), String::new()),
-            (Places::Nowhere(words), _) => (words.clone(), "Esc to close.".to_string()),
-            (_, List::Reading) if self.shown().is_some() => (format!("reading the channels of {}…", self.shown_words()), String::new()),
-            (_, List::Reading) => ("reading Slack's channels…".to_string(), String::new()),
-            (_, List::Failed(words)) => (words.clone(), "Esc to close.".to_string()),
-            (places, List::Listed { more, .. }) => {
-                let head = self.listed_head();
-                let head = if rows.is_empty() { format!("{head}\n\nno channel matches") } else { format!("{head}\n") };
-                let more = if *more { " More channels exist than are listed: paste a channel's link to pick one." } else { "" };
-                let (lead, moving) = match places {
-                    Places::Older => (guide(false), MOVE),
-                    _ => (guide(self.several()), ""),
-                };
-                (head, format!("{lead}{more}{moving}"))
-            }
+        let (head, guide) = match &self.places {
+            Places::Asking => (format!("reading which Slack workspaces the chat on {} is connected to…", self.c()), String::new()),
+            Places::Nowhere(words) => (words.clone(), "Esc to close.".to_string()),
+            Places::Older => (format!("{}\n", self.listed_head()), format!("{GUIDE}{MOVE}")),
+            Places::Known(_) => (format!("{}\n", self.listed_head()), GUIDE.to_string()),
         };
         let cursor = self.tree.selected();
-        let rows = rows.iter().enumerate().map(|(i, r)| format_tree_row(r, i == cursor, false)).collect();
+        let rows = self.tree.rows().iter().enumerate().map(|(i, r)| format_tree_row(r, i == cursor, false)).collect();
         Body { head, rows, cursor, guide, ..Body::default() }
     }
 }

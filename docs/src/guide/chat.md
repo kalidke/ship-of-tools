@@ -59,8 +59,8 @@ changed; see [Keybindings](../ref/keybindings.md).
 | `Ctrl+o` | Open the marked message's first picture in the preview pane. A click on a picture opens that one. |
 | `Ctrl+Shift+k` | Open the channel list: change this project's channel, pick one in another workspace, or connect a workspace. |
 
-While the channel list is open, Up and Down choose, Left and Right show another workspace's channels, typing narrows
-the list, Enter picks and Escape closes it.
+While the channel list is open, Up and Down choose, Right opens a workspace and Left closes it, typing narrows the list,
+Enter picks (on a closed workspace it opens it) and Escape closes the list.
 
 ## Reading
 

@@ -349,12 +349,13 @@ pub(in crate::ui) fn name_key(state: &mut State, key: &KeyPress<'_>, label: &str
 }
 
 /// What an arrow does while the channel picker is open: ArrowUp and ArrowDown choose (held, they keep choosing);
-/// ArrowLeft and ArrowRight show the previous or next Slack workspace's list, never from a held key; no other key is an
+/// ArrowRight opens a Slack workspace and ArrowLeft closes it or goes to it, never from a held key; no other key is an
 /// arrow, so it reaches the picker's prompt and the drawer as before (never the thread keys under the picker).
 #[derive(Debug, PartialEq)]
 pub(in crate::ui) enum PickerArrow {
     Choose { down: bool },
-    Workspace { next: bool },
+    Open,
+    Close,
     Held,
 }
 
@@ -363,14 +364,14 @@ pub(in crate::ui) fn picker_arrow(action: Option<Action>, repeat: bool) -> Optio
         Action::ChatMarkOlder => PickerArrow::Choose { down: false },
         Action::ChatMarkNewer => PickerArrow::Choose { down: true },
         Action::ChatThreadClose | Action::ChatThreadOpen if repeat => PickerArrow::Held,
-        Action::ChatThreadClose => PickerArrow::Workspace { next: false },
-        Action::ChatThreadOpen => PickerArrow::Workspace { next: true },
+        Action::ChatThreadClose => PickerArrow::Close,
+        Action::ChatThreadOpen => PickerArrow::Open,
         _ => return None,
     })
 }
 
-/// A key while the channel picker is open: ArrowUp and ArrowDown choose, ArrowLeft and ArrowRight show another Slack
-/// workspace's channels, Enter picks, Escape closes, paste is a channel link and typing narrows the list (`prompt_key`);
+/// A key while the channel picker is open: ArrowUp and ArrowDown choose, ArrowRight opens a Slack workspace and
+/// ArrowLeft closes it, Enter picks, Escape closes, paste is a channel link and typing narrows the list (`prompt_key`);
 /// every other key reaches the drawer as before.
 pub(in crate::ui) fn picker_key(state: &mut State, key: &KeyPress<'_>, label: &str) -> bool {
     if !state.chat.picking() {
@@ -379,7 +380,8 @@ pub(in crate::ui) fn picker_key(state: &mut State, key: &KeyPress<'_>, label: &s
     if let Some(arrow) = picker_arrow(key.action, key.event.repeat) {
         match arrow {
             PickerArrow::Choose { down } => state.chat.picker_step(down),
-            PickerArrow::Workspace { next } => state.with_chat(|c, _| c.picker_move(next)),
+            PickerArrow::Open => state.with_chat(|c, _| c.picker_open()),
+            PickerArrow::Close => state.chat.picker_close(),
             PickerArrow::Held => {}
         }
         prompt_done(state, label);

@@ -80,8 +80,7 @@ fn shown_lines(d: &ChatDrawer) -> Vec<String> {
 
 /// The picker's rows from its first entry down, under the head that names the workspace and the Slack app.
 fn listed(d: &ChatDrawer) -> Vec<String> {
-    let entry = |l: &String| l.starts_with("> . ") || l.starts_with("  . ");
-    shown_lines(d).into_iter().skip_while(|l| !entry(l)).collect()
+    shown_lines(d).into_iter().skip_while(|l| !is_row(l)).collect()
 }
 
 fn asks_resolve(d: &mut ChatDrawer, at: Instant) -> bool {
@@ -94,26 +93,26 @@ fn the_picker_lists_channels_by_name_with_their_marks_and_says_how_a_private_one
     // An unmapped row opens it by itself and asks for the list once; the title is the picker's.
     assert_eq!((lists(&outs), d.picking()), (1, true));
     assert_eq!(d.title(), " chat · choose this project's channel ");
-    assert_eq!(shown_lines(&d), ["reading Slack's channels…"]);
+    assert_eq!(tree(&d)[..2], ["> v your connected Slack workspace", "    . reading its channels…"]);
     d.on_evt(&host(), channels_reply(false), at);
     let lines = listed(&d);
-    assert!(lines[0].starts_with("> . #lab-general"), "{lines:?}");
-    assert!(lines[1].starts_with("  . #lab-microscopes") && lines[1].ends_with("your Slack app joins it when you pick it"), "{lines:?}");
-    assert!(lines[2].starts_with("  . #lab-papers") && lines[2].ends_with("private; your Slack app is in it"), "{lines:?}");
-    assert!(lines[3] == "  . #random", "a public channel the app is in has no mark: {lines:?}");
-    assert!(lines[4].starts_with("  . Connect Slack again") && lines[4].ends_with("connect again with new Slack codes (same workspace)"), "{lines:?}");
-    let guide = lines[5..].join(" ");
+    assert!(lines[1].starts_with(">   . #lab-general"), "{lines:?}");
+    assert!(lines[2].starts_with("    . #lab-microscopes") && lines[2].ends_with("your Slack app joins it when you pick it"), "{lines:?}");
+    assert!(lines[3].starts_with("    . #lab-papers") && lines[3].ends_with("private; your Slack app is in it"), "{lines:?}");
+    assert!(lines[4] == "    . #random", "a public channel the app is in has no mark: {lines:?}");
+    assert!(lines[5].starts_with("  . Connect Slack again") && lines[5].ends_with("connect again with new Slack codes (same workspace)"), "{lines:?}");
+    let guide = lines[6..].join(" ");
     assert!(guide.contains("Esc to close") && guide.contains("Picking a public channel your Slack app is not in makes it join") && !guide.contains("paste a channel's link"), "{guide}");
     // An older computer's head names the one connected workspace and says who can update it, what the Slack app is, and
     // why a private channel may be missing, with what to type in Slack.
     let head = shown_lines(&d).join(" ");
-    assert!(head.contains("A private channel is listed only once someone in it invites your Slack app: in that channel in Slack, type /invite @Ship of Tools, then open this list again."), "{head}");
+    assert!(head.contains("A private channel is listed only once someone in it invites your Slack app: in that channel in Slack, type /invite @Ship of Tools, then press Esc and open this list again."), "{head}");
     assert!(head.contains("channels of your connected Slack workspace") && head.contains("Ship of Tools on a is too old to connect more than one Slack workspace"), "{head}");
     assert!(head.contains("Your Slack app (the bot that reads the channel and posts for your agents)"), "{head}");
     assert!(guide.contains("To move the chat to another workspace, see the manual page \"Setting up Slack\": press F1, select \"Choose channel\" in the list, and press Enter"), "{guide}");
     // A list cut at the bound says to paste a link.
     d.on_evt(&host(), channels_reply(true), at);
-    assert!(shown_lines(&d).join(" ").contains("paste a channel's link"));
+    assert!(said(&d).contains("paste a channel's link"));
     // A short drawer keeps the choice in view and cuts the guide and then the head, never the entries' window below three rows:
     // from four rows up, on the first entry and on the last.
     for last in [false, true] {
@@ -130,9 +129,11 @@ fn the_picker_lists_channels_by_name_with_their_marks_and_says_how_a_private_one
     // A read that fails says why and offers only to connect Slack again; the picker does not hide.
     let (mut d, at, _) = unmapped();
     d.on_evt(&host(), ChatEvt::Channels { workspace: None, reply: ChatReply::Refused(ChatCode::Unavailable) }, at);
-    assert_eq!(shown_lines(&d)[..2], ["could not list the channels: the chat is not available here", "> . Connect Slack again · connect again with new Slack codes (same workspace)"]);
+    assert!(said(&d).starts_with("could not list the channels: the chat is not available here"));
+    assert_eq!(tree(&d), ["> v your connected Slack workspace", "    . could not list its channels", "  . Connect Slack again · connect again with new Slack codes (same workspace)"]);
     d.on_evt(&host(), ChatEvt::Channels { workspace: None, reply: ChatReply::Unsupported }, at);
-    assert_eq!(shown_lines(&d)[0], "Ship of Tools on a is too old to list channels: update it");
+    assert!(said(&d).starts_with("Ship of Tools on a is too old to list channels: update it"));
+    (0..2).for_each(|_| d.picker_step(true));
     assert!(d.picker_enter().is_empty() && d.in_setup(), "Connect Slack again sends nothing and starts the Connect step");
 }
 
@@ -191,16 +192,16 @@ fn typing_filters_and_enter_pairs_once() {
     d.on_evt(&host(), channels_reply(false), at);
     // The `#` the entries are drawn with may be typed.
     d.picker_edit(Edit::Text("#"));
-    assert!(listed(&d)[0].starts_with("> . #lab-general") && listed(&d).len() > 4);
+    assert!(tree(&d)[1].starts_with(">   . #lab-general") && tree(&d).len() > 4);
     d.picker_edit(Edit::Backspace);
     d.picker_edit(Edit::Text("LAB"));
     assert_eq!(d.title(), " chat · choose this project's channel  filter: LAB ");
-    let lines = listed(&d);
-    assert!(lines[0].starts_with("> . #lab-general") && lines[2].starts_with("  . #lab-papers") && !lines.iter().any(|l| l.contains("#random")), "{lines:?}");
+    let lines = tree(&d);
+    assert!(lines[1].starts_with(">   . #lab-general") && lines[3].starts_with("    . #lab-papers") && !lines.iter().any(|l| l.contains("#random")), "{lines:?}");
     d.picker_step(true);
     d.picker_step(true);
     d.picker_step(true);
-    assert!(listed(&d)[2].starts_with("> . #lab-papers"), "the cursor stops at the last entry");
+    assert!(tree(&d)[3].starts_with(">   . #lab-papers"), "the cursor stops at the last entry");
     d.picker_step(false);
     // Enter sends one pair for the chosen channel; a second Enter before the reply sends nothing.
     let sent = d.picker_enter();
@@ -216,7 +217,7 @@ fn typing_filters_and_enter_pairs_once() {
     let (mut d, at, _) = unmapped();
     d.on_evt(&host(), channels_reply(false), at);
     d.picker_edit(Edit::Text("zzz"));
-    assert!(shown_lines(&d).iter().any(|l| l == "no channel matches"));
+    assert!(tree(&d).contains(&"    . no channel matches".to_string()), "{:?}", tree(&d));
     assert!(d.picker_enter().is_empty());
     (0..3).for_each(|_| d.picker_edit(Edit::Backspace));
     assert_eq!(d.title(), " chat · choose this project's channel ");
@@ -257,21 +258,22 @@ fn a_pasted_channel_link_pairs_its_id_and_any_other_paste_goes_nowhere() {
 }
 
 #[test]
-fn the_setup_chord_offers_no_channel_first_on_a_mapped_row() {
+fn the_setup_chord_offers_no_channel_after_the_workspaces_on_a_mapped_row() {
     let (mut d, at) = channel(&[]);
     let outs = d.open_picker(shown("ROW1").as_ref()).unwrap();
     assert_eq!(lists(&outs), 1);
     older(&mut d, at);
     d.on_evt(&host(), channels_reply(false), at);
-    let lines = listed(&d);
-    assert!(lines[0].starts_with("  . No channel for this project") && lines[1].starts_with("> . #lab-general"), "{lines:?}");
+    let lines = tree(&d);
+    assert!(lines[1].starts_with(">   . #lab-general") && lines[5].starts_with("  . No channel for this project"), "{lines:?}");
     // A narrowed list is channels alone, so typing never leaves Enter on the unpairing.
     d.picker_edit(Edit::Text("lab"));
     assert!(!shown_lines(&d).iter().any(|l| l.contains("No channel for")));
     (0..3).for_each(|_| d.picker_edit(Edit::Backspace));
-    assert!(listed(&d)[1].starts_with("> . #lab-general"), "the cursor returns to the first channel");
+    assert!(tree(&d)[1].starts_with(">   . #lab-general"), "the cursor returns to the first channel");
     // `No channel for this project` unpairs, and the row then stays unpicked until a person asks.
-    d.picker_step(false);
+    (0..4).for_each(|_| d.picker_step(true));
+    assert_eq!(cursor_row(&d), "> . No channel for this project");
     let sent = d.picker_enter();
     assert_eq!(pairs(&sent), [("ROW1".to_string(), None, None)], "an older daemon's unpair names no workspace");
     d.on_evt(&host(), paired("ROW1", None, ChatReply::Done(ChatPairRes {})), at);
@@ -292,7 +294,7 @@ fn the_setup_chord_offers_no_channel_first_on_a_mapped_row() {
     d.open_picker(shown("ROW1").as_ref()).unwrap();
     older(&mut d, at);
     d.on_evt(&host(), channels_reply(false), at);
-    assert!(listed(&d)[0].starts_with("> . #lab-general") && !shown_lines(&d).iter().any(|l| l.contains("No channel for")));
+    assert!(tree(&d)[1].starts_with(">   . #lab-general") && !shown_lines(&d).iter().any(|l| l.contains("No channel for")));
     let mut off = ChatDrawer::default();
     off.tick(shown("ROW1"), at);
     assert_eq!(off.open_picker(shown("ROW1").as_ref()).unwrap_err(), "no connection to a");
@@ -374,7 +376,7 @@ fn the_picker_belongs_to_its_row_and_link_and_opens_by_itself_once_while_the_dra
     // A reply from another host does not fill it.
     let (mut d, at, _) = unmapped();
     d.on_evt(&"b".to_string(), channels_reply(false), at);
-    assert_eq!(shown_lines(&d), ["reading Slack's channels…"]);
+    assert_eq!(tree(&d)[..2], ["> v your connected Slack workspace", "    . reading its channels…"]);
 }
 
 #[test]
@@ -432,8 +434,9 @@ fn a_request_that_could_not_be_queued_is_told_it_was_refused_unavailable() {
     // Told so, the picker is not left waiting: its list says why, and a pair that was never queued is refused and frees the next.
     let (mut d, at, _) = unmapped();
     d.on_evt(&host(), never_written(&OutgoingReq::ChatChannels { workspace: None }).unwrap(), at);
-    assert_eq!(shown_lines(&d)[0], "could not list the channels: the chat is not available here");
+    assert!(said(&d).starts_with("could not list the channels: the chat is not available here"));
     d.on_evt(&host(), channels_reply(false), at);
+    d.picker_step(true);
     let sent = d.picker_enter();
     assert!(d.picker_enter().is_empty());
     let (_, req) = &sent[0];
@@ -449,7 +452,7 @@ fn an_empty_channel_says_no_messages_in_the_body_and_the_picker_and_a_thread_say
     d.open_picker(shown("ROW1").as_ref()).unwrap();
     assert_eq!(d.body().unwrap().lines(80, 5), ["reading which Slack workspaces the chat on a is connected to…"]);
     older(&mut d, Instant::now());
-    assert_eq!(d.body().unwrap().lines(40, 5), ["reading Slack's channels…"]);
+    assert_eq!(tree(&d)[..2], ["> v your connected Slack workspace", "    . reading its channels…"]);
     let (d, _) = channel(&[top(1)]);
     assert!(d.body().is_none(), "a channel with a record says nothing");
 }
@@ -529,150 +532,70 @@ fn listed_in(workspace: &str, more: bool) -> ChatEvt {
     }
 }
 
-/// An unmapped row's picker on a computer running two workspaces (a third stopped): it opens on the default's list, one
-/// workspace at a time, says so with Left and Right, moves between them without wrapping, and pairs in the one shown.
-#[test]
-fn the_picker_shows_one_workspace_at_a_time_and_left_and_right_move_between_them() {
-    let t0 = Instant::now();
-    let mut d = ChatDrawer::default();
-    d.set_focused(true);
-    d.on_connection(&host(), true, false, t0);
-    d.tick(shown("ROW1"), t0);
-    d.tick(shown("ROW1"), t0 + Duration::from_millis(200));
-    let at = t0 + Duration::from_millis(210);
-    d.on_evt(&host(), answer("ROW1", serde_json::json!({ "state": "unmapped" })), at);
-    assert_eq!(lists(&d.tick(shown("ROW1"), at).0), 1);
-    let all = [("TAAAA1111", Some("Alpha Lab"), true), ("TBBBB2222", Some("Beta Lab"), true), ("TCCCC3333", Some("Gamma Lab"), false)];
-    assert_eq!(asked(&d.on_evt(&host(), workspaces("TAAAA1111", &all), at)), [Some("TAAAA1111".to_string())]);
-    assert_eq!(d.title(), " chat · choose this project's channel · Alpha Lab (1 of 2) ");
-    assert_eq!(shown_lines(&d), ["reading the channels of the Slack workspace Alpha Lab…"]);
-    // Another workspace's late list is not this one's.
-    d.on_evt(&host(), listed_in("TBBBB2222", false), at);
-    assert_eq!(shown_lines(&d), ["reading the channels of the Slack workspace Alpha Lab…"]);
-    d.on_evt(&host(), listed_in("TAAAA1111", false), at);
-    let said = d.body().unwrap().lines(2000, 60).join(" ");
-    assert!(said.contains("These are the channels of the Slack workspace Alpha Lab that your Slack app (the bot you make for yourself in each Slack workspace, which reads the channel and posts for your agents) can see, one of the 2 Slack workspaces the chat on a is connected to. The list shows one workspace at a time: Left and Right move between them, and Connect a Slack workspace is at the end of each."), "{said}");
-    assert!(said.contains("picking a public channel adds it there") && said.contains("Left and Right for another Slack workspace"), "{said}");
-    assert!(!said.contains("To move the chat to another workspace"), "{said}");
-    let lines = listed(&d);
-    assert!(lines[4].starts_with("  . Connect a Slack workspace") && lines[4].ends_with("add a Slack workspace, or give one new Slack codes"), "{lines:?}");
-    // Left at the first does nothing; Right shows the second and asks its list; Right at the last does nothing.
-    assert!(d.picker_move(false).is_empty());
-    assert_eq!(asked(&d.picker_move(true)), [Some("TBBBB2222".to_string())]);
-    assert_eq!(d.title(), " chat · choose this project's channel · Beta Lab (2 of 2) ");
-    assert!(d.picker_move(true).is_empty());
-    d.on_evt(&host(), listed_in("TBBBB2222", false), at);
-    // Enter pairs in the workspace shown.
-    let sent = d.picker_enter();
-    assert!(matches!(sent.as_slice(), [(_, OutgoingReq::ChatPair { workspace: Some(w), channel: Some(c), .. })] if w == "TBBBB2222" && c.as_str() == "C1"), "{sent:?}");
-    // A channel that is not in it says which workspace and that the others are a key away.
-    d.on_evt(&host(), paired("ROW1", Some("C1"), ChatReply::Refused(ChatCode::NoSuchChannel)), at);
-    assert_eq!(d.take_notice().as_deref(), Some("not set: that channel is not in the Slack workspace Beta Lab; Left and Right show the channels of the other Slack workspaces; if it is a private channel, your Slack app is not in it: in that channel in Slack, type /invite @Ship of Tools, then pick it again"));
-    assert!(d.picking());
-    // A pasted link pairs in the workspace it names when that one runs; one the computer is not connected to is refused.
-    let sent = d.picker_paste("https://app.slack.com/client/TAAAA1111/C0456EFGH").unwrap();
-    assert!(matches!(sent.as_slice(), [(_, OutgoingReq::ChatPair { workspace: Some(w), .. })] if w == "TAAAA1111"), "{sent:?}");
-    d.on_evt(&host(), paired("ROW1", Some("C0456EFGH"), ChatReply::Refused(ChatCode::NotInChannel)), at);
-    assert_eq!(
-        d.picker_paste("https://app.slack.com/client/TCCCC3333/C0456EFGH").unwrap_err(),
-        "not pasted: that channel is in a Slack workspace the chat on a is not connected to; to connect it, choose Connect a Slack workspace at the end of this list"
-    );
-    let sent = d.picker_paste("C0456EFGH").unwrap();
-    assert!(matches!(sent.as_slice(), [(_, OutgoingReq::ChatPair { workspace: Some(w), .. })] if w == "TBBBB2222"), "an id alone pairs in the one shown: {sent:?}");
+/// The nav pane's text for a leaf at `depth` with `label`, the cursor's when `selected`.
+fn tree_leaf(label: &str, selected: bool, depth: usize) -> String {
+    use crate::ui::nav::{format_tree_row, TreeRow};
+    let node = sot_protocol::TreeNode { id: "x".into(), label: label.into(), kind: "k".into(), has_children: false, badges: Vec::new(), payload: Default::default() };
+    format_tree_row(&TreeRow { node, depth, expanded: false }, selected, false)
 }
 
-/// A mapped row's picker opens on its own workspace; one workspace's list names it and says how to add another; a
-/// workspace with no name is said by its ID; none running leaves only the Connect step; a list that fails names its workspace.
-#[test]
-fn the_picker_opens_on_the_rows_workspace_and_says_each_place() {
-    let (mut d, at) = channel(&[]);
-    assert_eq!(lists(&d.open_picker(shown("ROW1").as_ref()).unwrap()), 1);
-    let all = [("TAAAA1", Some("Alpha Lab"), true), ("WS1", None, true)];
-    assert_eq!(asked(&d.on_evt(&host(), workspaces("TAAAA1", &all), at)), [Some("WS1".to_string())], "the row's own, not the default");
-    assert_eq!(d.title(), " chat · choose this project's channel · workspace WS1 (2 of 2) ");
-    d.on_evt(&host(), ChatEvt::Channels { workspace: Some("WS1".into()), reply: ChatReply::Refused(ChatCode::Unavailable) }, at);
-    assert!(d.body().unwrap().lines(2000, 9)[0].starts_with("could not list the channels of the Slack workspace with ID WS1: the chat is not available here"));
-    // A mapped row's refused list leaves the cursor on the Connect step, the only row, so Enter opens it.
-    assert_eq!(cursor_row(&d), "> . Connect a Slack workspace · add a Slack workspace, or give one new Slack codes");
-    // Unpairing names the workspace shown.
-    d.on_evt(&host(), listed_in("WS1", false), at);
-    (0..2).for_each(|_| d.picker_step(false));
-    assert!(matches!(d.picker_enter().as_slice(), [(_, OutgoingReq::ChatPair { workspace: Some(w), channel: None, .. })] if w == "WS1"));
-
-    let (mut d, at) = channel(&[]);
-    d.open_picker(shown("ROW1").as_ref()).unwrap();
-    d.on_evt(&host(), workspaces("WS1", &[("WS1", Some("Alpha Lab"), true)]), at);
-    assert_eq!(d.title(), " chat · choose this project's channel · Alpha Lab ");
-    d.on_evt(&host(), listed_in("WS1", false), at);
-    let said = d.body().unwrap().lines(2000, 60).join(" ");
-    // The row's channel is not in the list, so its words lead, and they say what your Slack app is.
-    assert!(said.starts_with("This project's channel, CH1, is not in this list: your Slack app (the bot that reads the channel and posts for your agents) is not in it"), "{said}");
-    assert!(said.contains("These are the channels of the Slack workspace Alpha Lab that your Slack app can see. Your Slack app reads only the channels it is in; picking a public channel adds it there. A private channel is listed only once someone in it invites your Slack app: in that channel in Slack, type /invite @Ship of Tools, then open this list again. To add another Slack workspace, choose Connect a Slack workspace at the end of this list."), "{said}");
-    assert!(said.contains("Type to narrow the list, Up and Down to choose, Enter to pick"), "one workspace's guide has no Left and Right: {said}");
-    assert!(d.picker_move(true).is_empty());
-
-    let (mut d, at) = channel(&[]);
-    d.open_picker(shown("ROW1").as_ref()).unwrap();
-    assert!(asked(&d.on_evt(&host(), workspaces("WS1", &[("WS1", None, false)]), at)).is_empty());
-    let lines = shown_lines(&d);
-    assert!(lines.join(" ").starts_with("no Slack workspace is running on a right now: choose Connect a Slack workspace below; the log of Ship of Tools' service on a says why"), "{lines:?}");
-    assert_eq!(listed(&d)[0], "> . Connect a Slack workspace · add a Slack workspace, or give one new Slack codes");
-    assert!(d.picker_enter().is_empty() && d.in_setup(), "the Connect step takes the picker's place");
-
-    let (mut d, at) = channel(&[]);
-    d.open_picker(shown("ROW1").as_ref()).unwrap();
-    d.on_evt(&host(), ChatEvt::Workspaces { reply: ChatReply::Refused(ChatCode::Busy) }, at);
-    assert!(shown_lines(&d)[0].starts_with("could not read which Slack workspaces the chat on a is connected to: "), "{:?}", shown_lines(&d));
-    assert_eq!(listed(&d)[0], "> . Connect a Slack workspace · add a Slack workspace, or give one new Slack codes");
-    assert!(d.picker_enter().is_empty() && d.in_setup(), "the Connect step takes the picker's place");
+/// A channel list of `(id, name)`, none private and the app in each.
+fn channels_of(channels: &[(&str, &str)]) -> ChatEvt {
+    let list: Vec<_> = channels.iter().map(|(id, name)| serde_json::json!({ "id": id, "name": name, "private": false, "member": true })).collect();
+    let res: ChatChannelsRes = serde_json::from_value(serde_json::json!({ "channels": list, "more": false })).unwrap();
+    ChatEvt::Channels { workspace: None, reply: ChatReply::Done(res) }
 }
 
-/// An unmapped row's picker on a computer running Alpha Lab (`TAAAA1111`, the default) and Beta Lab (`TBBBB2222`), before
-/// any list is answered.
-fn known_two() -> (ChatDrawer, Instant) {
-    let t0 = Instant::now();
-    let mut d = ChatDrawer::default();
-    d.set_focused(true);
-    d.on_connection(&host(), true, false, t0);
-    d.tick(shown("ROW1"), t0);
-    d.tick(shown("ROW1"), t0 + Duration::from_millis(200));
-    let at = t0 + Duration::from_millis(210);
-    d.on_evt(&host(), answer("ROW1", serde_json::json!({ "state": "unmapped" })), at);
-    assert_eq!(lists(&d.tick(shown("ROW1"), at).0), 1);
-    let all = [("TAAAA1111", Some("Alpha Lab"), true), ("TBBBB2222", Some("Beta Lab"), true)];
-    assert_eq!(asked(&d.on_evt(&host(), workspaces("TAAAA1111", &all), at)), [Some("TAAAA1111".to_string())]);
-    (d, at)
-}
-
-/// The picker's arrows, by action and whether the key is held (`picker_arrow`): Up and Down choose, held too; Left and
-/// Right move between workspaces, never held; no other key is an arrow, so none falls through to the thread keys.
-#[test]
-fn the_pickers_arrows_choose_and_move_and_a_held_one_moves_nothing() {
-    use super::{picker_arrow, PickerArrow};
-    for (action, repeat, want) in [
-        (Some(Action::ChatMarkOlder), false, Some(PickerArrow::Choose { down: false })),
-        (Some(Action::ChatMarkNewer), true, Some(PickerArrow::Choose { down: true })),
-        (Some(Action::ChatThreadClose), false, Some(PickerArrow::Workspace { next: false })),
-        (Some(Action::ChatThreadOpen), false, Some(PickerArrow::Workspace { next: true })),
-        (Some(Action::ChatThreadOpen), true, Some(PickerArrow::Held)),
-        (Some(Action::ChatThreadClose), true, Some(PickerArrow::Held)),
-        (Some(Action::ChatSend), false, None),
-        (Some(Action::ChatSetup), false, None),
-        (None, false, None),
-    ] {
-        assert_eq!(picker_arrow(action, repeat), want, "{action:?} held {repeat}");
+/// `channels_of`, answering workspace `workspace`.
+fn channels_of_in(workspace: &str, channels: &[(&str, &str)]) -> ChatEvt {
+    match channels_of(channels) {
+        ChatEvt::Channels { reply, .. } => ChatEvt::Channels { workspace: Some(workspace.to_string()), reply },
+        _ => unreachable!(),
     }
 }
 
-/// A move shows the new workspace's list as reading until it is answered: nothing of the old list can be picked under the
-/// new title.
-#[test]
-fn a_move_reads_its_list_before_any_pick() {
-    let (mut d, at) = known_two();
-    d.on_evt(&host(), listed_in("TAAAA1111", false), at);
-    assert_eq!(asked(&d.picker_move(true)), [Some("TBBBB2222".to_string())]);
-    assert_eq!(shown_lines(&d), ["reading the channels of the Slack workspace Beta Lab…"]);
-    assert!(d.picker_enter().is_empty(), "a pick before the new list was answered");
+/// The row the cursor is on, as the list draws it.
+fn cursor_row(d: &ChatDrawer) -> String {
+    shown_lines(d).into_iter().find(|l| l.starts_with("> ")).expect("a cursor row")
+}
+
+
+/// A row of the picker's tree as the list draws it.
+fn is_row(l: &str) -> bool {
+    l.starts_with(['>', ' ']) && ["v ", "> ", ". "].iter().any(|p| l[1..].trim_start().starts_with(p))
+}
+
+/// The tree's rows as drawn, in order.
+fn tree(d: &ChatDrawer) -> Vec<String> {
+    d.body().expect("a body").lines(2000, 80).into_iter().skip_while(|l| !is_row(l)).take_while(|l| is_row(l)).collect()
+}
+
+/// Everything the body says, one line.
+fn said(d: &ChatDrawer) -> String {
+    d.body().expect("a body").lines(2000, 80).join(" ")
+}
+
+const CONNECT: &str = "  . Connect a Slack workspace · add a Slack workspace, or give one new Slack codes";
+
+/// A picker opened over an unmapped row on the workspaces `all` (id, name, running), opening on `default`.
+fn opened(default: &str, all: &[(&str, Option<&str>, bool)]) -> (ChatDrawer, Instant) {
+    let t0 = Instant::now();
+    let mut d = ChatDrawer::default();
+    d.set_focused(true);
+    d.on_connection(&host(), true, false, t0);
+    d.tick(shown("ROW1"), t0);
+    d.tick(shown("ROW1"), t0 + Duration::from_millis(200));
+    let at = t0 + Duration::from_millis(210);
+    d.on_evt(&host(), answer("ROW1", serde_json::json!({ "state": "unmapped" })), at);
+    assert_eq!(lists(&d.tick(shown("ROW1"), at).0), 1);
+    assert_eq!(asked(&d.on_evt(&host(), workspaces(default, all), at)), [Some(default.to_string())]);
+    (d, at)
+}
+
+/// An unmapped row's picker on a computer running Alpha Lab (`TAAAA1111`, the default) and Beta Lab (`TBBBB2222`), a third
+/// (`TCCCC3333`) stopped, before any list is answered.
+fn known_two() -> (ChatDrawer, Instant) {
+    opened("TAAAA1111", &[("TAAAA1111", Some("Alpha Lab"), true), ("TBBBB2222", Some("Beta Lab"), true), ("TCCCC3333", Some("Gamma Lab"), false)])
 }
 
 /// An unmapped row's picker on two running workspaces whose entries name their Slack apps, Alpha's list answered.
@@ -694,88 +617,259 @@ fn two_apps() -> (ChatDrawer, Instant) {
     (d, at)
 }
 
-/// Left and Right move while a pair is answered, and the pair's words name the workspace it was sent to: that workspace's
-/// name, its Slack app, and its list for the private-channel check, whichever workspace is shown when the answer comes.
-#[test]
-fn left_and_right_move_while_a_pair_is_answered_and_its_words_name_its_own_workspace() {
-    // A channel Alpha's list holds, refused after the person moved to Beta: Alpha's name and Slack app.
+/// `two_apps` with Beta opened and its list answered; the cursor on Beta's first channel.
+fn both_open() -> (ChatDrawer, Instant) {
     let (mut d, at) = two_apps();
-    assert_eq!(pairs(&d.picker_enter()).len(), 1);
-    assert_eq!(asked(&d.picker_move(true)), [Some("TBBBB2222".to_string())], "the move is not refused");
-    assert_eq!(d.title(), " chat · choose this project's channel · Beta Lab (2 of 2) ");
-    d.on_evt(&host(), paired("ROW1", Some("C1"), ChatReply::Refused(ChatCode::NoSuchChannel)), at);
-    assert_eq!(d.take_notice().as_deref(), Some("not set: that channel is not in the Slack workspace Alpha Lab; Left and Right show the channels of the other Slack workspaces; if it is a private channel, your Slack app is not in it: in that channel in Slack, type /invite @Alpha App, then pick it again"));
-    assert!(d.picking());
-    // A private channel of Alpha's list (`G3`), refused after Beta's list answered without it: still said of Alpha's.
-    d.picker_move(false);
-    (0..2).for_each(|_| d.picker_step(true));
-    let sent = pairs(&d.picker_enter());
-    assert_eq!(sent, [("ROW1".to_string(), Some("G3".to_string()), Some("TAAAA1111".to_string()))]);
-    d.picker_move(true);
-    d.on_evt(&host(), channels_of_in("TBBBB2222", &[("C9", "other")]), at);
-    d.on_evt(&host(), paired("ROW1", Some("G3"), ChatReply::Refused(ChatCode::NotInChannel)), at);
-    assert_eq!(d.take_notice().as_deref(), Some("not set: your Slack app is not in that private channel; in that channel in Slack, type /invite @Alpha App, then pick it again"));
-    // A pasted link that names Beta, sent while Alpha is shown, is said of Beta.
-    d.picker_move(false);
-    let sent = pairs(&d.picker_paste("https://app.slack.com/client/TBBBB2222/C0456EFGH").unwrap());
-    assert_eq!(sent, [("ROW1".to_string(), Some("C0456EFGH".to_string()), Some("TBBBB2222".to_string()))]);
-    d.on_evt(&host(), paired("ROW1", Some("C0456EFGH"), ChatReply::Refused(ChatCode::NoSuchChannel)), at);
-    assert!(d.take_notice().is_some_and(|n| n.contains("not in the Slack workspace Beta Lab") && n.ends_with("type /invite @Beta App, then pick it again")));
-}
-
-/// A workspace's list is kept from its ask on: a return shows it at once and asks nothing, a late answer for a workspace this
-/// picker asked is kept, one for a workspace it never asked is dropped, and a failed list is asked again at the return.
-#[test]
-fn a_workspace_listed_once_is_shown_again_with_no_second_ask() {
-    let (mut d, at) = two_apps();
-    let first_row = |d: &ChatDrawer| listed(d)[0].clone();
-    // An answer for Beta, which this picker never asked, is dropped: moving to Beta asks, and shows it reading.
-    d.on_evt(&host(), listed_in("TBBBB2222", false), at);
-    assert_eq!(asked(&d.picker_move(true)), [Some("TBBBB2222".to_string())]);
-    assert_eq!(shown_lines(&d), ["reading the channels of the Slack workspace Beta Lab…"]);
-    // Back to Alpha before Beta answers: Alpha's list is shown at once with no ask; Beta's late answer is kept, unseen.
-    assert!(d.picker_move(false).is_empty());
-    assert_eq!(first_row(&d), "> . #lab-general");
-    // A return to Beta while its answer is still awaited asks nothing: it is being read.
-    assert!(d.picker_move(true).is_empty());
-    assert_eq!(shown_lines(&d), ["reading the channels of the Slack workspace Beta Lab…"]);
-    assert!(d.picker_move(false).is_empty());
-    d.on_evt(&host(), channels_of_in("TBBBB2222", &[("C9", "beta-only")]), at);
-    assert_eq!(first_row(&d), "> . #lab-general", "Alpha's rows are still shown");
-    // Beta again: its kept list is shown at once, and nothing is asked; Alpha again likewise.
-    assert!(d.picker_move(true).is_empty());
-    assert_eq!(first_row(&d), "> . #beta-only");
-    assert!(d.picker_move(false).is_empty());
-    assert_eq!(first_row(&d), "> . #lab-general");
-    // A list that failed is asked again at the return, and not before.
-    let (mut d, at) = two_apps();
-    d.picker_move(true);
-    d.on_evt(&host(), ChatEvt::Channels { workspace: Some("TBBBB2222".into()), reply: ChatReply::Refused(ChatCode::Unavailable) }, at);
-    assert!(shown_lines(&d)[0].starts_with("could not list the channels of the Slack workspace Beta Lab"));
-    assert!(d.picker_move(false).is_empty());
-    assert_eq!(asked(&d.picker_move(true)), [Some("TBBBB2222".to_string())]);
-    assert_eq!(shown_lines(&d), ["reading the channels of the Slack workspace Beta Lab…"]);
-}
-
-/// A move to a workspace already listed puts the cursor on its first channel, not where Connect's row was in the one left.
-#[test]
-fn a_move_to_a_listed_workspace_puts_the_cursor_on_its_first_channel() {
-    let (mut d, at) = two_apps();
-    d.picker_move(true);
-    d.on_evt(&host(), listed_in("TBBBB2222", false), at);
-    d.picker_move(false);
     (0..4).for_each(|_| d.picker_step(true));
-    assert!(cursor_row(&d).contains("Connect a Slack workspace"), "{}", cursor_row(&d));
-    assert!(d.picker_move(true).is_empty());
-    assert_eq!(cursor_row(&d), "> . #lab-general");
+    d.picker_open();
+    d.on_evt(&host(), listed_in("TBBBB2222", false), at);
+    d.picker_step(true);
+    (d, at)
 }
 
-/// A paste waits until the workspaces are known (a link's workspace could not be told from the one shown before), and is
-/// refused with none running; Slack's Copy link, which names its workspace by domain alone, pairs in the one shown.
+/// The workspaces are rows that open in place, each with its channels beneath it: Alpha opens at the start and its list is
+/// asked, Right opens Beta and asks its list once, Left on a channel goes to its workspace and there closes it, and Enter on
+/// a channel pairs in its workspace.
 #[test]
-fn a_paste_waits_for_the_workspaces_and_a_copy_link_pairs_in_the_one_shown() {
+fn the_channel_list_is_a_tree_of_its_workspaces_with_their_channels_beneath() {
+    let (mut d, at) = known_two();
+    assert_eq!(d.title(), " chat · choose this project's channel ");
+    assert_eq!(tree(&d), ["> v Alpha Lab", "    . reading its channels…", "  > Beta Lab", CONNECT]);
+    d.on_evt(&host(), listed_in("TAAAA1111", false), at);
+    let alpha = ["  v Alpha Lab", ">   . #lab-general", "    . #lab-microscopes · your Slack app joins it when you pick it", "    . #lab-papers · private; your Slack app is in it", "    . #random", "  > Beta Lab", CONNECT];
+    assert_eq!(tree(&d), alpha);
+    (0..4).for_each(|_| d.picker_step(true));
+    assert_eq!(cursor_row(&d), "> > Beta Lab");
+    assert_eq!(asked(&d.picker_open()), [Some("TBBBB2222".to_string())]);
+    assert!(d.picker_open().is_empty(), "Right on an open workspace asks nothing");
+    assert_eq!(tree(&d)[5..], ["> v Beta Lab", "    . reading its channels…", CONNECT]);
+    d.on_evt(&host(), listed_in("TBBBB2222", false), at);
+    d.picker_step(true);
+    d.picker_close();
+    assert_eq!(cursor_row(&d), "> v Beta Lab");
+    d.picker_close();
+    assert_eq!(tree(&d)[5..], ["> > Beta Lab", CONNECT]);
+    // Up to Alpha's last channel: Enter pairs it in Alpha.
+    d.picker_step(false);
+    assert_eq!(pairs(&d.picker_enter()), [("ROW1".to_string(), Some("C4".to_string()), Some("TAAAA1111".to_string()))]);
+}
+
+/// The picker's keys, by action and whether the key is held (`picker_arrow`): Up and Down choose, held too; Right opens and
+/// Left closes, never held; no other key is an arrow, so none falls through to the thread keys. Then each key on each kind
+/// of row, as the nav pane's trees take them.
+#[test]
+fn the_pickers_keys_open_close_and_choose_as_the_nav_trees_do() {
+    use super::{picker_arrow, PickerArrow};
+    for (action, repeat, want) in [
+        (Some(Action::ChatMarkOlder), false, Some(PickerArrow::Choose { down: false })),
+        (Some(Action::ChatMarkNewer), true, Some(PickerArrow::Choose { down: true })),
+        (Some(Action::ChatThreadClose), false, Some(PickerArrow::Close)),
+        (Some(Action::ChatThreadOpen), false, Some(PickerArrow::Open)),
+        (Some(Action::ChatThreadOpen), true, Some(PickerArrow::Held)),
+        (Some(Action::ChatThreadClose), true, Some(PickerArrow::Held)),
+        (Some(Action::ChatSend), false, None),
+        (Some(Action::ChatSetup), false, None),
+        (None, false, None),
+    ] {
+        assert_eq!(picker_arrow(action, repeat), want, "{action:?} held {repeat}");
+    }
+    let (mut d, _) = two_apps();
+    let open = tree(&d);
+    // Right on a channel does nothing; Left on a channel goes to its workspace and closes nothing.
+    assert!(d.picker_open().is_empty());
+    assert_eq!(tree(&d), open);
+    d.picker_close();
+    assert_eq!(cursor_row(&d), "> v Alpha Lab");
+    assert_eq!(tree(&d).len(), open.len());
+    // Left on an open workspace closes it; on a closed one at the top it does nothing.
+    d.picker_close();
+    assert_eq!(tree(&d), ["> > Alpha Lab", "  > Beta Lab", CONNECT]);
+    d.picker_close();
+    assert_eq!(tree(&d), ["> > Alpha Lab", "  > Beta Lab", CONNECT]);
+    // Right on the closed workspace opens it, its list being held, and leaves the cursor on its row.
+    assert!(d.picker_open().is_empty());
+    assert_eq!(cursor_row(&d), "> v Alpha Lab");
+    assert_eq!(tree(&d).len(), open.len());
+    // Enter on an open workspace sends nothing; on a closed one it opens it and asks its list; on a note it sends nothing.
+    assert!(d.picker_enter().is_empty());
+    assert_eq!(tree(&d).len(), open.len());
+    (0..5).for_each(|_| d.picker_step(true));
+    assert_eq!(cursor_row(&d), "> > Beta Lab");
+    assert_eq!(asked(&d.picker_enter()), [Some("TBBBB2222".to_string())]);
+    assert_eq!(cursor_row(&d), "> v Beta Lab");
+    d.picker_step(true);
+    assert_eq!(cursor_row(&d), ">   . reading its channels…");
+    assert!(d.picker_enter().is_empty() && !d.in_setup(), "a note picks nothing");
+    // Enter on the Connect step opens it.
+    d.picker_step(true);
+    assert!(cursor_row(&d).contains("Connect a Slack workspace"));
+    assert!(d.picker_enter().is_empty() && d.in_setup());
+}
+
+/// A list answered while its workspace is closed is kept and not shown; its opening shows it with no ask. A list this picker
+/// never asked is dropped, one still being read is not asked again, and one that failed is asked again at the next opening.
+#[test]
+fn a_list_for_a_closed_workspace_is_kept_and_shown_at_its_opening_with_no_ask() {
+    let (mut d, at) = two_apps();
+    // An answer for Beta, which this picker never asked, is dropped: opening Beta asks, and shows it reading.
+    d.on_evt(&host(), listed_in("TBBBB2222", false), at);
+    (0..4).for_each(|_| d.picker_step(true));
+    assert_eq!(asked(&d.picker_open()), [Some("TBBBB2222".to_string())]);
+    assert_eq!(tree(&d)[5..], ["> v Beta Lab", "    . reading its channels…", CONNECT]);
+    // Closed and opened again while it is being read: nothing is asked.
+    d.picker_close();
+    assert!(d.picker_open().is_empty());
+    // Closed, its answer comes: kept, not shown; its opening shows it with no ask.
+    d.picker_close();
+    d.on_evt(&host(), channels_of_in("TBBBB2222", &[("C9", "beta-only")]), at);
+    assert_eq!(tree(&d)[5..], ["> > Beta Lab", CONNECT]);
+    assert!(d.picker_open().is_empty());
+    assert_eq!(tree(&d)[5..], ["> v Beta Lab", "    . #beta-only", CONNECT]);
+    // A list that failed says so, leads the head with the words, and is asked again at the next opening.
+    let (mut d, at) = two_apps();
+    (0..4).for_each(|_| d.picker_step(true));
+    d.picker_open();
+    d.on_evt(&host(), ChatEvt::Channels { workspace: Some("TBBBB2222".into()), reply: ChatReply::Refused(ChatCode::Unavailable) }, at);
+    assert_eq!(tree(&d)[5..], ["> v Beta Lab", "    . could not list its channels", CONNECT]);
+    assert!(said(&d).starts_with("could not list the channels of the Slack workspace Beta Lab: the chat is not available here"), "{}", said(&d));
+    d.picker_close();
+    assert_eq!(asked(&d.picker_open()), [Some("TBBBB2222".to_string())]);
+}
+
+/// Each workspace's rows say what its list holds: reading, refused (with its words leading the head), a computer too old
+/// to list, no channel the Slack app can see, no match for the filter, and a list cut at its bound.
+#[test]
+fn a_workspaces_rows_say_what_its_list_holds() {
+    let (mut d, at) = known_two();
+    assert_eq!(tree(&d)[1], "    . reading its channels…");
+    d.on_evt(&host(), channels_of_in("TAAAA1111", &[]), at);
+    assert_eq!(tree(&d)[..2], ["> v Alpha Lab", "    . no channel your Slack app can see"]);
+    d.picker_edit(Edit::Text("zzz"));
+    assert_eq!(tree(&d), ["> v Alpha Lab", "    . no channel your Slack app can see", "  > Beta Lab"], "a filter hides the unpairing and Connect");
+    let (mut d, at) = two_apps();
+    d.picker_edit(Edit::Text("zzz"));
+    assert_eq!(tree(&d), ["> v Alpha Lab", "    . no channel matches", "  > Beta Lab"]);
+    d.picker_edit(Edit::Backspace);
+    d.picker_edit(Edit::Backspace);
+    d.picker_edit(Edit::Backspace);
+    // Beta is open and its list is cut at its bound: its last row says to paste a link.
+    (0..4).for_each(|_| d.picker_step(true));
+    d.picker_open();
+    d.on_evt(&host(), listed_in("TBBBB2222", true), at);
+    assert_eq!(tree(&d).last().map(String::as_str), Some(CONNECT));
+    assert!(tree(&d).contains(&"    . More channels exist than are listed: paste a channel's link to pick one.".to_string()), "{:?}", tree(&d));
+    d.picker_edit(Edit::Text("zzz"));
+    assert!(tree(&d).iter().filter(|r| r.ends_with("no channel matches")).count() == 2, "{:?}", tree(&d));
+    // A computer too old to list channels says so, in the head and on the row.
+    let (mut d, at) = two_apps();
+    (0..4).for_each(|_| d.picker_step(true));
+    d.picker_open();
+    d.on_evt(&host(), ChatEvt::Channels { workspace: Some("TBBBB2222".into()), reply: ChatReply::Unsupported }, at);
+    assert!(said(&d).starts_with("Ship of Tools on a is too old to list channels: update it"), "{}", said(&d));
+    // An older computer's one workspace names no workspace in its words.
+    let (mut d, at, _) = unmapped();
+    d.on_evt(&host(), ChatEvt::Channels { workspace: None, reply: ChatReply::Refused(ChatCode::Unavailable) }, at);
+    assert_eq!(tree(&d)[..2], ["> v your connected Slack workspace", "    . could not list its channels"]);
+    assert!(said(&d).starts_with("could not list the channels: the chat is not available here"), "{}", said(&d));
+}
+
+/// The cursor starts on the opened workspace's row and, when its list first arrives, goes to its first channel unless a key
+/// moved it; a row that went sends it to its workspace's row; an edit puts it on the first channel shown, else on the first
+/// row; it is never on `No channel for this project` unless a key put it there.
+#[test]
+fn the_cursor_lands_on_a_channel_and_never_falls_on_no_channel_for_this_project() {
+    let all = [("WS1", Some("Alpha Lab"), true), ("WS2", Some("Beta Lab"), true)];
+    let mapped = || {
+        let (mut d, at) = channel(&[]);
+        d.open_picker(shown("ROW1").as_ref()).unwrap();
+        d.on_evt(&host(), workspaces("WS1", &all), at);
+        (d, at)
+    };
+    let (mut d, at) = mapped();
+    assert_eq!(tree(&d), ["> v Alpha Lab", "    . reading its channels…", "  > Beta Lab", "  . No channel for this project", CONNECT]);
+    d.on_evt(&host(), listed_in("WS1", false), at);
+    assert_eq!(cursor_row(&d), ">   . #lab-general");
+    // Closed and its list answered again: the cursor is on its row and stays there (the landing is spent).
+    d.picker_close();
+    d.on_evt(&host(), listed_in("WS1", false), at);
+    assert_eq!(cursor_row(&d), "> v Alpha Lab");
+    // The filter: the first channel shown, else the first row; emptied, the first channel again.
+    d.picker_step(true);
+    (0..3).for_each(|_| d.picker_step(true));
+    assert_eq!(cursor_row(&d), ">   . #random");
+    d.picker_edit(Edit::Text("lab"));
+    assert_eq!(cursor_row(&d), ">   . #lab-general");
+    assert!(!tree(&d).iter().any(|r| r.contains("No channel for") || r.contains("Connect a")), "a filter hides the unpairing and Connect: {:?}", tree(&d));
+    d.picker_edit(Edit::Text("zzz"));
+    assert_eq!(cursor_row(&d), "> v Alpha Lab");
+    (0..6).for_each(|_| d.picker_edit(Edit::Backspace));
+    assert_eq!(cursor_row(&d), ">   . #lab-general");
+    // A key moved the cursor off its row before the list came: the landing does not happen, and the note's row going sends it
+    // to its workspace's row.
+    let (mut d, at) = mapped();
+    d.picker_step(true);
+    assert_eq!(cursor_row(&d), ">   . reading its channels…");
+    d.on_evt(&host(), listed_in("WS1", false), at);
+    assert_eq!(cursor_row(&d), "> v Alpha Lab");
+    // A workspace other than the first: its note's row going sends the cursor to its row, not to the first row.
+    d.picker_step(true);
+    (0..3).for_each(|_| d.picker_step(true));
+    d.picker_step(true);
+    assert_eq!(cursor_row(&d), "> > Beta Lab");
+    d.picker_open();
+    d.picker_step(true);
+    d.on_evt(&host(), listed_in("WS2", false), at);
+    assert_eq!(cursor_row(&d), "> v Beta Lab");
+    // A key that moves nothing (Up on the first row) does not spend the landing.
+    let (mut d, at) = mapped();
+    d.picker_step(false);
+    d.on_evt(&host(), listed_in("WS1", false), at);
+    assert_eq!(cursor_row(&d), ">   . #lab-general");
+    // An edit before the list came spends the landing.
+    let (mut d, at) = mapped();
+    d.picker_edit(Edit::Text("lab"));
+    d.on_evt(&host(), listed_in("WS1", false), at);
+    assert_eq!(cursor_row(&d), "> v Alpha Lab");
+    // The cursor starts on the row of the workspace the picker opened on, wherever it stands in the list.
+    let (d, _) = opened("TBBBB2222", &[("TAAAA1111", Some("Alpha Lab"), true), ("TBBBB2222", Some("Beta Lab"), true)]);
+    assert_eq!(cursor_row(&d), "> v Beta Lab");
+}
+
+/// Enter on a channel pairs it in the workspace of its row, and the pair's words name that workspace whichever row the cursor
+/// is on when the answer comes; a pasted id pairs in the workspace the cursor is in, a link in the workspace it names; the
+/// unpairing is in the project's own workspace when it runs, else the one the picker opened on.
+#[test]
+fn a_pick_and_a_paste_name_their_own_workspace() {
+    let (mut d, at) = both_open();
+    assert_eq!(pairs(&d.picker_enter()), [("ROW1".to_string(), Some("C1".to_string()), Some("TBBBB2222".to_string()))]);
+    d.picker_step(false);
+    (0..6).for_each(|_| d.picker_step(false));
+    assert_eq!(cursor_row(&d), "> v Alpha Lab");
+    d.on_evt(&host(), paired("ROW1", Some("C1"), ChatReply::Refused(ChatCode::NoSuchChannel)), at);
+    let words = d.take_notice().unwrap();
+    assert!(words.contains("not in the Slack workspace Beta Lab") && words.ends_with("type /invite @Beta App, then pick it again"), "{words}");
+    // An id alone pairs where the cursor is (a workspace's row or one of its channels); a link names its own workspace; a Copy
+    // link, which names none, goes where the cursor is.
+    assert_eq!(pairs(&d.picker_paste("C0456EFGH").unwrap())[0].2.as_deref(), Some("TAAAA1111"));
+    d.on_evt(&host(), paired("ROW1", Some("C0456EFGH"), ChatReply::Refused(ChatCode::NotInChannel)), at);
+    (0..6).for_each(|_| d.picker_step(true));
+    assert!(cursor_row(&d).contains("Beta Lab") || cursor_row(&d).contains("#"), "{}", cursor_row(&d));
+    let sent = pairs(&d.picker_paste("https://lab-beta.slack.com/archives/C0456EFGH").unwrap());
+    assert_eq!(sent[0].2.as_deref(), Some("TBBBB2222"));
+    d.on_evt(&host(), paired("ROW1", Some("C0456EFGH"), ChatReply::Refused(ChatCode::NotInChannel)), at);
+    assert_eq!(pairs(&d.picker_paste("https://app.slack.com/client/TAAAA1111/C0456EFGH").unwrap())[0].2.as_deref(), Some("TAAAA1111"));
+    d.on_evt(&host(), paired("ROW1", Some("C0456EFGH"), ChatReply::Refused(ChatCode::NotInChannel)), at);
+    assert_eq!(
+        d.picker_paste("https://app.slack.com/client/TCCCC3333/C0456EFGH").unwrap_err(),
+        "not pasted: that channel is in a Slack workspace the chat on a is not connected to; to connect it, choose Connect a Slack workspace at the end of this list"
+    );
+    // Waiting for the workspaces, and with none running.
     let (mut d, _) = channel(&[]);
     d.open_picker(shown("ROW1").as_ref()).unwrap();
+    assert!(tree(&d).is_empty(), "no row before the workspaces are known");
+    d.picker_edit(Edit::Text("a"));
+    d.picker_edit(Edit::Backspace);
+    assert!(tree(&d).is_empty(), "nor after an edit");
     assert_eq!(
         d.picker_paste("https://app.slack.com/client/TBBBB2222/C0456EFGH").unwrap_err(),
         "not pasted: still reading which Slack workspaces the chat on a is connected to; paste it again in a moment"
@@ -784,12 +878,137 @@ fn a_paste_waits_for_the_workspaces_and_a_copy_link_pairs_in_the_one_shown() {
     d.open_picker(shown("ROW1").as_ref()).unwrap();
     d.on_evt(&host(), workspaces("WS1", &[("WS1", None, false)]), at);
     assert_eq!(d.picker_paste("C0456EFGH").unwrap_err(), "not pasted: no Slack workspace is running on a right now");
+    // An id alone, with the cursor on the Connect step (which names no workspace), goes to the workspace the picker opened on;
+    // against an older computer, which has no workspaces to name, it names none though the row knew one.
+    let (mut d, _) = two_apps();
+    (0..5).for_each(|_| d.picker_step(true));
+    assert!(cursor_row(&d).contains("Connect a Slack workspace"), "{}", cursor_row(&d));
+    assert_eq!(pairs(&d.picker_paste("C0456EFGH").unwrap())[0].2.as_deref(), Some("TAAAA1111"));
+    let mut p = super::picker::Picker::new(shown("ROW1").unwrap(), false, "app".into()).starting(Some("WS9".into()));
+    p.on_workspaces(ChatReply::Unsupported);
+    assert_eq!(p.paste("C0456EFGH"), Ok(super::picker::Pick::Channel(id("C0456EFGH"), None)));
+    // The unpairing: the project's own workspace (`WS1`) when it runs, though the picker opened on another; else the opened one.
+    let current = |ws: &str| Some((ws.to_string(), id("CH1"), "#lab".to_string()));
+    let unpair = |own: &str| {
+        let mut p = super::picker::Picker::new(shown("ROW1").unwrap(), true, "app".into()).starting(Some("WS2".into())).current(current(own));
+        p.on_workspaces(match workspaces("WS2", &[("WS1", Some("Alpha Lab"), true), ("WS2", Some("Beta Lab"), true)]) {
+            ChatEvt::Workspaces { reply } => reply,
+            _ => unreachable!(),
+        });
+        (0..2).for_each(|_| p.step(true));
+        p.enter()
+    };
+    assert_eq!(unpair("WS1"), Some(super::picker::Pick::Unpair(Some("WS1".into()))));
+    assert_eq!(unpair("GONE"), Some(super::picker::Pick::Unpair(Some("WS2".into()))));
+}
 
+/// The words: the head for several workspaces, the guide with its keys, the title with no workspace in it, the missing
+/// channel said of the project's own workspace whichever row the cursor is on, the invite naming the cursor's workspace's
+/// Slack app, and a refusal that points at Right.
+#[test]
+fn the_trees_words_name_its_workspaces_and_its_keys() {
     let (mut d, at) = known_two();
-    d.picker_move(true);
-    d.on_evt(&host(), listed_in("TBBBB2222", false), at);
-    let sent = d.picker_paste("https://lab-beta.slack.com/archives/C0456EFGH").unwrap();
-    assert_eq!(pairs(&sent), [("ROW1".to_string(), Some("C0456EFGH".to_string()), Some("TBBBB2222".to_string()))]);
+    d.on_evt(&host(), listed_in("TAAAA1111", false), at);
+    let head = said(&d);
+    assert!(head.contains("These are the 2 Slack workspaces the chat on a is connected to, each with the channels your Slack app (the bot you make for yourself in each Slack workspace, which reads the channel and posts for your agents) can see in it, and Connect a Slack workspace is at the end. Your Slack app reads only the channels it is in; picking a public channel adds it there. A private channel is listed only once someone in it invites your Slack app. For the Slack workspace Alpha Lab: in that channel in Slack, type /invite @Ship of Tools, then press Esc and open this list again."), "{head}");
+    assert!(head.contains("Type to narrow the channels of the open workspaces, Up and Down to choose, Right to open a Slack workspace and Left to close it, Enter to pick, Esc to close."), "{head}");
+    assert!(!head.contains("Left and Right") && !head.contains("one workspace at a time"), "{head}");
+    d.picker_edit(Edit::Text("lab"));
+    assert_eq!(d.title(), " chat · choose this project's channel  filter: lab ");
+    // A refused pair says Right shows the other workspaces' channels.
+    let (mut d, at) = two_apps();
+    d.picker_enter();
+    d.on_evt(&host(), paired("ROW1", Some("C1"), ChatReply::Refused(ChatCode::NoSuchChannel)), at);
+    assert!(d.take_notice().unwrap().contains("; Right on another Slack workspace in this list shows its channels; if it is a private channel"));
+    // The project's channel is in WS1; the list lacks it. The words lead while the cursor is on WS2's row or on Connect.
+    let apps = serde_json::from_value(serde_json::json!({ "default": "WS1", "workspaces": [
+        { "id": "WS1", "name": "Alpha Lab", "running": true, "app_name": "Ship of Tools (lab-user)" },
+        { "id": "WS2", "name": "Beta Lab", "running": true } ] })).unwrap();
+    let (mut d, at) = channel(&[]);
+    d.open_picker(shown("ROW1").as_ref()).unwrap();
+    d.on_evt(&host(), ChatEvt::Workspaces { reply: ChatReply::Done(apps) }, at);
+    d.on_evt(&host(), listed_in("WS1", false), at);
+    let on_alpha = said(&d);
+    assert!(on_alpha.starts_with("This project's channel, CH1, is not in this list") && on_alpha.contains("To keep it, in that channel in Slack, type /invite @Ship of Tools (lab-user), then press Esc."), "{on_alpha}");
+    assert!(on_alpha.contains("invites your Slack app. For the Slack workspace Alpha Lab: in that channel in Slack, type /invite @Ship of Tools (lab-user), then press Esc and open this list again."), "{on_alpha}");
+    (0..4).for_each(|_| d.picker_step(true));
+    assert_eq!(cursor_row(&d), "> > Beta Lab");
+    let on_beta = said(&d);
+    assert!(on_beta.starts_with("This project's channel, CH1, is not in this list") && on_beta.contains("To keep it, in that channel in Slack, type /invite @Ship of Tools (lab-user), then press Esc."), "{on_beta}");
+    assert!(on_beta.contains("invites your Slack app. For the Slack workspace Beta Lab: in that channel in Slack, type /invite @Ship of Tools, then press Esc and open this list again."), "the cursor's workspace names no app: {on_beta}");
+}
+
+/// A mapped row's picker opens on its own workspace; one workspace's list names it and says how to add another; a
+/// workspace with no name is said by its ID; none running leaves only the Connect step; a list that fails names its workspace.
+#[test]
+fn the_picker_opens_on_the_rows_workspace_and_says_each_place() {
+    let (mut d, at) = channel(&[]);
+    assert_eq!(lists(&d.open_picker(shown("ROW1").as_ref()).unwrap()), 1);
+    let all = [("TAAAA1", Some("Alpha Lab"), true), ("WS1", None, true)];
+    assert_eq!(asked(&d.on_evt(&host(), workspaces("TAAAA1", &all), at)), [Some("WS1".to_string())], "the row's own, not the default");
+    assert_eq!(d.title(), " chat · choose this project's channel ");
+    d.on_evt(&host(), ChatEvt::Channels { workspace: Some("WS1".into()), reply: ChatReply::Refused(ChatCode::Unavailable) }, at);
+    assert!(d.body().unwrap().lines(2000, 9)[0].starts_with("could not list the channels of the Slack workspace with ID WS1: the chat is not available here"));
+    // A mapped row's refused list leaves the cursor on its workspace's row, with the unpairing and Connect below.
+    assert_eq!(tree(&d), ["  > Alpha Lab", "> v workspace WS1", "    . could not list its channels", "  . No channel for this project", CONNECT]);
+    // Unpairing names the project's own workspace.
+    d.on_evt(&host(), listed_in("WS1", false), at);
+    (0..5).for_each(|_| d.picker_step(true));
+    assert_eq!(cursor_row(&d), "> . No channel for this project");
+    assert!(matches!(d.picker_enter().as_slice(), [(_, OutgoingReq::ChatPair { workspace: Some(w), channel: None, .. })] if w == "WS1"));
+
+    let (mut d, at) = channel(&[]);
+    d.open_picker(shown("ROW1").as_ref()).unwrap();
+    d.on_evt(&host(), workspaces("WS1", &[("WS1", Some("Alpha Lab"), true)]), at);
+    assert_eq!(d.title(), " chat · choose this project's channel ");
+    d.on_evt(&host(), listed_in("WS1", false), at);
+    let said = d.body().unwrap().lines(2000, 60).join(" ");
+    // The row's channel is not in the list, so its words lead, and they say what your Slack app is.
+    assert!(said.starts_with("This project's channel, CH1, is not in this list: your Slack app (the bot that reads the channel and posts for your agents) is not in it"), "{said}");
+    assert!(said.contains("These are the channels of the Slack workspace Alpha Lab that your Slack app can see. Your Slack app reads only the channels it is in; picking a public channel adds it there. A private channel is listed only once someone in it invites your Slack app: in that channel in Slack, type /invite @Ship of Tools, then press Esc and open this list again. To add another Slack workspace, choose Connect a Slack workspace at the end of this list."), "{said}");
+    assert!(said.contains("Up and Down to choose, Right to open a Slack workspace and Left to close it, Enter to pick"), "{said}");
+    assert!(d.picker_open().is_empty());
+
+    let (mut d, at) = channel(&[]);
+    d.open_picker(shown("ROW1").as_ref()).unwrap();
+    assert!(asked(&d.on_evt(&host(), workspaces("WS1", &[("WS1", None, false)]), at)).is_empty());
+    let lines = shown_lines(&d);
+    assert!(lines.join(" ").starts_with("no Slack workspace is running on a right now: choose Connect a Slack workspace below; the log of Ship of Tools' service on a says why"), "{lines:?}");
+    assert_eq!(listed(&d)[0], "> . Connect a Slack workspace · add a Slack workspace, or give one new Slack codes");
+    assert!(d.picker_enter().is_empty() && d.in_setup(), "the Connect step takes the picker's place");
+
+    let (mut d, at) = channel(&[]);
+    d.open_picker(shown("ROW1").as_ref()).unwrap();
+    d.on_evt(&host(), ChatEvt::Workspaces { reply: ChatReply::Refused(ChatCode::Busy) }, at);
+    assert!(shown_lines(&d)[0].starts_with("could not read which Slack workspaces the chat on a is connected to: "), "{:?}", shown_lines(&d));
+    assert_eq!(listed(&d)[0], "> . Connect a Slack workspace · add a Slack workspace, or give one new Slack codes");
+    assert!(d.picker_enter().is_empty() && d.in_setup(), "the Connect step takes the picker's place");
+}
+
+/// Left and Right move while a pair is answered, and the pair's words name the workspace it was sent to: that workspace's
+/// name, its Slack app, and its list for the private-channel check, whichever workspace is shown when the answer comes.
+#[test]
+fn left_and_right_move_while_a_pair_is_answered_and_its_words_name_its_own_workspace() {
+    // A channel Alpha's list holds, refused after the person moved to Beta: Alpha's name and Slack app.
+    let (mut d, at) = two_apps();
+    assert_eq!(pairs(&d.picker_enter()).len(), 1);
+    (0..4).for_each(|_| d.picker_step(true));
+    assert_eq!(asked(&d.picker_enter()), [Some("TBBBB2222".to_string())], "Enter opens a workspace while a pair is answered, as Right does");
+    d.on_evt(&host(), paired("ROW1", Some("C1"), ChatReply::Refused(ChatCode::NoSuchChannel)), at);
+    assert_eq!(d.take_notice().as_deref(), Some("not set: that channel is not in the Slack workspace Alpha Lab; Right on another Slack workspace in this list shows its channels; if it is a private channel, your Slack app is not in it: in that channel in Slack, type /invite @Alpha App, then pick it again"));
+    assert!(d.picking());
+    // A private channel of Alpha's list (`G3`), refused after Beta's list answered without it: still said of Alpha's.
+    (0..2).for_each(|_| d.picker_step(false));
+    let sent = pairs(&d.picker_enter());
+    assert_eq!(sent, [("ROW1".to_string(), Some("G3".to_string()), Some("TAAAA1111".to_string()))]);
+    d.on_evt(&host(), channels_of_in("TBBBB2222", &[("C9", "other")]), at);
+    d.on_evt(&host(), paired("ROW1", Some("G3"), ChatReply::Refused(ChatCode::NotInChannel)), at);
+    assert_eq!(d.take_notice().as_deref(), Some("not set: your Slack app is not in that private channel; in that channel in Slack, type /invite @Alpha App, then pick it again"));
+    // A pasted link that names Beta, sent while the cursor is in Alpha, is said of Beta.
+    let sent = pairs(&d.picker_paste("https://app.slack.com/client/TBBBB2222/C0456EFGH").unwrap());
+    assert_eq!(sent, [("ROW1".to_string(), Some("C0456EFGH".to_string()), Some("TBBBB2222".to_string()))]);
+    d.on_evt(&host(), paired("ROW1", Some("C0456EFGH"), ChatReply::Refused(ChatCode::NoSuchChannel)), at);
+    assert!(d.take_notice().is_some_and(|n| n.contains("not in the Slack workspace Beta Lab") && n.ends_with("type /invite @Beta App, then pick it again")));
 }
 
 /// S6: the head says the project's channel is missing only from a whole list of the project's own workspace: a list cut at
@@ -813,9 +1032,17 @@ fn the_missing_channel_is_said_only_of_a_whole_list_of_its_own_workspace() {
     let (mut d, at) = opened(&[("WS1", Some("Alpha Lab"), true), ("WS2", Some("Beta Lab"), true)]);
     d.on_evt(&host(), listed_in("WS1", false), at);
     assert!(head(&d).starts_with(missing), "{}", head(&d));
-    assert_eq!(asked(&d.picker_move(true)), [Some("WS2".to_string())]);
+    (0..4).for_each(|_| d.picker_step(true));
+    assert_eq!(asked(&d.picker_open()), [Some("WS2".to_string())]);
     d.on_evt(&host(), listed_in("WS2", false), at);
-    assert!(!head(&d).contains(missing), "another workspace's list: {}", head(&d));
+    assert!(head(&d).starts_with(missing), "said whichever row the cursor is on: {}", head(&d));
+    // Another workspace's whole list never decides it: the project's own list was cut, so nothing is said.
+    let (mut d, at) = opened(&[("WS1", Some("Alpha Lab"), true), ("WS2", Some("Beta Lab"), true)]);
+    d.on_evt(&host(), listed_in("WS1", true), at);
+    (0..4).for_each(|_| d.picker_step(true));
+    d.picker_open();
+    d.on_evt(&host(), listed_in("WS2", false), at);
+    assert!(!head(&d).contains(missing), "{}", head(&d));
 }
 
 /// S2: the picker's invites name the shown workspace's Slack app as the hub names it (Slack's name for its bot), and the
@@ -831,41 +1058,13 @@ fn the_pickers_invites_name_the_slack_app_the_hub_names() {
     d.on_evt(&host(), listed_in("WS1", false), at);
     let said = d.body().unwrap().lines(2000, 60).join(" ");
     assert!(said.contains("To keep it, in that channel in Slack, type /invite @Ship of Tools (lab-user), then press Esc."), "{said}");
-    assert!(said.contains("A private channel is listed only once someone in it invites your Slack app: in that channel in Slack, type /invite @Ship of Tools (lab-user), then open this list again."), "{said}");
+    assert!(said.contains("A private channel is listed only once someone in it invites your Slack app. For the Slack workspace Alpha Lab: in that channel in Slack, type /invite @Ship of Tools (lab-user), then press Esc and open this list again."), "{said}");
     assert_eq!(d.picker_paste("C0456EFGH").unwrap().len(), 1);
     d.on_evt(&host(), paired("ROW1", Some("C0456EFGH"), ChatReply::Refused(ChatCode::NoSuchChannel)), at);
     assert!(d.take_notice().is_some_and(|n| n.ends_with("type /invite @Ship of Tools (lab-user), then pick it again")));
-    // Another workspace whose entry names no Slack app: the person's.
-    d.picker_move(true);
-    d.on_evt(&host(), listed_in("WS2", false), at);
-    assert!(d.body().unwrap().lines(2000, 60).join(" ").contains("type /invite @Ship of Tools, then open this list again."));
-}
-
-/// The nav pane's text for a leaf at depth 0 with `label`, the cursor's when `selected`.
-fn tree_leaf(label: &str, selected: bool) -> String {
-    use crate::ui::nav::{format_tree_row, TreeRow};
-    let node = sot_protocol::TreeNode { id: "x".into(), label: label.into(), kind: "k".into(), has_children: false, badges: Vec::new(), payload: Default::default() };
-    format_tree_row(&TreeRow { node, depth: 0, expanded: false }, selected, false)
-}
-
-/// A channel list of `(id, name)`, none private and the app in each.
-fn channels_of(channels: &[(&str, &str)]) -> ChatEvt {
-    let list: Vec<_> = channels.iter().map(|(id, name)| serde_json::json!({ "id": id, "name": name, "private": false, "member": true })).collect();
-    let res: ChatChannelsRes = serde_json::from_value(serde_json::json!({ "channels": list, "more": false })).unwrap();
-    ChatEvt::Channels { workspace: None, reply: ChatReply::Done(res) }
-}
-
-/// `channels_of`, answering workspace `workspace`.
-fn channels_of_in(workspace: &str, channels: &[(&str, &str)]) -> ChatEvt {
-    match channels_of(channels) {
-        ChatEvt::Channels { reply, .. } => ChatEvt::Channels { workspace: Some(workspace.to_string()), reply },
-        _ => unreachable!(),
-    }
-}
-
-/// The row the cursor is on, as the list draws it.
-fn cursor_row(d: &ChatDrawer) -> String {
-    shown_lines(d).into_iter().find(|l| l.starts_with("> ")).expect("a cursor row")
+    // The cursor in another workspace whose entry names no Slack app: the person's.
+    (0..4).for_each(|_| d.picker_step(true));
+    assert!(d.body().unwrap().lines(2000, 60).join(" ").contains("type /invite @Ship of Tools, then press Esc and open this list again."));
 }
 
 #[test]
@@ -879,13 +1078,15 @@ fn the_channel_list_draws_its_entries_as_the_nav_tree_draws_its_rows() {
         ("#random", false),
         ("Connect Slack again · connect again with new Slack codes (same workspace)", false),
     ];
-    let rows: Vec<String> = shown_lines(&d).into_iter().skip_while(|l| !l.starts_with("> . ")).take(want.len()).collect();
-    assert_eq!(rows, ["> . #lab-general",
-        "  . #lab-microscopes · your Slack app joins it when you pick it",
-        "  . #lab-papers · private; your Slack app is in it",
-        "  . #random",
+    let rows = tree(&d);
+    assert_eq!(rows, ["  v your connected Slack workspace",
+        ">   . #lab-general",
+        "    . #lab-microscopes · your Slack app joins it when you pick it",
+        "    . #lab-papers · private; your Slack app is in it",
+        "    . #random",
         "  . Connect Slack again · connect again with new Slack codes (same workspace)"]);
-    assert_eq!(rows, want.map(|(label, selected)| tree_leaf(label, selected)));
+    let depths = [1, 1, 1, 1, 0];
+    assert_eq!(rows[1..], want.iter().zip(depths).map(|((label, selected), depth)| tree_leaf(label, *selected, depth)).collect::<Vec<_>>()[..]);
 }
 
 #[test]
@@ -894,65 +1095,80 @@ fn a_list_answered_again_keeps_the_cursor_on_its_channel() {
     d.on_evt(&host(), channels_reply(false), at);
     d.picker_step(true);
     d.picker_step(true);
-    assert_eq!(cursor_row(&d), "> . #lab-papers · private; your Slack app is in it");
+    assert_eq!(cursor_row(&d), ">   . #lab-papers · private; your Slack app is in it");
     // The same list again, with a channel sorted above the cursor's: the cursor stays on its channel, now one row lower.
     d.on_evt(&host(), channels_of(&[("C0", "a-first"), ("C1", "lab-general"), ("C2", "lab-microscopes"), ("G3", "lab-papers"), ("C4", "random")]), at);
-    assert_eq!(cursor_row(&d), "> . #lab-papers");
+    assert_eq!(cursor_row(&d), ">   . #lab-papers");
 }
 
-/// The guard the home rule keeps: the cursor starts on the first channel, never on `No channel for this project`, after an
-/// edit, when its row is gone and on the first list.
+
+/// The project's channel is missing from an older computer's one list: its words lead the head, as for any workspace, and
+/// the head's second sentence does not say again what the Slack app is.
 #[test]
-fn the_cursor_goes_home_and_never_to_no_channel() {
+fn an_older_computers_list_says_when_the_projects_channel_is_missing_from_it() {
     let (mut d, at) = channel(&[]);
     d.open_picker(shown("ROW1").as_ref()).unwrap();
     older(&mut d, at);
     d.on_evt(&host(), channels_reply(false), at);
-    assert!(cursor_row(&d).ends_with("#lab-general"), "{}", cursor_row(&d));
-    (0..3).for_each(|_| d.picker_step(true));
-    assert!(cursor_row(&d).ends_with("#random"), "{}", cursor_row(&d));
-    d.on_evt(&host(), channels_of(&[("C1", "lab-general"), ("C2", "lab-microscopes")]), at);
-    assert!(cursor_row(&d).ends_with("#lab-general"), "its row gone: {}", cursor_row(&d));
-    d.picker_step(true);
-    d.picker_edit(Edit::Text("lab"));
-    assert!(cursor_row(&d).ends_with("#lab-general"), "an edit: {}", cursor_row(&d));
-    d.picker_edit(Edit::Backspace);
-    d.picker_edit(Edit::Backspace);
-    d.picker_edit(Edit::Backspace);
-    assert!(cursor_row(&d).ends_with("#lab-general"), "the filter emptied: {}", cursor_row(&d));
+    let head = said(&d);
+    assert!(head.starts_with("This project's channel, CH1, is not in this list: your Slack app (the bot that reads the channel and posts for your agents) is not in it"), "{head}");
+    assert!(head.contains("Your Slack app reads only the channels it is in.") && !head.contains("Your Slack app (the bot"), "{head}");
 }
 
+/// An older computer's one workspace: a refused list is asked again when the workspace is opened again, by Right or by Enter,
+/// and Right on it while open asks nothing.
 #[test]
-fn a_list_with_channels_after_an_empty_one_puts_the_cursor_on_the_first_channel_unless_a_key_moved_it() {
-    // An empty list leaves the cursor on Connect; the list that then holds channels takes it to the first, no key pressed.
+fn an_older_computers_failed_list_is_asked_again_when_its_workspace_is_opened_again() {
     let (mut d, at, _) = unmapped();
-    d.on_evt(&host(), channels_of(&[]), at);
-    assert!(cursor_row(&d).contains("Connect Slack again"), "{}", cursor_row(&d));
-    d.on_evt(&host(), channels_reply(false), at);
-    assert!(cursor_row(&d).ends_with("#lab-general"), "{}", cursor_row(&d));
-    // A Down that moves nothing is no move: the list answered after it still takes the cursor to the first channel.
-    let (mut d, at, _) = unmapped();
-    d.on_evt(&host(), channels_of(&[]), at);
+    d.on_evt(&host(), ChatEvt::Channels { workspace: None, reply: ChatReply::Refused(ChatCode::Unavailable) }, at);
+    assert!(d.picker_open().is_empty(), "Right on the open workspace asks nothing");
+    let opens: [fn(&mut ChatDrawer) -> Vec<Out>; 2] = [|d| d.picker_open(), |d| d.picker_enter()];
+    for open in opens {
+        d.picker_close();
+        assert_eq!(tree(&d), ["> > your connected Slack workspace", "  . Connect Slack again · connect again with new Slack codes (same workspace)"]);
+        assert_eq!(asked(&open(&mut d)), [None]);
+        assert_eq!(tree(&d)[..2], ["> v your connected Slack workspace", "    . reading its channels…"]);
+        d.on_evt(&host(), ChatEvt::Channels { workspace: None, reply: ChatReply::Refused(ChatCode::Unavailable) }, at);
+        assert!(said(&d).starts_with("could not list the channels: the chat is not available here"), "{}", said(&d));
+    }
+}
+
+/// Right and Left do nothing on a row that is not theirs: Right on an open workspace whose list failed, on a note, on
+/// `No channel for this project` and on Connect, Left on those last two.
+#[test]
+fn right_and_left_do_nothing_on_rows_that_are_not_theirs() {
+    let (mut d, at) = known_two();
+    d.on_evt(&host(), ChatEvt::Channels { workspace: Some("TAAAA1111".into()), reply: ChatReply::Refused(ChatCode::Unavailable) }, at);
+    let failed = tree(&d);
+    assert!(d.picker_open().is_empty(), "an open workspace whose list failed is not asked again by Right");
+    assert_eq!(tree(&d), failed);
     d.picker_step(true);
-    d.on_evt(&host(), channels_reply(false), at);
-    assert!(cursor_row(&d).ends_with("#lab-general"), "{}", cursor_row(&d));
-    // A Down that does move the cursor onto Connect, and one more past the last row, keeps it there when the list is answered again.
+    assert_eq!(cursor_row(&d), ">   . could not list its channels");
+    let on_note = tree(&d);
+    assert!(d.picker_open().is_empty());
+    assert_eq!(tree(&d), on_note, "Right on a note");
+    // The project's rows, with the project's workspace open and then closed.
+    let (mut d, at) = channel(&[]);
+    d.open_picker(shown("ROW1").as_ref()).unwrap();
+    d.on_evt(&host(), workspaces("WS1", &[("WS1", Some("Alpha Lab"), true), ("WS2", Some("Beta Lab"), true)]), at);
+    d.on_evt(&host(), listed_in("WS1", false), at);
     (0..5).for_each(|_| d.picker_step(true));
-    assert!(cursor_row(&d).contains("Connect Slack again"), "{}", cursor_row(&d));
-    d.on_evt(&host(), channels_reply(false), at);
-    assert!(cursor_row(&d).contains("Connect Slack again"), "{}", cursor_row(&d));
-}
-
-/// A cursor that went home after a key moved it is no longer a person's: the next list answered takes it to its own first
-/// channel and does not keep it on the channel home chose.
-#[test]
-fn a_cursor_sent_home_is_not_kept_by_the_next_list() {
-    let (mut d, at, _) = unmapped();
-    d.on_evt(&host(), channels_reply(false), at);
-    (0..3).for_each(|_| d.picker_step(true));
-    assert!(cursor_row(&d).ends_with("#random"), "{}", cursor_row(&d));
-    d.on_evt(&host(), channels_of(&[("C1", "lab-general"), ("C2", "lab-microscopes")]), at);
-    assert!(cursor_row(&d).ends_with("#lab-general"), "its row gone: {}", cursor_row(&d));
-    d.on_evt(&host(), channels_of(&[("C0", "a-first"), ("C1", "lab-general"), ("C2", "lab-microscopes")]), at);
-    assert!(cursor_row(&d).ends_with("#a-first"), "{}", cursor_row(&d));
+    assert_eq!(cursor_row(&d), "> . No channel for this project");
+    let before = tree(&d);
+    d.picker_close();
+    assert!(d.picker_open().is_empty());
+    assert_eq!(tree(&d), before, "Left and Right on the unpairing");
+    d.picker_step(true);
+    let before = tree(&d);
+    d.picker_close();
+    assert!(d.picker_open().is_empty());
+    assert_eq!(tree(&d), before, "Left and Right on Connect");
+    (0..7).for_each(|_| d.picker_step(false));
+    d.picker_close();
+    assert_eq!(cursor_row(&d), "> > Alpha Lab");
+    (0..2).for_each(|_| d.picker_step(true));
+    assert_eq!(cursor_row(&d), "> . No channel for this project");
+    let before = tree(&d);
+    assert!(d.picker_open().is_empty());
+    assert_eq!(tree(&d), before, "Right on the unpairing leaves the project's closed workspace closed");
 }

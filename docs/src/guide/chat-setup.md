@@ -151,9 +151,12 @@ could not tell; a project whose panel then shows nothing needs your Slack app in
 Each project has one channel, and each channel serves one project. The channel list opens when you press Enter on the
 connected screen, and by itself when you open the Chat panel on a project with no channel; after you close it with
 Escape, it waits for Enter until you select another session. Its top line reads
-`chat · choose this project's channel` and the workspace's name.
+`chat · choose this project's channel`. Below it, every running workspace is a row, with its channels beneath it when it is
+open; the workspace the project's channel is in is open when the list appears.
 
-- Type to narrow the list (case does not matter, and a `#` is ignored). Up and Down choose, Enter picks, Escape closes.
+- Type to narrow the list (case does not matter, and a `#` is ignored); it narrows the channels of the open workspaces.
+  Up and Down choose, Right opens a workspace, Left closes it (on a channel, it goes to that channel's workspace), Enter
+  picks a channel (on a closed workspace it opens it), Escape closes the list.
 - After Escape the panel says `this project has no channel: press Enter to pick one`, and Enter opens the list again.
 - A public channel your Slack app is not in is marked `your Slack app joins it when you pick it`: picking it makes the
   app join, and Slack shows that it joined.
@@ -181,12 +184,12 @@ listed: paste a channel's link to pick one.` Paste a channel's link or ID with `
 in its details in Slack; its last part is the channel's ID, which begins with `C` or `G` and is made of capital letters
 and digits. The address in your browser's Slack tab (`https://app.slack.com/client/T.../C...`) also names the workspace,
 and is picked in that workspace, or refused when it is not connected here; the link Slack's **Copy link** gives names no
-workspace, so it is picked in the workspace the list shows.
+workspace, so it is picked in the workspace the cursor is in.
 
 ### Change or remove a project's channel
 
-Select the project's session, open the Chat panel and press `Ctrl+Shift+k`. The list then begins with
-`No channel for this project` and ends with `Connect a Slack workspace`. Your choice is written into `chat.toml`, the
+Select the project's session, open the Chat panel and press `Ctrl+Shift+k`. The list then ends with
+`No channel for this project` and `Connect a Slack workspace`. Your choice is written into `chat.toml`, the
 chat's settings file on the computer that runs your sessions. If you edited that file by hand, a pick from the panel
 rewrites it whole: its comments and the order of its keys are not kept.
 
@@ -215,11 +218,10 @@ The panel's top line names the workspace's short name, a colon and the channel (
 ### Pick a channel in another workspace
 
 Nothing needs to be set up again. Select the project's session and open the Chat panel; the channel list opens by
-itself if the project has no channel, and `Ctrl+Shift+k` opens it otherwise. The list shows one workspace at a time,
-named in its top line with its place (`chat · choose this project's channel · Alpha Lab (1 of 2)`). Press Right or Left
-to show the next or previous workspace's channels, then pick as before. The list opens on the workspace of the
-project's channel; for a project with no channel, on the workspace connected first; and after you connect one, on that
-one.
+itself if the project has no channel, and `Ctrl+Shift+k` opens it otherwise. The list shows each running workspace as a row.
+Move to a workspace and press Right (or Enter) to open it and see its channels, then pick as before; Left closes it. The
+list opens with the workspace of the project's channel open; for a project with no channel, the workspace connected
+first; and after you connect one, that one.
 
 ## Give a connected workspace new Slack codes
 

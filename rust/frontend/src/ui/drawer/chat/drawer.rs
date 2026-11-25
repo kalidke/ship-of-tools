@@ -732,7 +732,7 @@ impl ChatDrawer {
         outs
     }
 
-    /// Opens the picker for `row` and asks for the channels: for an unmapped row, or a mapped one (which begins with `No
+    /// Opens the picker for `row` and asks for the channels: for an unmapped row, or a mapped one (whose list also offers `No
     /// channel for this project`). Any other stand says its words instead. The channel's view is set aside, and its thread
     /// closed (a thread's Left key would otherwise give back the channel's view under the picker).
     pub(in crate::ui) fn open_picker(&mut self, row: Option<&ResultRowIdentity>) -> Result<Vec<Out>, String> {
@@ -759,12 +759,17 @@ impl ChatDrawer {
         Ok(vec![(row.host.clone(), OutgoingReq::ChatWorkspaces)])
     }
 
-    /// Left (`next` false) or Right in the picker: the previous or next workspace's channels, asked when it has no list yet or
-    /// its list failed.
-    pub(in crate::ui) fn picker_move(&mut self, next: bool) -> Vec<Out> {
+    /// Right in the picker: the workspace under the cursor opens, and its channels are asked when it has no list yet or its
+    /// list failed.
+    pub(in crate::ui) fn picker_open(&mut self) -> Vec<Out> {
         let Some(p) = self.picker_mut() else { return Vec::new() };
         let host = p.row.host.clone();
-        p.move_by(next).map(|w| vec![(host, OutgoingReq::ChatChannels { workspace: Some(w) })]).unwrap_or_default()
+        p.open().map(|workspace| vec![(host, OutgoingReq::ChatChannels { workspace })]).unwrap_or_default()
+    }
+
+    /// Left in the picker: the open workspace under the cursor closes, or the cursor goes to its workspace.
+    pub(in crate::ui) fn picker_close(&mut self) {
+        self.picker_mut().into_iter().for_each(Picker::close);
     }
 
     /// The picker ends, and the channel's view returns.
@@ -799,8 +804,11 @@ impl ChatDrawer {
     }
 
     pub(in crate::ui) fn picker_enter(&mut self) -> Vec<Out> {
-        if self.pair_sent.is_some() {
-            return Vec::new();
+        // Enter on a closed workspace opens it as Right does (asking its list when it needs one), a pair in flight or not; on
+        // every other row it picks, one pair at a time, and a workspace row picks nothing.
+        let asks = self.picker_open();
+        if !asks.is_empty() || self.pair_sent.is_some() {
+            return asks;
         }
         let pick = self.picker_mut().and_then(Picker::enter);
         self.picked(pick)

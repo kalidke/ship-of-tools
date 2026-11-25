@@ -1419,9 +1419,16 @@ fn no_project_word_reaches_a_screen() {
         picks.extend(p.body().lines(100, 40));
         picks.push(p.no_such_channel());
         picks.push(p.paste("https://app.slack.com/client/TZZZZ9/C0456EFGH").err().unwrap_or_default());
-        if let Some(w) = p.move_by(true) {
+        // Another workspace, when one runs: step down to its row and open it, so its words are read too.
+        let several = all.iter().filter(|w| w.2).count() > 1;
+        let opened = (0..8).find_map(|_| {
+            p.step(true);
+            p.open()
+        });
+        assert_eq!(opened.is_some(), several, "a second running workspace's row is reached, and no other opens");
+        if let Some(w) = opened {
             picks.extend(p.body().lines(100, 40));
-            p.on_channels(Some(&w), ChatReply::Refused(ChatCode::Busy));
+            p.on_channels(w.as_deref(), ChatReply::Refused(ChatCode::Busy));
             picks.extend([p.title(), p.no_such_channel()]);
             picks.extend(p.body().lines(100, 40));
         }
@@ -1734,7 +1741,7 @@ fn a_channel_the_connected_slack_app_is_not_in_says_so_and_what_to_type_in_slack
     picker_of_unreadable(&mut d, at);
     let head = d.body().unwrap().lines(400, 40).join(" ");
     assert!(head.starts_with(&format!("This project's channel, #lab-private, is not in this list: your Slack app (the bot that reads the channel and posts for your agents) is not in it, so this panel cannot show it. To keep it, in that channel in Slack, type /invite @{NAME}, then press Esc. To change it, pick another channel below.")), "{head}");
-    assert!(head.contains(&format!("These are the channels of the Slack workspace Alpha Lab that your Slack app can see. Your Slack app reads only the channels it is in; picking a public channel adds it there. A private channel is listed only once someone in it invites your Slack app: in that channel in Slack, type /invite @{NAME}, then open this list again.")), "{head}");
+    assert!(head.contains(&format!("These are the channels of the Slack workspace Alpha Lab that your Slack app can see. Your Slack app reads only the channels it is in; picking a public channel adds it there. A private channel is listed only once someone in it invites your Slack app: in that channel in Slack, type /invite @{NAME}, then press Esc and open this list again.")), "{head}");
     assert_eq!(head.matches("(the bot").count(), 1, "your Slack app is said what it is once, at its first use: {head}");
     // Its link pasted: Slack answers a private channel the app is not in as a channel it does not have.
     assert_eq!(d.picker_paste("https://alphalab.slack.com/archives/G0PRIVATE1").unwrap().len(), 1);
