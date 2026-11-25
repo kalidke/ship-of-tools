@@ -25,7 +25,7 @@ mod view;
 pub(in crate::ui) use compose::{compose_rows, ComposeText, Edit};
 pub(in crate::ui) use connect::connect_key;
 pub(in crate::ui) use drawer::{ChatDrawer, Previewed};
-pub(in crate::ui) use picker::Body;
+pub(in crate::ui) use picker::{Body, Tone};
 pub(in crate::ui) use view::{ChatHit, Step};
 #[cfg(test)]
 pub(in crate::ui) use view::ChatView;

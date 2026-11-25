@@ -1065,7 +1065,7 @@ fn the_connect_step_parks_the_channels_records() {
     d.on_evt(&host(), ChatEvt::Channels { workspace: None, reply: ChatReply::Done(listed) }, at);
     let rows = d.body().unwrap().lines(100, 30);
     assert!(rows.join(" ").contains(&format!("/invite @{NAME}")), "the picker's invite names the person's app");
-    assert!(rows.iter().any(|r| r.trim_start_matches(['>', ' ']).starts_with("Connect Slack again")), "Connect Slack again is offered");
+    assert!(rows.iter().any(|r| r.trim_start_matches(['>', '.', ' ']).starts_with("Connect Slack again")), "Connect Slack again is offered");
     (0..3).for_each(|_| d.picker_step(true));
     assert!(d.picker_enter().is_empty(), "Connect Slack again sends nothing");
     assert!(d.in_setup() && !d.picking());

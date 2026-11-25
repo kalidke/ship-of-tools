@@ -3,7 +3,8 @@
 
 use super::*;
 use crate::ui::drawer::repl::presentation::ReplDrawerLayout;
-use super::nav_body::NavBody;
+use super::nav_body::{tree_row_style, NavBody};
+use crate::ui::drawer::chat::Tone;
 
 // Snapshot per-row chrome strings up-front so the ratatui closure
 // doesn't need to borrow `self.tree` (the closure captures `frame`
@@ -429,7 +430,10 @@ impl ChromeView<'_> {
         if let Some(body) = chat_body.filter(|_| drawer == DrawerContent::Chat) {
             let (width, height) = (repl_rect.width as usize, repl_rect.height as usize);
             self.chat_body_end = (body.scroll_end(width, height), repl_rect.height);
-            let lines: Vec<RtLine> = body.lines(width, height).into_iter().map(RtLine::from).collect();
+            let lines: Vec<RtLine> = body.rows(width, height).into_iter().map(|(text, tone)| match tone {
+                Tone::Words => RtLine::from(text),
+                Tone::Row | Tone::Cursor => RtLine::from(Span::styled(text, tree_row_style(tone == Tone::Cursor))),
+            }).collect();
             frame.render_widget(Paragraph::new(lines), repl_rect);
         }
         if let Some(text) = chat_compose.filter(|_| drawer == DrawerContent::Chat) {

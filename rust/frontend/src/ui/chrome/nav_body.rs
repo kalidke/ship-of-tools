@@ -12,6 +12,12 @@ pub(super) struct NavBody {
     pub(super) tree: (ratatui::layout::Rect, Paragraph<'static>),
 }
 
+/// A plain tree row's style: light yellow on the cursor's row, dim on every other. The nav pane's rows take it when nothing
+/// else colors them, and so do the rows of the Chat drawer's channel list.
+pub(super) fn tree_row_style(cursor: bool) -> Style {
+    if cursor { Style::default().fg(Color::LightYellow) } else { Style::default().add_modifier(Modifier::DIM) }
+}
+
 impl ChromeView<'_> {
     pub(super) fn nav_body(
         &mut self,
@@ -244,7 +250,7 @@ impl ChromeView<'_> {
                 style = style.add_modifier(Modifier::BOLD);
             }
         } else if *is_selected {
-            style = style.fg(Color::LightYellow);
+            style = tree_row_style(true);
         } else if contrast_dim && mode == Mode::Sessions {
             // "dim" lever: fade non-selected Sessions rows that
             // carry no tone so the selection pops by contrast.
@@ -252,7 +258,7 @@ impl ChromeView<'_> {
             let (r, g, b) = scale_rgb((204, 204, 204), CONTRAST_DIM_FACTOR);
             style = style.fg(Color::Rgb(r, g, b));
         } else {
-            style = style.add_modifier(Modifier::DIM);
+            style = tree_row_style(false);
         }
         style
     }

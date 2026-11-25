@@ -456,6 +456,33 @@ fn the_chat_drawer_draws_its_body_and_no_other_drawer_does() {
     }
 }
 
+/// The Chat drawer's list rows take the nav tree's styles: the cursor's row what the nav's cursor row has, any other row
+/// what its plain row has, and the head's words neither.
+#[test]
+fn the_channel_lists_rows_take_the_nav_trees_cursor_and_plain_styles() {
+    use crate::ui::drawer::chat::Body;
+    let body = Body::listing("these are the channels", &["> . #cursored", "  . #plainrow"], 0);
+    let nav = |text: &str, selected| (text.to_string(), selected, false, false, None, 0.0, false, false);
+    let tree = vec![nav("> navcursor", true), nav("  navplain", false)];
+    let kept = std::cell::RefCell::new(None);
+    let frame = NavFrame { body: Some(&body), keep: Some(&kept), ..NavFrame::default() };
+    let (rows, ..) = paint_chrome_nav((200, 60), "ready", tree, (String::new(), Vec::new(), 0, DrawerContent::Chat), None, frame);
+    let buf = kept.borrow().clone().unwrap();
+    let style_of = |text: &str| {
+        let y = rows.iter().position(|r| r.contains(text)).unwrap_or_else(|| panic!("no {text:?} row in {rows:?}"));
+        let x = rows[y].find(text).map(|byte| rows[y][..byte].chars().count()).unwrap() as u16;
+        let cell = &buf[(x, y as u16)];
+        (cell.fg, cell.modifier)
+    };
+    let (nav_cursor, nav_plain) = (style_of("> navcursor"), style_of("  navplain"));
+    assert_eq!(nav_cursor.0, Color::LightYellow);
+    assert!(nav_plain.1.contains(Modifier::DIM));
+    assert_eq!(style_of("> . #cursored"), nav_cursor);
+    assert_eq!(style_of("  . #plainrow"), nav_plain);
+    let head = style_of("these are the channels");
+    assert!(head != nav_cursor && head != nav_plain && head.1.is_empty(), "{head:?}");
+}
+
 #[test]
 fn the_chat_drawer_draws_its_compose_rows_at_its_foot_and_no_other_drawer_does() {
     use crate::ui::drawer::chat::ComposeText;

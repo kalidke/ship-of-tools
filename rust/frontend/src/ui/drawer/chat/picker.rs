@@ -1,15 +1,18 @@
 //! The channel picker: the list a person chooses a project's channel from (`chat.workspaces`, then `chat.channels` of one
 //! Slack workspace, then one `chat.pair`), narrowed by typing, one workspace's list at a time with Left and Right between
-//! them. It holds the lists and the choice and sends nothing; `ChatDrawer` sends what it returns, holds the one pair in
+//! them. It holds the lists and the cursor (a `TreeView`, its entries drawn as the nav pane draws its tree rows) and sends nothing; `ChatDrawer` sends what it returns, holds the one pair in
 //! flight and parks the channel's view behind it, as behind any of its modal screens. Also here: `Body`, what a modal
 //! screen draws.
 
 use sot_protocol::ops::{ChatChannel, ChatChannelInfo, ChatChannelsRes, ChatCode, ChatWorkspaceInfo, ChatWorkspacesRes};
 
+use sot_protocol::TreeNode;
+
 use super::compose::Edit;
 use super::row_channel::{computer, log_words};
 use crate::net::transport::ChatReply;
 use crate::ui::chrome::{cell_row, wrap_status};
+use crate::ui::nav::{format_tree_row, TreeRow, TreeView};
 use crate::ui::ResultRowIdentity;
 
 /// How a person invites a Slack app (`name`, the one the hub names, else `slack_app_name`'s) to a channel.
@@ -91,7 +94,10 @@ pub(super) struct Picker {
     /// The row has a channel: the list begins with `No channel for this project`.
     mapped: bool,
     filter: String,
-    choice: usize,
+    /// The entries as the list draws them, one leaf row each, and the cursor on one of them.
+    tree: TreeView,
+    /// A key moved the cursor since it last went to the first channel: a list answered again then leaves it on its row.
+    moved: bool,
     list: List,
     places: Places,
     /// The workspace to open on, when it runs: the row's, or the one just connected.
@@ -123,7 +129,7 @@ pub(super) fn link_target(text: &str) -> Option<(Option<String>, ChatChannel)> {
 
 impl Picker {
     pub(super) fn new(row: ResultRowIdentity, mapped: bool, app: String) -> Self {
-        Picker { row, mapped, filter: String::new(), choice: 0, list: List::Reading, places: Places::Asking, start: None, away: false, pairing: false, app, current: None }
+        Picker { row, mapped, filter: String::new(), tree: TreeView::new(), moved: false, list: List::Reading, places: Places::Asking, start: None, away: false, pairing: false, app, current: None }
     }
 
     /// The row's channel now (its workspace, id and label), which the head names when the list shown lacks it.
@@ -199,20 +205,21 @@ impl Picker {
             return None;
         }
         let c = self.c();
-        match reply {
+        let next = match reply {
             ChatReply::Done(res) => {
                 let running: Vec<ChatWorkspaceInfo> = res.workspaces.into_iter().filter(|w| w.running).collect();
                 if running.is_empty() {
                     self.places = Places::Nowhere(format!("no Slack workspace is running on {c} right now: choose Connect a Slack workspace below; {}", log_words(&c)));
-                    return None;
+                    None
+                } else {
+                    let at = [self.start.as_deref(), Some(res.default.as_str())]
+                        .into_iter()
+                        .flatten()
+                        .find_map(|want| running.iter().position(|w| w.id == want))
+                        .unwrap_or(0);
+                    self.places = Places::Known { running, at };
+                    Some(self.asked())
                 }
-                let at = [self.start.as_deref(), Some(res.default.as_str())]
-                    .into_iter()
-                    .flatten()
-                    .find_map(|want| running.iter().position(|w| w.id == want))
-                    .unwrap_or(0);
-                self.places = Places::Known { running, at };
-                Some(self.asked())
             }
             ChatReply::Unsupported => {
                 self.places = Places::Older;
@@ -222,28 +229,46 @@ impl Picker {
                 self.places = Places::Nowhere(format!("could not read which Slack workspaces the chat on {c} is connected to: {}", code.text()));
                 None
             }
-        }
+        };
+        self.install();
+        next
     }
 
     /// Left (`next` false) or Right: the previous or the next running workspace's list, without wrapping; the workspace to ask,
-    /// or `None` at an end, with one workspace, or for an older computer. The filter stays; the choice goes home.
+    /// or `None` at an end, with one workspace, or for an older computer. The filter stays; the cursor goes home.
     pub(super) fn move_by(&mut self, next: bool) -> Option<String> {
         let Places::Known { running, at } = &mut self.places else { return None };
         let to = if next { (*at + 1 < running.len()).then_some(*at + 1) } else { at.checked_sub(1) }?;
         *at = to;
         self.list = List::Reading;
-        self.choice = self.home();
+        self.install();
         self.asked()
     }
 
     /// The entries, in order: `No channel for this project` only over an empty filter (a narrowed list never unpairs), the
-    /// channels by name, and the Connect step last over an empty filter (a list that failed offers it alone). Each is its
-    /// pick, its label and its mark.
-    fn entries(&self) -> Vec<(Pick, String, &'static str)> {
+    /// channels by name, and the Connect step last over an empty filter (a list that failed offers it alone). Each is one leaf
+    /// row, its mark after its label.
+    fn rows(&self) -> Vec<TreeRow> {
         let plain = self.filter.is_empty();
+        let workspace = self.asked();
+        let at = workspace.clone().unwrap_or_default();
+        let payload = |channel: Option<&ChatChannel>| {
+            let mut p = serde_json::Map::new();
+            if let Some(w) = &workspace {
+                p.insert("workspace".into(), w.clone().into());
+            }
+            if let Some(c) = channel {
+                p.insert("channel".into(), c.as_str().into());
+            }
+            p
+        };
+        let leaf = |id: String, label: String, mark: &str, kind: &str, payload| {
+            let label = if mark.is_empty() { label } else { format!("{label} · {mark}") };
+            TreeRow { node: TreeNode { id, label, kind: kind.into(), has_children: false, badges: Vec::new(), payload }, depth: 0, expanded: false }
+        };
         let again = plain.then(|| match self.places {
-            Places::Older => (Pick::Reconnect, "Connect Slack again".to_string(), "connect again with new Slack codes (same workspace)"),
-            _ => (Pick::Reconnect, "Connect a Slack workspace".to_string(), "add a Slack workspace, or give one new Slack codes"),
+            Places::Older => leaf("chat:connect".into(), "Connect Slack again".into(), "connect again with new Slack codes (same workspace)", "chat_connect", Default::default()),
+            _ => leaf("chat:connect".into(), "Connect a Slack workspace".into(), "add a Slack workspace, or give one new Slack codes", "chat_connect", Default::default()),
         });
         if matches!(self.places, Places::Nowhere(_)) {
             return again.into_iter().collect();
@@ -258,7 +283,7 @@ impl Picker {
         shown.sort_by_key(|c| c.name.to_lowercase());
         let mut out = Vec::new();
         if plain && self.mapped {
-            out.push((Pick::Unpair(self.asked()), "No channel for this project".to_string(), ""));
+            out.push(leaf("chat:none".into(), "No channel for this project".into(), "", "chat_unpair", payload(None)));
         }
         out.extend(shown.into_iter().map(|c| {
             let mark = match (c.private, c.member) {
@@ -267,15 +292,39 @@ impl Picker {
                 // Slack lists a private channel only when the app is in it.
                 (true, _) => "private; your Slack app is in it",
             };
-            (Pick::Channel(c.id.clone(), self.asked()), format!("#{}", cell_row(&c.name)), mark)
+            leaf(format!("chat-ws:{at}/{}", c.id.as_str()), format!("#{}", cell_row(&c.name)), mark, "chat_channel", payload(Some(&c.id)))
         }));
         out.extend(again);
         out
     }
 
-    /// Where the choice begins: on the first channel, so a mapped row's Enter never unpairs by being pressed first.
+    /// What Enter on `row` does.
+    fn pick_of(row: &TreeRow) -> Option<Pick> {
+        let payload = &row.node.payload;
+        let workspace = payload.get("workspace").and_then(|w| w.as_str()).map(str::to_string);
+        match row.node.kind.as_str() {
+            "chat_channel" => Some(Pick::Channel(ChatChannel::try_from(payload.get("channel")?.as_str()?.to_string()).ok()?, workspace)),
+            "chat_unpair" => Some(Pick::Unpair(workspace)),
+            "chat_connect" => Some(Pick::Reconnect),
+            _ => None,
+        }
+    }
+
+    /// Where the cursor begins: on the first channel, so a mapped row's Enter never unpairs by being pressed first.
     fn home(&self) -> usize {
         usize::from(self.filter.is_empty() && self.mapped)
+    }
+
+    /// The entries as they stand, drawn from `rows`: the cursor stays on its row when a key put it there and the row is
+    /// still there; otherwise it goes to the first channel.
+    fn install(&mut self) {
+        let before = self.tree.rows().get(self.tree.selected()).map(|r| r.node.id.clone());
+        self.tree.set_flat(self.rows());
+        let kept = self.moved && before.is_some_and(|id| self.tree.rows().get(self.tree.selected()).is_some_and(|r| r.node.id == id));
+        if !kept {
+            self.moved = false;
+            self.tree.select_clamped(self.home());
+        }
     }
 
     /// A channel list's answer; one for another workspace than the one shown now is dropped.
@@ -289,7 +338,7 @@ impl Picker {
             ChatReply::Unsupported => List::Failed(format!("Ship of Tools on {} is too old to list channels: update it", self.c())),
             ChatReply::Refused(code) => List::Failed(format!("could not list the channels{of}: {}", code.text())),
         };
-        self.choice = self.home();
+        self.install();
     }
 
     pub(super) fn edit(&mut self, edit: Edit) {
@@ -298,17 +347,19 @@ impl Picker {
             Edit::Backspace => drop(self.filter.pop()),
             _ => return,
         }
-        self.choice = self.home();
+        self.moved = false;
+        self.install();
     }
 
     pub(super) fn step(&mut self, down: bool) {
-        let last = self.entries().len().saturating_sub(1);
-        self.choice = if down { (self.choice + 1).min(last) } else { self.choice.saturating_sub(1) };
+        let from = self.tree.selected();
+        if down { self.tree.move_down() } else { self.tree.move_up() }
+        self.moved |= self.tree.selected() != from;
     }
 
-    /// Enter: the chosen entry. The drawer sends it, one pair at a time.
+    /// Enter: the entry under the cursor. The drawer sends it, one pair at a time.
     pub(super) fn enter(&mut self) -> Option<Pick> {
-        let (pick, ..) = self.entries().into_iter().nth(self.choice)?;
+        let pick = Self::pick_of(self.tree.rows().get(self.tree.selected())?)?;
         self.pairing = true;
         Some(pick)
     }
@@ -397,7 +448,7 @@ impl Picker {
     }
 
     pub(super) fn body(&self) -> Body {
-        let entries = self.entries();
+        let rows = self.tree.rows();
         let (head, guide) = match (&self.places, &self.list) {
             (Places::Asking, _) => (format!("reading which Slack workspaces the chat on {} is connected to…", self.c()), String::new()),
             (Places::Nowhere(words), _) => (words.clone(), "Esc to close.".to_string()),
@@ -406,7 +457,7 @@ impl Picker {
             (_, List::Failed(words)) => (words.clone(), "Esc to close.".to_string()),
             (places, List::Listed { more, .. }) => {
                 let head = self.listed_head();
-                let head = if entries.is_empty() { format!("{head}\n\nno channel matches") } else { format!("{head}\n") };
+                let head = if rows.is_empty() { format!("{head}\n\nno channel matches") } else { format!("{head}\n") };
                 let more = if *more { " More channels exist than are listed: paste a channel's link to pick one." } else { "" };
                 let (lead, moving) = match places {
                     Places::Older => (guide(false), MOVE),
@@ -415,7 +466,9 @@ impl Picker {
                 (head, format!("{lead}{more}{moving}"))
             }
         };
-        Body { head, entries: entries.into_iter().map(|(_, label, mark)| (label, mark)).collect(), chosen: self.choice, guide, ..Body::default() }
+        let cursor = self.tree.selected();
+        let rows = rows.iter().enumerate().map(|(i, r)| format_tree_row(r, i == cursor, false)).collect();
+        Body { head, rows, cursor, guide, ..Body::default() }
     }
 }
 
@@ -432,13 +485,22 @@ pub(super) fn pair_words(reply: &ChatReply<sot_protocol::ops::ChatPairRes>, priv
     })
 }
 
-/// What the drawer shows in its body instead of records: a head, the entries (label and mark) with one chosen, a guide, and a
-/// line pinned at the foot (a screen's keys), which stays in view while the rest scrolls by `scroll` rows.
+/// How a row of a body is drawn: `Words` in the default style, `Row` and `Cursor` as the nav pane draws a tree row off and
+/// on its cursor.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(in crate::ui) enum Tone {
+    Words,
+    Row,
+    Cursor,
+}
+
+/// What the drawer shows in its body instead of records: a head, the rows of a list (each drawn whole) with the cursor on
+/// one, a guide, and a line pinned at the foot (a screen's keys), which stays in view while the rest scrolls by `scroll` rows.
 #[derive(Default)]
 pub(in crate::ui) struct Body {
     pub(super) head: String,
-    pub(super) entries: Vec<(String, &'static str)>,
-    pub(super) chosen: usize,
+    pub(super) rows: Vec<String>,
+    pub(super) cursor: usize,
     pub(super) guide: String,
     pub(super) pin: String,
     pub(super) scroll: u16,
@@ -469,26 +531,39 @@ impl Body {
         Body { head: text.to_string(), ..Body::default() }
     }
 
-    /// The rows for a body `width` cells wide and `height` tall: the head, the entries (a window that keeps the choice in view,
-    /// at least three rows) and the guide, wrapped, from `scroll` rows down and cut at the height; the pinned line, wrapped,
-    /// below a blank row at the foot. While rows remain below, `MORE` says so: in that blank row, or with no pinned line in
-    /// the last row.
-    pub(in crate::ui) fn lines(&self, width: usize, height: usize) -> Vec<String> {
+    /// A body of a head and a list, for the chrome's tests.
+    #[cfg(test)]
+    pub(in crate::ui) fn listing(head: &str, rows: &[&str], cursor: usize) -> Self {
+        Body { head: head.to_string(), rows: rows.iter().map(|r| r.to_string()).collect(), cursor, ..Body::default() }
+    }
+
+    /// The rows for a body `width` cells wide and `height` tall, each with its tone: the head, the list (a window that keeps
+    /// the cursor in view, at least three rows) and the guide, wrapped, from `scroll` rows down and cut at the height; the
+    /// pinned line, wrapped, below a blank row at the foot. While rows remain below, `MORE` says so: in that blank row, or
+    /// with no pinned line in the last row.
+    pub(in crate::ui) fn rows(&self, width: usize, height: usize) -> Vec<(String, Tone)> {
         let (room, content, pin) = self.parts(width, height);
         let end = content.len().saturating_sub(room);
         let start = usize::from(self.scroll).min(end);
         let more = start < end;
-        let mut out: Vec<String> = content.into_iter().skip(start).take(room).collect();
+        let words = |s: String| (s, Tone::Words);
+        let mut out: Vec<(String, Tone)> = content.into_iter().skip(start).take(room).collect();
         if !pin.is_empty() {
-            out.resize(room, String::new());
-            out.push(if more { MORE.to_string() } else { String::new() });
-            out.extend(pin);
+            out.resize(room, words(String::new()));
+            out.push(words(if more { MORE.to_string() } else { String::new() }));
+            out.extend(pin.into_iter().map(words));
         } else if more {
             if let Some(last) = out.last_mut() {
-                MORE.clone_into(last);
+                *last = words(MORE.to_string());
             }
         }
         out.into_iter().take(height).collect()
+    }
+
+    /// The text of `rows`, for the tests.
+    #[cfg(test)]
+    pub(in crate::ui) fn lines(&self, width: usize, height: usize) -> Vec<String> {
+        self.rows(width, height).into_iter().map(|(text, _)| text).collect()
     }
 
     /// How far the body scrolls at that size: the rows of it that do not fit above the pinned line.
@@ -498,20 +573,18 @@ impl Body {
     }
 
     /// The rows above the pinned line, what scrolls in them, and the pinned rows.
-    fn parts(&self, width: usize, height: usize) -> (usize, Vec<String>, Vec<String>) {
+    fn parts(&self, width: usize, height: usize) -> (usize, Vec<(String, Tone)>, Vec<String>) {
         let pin = wrapped(&self.pin, width);
         let room = if pin.is_empty() { height } else { height.saturating_sub(pin.len() + 1) };
         let (head, guide) = (wrapped(&self.head, width), wrapped(&self.guide, width));
-        // Over a list the head gives way after the guide: the entries keep three rows (the choice stays in view) and the row that
+        // Over a list the head gives way after the guide: the list keeps three rows (the cursor stays in view) and the row that
         // says more is below before the head keeps any, so a short drawer shows the list and a tall one the whole head.
-        let head = if self.entries.is_empty() { head } else { head.into_iter().take(room.saturating_sub(self.entries.len().min(3) + 1)).collect() };
+        let head = if self.rows.is_empty() { head } else { head.into_iter().take(room.saturating_sub(self.rows.len().min(3) + 1)).collect() };
         let window = room.saturating_sub(head.len() + guide.len() + usize::from(!guide.is_empty())).max(3);
-        let start = (self.chosen + 1).saturating_sub(window);
-        let across = self.entries.iter().map(|(label, _)| label.chars().count()).max().unwrap_or(0);
-        let rows = self.entries.iter().enumerate().skip(start).take(window).map(|(i, (label, mark))| {
-            format!("{} {label:<across$}  {mark}", if i == self.chosen { '>' } else { ' ' }).trim_end().to_string()
-        });
+        let start = (self.cursor + 1).saturating_sub(window);
+        let words = |s: String| (s, Tone::Words);
+        let rows = self.rows.iter().enumerate().skip(start).take(window).map(|(i, r)| (r.clone(), if i == self.cursor { Tone::Cursor } else { Tone::Row }));
         let gap = (!guide.is_empty()).then(String::new);
-        (room, head.into_iter().chain(rows).chain(gap).chain(guide).collect(), pin)
+        (room, head.into_iter().map(words).chain(rows).chain(gap.map(words)).chain(guide.into_iter().map(words)).collect(), pin)
     }
 }
