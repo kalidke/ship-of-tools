@@ -3469,7 +3469,9 @@ the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the sa
       failed without them; a name typed in capitals was read as an id; and a workspace id that is not connected
       was worded as the chat not running. One round answered them, and made the reply from what the edit wrote,
       which deleted the second read. Because that round changed code the window's own pairing shares, a second
-      reading was asked for regressions alone.
+      reading was asked for regressions alone. It found none, and one sentence the round had added that named
+      the wrong channel (a refusal after a join said the app was now in the project's own channel); the
+      maintaining session corrected that line and its test row in a commit of its own.
     - The window's part is one product line, with a test written first and seen red: a project with no channel
       is asked for again each minute, since no watch tells a window that a session paired it.
     - What it cost and showed: 82 minutes from the brief to the last commit of the round. The id commit ended at

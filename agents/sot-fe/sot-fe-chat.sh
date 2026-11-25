@@ -344,8 +344,9 @@ _chat_paired() {
                 else words="the request is not valid (this session's handle is not its row's, its row is no longer there, or the session is named in over 256 bytes)"; fi ;;
             *)           words="$err" ;;
         esac
-        # A refusal after the app is in the channel: the pairing is unchanged, the app's membership may not be.
-        [ "$(printf '%s' "$resp" | jq -r '.payload.joined // false')" != true ] || words="$words; the Slack app is now in that channel, and nothing was paired"
+        # A refusal after the app is in the channel: the pairing is unchanged, the app's membership may not be. The channel is
+        # named as it was asked for, since the words before it may name another (the project's own, for `already_paired`).
+        [ "$(printf '%s' "$resp" | jq -r '.payload.joined // false')" != true ] || words="$words; the Slack app is now in $CHAT_CHANNEL, and nothing was paired"
         _chat_refused "$code" "$words"
     fi
     case "$(printf '%s' "$resp" | jq -r '.payload.outcome // empty')" in
