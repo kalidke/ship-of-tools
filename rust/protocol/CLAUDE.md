@@ -364,7 +364,14 @@ name is in this crate's one op table.
     (sidecars' guarantee 19); each side's test states the two numbers as literals. `cut` is required and carried. The
     window's network side reads it (fe-net's contract); the daemon forwards it unread, and its read of one for a share is
     unbuilt. `PageWords::text(first, last)` is the one definition of the text of a range of words, numbered over all
-    lines in order: the words of a line joined by one space and the lines by LF, `None` when `first` is after `last` or
+    lines in order: the words of a line joined by one space, or by nothing where two touch (the gap between their boxes,
+    either way, under a tenth of the smaller of the two words' lengths per character, both taken along the axis the
+    boxes are apart on, across the page, or down it for a line set at 90 or 270 degrees: a subscript or a superscript
+    the PDF tool made a word of its own), and the lines by LF, but for a line that is only a section's number (`2`,
+    `2.1`, `3.`) and the next line when it starts beside that number on its right, within four of the number's heights
+    (counted in the document's fractions of the page, so about three real heights on a portrait page), on its band (the
+    two boxes share half the shorter one's height), which go on as one line with one space between them: the tool gives
+    a heading's number and its title as two lines, a column gap apart. `None` when `first` is after `last` or
     `last` is no word (`word_count` counts them); the window copies it and a share's digest is of it, so neither writes
     its own. `PreviewGetReq.words` is defaulted and left out when false, so an ordinary request is the one an older daemon
     reads; `HelloRes.serves_page_words` is defaulted and left out when false, and says the daemon answers `words` with
@@ -372,10 +379,22 @@ name is in this crate's one op table.
     picture, so a window sends one only where the hello said it (fe-net's contract). Mechanism: two defaulted fields
     (`PreviewGetReq.words` and `HelloRes.serves_page_words`) and one new type, no new op, so `PROTOCOL_VERSION` stays 4.
     Limit: the decoder does not check that the words lie inside the page beyond the `u16` range, or that they are in a
-    reading order; the plugin's test pins the same literal document (`julia/plugins/pdf-file/test/words.jl`). Tests
+    reading order; the plugin's test pins the same literal document (`julia/plugins/pdf-file/test/words.jl`). The text's
+    two rules read the boxes alone, so: the half point TeX sets after a subscript is a space, as in the tool's own plain
+    text (`ϕ1 , ϕ2`); the parts of a stacked fraction, one above the other, are a space apart (`x 2`); a heading the tool
+    gives in another order (the tool gave some headings' numbers lines away from their titles on a two-column page), or
+    numbered otherwise than in digits, or whose title starts further than four of its number's heights, or that is set at
+    90 or 270 degrees, stays two lines; and a lone number in a table's cell, or a lone number any line starts within four
+    of its heights beside, goes on with that line (a number at the right end of a column's line can join the next
+    column's), while the other cells stay lines of their own. Tests
     `ops/page_words_tests.rs`: `the_plugins_document_is_the_wires`, `page_words_are_bounded_at_decode`,
     `a_words_text_is_clean_at_decode`, `the_document_is_one_object_with_all_three_fields`,
     `a_range_of_words_is_their_text_by_line_and_space`,
+    `a_word_that_touches_the_one_before_it_is_joined_to_it_with_no_space`,
+    `a_line_of_words_stacked_down_the_page_keeps_its_spaces`, `the_touch_bound_is_per_character`,
+    `the_touch_bound_is_the_smaller_of_the_two_words`,
+    `a_rotated_words_length_per_character_is_measured_along_the_line`, `a_headings_number_and_its_title_are_one_line`,
+    `a_lone_number_goes_on_only_with_a_line_within_four_heights`, `a_heading_join_is_one_space_whatever_the_boxes_say`,
     `a_words_request_is_the_ordinary_one_with_one_more_field`; `ops/session_tests.rs`:
     `a_hello_says_it_serves_page_words_and_stays_additive`.
 
@@ -424,7 +443,7 @@ Same on all three; the blocking codec is the one the ssh bridge and shell wrappe
 | 14 | the drawing's raster | `ink_tests.rs` (the three tests under guarantee 14) |
 | 15 | terminal escapes | `escapes_tests.rs` (the five tests under guarantee 15) |
 | 16 | the update's state | `ops/update_tests.rs` (the five tests under guarantee 16); `ops/session_tests.rs`: `a_hello_and_a_version_answer_carry_the_update_state_and_stay_additive` |
-| 17 | a page's words | `ops/page_words_tests.rs` (the six tests under guarantee 17); `ops/session_tests.rs`: `a_hello_says_it_serves_page_words_and_stays_additive` |
+| 17 | a page's words | `ops/page_words_tests.rs` (the fourteen tests under guarantee 17); `ops/session_tests.rs`: `a_hello_says_it_serves_page_words_and_stays_additive` |
 
 ## Files
 - `Cargo.toml`: the crate manifest (feature `test-support`, dev only); depends on platform alone of ours

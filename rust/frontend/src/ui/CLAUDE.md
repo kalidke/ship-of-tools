@@ -2446,7 +2446,9 @@ canvas rectangle's), so a zoom or a pan changes nothing, and a word is named by 
 of every gap), else the first nearest by the distance to the box in units of the page's height (`aspect`, the page's width
 over its height, widens a sideways step), a point past the page's edge included, none for a page with no words. `select` is
 every word from the one at a drag's start to the one at its end in the document's order, whichever way the drag runs
-(`(first, last)`, inclusive). `text` is wire's `PageWords::text` (words of a line joined by one space, lines by LF; none for
+(`(first, last)`, inclusive). `text` is wire's `PageWords::text` (words of a line joined by one space, or by none where two
+touch, as a subscript and its letter do; lines by LF, but for a heading's lone number and its title beside it, within four
+of its heights, joined by one space; none for
 a range outside the page), the one definition the daemon's check and a share's digest also read (wire's guarantee 17).
 `bands` is one rectangle for each line a selection touches, from its least left to its greatest right (a line read right to
 left has its band) and as high as the tallest, mapped onto the canvas rectangle and clipped to the image rectangle, a band

@@ -15,7 +15,8 @@ Ctrl+c (Cmd+c on macOS) to copy it. Ctrl+Shift+c (Cmd+Shift+c on macOS) also cop
 fenced code blocks in a markdown preview.
 
 On a page of a PDF the same drag selects whole words, in the order the PDF's text runs, and marks them; Ctrl+c
-(Cmd+c on macOS) copies them, the words of a line joined by spaces and the lines by line breaks. A press on a page
+(Cmd+c on macOS) copies them, the words of a line joined by spaces and the lines by line breaks; a subscript or a
+superscript is joined to its letter with no space, and a section's number and the title beside it are one line. A press on a page
 focuses the preview. The first press on a page reads that page's words, and a drag you made while it read marks them when
 they arrive, even if you let go first. Turning the page, showing another file or session, or the PDF being written again
 clears the selection, and so does a press elsewhere and Escape; zooming and panning keep it. A page with no text says

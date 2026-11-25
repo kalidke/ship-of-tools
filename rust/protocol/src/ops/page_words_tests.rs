@@ -151,3 +151,160 @@ fn a_range_of_words_is_their_text_by_line_and_space() {
     assert_eq!((none.word_count(), none.text(0, 0)), (0, None), "a page with no words has no range");
 }
 
+fn page(lines: Vec<Vec<PageWord>>) -> PageWords {
+    PageWords { page: 1, cut: false, lines }
+}
+
+/// Two words of a line that touch are joined with no space: a subscript or a superscript the PDF tool made a word of its
+/// own (its box starts where its letter's ends, or a little after, as an exponent after an italic letter does), and two
+/// boxes that overlap. A gap of a tenth of the smaller of the two words' widths per character or more is a space, so a
+/// thin space is kept, and so is the half point TeX sets after a subscript, as the tool's own plain text keeps it. The
+/// boxes are the text tool's, as the plugin writes them, on the first page of `examples/preview/sample.pdf` and on a
+/// generated page.
+#[test]
+fn a_word_that_touches_the_one_before_it_is_joined_to_it_with_no_space() {
+    for (line, want) in [
+        // Each subscript starts where its letter ends; each comma is 54 (half a point) after its subscript.
+        (
+            vec![
+                word(31029, 26315, 35448, 27117, "latitudes"),
+                word(35882, 26315, 36578, 27117, "ϕ"),
+                word(36578, 26619, 37031, 27205, "1"),
+                word(37085, 26315, 37409, 27117, ","),
+                word(37604, 26315, 38300, 27117, "ϕ"),
+                word(38300, 26619, 38753, 27205, "2"),
+                word(39240, 26315, 41123, 27117, "and"),
+            ],
+            "latitudes ϕ1 , ϕ2 and",
+        ),
+        // An exponent that starts where `sin` ends; one 38 after an italic `y`, under a tenth of its own 426.
+        (vec![word(45974, 43400, 47409, 44201, "sin"), word(47409, 43196, 47862, 43782, "2"), word(48044, 43213, 48554, 43799, "x")], "sin2 x"),
+        (vec![word(10900, 12552, 12618, 13147, "and"), word(12891, 12415, 13414, 13147, "y"), word(13452, 12287, 13878, 12800, "2")], "and y2"),
+        // A thin space, 203 against a tenth of the 453 a character of `θ;`.
+        (vec![word(48922, 30214, 49830, 31016, "="), word(50155, 30214, 51042, 31016, "R"), word(51245, 30214, 52151, 31016, "θ;")], "= R θ;"),
+        // Boxes that overlap touch; a line read right to left keeps its space, the gap being measured either way.
+        (vec![word(1000, 100, 3000, 900, "ab"), word(2900, 100, 4000, 900, "c")], "abc"),
+        (vec![word(6000, 100, 8000, 900, "b"), word(1000, 100, 5000, 900, "a")], "b a"),
+    ] {
+        let last = line.len() - 1;
+        assert_eq!(page(vec![line]).text(0, last).as_deref(), Some(want));
+    }
+    // A selection of the subscript alone, or of its letter alone, gives that word.
+    let doc = page(vec![vec![word(35882, 26315, 36578, 27117, "ϕ"), word(36578, 26619, 37031, 27205, "1")]]);
+    assert_eq!((doc.text(0, 0).as_deref(), doc.text(1, 1).as_deref()), (Some("ϕ"), Some("1")));
+}
+
+/// A line that is only a section's number goes on with the next line when that line starts beside it on its right, on
+/// the same band of the page (the two boxes share half the shorter's height) and near it (within four of its heights), so
+/// a heading the PDF tool gave as two lines, its number and its title a column's gap apart, is one line of text; every
+/// other break between lines stays. Two columns are not joined, whether the tool gave them a column at a time or a line of each in turn on one band. The
+/// heading's boxes are the tool's, as the plugin writes them, on the first page of `examples/preview/sample.pdf`.
+#[test]
+fn a_headings_number_and_its_title_are_one_line() {
+    let title = || vec![word(10302, 24103, 14644, 25157, "Setup")];
+    let heading = |number: Vec<PageWord>| {
+        let last = number.len();
+        page(vec![number, title()]).text(0, last).unwrap()
+    };
+    let doc = page(vec![vec![word(7710, 24103, 8574, 25157, "1")], title(), vec![word(7710, 26315, 9414, 27117, "Let"), word(9847, 26315, 11665, 27117, "two")]]);
+    assert_eq!(doc.text(0, 3).as_deref(), Some("1 Setup\nLet two"));
+    assert_eq!(doc.text(1, 2).as_deref(), Some("Setup\nLet"), "a selection that starts at the title");
+    for (number, want) in [
+        (vec![word(7710, 24103, 8574, 25157, "2.1")], "2.1 Setup"),
+        (vec![word(7710, 24103, 8574, 25157, "3.")], "3. Setup"),
+        // Set higher than its title by a third of its height, the number is on the title's band; a line lower, it is not.
+        (vec![word(7710, 23752, 8574, 24806, "1")], "1 Setup"),
+        (vec![word(7710, 25157, 8574, 26211, "1")], "1\nSetup"),
+        // A mark the tool put before the words it follows, which are on its left.
+        (vec![word(15000, 24103, 15400, 25157, "1")], "1\nSetup"),
+        // No section's number, or not alone on its line.
+        (vec![word(7710, 24103, 8574, 25157, "(1)")], "(1)\nSetup"),
+        (vec![word(7710, 24103, 8574, 25157, "A")], "A\nSetup"),
+        (vec![word(7710, 24103, 8574, 25157, "1..")], "1..\nSetup"),
+        (vec![word(5000, 24103, 7000, 25157, "Table"), word(7710, 24103, 8574, 25157, "1")], "Table 1\nSetup"),
+    ] {
+        assert_eq!(heading(number), want);
+    }
+    // Two columns given a column at a time, and a line of each in turn on one band (as the tool gave a generated page).
+    let columns = page(vec![
+        vec![word(7710, 12553, 9263, 13148, "Let")],
+        vec![word(7710, 13500, 12000, 14096, "be")],
+        vec![word(33260, 12693, 49023, 13289, "Vivamus")],
+        vec![word(33260, 13641, 40000, 14237, "viverra")],
+    ]);
+    assert_eq!(columns.text(0, 3).as_deref(), Some("Let\nbe\nVivamus\nviverra"));
+    let turns = page(vec![
+        vec![word(7710, 23434, 11276, 24030, "egestas.")],
+        vec![word(33260, 23574, 44022, 24170, "tate")],
+        vec![word(12208, 23434, 19072, 24030, "Mauris")],
+    ]);
+    assert_eq!(turns.text(0, 2).as_deref(), Some("egestas.\ntate\nMauris"));
+}
+
+/// A line of text set at 90 or 270 degrees is one line of the tool whose words are stacked down the page: their boxes share
+/// one horizontal range, so the gap between them is measured down the page, and so is a word's length per character, and
+/// the spaces stay. Read upward (the first word lowest) and read downward (the first word highest); two words that meet
+/// down the page still touch. The boxes are the shape the plugin wrote for a sideways table's caption.
+#[test]
+fn a_line_of_words_stacked_down_the_page_keeps_its_spaces() {
+    let upward = vec![word(33465, 40000, 35006, 41000, "Mean"), word(33465, 39200, 35006, 39700, "of"), word(33465, 38200, 35006, 38900, "signal")];
+    let downward = vec![word(33465, 38000, 35006, 39000, "Mean"), word(33465, 39300, 35006, 39800, "of"), word(33465, 40100, 35006, 40800, "signal")];
+    let meeting = vec![word(33465, 40000, 35006, 41000, "ab"), word(33465, 39500, 35006, 40000, "c")];
+    for (line, want) in [(upward, "Mean of signal"), (downward, "Mean of signal"), (meeting, "abc")] {
+        let last = line.len() - 1;
+        assert_eq!(page(vec![line]).text(0, last).as_deref(), Some(want));
+    }
+}
+
+/// A line that is only a number goes on with a line beside it only when that line starts within four of the number's
+/// heights: a heading's title is under two (the sample's is 1.6), and another column's line, or a sub- or superscript the
+/// tool gave a line of its own beside another, is further.
+#[test]
+fn a_lone_number_goes_on_only_with_a_line_within_four_heights() {
+    // The number is 1054 high; its title starts 1728 (1.6 heights), 2108 (2), 4216 (4), 5270 (5) and 19000 from its right.
+    for (title_left, want) in [(10302, "1 Setup"), (10682, "1 Setup"), (12790, "1 Setup"), (13844, "1\nSetup"), (27574, "1\nSetup")] {
+        let doc = page(vec![vec![word(7710, 24103, 8574, 25157, "1")], vec![word(title_left, 24103, title_left + 4342, 25157, "Setup")]]);
+        assert_eq!(doc.text(0, 1).as_deref(), Some(want), "a title starting at {title_left}");
+    }
+    // A heading's number, and the other column's line the tool gave between it and its title.
+    let columns = page(vec![
+        vec![word(7710, 32566, 8555, 34263, "2")],
+        vec![word(34327, 32507, 36896, 33102, "Fusce"), word(37388, 32507, 40834, 33102, "mauris.")],
+        vec![word(10245, 32566, 16706, 34263, "Methods")],
+    ]);
+    assert_eq!(columns.text(0, 3).as_deref(), Some("2\nFusce mauris.\nMethods"));
+}
+
+/// The number and its title of a heading are joined by one space, even where the title's box starts at the number's right.
+#[test]
+fn a_heading_join_is_one_space_whatever_the_boxes_say() {
+    let doc = page(vec![vec![word(1000, 100, 2000, 900, "1")], vec![word(2000, 100, 5000, 900, "Setup")]]);
+    assert_eq!(doc.text(0, 1).as_deref(), Some("1 Setup"));
+}
+
+/// The bound of `touch` is a tenth of a word's width per character, not of its whole width: two words of four characters
+/// 300 apart, each 4000 wide, are a space apart (a tenth of 1000), though 300 is under a tenth of 4000.
+#[test]
+fn the_touch_bound_is_per_character() {
+    let line = vec![word(1000, 100, 5000, 900, "abcd"), word(5300, 100, 9300, 900, "efgh")];
+    assert_eq!(page(vec![line]).text(0, 1).as_deref(), Some("abcd efgh"));
+}
+
+/// The bound is the smaller of the two words' tenths: a word of two characters 100 wide (a tenth of 50 each) and one of
+/// four 8000 wide (a tenth of 2000 each), 100 apart, are a space apart in either order, though 100 is under the second's.
+#[test]
+fn the_touch_bound_is_the_smaller_of_the_two_words() {
+    let small_first = vec![word(1000, 100, 1100, 900, "ab"), word(1200, 100, 9200, 900, "cdef")];
+    let small_last = vec![word(1000, 100, 9000, 900, "cdef"), word(9100, 100, 9200, 900, "ab")];
+    assert_eq!(page(vec![small_first]).text(0, 1).as_deref(), Some("ab cdef"));
+    assert_eq!(page(vec![small_last]).text(0, 1).as_deref(), Some("cdef ab"));
+}
+
+/// A word's length per character is taken along the line, so down the page for a line set at 90 or 270 degrees: TeX's half
+/// point after a subscript is a space there as on a horizontal line (a word's thickness per character, across the page,
+/// would be wider than a tenth of that gap). The boxes are the plugin's, from a generated page's line set at 90 degrees.
+#[test]
+fn a_rotated_words_length_per_character_is_measured_along_the_line() {
+    let line = vec![word(48109, 16119, 49056, 16610, "ϕ"), word(48491, 15790, 49154, 16119, "1"), word(47723, 15520, 49264, 15749, ",")];
+    assert_eq!(page(vec![line]).text(0, 2).as_deref(), Some("ϕ1 ,"));
+}
