@@ -495,7 +495,8 @@ written plan; the paging between workspaces with Left and Right is gone; proved 
 window, CHAT-PICKER-TREE-NOT-SEEN); and, on `main` since 2026-11-25 and used by no person, a session reads its project's
 channel, or one thread of it, back with `sot-fe chat read` (the newest 50 messages as one line each: time, who, files and
 first words, with a deleted parent whose thread has replies listed as one line), the exit-3 words of a post name the read that
-shows whether it went out, and the daemon's log carries one line for each post or file post that ends unknown, with the Slack
+shows whether it went out, a file post whose share answer names no message time asks Slack once more for the file and, when that
+names none either, says on a second line how to find the time with the read, and the daemon's log carries one line for each post or file post that ends unknown, with the Slack
 step and a fixed code for why (a session had seen a post end unknown with nothing to say why or whether it existed, and
 another could not name its file posts to the delete; CHAT-POST-UNKNOWN-NOT-READ-BACK and
 CHAT-DELETE-CANNOT-REACH-A-FILE-POST, Closed; proved against the fake Slack only, CHAT-READ-UNMEASURED); and, the same day and used by no person, three chat words a session found

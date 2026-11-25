@@ -181,7 +181,7 @@
 #              MAY exist: never post again; its words give the `sot-fe chat read` that shows whether it went out). Test the exit code, not the words. A reply is
 #              public to every member of the channel.
 #              With --file <path> it shares a file of the row's folder instead, the text as its comment: ONE
-#              `chat.post_file`, waiting 120 s (agents/CLAUDE.md says its rules).
+#              `chat.post_file`, waiting 145 s (agents/CLAUDE.md says its rules).
 #              `chat delete <ts>` deletes the message with that ts, which this project's Slack app posted in the row's
 #              channel (this session's own posts, and those of earlier sessions of the project; nothing in another project's
 #              channel), and no file it shared: ONE `chat.delete`, never sent twice, waiting 45 s. Only when the session's

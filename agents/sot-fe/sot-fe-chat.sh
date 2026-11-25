@@ -110,7 +110,7 @@ _chat_posted() {
     fi
     case "$(printf '%s' "$resp" | jq -r '.payload.outcome // empty')" in
         posted)
-            printf '%s' "$resp" | jq -r '{no_member: "no member", several_members: "several members",
+            printf '%s' "$resp" | jq -r --arg thread "$thread" '{no_member: "no member", several_members: "several members",
                 members_unread: "the member list could not be read", too_many_members: "the member list is too large",
                 channel_wide: "a session never notifies a whole channel", too_long: "the post would be too long"} as $why
                 | def names: (map(select(. != "")) | length) as $n | (if $n < length then " and more" else "" end) as $more
@@ -119,7 +119,9 @@ _chat_posted() {
                 + ((.payload.mentioned // []) | if length > 0 then "; mentioned " + names else "" end)
                 + ([.payload.unlinked[]? | if .why == "more" then "and more"
                     else "\(.name) (\($why[.why] // "not linked")\(if (.candidates // []) | length > 0 then ", " + (.candidates | names) else "" end))" end]
-                   | if length > 0 then "; not linked: " + join(", ") else "" end)'
+                   | if length > 0 then "; not linked: " + join(", ") else "" end)
+                # A file share that named no message time says how to find it, on a line of its own.
+                + (if .payload.ts then "" else "\nits message'"'"'s time is not known yet: run sot-fe chat read\(if $thread != "" then " --thread \($thread)" else "" end), whose line for this post shows files=\(.payload.file)" end)'
             ;;
         refused)
             _chat_refused "$(printf '%s' "$resp" | jq -r '.payload.code // "?"')"
@@ -185,8 +187,9 @@ send_chat_post_file() {
                          + (if $thread == "" then {} else {thread:$thread} end)
                          + (if $comment == "" then {} else {comment:$comment} end))}')"
     # Past the daemon's own bounds with a margin: the member list's 10 s (a name in the comment), the upload URL's read
-    # 15 s, the upload's 60 s and the share's 30 s (sot-chat's NAMES_, READ_, TRANSFER_ and POST_DEADLINE), 115 s.
-    export SEND_TIMEOUT="${TIMEOUT:-130}"
+    # 15 s, the upload's 60 s, the share's 30 s and the read of the share's time 15 s (sot-chat's NAMES_, READ_,
+    # TRANSFER_ and POST_DEADLINE), 130 s.
+    export SEND_TIMEOUT="${TIMEOUT:-145}"
     _chat_posted "$(_chat_ask chat.post_file "$req")" "$thread"
 }
 

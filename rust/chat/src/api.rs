@@ -1102,7 +1102,7 @@ impl Api {
     #[allow(clippy::too_many_arguments)]
     pub async fn post_file_linked(
         &self,
-        _transfer: Transfer,
+        transfer: Transfer,
         channel: &str,
         thread: Option<&str>,
         kind: PostKind,
@@ -1173,17 +1173,31 @@ impl Api {
             if let Some(comment) = comment {
                 body["initial_comment"] = comment.into();
             }
-            if let Some(parent) = thread {
+            if let Some(parent) = &thread {
                 body["thread_ts"] = parent.as_str().into();
             }
             let share = Request::post(share_url, self.deadlines.post, JSON, body.to_string().into_bytes()).bearer(token);
-            let outcome = share_outcome(self.http.send(share).await, channel);
+            let outcome = share_outcome(self.http.send(share).await, channel, thread.as_ref());
             if let FileOutcome::Refused(code) = &outcome {
                 self.refused(kind, code);
             }
             outcome
         }
         .await;
+        // A share Slack acknowledged with no time of its own: the transfer is over, so its permit is freed, and one
+        // `files.info` read of the file may name the share's time (guarantee 32). A read that fails or names none leaves
+        // `ts: None`; it never turns a posted share into anything else.
+        let outcome = match outcome {
+            FileOutcome::Posted { file, ts: None } => {
+                drop(transfer);
+                let ts = match self.read("files.info", &[("file", file.clone())], MAX_BODY).await {
+                    Ok(v) => v.get("file").filter(|f| answered_id(f, "id") == Some(file.as_str())).and_then(|f| share_time(f, channel, thread.as_ref())),
+                    Err(_) => None,
+                };
+                FileOutcome::Posted { file, ts }
+            }
+            other => other,
+        };
         Ok((outcome, told))
     }
 
@@ -1878,19 +1892,33 @@ fn post_outcome(result: Result<Response, HttpError>) -> PostOutcome {
     }
 }
 
+/// The time of a file's share in `channel`, public or private, from a file object (a share's answer's or `files.info`'s). At
+/// the top level the channel's first entry; in a thread `thread`, the first entry that is not the thread's own message (a
+/// parent's time is never the post's, and a delete of it would remove the parent) and names no other thread.
+fn share_time(file: &Value, channel: &str, thread: Option<&Ts>) -> Option<Ts> {
+    let shares = file.get("shares")?;
+    let entries = ["public", "private"].iter().find_map(|kind| shares.get(*kind)?.get(channel)?.as_array());
+    let mut times = entries?.iter().filter_map(|e| {
+        let ts = Ts::parse(e.get("ts")?.as_str()?).ok()?;
+        let is_threads = |t: &Ts| match e.get("thread_ts").and_then(Value::as_str) {
+            Some(other) => other == t.as_str() && ts_key(&ts) != ts_key(t),
+            None => ts_key(&ts) != ts_key(t),
+        };
+        thread.is_none_or(is_threads).then_some(ts)
+    });
+    times.next()
+}
+
 /// A share's answer: the acknowledgement, read for `files[0].id` (an `ok` with none is `Unknown`) and the share's `ts`
 /// in `channel`, public or private, which Slack's answer can lack.
-fn share_outcome(result: Result<Response, HttpError>, channel: &str) -> FileOutcome {
+fn share_outcome(result: Result<Response, HttpError>, channel: &str, thread: Option<&Ts>) -> FileOutcome {
     match acknowledgement(result) {
         Ack::Done(v) => {
             let shared = v.pointer("/files/0");
             let Some(file) = shared.and_then(|f| answered_id(f, "id")) else {
                 return FileOutcome::Unknown("no_file_id".into());
             };
-            let ts = ["public", "private"]
-                .iter()
-                .find_map(|kind| shared?.get("shares")?.get(*kind)?.get(channel)?.get(0)?.get("ts")?.as_str())
-                .and_then(|t| Ts::parse(t).ok());
+            let ts = shared.and_then(|f| share_time(f, channel, thread));
             FileOutcome::Posted { file: file.into(), ts }
         }
         Ack::Refused(code) => FileOutcome::Refused(code),

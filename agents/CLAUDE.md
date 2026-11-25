@@ -487,7 +487,7 @@ of each.
   of that rule (one spelling of both, so Git Bash's `/c/...` meets a `C:\...` root; a link above the folder resolved,
   one inside it never), and refused (exit 2, before an endpoint) when it is outside the folder, the folder itself, or has
   a `..` part; the rest is the node id `files:<rel>`. It sends one `chat.post_file` of kind `row` with that id, the
-  thread and the comment, waits 130 s (past the member list's 10 s, the upload URL's 15 s, the upload's 60 s and the share's 30 s, with a margin; pinned by the same case), and prints `posted <ts>` or `posted file <id>` (Slack named no message) with the
+  thread and the comment, waits 145 s (past the member list's 10 s, the upload URL's 15 s, the upload's 60 s, the share's 30 s and the read of the share's time, 15 s, with a margin; pinned by the same case), and prints `posted <ts>` or, when neither Slack's share answer nor the daemon's one `files.info` read named the message's time, `posted file <id>` (the mention report follows on that line) and a second line, `its message's time is not known yet: run sot-fe chat read[ --thread <ts>], whose line for this post shows files=<id>` (`case_a_file_post_with_no_time_says_how_to_find_it`), with the
   same exit codes. The daemon reads the file itself and refuses anything not a readable regular file of the folder, and
   the chat's configuration files (chat contract, D13). Unmeasured until a person's first use: that `--thread` shares
   into the thread and that the share reads back as the row's (the figures plan's LP2 and LP4). The suite runs on Linux

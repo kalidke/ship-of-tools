@@ -305,9 +305,10 @@ the folder is followed, so a `data/results` link to another disk can be posted; 
 refused. Any regular file of at most 16 MiB (a fixed limit of Ship of Tools; a larger one is refused, exit 2) can be
 posted; Slack shows it under
 `<handle> (row via Ship of Tools)`, then the comment. With `--thread` it is posted into that thread; if it shows in the
-channel instead, Slack did not take the thread. The command prints `posted <ts>`, or `posted file <id>` when Slack names
-no message, with the same exit codes as a reply. When it prints only the file's id, the agent finds the message's timestamp by
-reading the channel back, which names each file's id beside its message.
+channel instead, Slack did not take the thread. The command prints `posted <ts>`; when Slack's answer to the share names no message, it asks Slack once more for the file and
+prints `posted <ts>` if that answer names it. Otherwise it prints `posted file <id>` and a second line saying the message's
+time is not known yet, and the agent finds the timestamp by reading the channel back, which names each file's id beside
+its message ([Reading the channel back](#Reading-the-channel-back)). The exit codes are a reply's.
 
 ### Reading the channel back
 

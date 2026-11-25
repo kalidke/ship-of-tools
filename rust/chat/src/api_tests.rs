@@ -2296,6 +2296,102 @@ async fn a_file_is_uploaded_unauthorized_and_shared_once_with_its_label() {
     .await;
 }
 
+/// What a scripted Slack answers about one file's share: the share's own answer (`shares` of the share step, `None` for
+/// none) and `files.info` (`shares` of the read, or how the read fails).
+#[derive(Clone)]
+struct Play {
+    share: Option<Value>,
+    info: Info,
+}
+
+#[derive(Clone)]
+enum Info {
+    Shares(Value),
+    /// An answer about another file, whose share names a time.
+    OtherFile(Value),
+    Refused,
+    Limited,
+    Hang,
+}
+
+/// A file post whose share answers as `play` says, into `thread`: the outcome, and how many `files.info` reads were made.
+async fn shared_as(play: Play, thread: Option<&str>) -> (FileOutcome, usize) {
+    let (_, outcome, reads) = shared_with(play, thread, false).await;
+    (outcome, reads)
+}
+
+async fn shared_with(play: Play, thread: Option<&str>, probe_permits: bool) -> (bool, FileOutcome, usize) {
+    let upload = Upload::new().no_ts();
+    let fake = FakeSlack::start(Identity::Trusted, move |seen, port| {
+        if seen.path() == SHARE {
+            if let Some(shares) = &play.share {
+                return Reply::json(&json!({"ok": true, "files": [{"id": "F0FILE", "shares": shares}]}));
+            }
+        }
+        if seen.path() == "/api/files.info" {
+            return match &play.info {
+                Info::Shares(shares) => Reply::json(&json!({"ok": true, "file": {"id": "F0FILE", "shares": shares}})),
+                Info::OtherFile(shares) => Reply::json(&json!({"ok": true, "file": {"id": "F0OTHER", "shares": shares}})),
+                Info::Refused => Reply::json(&json!({"ok": false, "error": "file_not_found"})),
+                Info::Limited => status(429, &[], &json!({})),
+                Info::Hang => Reply::Hang,
+            };
+        }
+        upload.reply(seen, port).unwrap_or(Reply::Drop)
+    })
+    .await;
+    let api = new_api(&fake).with_deadlines(Duration::from_secs(2), Duration::from_secs(10), Duration::from_secs(10));
+    let post = async { api.post_file(api.transfer().unwrap(), "C0CHAN", thread, PostKind::Row, "build-7", "fit.png", PNG.to_vec(), None).await };
+    // While the read is held the post owns no transfer permit: both permits are free to take.
+    let probe = async {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let (first, second) = (api.transfer(), api.transfer());
+        !probe_permits || (first.is_ok() && second.is_ok())
+    };
+    let (outcome, free) = tokio::join!(post, probe);
+    let reads = calls(&fake, "files.info");
+    fake.shutdown().await;
+    (free, outcome.unwrap(), reads)
+}
+
+/// A share Slack acknowledged with no time asks `files.info` once, and its answer names the time; a thread's own time, or
+/// a share naming another thread, is never the post's time, from the share's answer and from `files.info` alike.
+#[tokio::test]
+async fn a_share_with_no_time_asks_files_info_once_and_never_takes_a_threads_own_time() {
+    bounded(async {
+        let at = |ts: &str| json!({"public": {"C0CHAN": [{"ts": ts}]}});
+        let named = "1700000900.000300";
+        let none = Play { share: None, info: Info::Shares(json!({})) };
+        let posted = |time: Option<&str>| FileOutcome::Posted { file: "F0FILE".into(), ts: time.map(ts) };
+
+        // `files.info` names the share's time: that is the post's time, from one read.
+        assert_eq!(shared_as(Play { info: Info::Shares(at(named)), ..none.clone() }, None).await, (posted(Some(named)), 1));
+        // An answer about another file is no answer about this one, whatever time it names.
+        assert_eq!(shared_as(Play { info: Info::OtherFile(at(named)), ..none.clone() }, None).await, (posted(None), 1));
+        // It names none, or fails, or is limited: the share is still posted, with no time, after one read.
+        assert_eq!(shared_as(none.clone(), None).await, (posted(None), 1));
+        for info in [Info::Refused, Info::Limited] {
+            assert_eq!(shared_as(Play { info, ..none.clone() }, None).await, (posted(None), 1));
+        }
+        // A share whose own answer names the time asks nothing more.
+        assert_eq!(shared_as(Play { share: Some(at(named)), info: Info::Refused }, None).await, (posted(Some(named)), 0));
+        // In a thread: an entry with the parent's own time, or naming another thread, is no time, from either answer.
+        let parent = "1700000800.000100";
+        let entry = |ts: &str, thread: &str| json!({"public": {"C0CHAN": [{"ts": ts, "thread_ts": thread}]}});
+        for shares in [at(parent), entry(parent, parent), entry(named, "1700000700.000100")] {
+            assert_eq!(shared_as(Play { share: Some(shares.clone()), info: Info::Refused }, Some(parent)).await, (posted(None), 1), "{shares}");
+            assert_eq!(shared_as(Play { share: None, info: Info::Shares(shares.clone()) }, Some(parent)).await, (posted(None), 1), "{shares}");
+        }
+        // A reply of the thread is its time.
+        assert_eq!(shared_as(Play { share: Some(entry(named, parent)), info: Info::Refused }, Some(parent)).await, (posted(Some(named)), 0));
+        assert_eq!(shared_as(Play { share: None, info: Info::Shares(entry(named, parent)) }, Some(parent)).await, (posted(Some(named)), 1));
+        // The read holds no transfer permit: while it hangs both permits are free, and the post ends at its deadline.
+        let (free, outcome, reads) = shared_with(Play { info: Info::Hang, ..none }, None, true).await;
+        assert_eq!((free, outcome, reads), (true, posted(None), 1));
+    })
+    .await;
+}
+
 /// Each step's failure by the file's name: `drop1` and `hang1` at step 1, `drop2` and `hang2` at the upload, and at
 /// the share `drop3`, `hang3`, `five` (a 503) and `noid` (an `ok` without the file).
 #[tokio::test]

@@ -376,14 +376,15 @@ case_each_file_outcome_has_its_words_and_exit_code() {
     while IFS='|' read -r payload want_rc want_text; do
         file_answered "$payload"
         stop_stub_daemon
+        want_text="$(printf '%b' "$want_text")"
         { [ "$CH_RC" = "$want_rc" ] && [ "$CH_OUT" = "$want_text" ]; } \
             || bad="$bad [$payload: rc=$CH_RC out=$CH_OUT]"
     done <<'EOF'
 {"outcome":"posted","file":"F0FILE","ts":"1700000800.000100"}|0|posted 1700000800.000100
-{"outcome":"posted","file":"F0FILE"}|0|posted file F0FILE
-{"outcome":"posted","file":"F0FILE","unlinked":[{"name":"\"@Ada\"","why":"members_unread"}]}|0|posted file F0FILE; not linked: "@Ada" (the member list could not be read)
-{"outcome":"posted","file":"F0FILE","unlinked":[{"name":"\"@Ada\"","why":"no_member"},{"name":"","why":"more"}]}|0|posted file F0FILE; not linked: "@Ada" (no member), and more
-{"outcome":"posted","file":"F0FILE","mentioned":["\"Ada Example\"",""],"unlinked":[{"name":"\"@Ben\"","why":"several_members","candidates":["\"Ben\" (\"Ben Smith\")","\"Ben Sample\"",""]}]}|0|posted file F0FILE; mentioned 1 and more: "Ada Example", and more; not linked: "@Ben" (several members, 2 and more: "Ben" ("Ben Smith"), "Ben Sample", and more)
+{"outcome":"posted","file":"F0FILE"}|0|posted file F0FILE\nits message's time is not known yet: run sot-fe chat read --thread 1700000050.000000, whose line for this post shows files=F0FILE
+{"outcome":"posted","file":"F0FILE","unlinked":[{"name":"\"@Ada\"","why":"members_unread"}]}|0|posted file F0FILE; not linked: "@Ada" (the member list could not be read)\nits message's time is not known yet: run sot-fe chat read --thread 1700000050.000000, whose line for this post shows files=F0FILE
+{"outcome":"posted","file":"F0FILE","unlinked":[{"name":"\"@Ada\"","why":"no_member"},{"name":"","why":"more"}]}|0|posted file F0FILE; not linked: "@Ada" (no member), and more\nits message's time is not known yet: run sot-fe chat read --thread 1700000050.000000, whose line for this post shows files=F0FILE
+{"outcome":"posted","file":"F0FILE","mentioned":["\"Ada Example\"",""],"unlinked":[{"name":"\"@Ben\"","why":"several_members","candidates":["\"Ben\" (\"Ben Smith\")","\"Ben Sample\"",""]}]}|0|posted file F0FILE; mentioned 1 and more: "Ada Example", and more; not linked: "@Ben" (several members, 2 and more: "Ben" ("Ben Smith"), "Ben Sample", and more)\nits message's time is not known yet: run sot-fe chat read --thread 1700000050.000000, whose line for this post shows files=F0FILE
 {"outcome":"refused","code":"busy"}|2|refused busy the chat is busy; try again in a moment
 {"outcome":"refused","code":"failed"}|2|refused failed the chat request failed
 {"error":"the file is not a readable file in the project's folder","code":"not_a_file"}|2|refused not_a_file the file is not a readable file in the project's folder
@@ -393,6 +394,26 @@ case_each_file_outcome_has_its_words_and_exit_code() {
 {"outcome":"somethingelse"}|3|unknown: the post may exist; do not send it again; to see whether it went out, run sot-fe chat read --thread 1700000050.000000
 {"error":"the chat request failed","code":"handler_error"}|3|unknown: the post may exist; do not send it again; to see whether it went out, run sot-fe chat read --thread 1700000050.000000
 EOF
+    [ -z "$bad" ] || { echo "$bad"; return 1; }
+}
+
+# A file share whose reply names no message time prints its id, and a second line that says how to find the time.
+case_a_file_post_with_no_time_says_how_to_find_it() {
+    local bad="" thread want
+    for thread in 1700000050.000000 ""; do
+        stage_reply chat.resolve "$MAPPED"
+        stage_reply chat.post_file '{"v":1,"id":3,"kind":"res","op":"chat.post_file","payload":{"outcome":"posted","file":"F0FILE"}}'
+        start_stub_daemon
+        run_chat "" SOT_WORKSPACE_ID=$ROW SOT_WORKSPACE_ROOT="$PROJ" STUB_NAME=alpha-h -- ${thread:+--thread $thread} --file "$PROJ/figs/fit.png" "the fit"
+        stop_stub_daemon
+        want="$(printf '%s\n%s' "posted file F0FILE" "its message's time is not known yet: run sot-fe chat read${thread:+ --thread $thread}, whose line for this post shows files=F0FILE")"
+        { [ "$CH_RC" = 0 ] && [ "$CH_OUT" = "$want" ]; } || bad="$bad [thread '$thread': rc=$CH_RC out=$CH_OUT]"
+    done
+    # A reply that names the time is the one line, and a text post is never given the second line.
+    stage_reply chat.resolve "$MAPPED"; stage_reply chat.post_file "$SHARED"; start_stub_daemon
+    run_chat "" SOT_WORKSPACE_ID=$ROW SOT_WORKSPACE_ROOT="$PROJ" STUB_NAME=alpha-h -- --file "$PROJ/figs/fit.png" "the fit"
+    stop_stub_daemon
+    { [ "$CH_RC" = 0 ] && [ "$CH_OUT" = "posted 1700000800.000100" ]; } || bad="$bad [named: rc=$CH_RC out=$CH_OUT]"
     [ -z "$bad" ] || { echo "$bad"; return 1; }
 }
 
@@ -422,7 +443,7 @@ case_a_file_usage_error_sends_nothing_and_exits_1() {
 # rust/protocol/src/ops/told_words_cases.tsv (a reply's payload, a tab, the line), which the protocol test
 # `sot_fe_and_the_wire_print_the_same_report` asserts on the wire's side, is printed here exactly.
 case_sot_fe_prints_the_wire_report_for_every_case() {
-    local cases="$SCRIPT_DIR/../../rust/protocol/src/ops/told_words_cases.tsv" bad="" n=0 payload line tab
+    local cases="$SCRIPT_DIR/../../rust/protocol/src/ops/told_words_cases.tsv" bad="" n=0 payload line tab got
     tab="$(printf '\t')"
     [ -f "$cases" ] || { echo "no $cases"; return 1; }
     while IFS= read -r row; do
@@ -431,7 +452,13 @@ case_sot_fe_prints_the_wire_report_for_every_case() {
         if printf '%s' "$payload" | jq -e 'has("file")' >/dev/null; then file_answered "$payload"; else answered "$payload"; fi
         stop_stub_daemon
         n=$((n + 1))
-        { [ "$CH_RC" = 0 ] && [ "$CH_OUT" = "$line" ]; } || bad="$bad [want: $line | got rc=$CH_RC: $CH_OUT]"
+        # A file share that names no time prints the report, then a second line of its own (a case of its own pins it).
+        got="$CH_OUT"
+        if printf '%s' "$payload" | jq -e 'has("file") and (has("ts") | not)' >/dev/null; then
+            contains "$CH_OUT" $'\nits message\'s time is not known yet: ' || bad="$bad [no second line: $CH_OUT]"
+            got="${CH_OUT%%$'\n'*}"
+        fi
+        { [ "$CH_RC" = 0 ] && [ "$got" = "$line" ]; } || bad="$bad [want: $line | got rc=$CH_RC: $CH_OUT]"
     done < "$cases"
     [ "$n" -ge 10 ] && [ -z "$bad" ] || { echo "cases=$n$bad"; return 1; }
 }
@@ -459,7 +486,7 @@ case_each_wait_is_past_the_daemons_own_bounds() {
     text="$(sed -n '/^send_chat_post()/,/^}/s/.*TIMEOUT:-\([0-9]*\)}.*/\1/p' "$chat")"
     file="$(sed -n '/^send_chat_post_file()/,/^}/s/.*TIMEOUT:-\([0-9]*\)}.*/\1/p' "$chat")"
     [ -n "$read" ] && [ -n "$post" ] && [ -n "$transfer" ] && [ -n "$names" ] && [ -n "$text" ] && [ -n "$file" ] \
-        && [ "$text" -ge $((names + post + 5)) ] && [ "$file" -ge $((names + read + transfer + post + 5)) ] \
+        && [ "$text" -ge $((names + post + 5)) ] && [ "$file" -ge $((names + 2 * read + transfer + post + 5)) ] \
         || { echo "read=$read post=$post transfer=$transfer names=$names text=$text file=$file"; return 1; }
 }
 
@@ -1122,6 +1149,7 @@ check "a usage error sends nothing and exits 1"                                 
 check "a file outside the row's folder, or with no row, root or handle, sends nothing"     case_a_file_post_is_refused_before_an_endpoint_outside_a_row_its_folder_or_a_handle
 check "a file post is one chat.resolve, then one chat.post_file with node, thread, comment, or neither" case_a_file_post_is_one_resolve_then_one_post_file_with_its_node_thread_and_comment
 check "each file outcome prints its words and exits with its code"                         case_each_file_outcome_has_its_words_and_exit_code
+check "a file post with no message time says how to find it, with and without a thread" case_a_file_post_with_no_time_says_how_to_find_it
 check "no answer to the file post is one request, never two, and exit 3"                    case_no_answer_to_the_file_post_is_one_request_and_exit_3
 check "a file usage error sends nothing and exits 1"                                       case_a_file_usage_error_sends_nothing_and_exits_1
 check "sot-fe prints wire's report for every case of told_words_cases.tsv"                case_sot_fe_prints_the_wire_report_for_every_case

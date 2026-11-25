@@ -34,12 +34,12 @@ longer text is refused once, nothing posted: split it.
   `--thread T` the root is still `T`). Not the `ts=` of a message that is itself a reply.
 - Share a file of this project's folder (any regular file, at most 16 MiB; only the file the person named): add
   `--file <path>`; the text, if any, becomes its comment (`--file <path> --stdin < <comment file>`). Run it with a tool
-  timeout of at least 150 s: it waits up to 130 s. If your shell cuts it off, treat it as exit 3.
+  timeout of at least 160 s: it waits up to 145 s. If your shell cuts it off, treat it as exit 3.
 
 It prints `posted <ts>` (`posted file <id>` when Slack names no message for a file), followed by whom it mentioned and
 any names left as text (see Mentions), and exits 0. Tell the person it is posted. When it printed a `<ts>`, that is the
-message's time. When it printed `posted file <id>`, the time is not known yet: the read below finds the message by that
-id.
+message's time. When it printed `posted file <id>`, a second line says the message's time is not known yet: run the read
+it names, and the line whose `files=` holds that id is the message, with its time first.
 
 ## Exit codes
 
