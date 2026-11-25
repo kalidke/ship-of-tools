@@ -380,6 +380,9 @@ impl TrustEffects for Fake {
     fn recent_start(&self, _: &crate::rows::Workspace) -> bool {
         false
     }
+}
+
+impl crate::rows::run::respawn::Respawn for Fake {
     fn stop(&self, _: &Path) -> Result<(), String> {
         Ok(())
     }

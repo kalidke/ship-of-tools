@@ -329,6 +329,7 @@ async fn serve(frame: Frame, shared: &Shared) -> Result<HandlerOutput> {
             crate::rows::ops::destroy::handle_workspace_destroy(req_id, payload, session, workspaces, ws_events_tx)
                 .await
         }
+        op::WORKSPACE_RESTART => crate::rows::ops::restart::handle_workspace_restart(req_id, payload, workspaces, &shared.client_id).await,
         op::PTY_INPUT => {
             // ADR 0042 amendment (2026-09-07): answered.
             // `origin`, when present, is the handler's own

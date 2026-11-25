@@ -20,6 +20,7 @@ pub(crate) mod headless;
 pub(crate) mod activation;
 pub(crate) mod admission;
 pub(crate) mod end_run;
+pub(crate) mod respawn;
 pub(crate) mod resume;
 pub(crate) mod start;
 pub(crate) mod trust_restart;

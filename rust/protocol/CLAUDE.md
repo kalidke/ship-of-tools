@@ -42,7 +42,7 @@ name is in this crate's one op table.
    empty is a daemon before the field, which the window reads as the signal to sort by `agent_status_at`; the list entry's
    previous shape is pinned in `ops/workspace_tests.rs` (`a_list_entry_grows_by_its_last_activity_and_stays_additive`).
    The families with none are agent, browse, lane, monitor, pty, repl, update's check and apply payloads (the two
-   `update` fields have guarantee 16's), the rest of workspace and the preview payloads (`ir.rs`), and the other page
+   `update` fields have guarantee 16's), the rest of workspace (`workspace.restart`'s `WorkspaceRestartReq {session, by?}` (`by` the asker's own row id, absent when empty, an older sender's none) and `WorkspaceRestartRes {outcome, workspace_id, slug, detail}`, and `WorkspaceListEntry.not_woken_by_mail`, absent when false, so an older reader reads false; a daemon that predates the op answers its unknown-op error with no `code`; `ops/workspace_tests.rs` pins the field) and the preview payloads (`ir.rs`), and the other page
    payloads have no previous-shape fixtures.
 4. **A child's output is read by lines, lossily, so no byte ends a reader.** A line is the bytes up to `\n`, less a
    `\r` before it, decoded lossily, through `ChildLines` or `blocking_child_lines` only; `rust/clippy.toml`'s

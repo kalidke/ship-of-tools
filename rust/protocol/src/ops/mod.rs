@@ -191,6 +191,17 @@ pub mod op {
     /// survive, so the replacement leg is the same row, same comm
     /// identity, different login.
     pub const WORKSPACE_REAUTH: &str = "workspace.reauth";
+    /// Stop a session's Codex agent and start it again with the row's own recipe, in a new conversation, for a Ready
+    /// Codex session that mail does not wake (rows' contract, Supervisor). The new leg carries the row's hooks only where
+    /// this computer's install lets Codex start with them, so `restarted` does not say mail wakes it. Request is
+    /// `WorkspaceRestartReq {session, by?}` (`session` a slug or an id; `by` the asker's own row id, which is refused
+    /// whatever name `session` gave it); a refusal before any effect is the ordinary `{error, code}` payload
+    /// (`unknown_workspace`, `own_session`, `not_codex`, `not_ready`, `not_needed`, `busy`, `registry_unreadable`,
+    /// `in_progress`, `closing`, and `bad_request`, `no_state_root`, `launcher_unresolved`, `capsule_unlocated`); every
+    /// other answer is `WorkspaceRestartRes`, its `outcome` `restarted`, `stop_failed` (nothing was started, the agent
+    /// may still be the one it was) or `not_started` (the agent ended and was not started again). A daemon that
+    /// predates the op answers its unknown-op error, with no `code`.
+    pub const WORKSPACE_RESTART: &str = "workspace.restart";
     /// Accounts brief (v0.6.0): enumerate every account this daemon's
     /// own home discovers RIGHT NOW — nothing declared, nothing cached.
     /// Empty request payload; response is `AccountsListRes`.

@@ -31,6 +31,9 @@ impl TrustEffects for Fake {
     fn recent_start(&self, _: &Workspace) -> bool {
         *self.recent.borrow()
     }
+}
+
+impl Respawn for Fake {
     fn stop(&self, _: &Path) -> Result<(), String> {
         self.calls.borrow_mut().push("stop");
         if self.stop_fails {

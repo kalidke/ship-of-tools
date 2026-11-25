@@ -313,16 +313,26 @@ pub(crate) struct Shown {
     pub status_at: String,
 }
 
+/// The registry entry of row `ws`: from `agents` through the row's bound handle, and only an entry of `host`.
+fn entry_of<'a>(ws: &Workspace, rows: &[Arc<Workspace>], agents: Option<&'a Value>, host: &str) -> Option<&'a Value> {
+    let handle = bound_handle(ws, rows);
+    if handle.is_empty() {
+        return None;
+    }
+    agents.and_then(|a| a.get(&handle)).filter(|e| host_matches(e, host))
+}
+
+/// Whether a turn runs in row `ws`: its entry carries the `floor` fact, which a turn's start sets and its end or an
+/// interrupt drops (a dialog during a turn keeps it). False when the row has no entry of `host`, so a session that never
+/// joined reads as at rest.
+pub(crate) fn turn_runs(ws: &Workspace, rows: &[Arc<Workspace>], agents: Option<&Value>, host: &str) -> bool {
+    entry_of(ws, rows, agents, host).and_then(Value::as_object).is_some_and(|entry| is_set(entry, "floor"))
+}
+
 /// The window's read: what row `ws` shows, from `agents` (the registry's `.agents`, read once per caller) through the row's
 /// bound handle, and only from an entry of `host`, so another host's same-named entry never colors this host's row.
 pub(crate) fn shown_of(ws: &Workspace, rows: &[Arc<Workspace>], agents: Option<&Value>, host: &str) -> Shown {
-    let handle = bound_handle(ws, rows);
-    if handle.is_empty() {
-        return Shown::default();
-    }
-    let Some(entry) = agents.and_then(|a| a.get(&handle)).filter(|e| host_matches(e, host)) else {
-        return Shown::default();
-    };
+    let Some(entry) = entry_of(ws, rows, agents, host) else { return Shown::default() };
     let field = |k: &str| entry.get(k).and_then(Value::as_str).unwrap_or("").to_string();
     Shown { state: field("state"), summary: field("summary"), status_at: field("status_at") }
 }

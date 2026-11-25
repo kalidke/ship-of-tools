@@ -104,6 +104,46 @@ Supervisor:
   handle or red by its question, the main box closes the leg, and a dialog the restart leaves is still stamped red);
   `capsule_workspaces::work_state` runs a reauth's restart and a watchdog's, each with a stub that loses
   the record, and the `Started` arms themselves are covered only by those two cases.
+- `workspace.restart` (`ops/restart.rs`) stops a Ready Codex session's agent and starts it again, in a new conversation,
+  so the new leg can carry the row's hooks. It is the remedy for the mark (`not_woken_by_mail`) and for nothing else. The stop
+  and the spawn are the trust restart's, moved into one owner (`run/respawn.rs`, `Respawn`, implemented once by
+  `LiveRespawn`; the trust restart's `TrustEffects` keep only the scope and the recent start). It resolves the session as
+  typed (a slug or an id, never the default row) and refuses, each before any effect and in this order:
+  `unknown_workspace`; `own_session` (the request's `by` is a claim of the asker's own row id, as a `pty.input` origin is,
+  and the row it names, resolved like the session, is refused whatever name the session was given; a client
+  that leaves `by` out is not refused, so this is a convention, not a check of who asks); `not_codex`
+  (any other kind, `none` included); `not_ready` (a shown phase other than `ready`: a row that was never started, ended,
+  queued or unreachable is opened from the window, which starts it); `not_needed` (messaging's `not_woken_by_mail` does not
+  hold for the row's folder, so a restart is not needed and would end its conversation); `busy` (this
+  host's registry entry bound to the row carries the `floor` fact, read by `work_state::turn_runs` beside `shown_of`
+  through the one entry lookup, so a Codex approval during a turn refuses too); `registry_unreadable` (the registry is read
+  fresh through `try_read_comm_agents`, and one that is missing, unreadable or malformed leaves no way to tell a turn, so the
+  restart fails closed); `in_progress` (the row's guard, tried, never waited on); `closing` (the run gate). The row's recipe
+  and `sot-capsule`'s path are then resolved (a failure is `launcher_unresolved` or `capsule_unlocated`, still before any
+  effect), the guard and a start permit are held across both effects, the supervisor is stopped, and a new one is spawned
+  with the row's recipe in `StartMode::Resume`: a stop records no end, so the new leg starts the agent at once, in a new
+  conversation that reads the handoff and polls its mail. The answer is `restarted`, `stop_failed` (no spawn; the agent may
+  still be the one it was) or `not_started` (the agent ended and was not started again; opening the session starts it),
+  each with the failing step's error as `detail`. The op reads no screen and types nothing. It logs at info, and the
+  failures at warn, with the slug and the asking connection's client id.
+  Limits. `restarted` says the agent was started again, not that mail now wakes it: the new leg is hooked only where this
+  computer's install lets its launcher stamp the marker (the plugin cache with one version, the selection script, a Codex
+  that accepts `--no-daemon`), so on a computer where it cannot the session is marked again, and each run ends another
+  conversation. The busy check rests on the `floor` fact reaching the row's own registry entry, which
+  the global work-state hooks write; for an agent started before the update that is unmeasured (a leg that ran without
+  `--no-daemon` may keep its session in Codex's shared background server, where its hooks may run in another environment and
+  write another handle's entry or none, and then `busy` never refuses), and a leg of 0.7.3 whose turn an Escape ended keeps
+  the fact until another turn ends, so an idle session reads `busy` until then. A turn that begins between the check and the
+  stop, a window of one registry read and one socket round trip, is ended with the program; text typed in the session's
+  input and not sent is lost. A hooked leg still starting is marked and so admitted (the list's limit above). A 0.7.3
+  supervisor's stop is read from its contract (row protocol 1 in both), no test runs one; no live row has been restarted.
+  Tests: `ops/restart_tests.rs`'s `a_restart_checks_everything_before_it_stops_and_stops_before_it_spawns` (a recording
+  `Respawn`: each refusal makes no call, a stop that fails spawns nothing, a success is stop then spawn with the recipe's
+  argv) and `a_restart_leaves_a_woken_session_the_askers_own_and_one_with_an_unreadable_registry_alone`,
+  `work_state/tests.rs`'s `a_floor_fact_on_the_rows_own_entry_is_a_running_turn`, and `tests/comm_wake.rs`'s
+  `a_codex_session_started_without_its_hooks_is_restarted_and_then_woken_by_mail` (the stand-in `codex` and the real `ccx`:
+  refused as its own, with an unreadable registry and while a turn runs, restarted once the plugin cache is staged, the
+  marker and the queue after it, then refused as not needed).
 - A supervisor this daemon did not launch (found alive at boot) is watched all the same, and its exit is restarted
   within the same budget with no selection. At a watch's end the observer waits for the supervisor's process to end
   (`Watch::end`, at most 5 s), so a decision is not taken while the exiting supervisor still answers or holds its fence;
@@ -482,7 +522,7 @@ wilt and the window's state order read it, never the new time.
 Owns: the registry (`Workspaces`) and the row (`Workspace`) with its phase cell, guards, run gate and the default row's
 rule; on disk `<config>/workspaces-<host>/<slug>.toml`, `<state>/workspaces/<id>/` with its tombstones, and
 `workspaces/.registries-of`; the ops `workspace.create`, `workspace.destroy`, `workspace.list`, `workspace.activate`,
-`workspace.reauth`, `agent.join`, `pty.open`, `pty.input`, `pty.screen`, `page.reply` and `lane.connect` (which pipes the row's one socket, `row-<h>`, after resuming an absent one), and the `workspace.changed`
+`workspace.reauth`, `workspace.restart`, `agent.join`, `pty.open`, `pty.input`, `pty.screen`, `page.reply` and `lane.connect` (which pipes the row's one socket, `row-<h>`, after resuming an absent one), and the `workspace.changed`
 event; the supervisor's launch (state root, detached spawn per OS, durable parent, the Linux row scope), its start,
 watchdog, observer, end and boot resume (`spawn/`, `run/`); the daemon's headless attach adapter (`run/headless.rs`,
 using the capsule client under its guarantees 6 and 7), which the wake and page replies use too; the liveness stamp's choice of
@@ -539,10 +579,7 @@ Open (docs/defects.md: PTY-INPUT-MARK): a prompt carries no record of how its by
 types any bytes, unmarked, for any process of this OS account, and can type a line that begins `[sot-page] `, so
 neither a prompt without a mark nor one with the page mark tells the person's keys from a program's.
 
-Unbuilt: ROW-RESTART (docs/defects.md item ROW-RESTART, a feature): one restart action for a row in phase `terminal` or `ended_no_respawn`
-(`workspace.restart`, `sot-fe restart <ws> [--resume <id>]`, Shift+R in Sessions), keeping the row's id and handle,
-with a fresh leg and a resume by id on request. No guarantee here needs it: an attach resets an ended row, and a reauth
-restarts a live one in place.
+Unbuilt: the rest of ROW-RESTART (docs/defects.md item ROW-RESTART, a feature): a restart action for a row in phase `terminal` or `ended_no_respawn`, for a Claude row, a resume by id (`--resume <id>`) and Shift+R in Sessions. `workspace.restart` is built for a Ready Codex session only (above). No guarantee here needs the rest: an attach resets an ended row, and a reauth restarts a live one in place.
 
 The project chat reads the registry for the current entry of a canonical row id (`chat::current_row`: `Workspaces::resolve`, then the id compared exactly, since `resolve` also takes a slug) once per admitted action and holds no rows lock past the read; a row removed or replaced under a new id is then refused by the chat as `stale_row`. Rows owns the registry and the inert-anchor fact (`is_inert_default_anchor`); the chat's `admit` and `resolve` run on the blocking pool, so a slow folder lookup never holds a worker of the runtime.
 

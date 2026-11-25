@@ -112,6 +112,27 @@ pub struct WorkspaceReauthRes {
     pub account: String,
 }
 
+/// `workspace.restart` request: the session as the caller typed it, its slug or its id.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WorkspaceRestartReq {
+    pub session: String,
+    /// The id of the row the asker runs in, `""` for none: the daemon refuses to restart that row, whatever name the
+    /// request gave it. The asker's own claim, as a `pty.input` origin is; absent from an older sender.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub by: String,
+}
+
+/// `workspace.restart` answer once its checks passed. `outcome` is `restarted`, `stop_failed` or `not_started`; `detail`
+/// is the failing step's error, empty for `restarted`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceRestartRes {
+    pub outcome: String,
+    pub workspace_id: String,
+    pub slug: String,
+    #[serde(default)]
+    pub detail: String,
+}
+
 /// `workspace.list` has no fields — the daemon always returns its full
 /// in-memory registry. Kept as a struct so future filters (kernel-only,
 /// running-only) can land additively.

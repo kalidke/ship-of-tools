@@ -6,7 +6,7 @@
 //! row's guard, tried and never waited on; the generation, the leg record and the once-per-episode rule are the row's
 //! (`Workspace::take_trust_leg`). The effects are behind [`TrustEffects`], which the tests fake.
 
-use super::start::spawn_and_watch;
+use super::respawn::{LiveRespawn, Respawn};
 use crate::rows::gate::StartPermit;
 use crate::rows::spawn::detach::sot_capsule_exe;
 use crate::rows::spawn::state_root::state_dir_for;
@@ -41,21 +41,28 @@ impl TrustRestart {
     }
 }
 
-/// The effects of a restart, behind one name so the tests record them.
-pub(crate) trait TrustEffects {
+/// The effects of a restart, behind one name so the tests record them: the trust scope and a recent start, besides the
+/// stop and spawn of [`Respawn`].
+pub(crate) trait TrustEffects: Respawn {
     /// Whether `root` lies under the declared trust prefix.
     fn covered(&self, root: &Path) -> bool;
     /// Whether a Claude leg on the row's trust file was prepared less than [`RECENT_START`] ago.
     fn recent_start(&self, row: &Workspace) -> bool;
-    /// Ends the supervisor at `state_dir`, returning after its process ended.
-    fn stop(&self, state_dir: &Path) -> Result<(), String>;
-    /// Spawns the row's supervisor again with `argv`, resuming its run, watched.
-    fn spawn(&self, permit: &StartPermit, exe: &Path, state_dir: &Path, argv: &[String], row: &Workspace, workspaces: &Workspaces)
-        -> std::io::Result<&'static str>;
 }
 
-/// The real effects, each function named once.
+/// The real effects: its own two, and the stop and spawn of [`LiveRespawn`].
 pub(crate) struct LiveTrust;
+
+impl Respawn for LiveTrust {
+    fn stop(&self, state_dir: &Path) -> Result<(), String> {
+        LiveRespawn.stop(state_dir)
+    }
+
+    fn spawn(&self, permit: &StartPermit, exe: &Path, state_dir: &Path, argv: &[String], row: &Workspace, workspaces: &Workspaces)
+        -> std::io::Result<&'static str> {
+        LiveRespawn.spawn(permit, exe, state_dir, argv, row, workspaces)
+    }
+}
 
 impl TrustEffects for LiveTrust {
     fn covered(&self, root: &Path) -> bool {
@@ -71,33 +78,6 @@ impl TrustEffects for LiveTrust {
         let Ok(extra) = crate::agents::accounts::account_env("claude", &row.account(), &home) else { return false };
         crate::agents::env::effective_claude_trust_file(&home, &extra)
             .is_ok_and(|file| crate::agents::folder_trust::claude_prepared_within(&file, RECENT_START))
-    }
-
-    fn stop(&self, state_dir: &Path) -> Result<(), String> {
-        sot_capsule::attach_client::supervisor_client::stop(state_dir).map_err(|e| e.to_string())
-    }
-
-    fn spawn(
-        &self,
-        permit: &StartPermit,
-        exe: &Path,
-        state_dir: &Path,
-        argv: &[String],
-        row: &Workspace,
-        workspaces: &Workspaces,
-    ) -> std::io::Result<&'static str> {
-        spawn_and_watch(
-            permit,
-            exe,
-            state_dir,
-            sot_capsule::supervisor::StartMode::Resume,
-            argv,
-            &row.project_root,
-            &row.agent_name(),
-            row.workspace_id.clone(),
-            row.slug.clone(),
-            workspaces.clone(),
-        )
     }
 }
 

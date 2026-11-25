@@ -45,7 +45,7 @@ pub use ops::{
     VersionQueryRes, VideoOpenReq, VideoOpenRes, WorkspaceActivateReq, WorkspaceActivateRes,
     WorkspaceCreateReq, WorkspaceCreateRes, WorkspaceDestroyReq, WorkspaceDestroyRes,
     WorkspaceListEntry, WorkspaceListReq, WorkspaceListRes, WorkspaceReauthReq,
-    WorkspaceReauthRes,
+    WorkspaceReauthRes, WorkspaceRestartReq, WorkspaceRestartRes,
 };
 
 use serde::{Deserialize, Serialize};

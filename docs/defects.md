@@ -402,6 +402,10 @@ owned by `docs/CLAUDE.md`.
 - **ROW-RESTART** [feature] One restart action for a row in phase `terminal` or `ended_no_respawn`: daemon op
   `workspace.restart` owned by rows, `sot-fe restart <ws> [--resume <id>]`, Shift+r in Sessions; same workspace id and
   handle, a fresh leg, resume by id on request. Recorded as unbuilt in the rows contract.
+  `workspace.restart` is built for a Ready Codex session (its agent stopped and started again with the row's recipe,
+  in a new conversation; refused during a turn, for the asker's own session and for a session mail already wakes); the
+  rest stays unbuilt: a row in `terminal` or `ended_no_respawn`,
+  Claude rows, `--resume <id>` and Shift+r.
 - **PTY-INPUT-MARK** [note] A row's prompt carries no record of how its bytes arrived. `pty.input`, and so
   `sot-fe type`, types any bytes into any row for any process of this OS account, unmarked, Enter and editing keys
   included, and `ccx --queue` passes any line to a Codex row's conversation, so a prompt with no mark is not evidence

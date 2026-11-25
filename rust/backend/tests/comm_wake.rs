@@ -489,6 +489,114 @@ async fn a_codex_session_that_names_no_conversation_is_listed_not_woken_by_mail_
     row.env.kill_daemon_bounded().await;
 }
 
+/// Sets or removes (`None`) the `floor` fact on the Codex handle's registry entry, which carries this host and the row's
+/// id, as a join writes it, so the entry is the row's own.
+fn set_codex_floor(env: &Env, ws: &str, floor: Option<&str>) {
+    support::write_registry(&env.comm_root, |doc| {
+        let entry = doc["agents"][CODEX].take();
+        let mut entry = if entry.is_object() { entry } else { serde_json::json!({}) };
+        entry["host"] = serde_json::json!(TEST_STATE_HOST);
+        entry["workspace_id"] = serde_json::json!(ws);
+        match floor {
+            Some(f) => entry["floor"] = serde_json::json!(f),
+            None => {
+                entry.as_object_mut().unwrap().remove("floor");
+            }
+        }
+        doc["agents"][CODEX] = entry;
+    });
+}
+
+/// Writes the plugin cache and the selection script that make the repo's `ccx` stamp its marker, as `selection.rs`'s
+/// `codex_selection_follows_the_launcher_across_resets` does: the next leg the daemon starts then carries the row's hooks.
+fn stage_codex_hooks(row: &Row) {
+    let agents = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../agents");
+    let cache = row.env.home_root.join(".codex/plugins/cache/sot-local/sot-row/0.1.0");
+    std::fs::create_dir_all(cache.join("hooks")).unwrap();
+    std::fs::create_dir_all(cache.join(".codex-plugin")).unwrap();
+    std::fs::write(cache.join(".codex-plugin/plugin.json"), r#"{"name":"sot-row","version":"0.1.0","hooks":"./hooks/hooks.json"}"#).unwrap();
+    std::fs::write(cache.join("hooks/hooks.json"), std::fs::read(agents.join("codex/row-hooks.json")).unwrap()).unwrap();
+    std::fs::create_dir_all(row.env.comm_root.join("bin")).unwrap();
+    sot_platform::test_exec::write_executable(&row.env.comm_root.join("bin/sot-selection-hook.sh"), std::fs::read(agents.join("sot-selection-hook.sh")).unwrap());
+}
+
+/// `workspace.restart`'s answer for `session`, asked by the session `by` runs in (`""` for none).
+async fn restart_as(row: &mut Row, session: &str, by: &str) -> serde_json::Value {
+    let id = row.next_id;
+    row.next_id += 1;
+    call(&mut row.conn, id, op::WORKSPACE_RESTART, serde_json::json!({ "session": session, "by": by })).await.payload
+}
+
+async fn restart_session(row: &mut Row, session: &str) -> serde_json::Value {
+    restart_as(row, session, "").await
+}
+
+/// The plan's done test. A Ready Codex session whose leg has no marker is asked nothing for mail and is listed not woken;
+/// `workspace.restart` refuses it while a turn runs (the registry entry's `floor`), by the asker's own session under any
+/// name, and while the registry cannot be read, and the stand-in is not started again; once woken it is refused as
+/// `not_needed`;
+/// once the repo's `ccx` can stamp its marker, a restart stops the agent and starts it again, the marker exists, the
+/// session is no longer listed, and its next mail is asked through the queue for the conversation it names. A name no
+/// session has and the harness's Claude session are refused, and not one byte reached the Codex terminal. Red before the
+/// change: the daemon knew no such op.
+#[tokio::test]
+async fn a_codex_session_started_without_its_hooks_is_restarted_and_then_woken_by_mail() {
+    let _serial = SERIAL.lock().await;
+    let mut row = start_full("cw-codex-restart", None, false, &[], &[], (0, 0), CODEX).await;
+    let cx = add_codex_row(&mut row, &[]).await;
+    let (main, marker) = (row.ws.clone(), row.env.state_root.join("sot").join("workspaces").join(&cx.ws).join("selection-hook"));
+    append_mail_to(&row.env, CODEX, 1);
+    two_looks(&row).await;
+    assert_eq!(cx.runs(), 0, "a session with no conversation was asked");
+    assert!(listed_not_woken(&mut row, &cx.ws).await);
+
+    set_codex_floor(&row.env, &cx.ws, Some("user"));
+    std::fs::remove_file(cx.dir.join("session")).unwrap();
+    let busy = restart_session(&mut row, &cx.ws).await;
+    assert_eq!(busy["code"].as_str(), Some("busy"), "{busy}");
+    two_looks(&row).await;
+    assert!(!cx.dir.join("session").exists(), "a refused restart started the stand-in again");
+    set_codex_floor(&row.env, &cx.ws, None);
+    // The asker's own session, by its slug or its id, and a registry that cannot be read (no turn can be told): refused,
+    // and the stand-in is not started again.
+    for named in ["codex-row", cx.ws.as_str()] {
+        let own = restart_as(&mut row, named, &cx.ws).await;
+        assert_eq!(own["code"].as_str(), Some("own_session"), "{own}");
+    }
+    let registry = row.env.comm_root.join("registry.json");
+    let saved = std::fs::read(&registry).unwrap();
+    std::fs::write(&registry, "{ not json").unwrap();
+    let unreadable = restart_session(&mut row, &cx.ws).await;
+    std::fs::write(&registry, saved).unwrap();
+    assert_eq!(unreadable["code"].as_str(), Some("registry_unreadable"), "{unreadable}");
+    two_looks(&row).await;
+    assert!(!cx.dir.join("session").exists(), "a refused restart started the stand-in again");
+
+    stage_codex_hooks(&row);
+    let done = restart_session(&mut row, &cx.ws).await;
+    assert_eq!((done["outcome"].as_str(), done["slug"].as_str(), done["workspace_id"].as_str()), (Some("restarted"), Some("codex-row"), Some(cx.ws.as_str())), "{done}");
+    wait_for("the stand-in's second start", || cx.dir.join("session").exists()).await;
+    poll_for_phase(&mut row.conn, &mut row.next_id, &cx.ws, "ready", BOUND.max(Duration::from_secs(60))).await;
+    assert!(marker.is_file(), "the new leg was not launched with the row's hooks");
+    assert!(!listed_not_woken(&mut row, &cx.ws).await, "a restarted session is still marked");
+    cx.bind(&format!("{THREAD}\n")).await;
+    wait_for("the queue command", || cx.runs() == 1).await;
+    assert!(cx.read("queued").contains(&format!("arg={THREAD}\n")), "{}", cx.read("queued"));
+
+    // The session is no longer marked, so a restart is not needed and would end its conversation.
+    std::fs::remove_file(cx.dir.join("session")).unwrap();
+    let needless = restart_session(&mut row, &cx.ws).await;
+    assert_eq!(needless["code"].as_str(), Some("not_needed"), "{needless}");
+    two_looks(&row).await;
+    assert!(!cx.dir.join("session").exists(), "a refused restart started the stand-in again");
+    let unknown = restart_session(&mut row, "nobody").await;
+    assert_eq!(unknown["code"].as_str(), Some("unknown_workspace"), "{unknown}");
+    let claude = restart_session(&mut row, &main).await;
+    assert_eq!(claude["code"].as_str(), Some("not_codex"), "{claude}");
+    assert_eq!(cx.read("typed"), "", "bytes reached the Codex row's terminal");
+    row.env.kill_daemon_bounded().await;
+}
+
 /// Rule 7. Mail to a Codex row that is not Ready asks nothing: neither the launcher nor the binary runs. The row was
 /// never started; its state folder holds a conversation id, as an ended run's would, so only the Ready rule keeps the
 /// request back (with the Ready check removed from the look this test is red on the launcher's question).

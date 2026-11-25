@@ -451,3 +451,16 @@ fn turn_order_uses_only_complete_pairs_and_the_uuid_v7_millisecond() {
         assert!(!older_turn(&entry, Some(&json!(["b",early]))));
     }
 }
+
+/// A turn runs in a row exactly while its bound handle's entry of this host carries the `floor` fact; no entry, another
+/// host's entry, and an entry without the fact are at rest.
+#[test]
+fn a_floor_fact_on_the_rows_own_entry_is_a_running_turn() {
+    let ws = row("turn", "h", "");
+    let rows = [ws.clone()];
+    let running = json!({"h": {"host": "here", "floor": "user"}});
+    assert!(turn_runs(&ws, &rows, Some(&running), "here"));
+    for agents in [None, Some(json!({"h": {"host": "there", "floor": "user"}})), Some(json!({"h": {"host": "here"}})), Some(json!({"other": {"host": "here", "floor": "user"}}))] {
+        assert!(!turn_runs(&ws, &rows, agents.as_ref(), "here"), "{agents:?}");
+    }
+}
