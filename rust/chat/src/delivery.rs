@@ -37,7 +37,7 @@ impl Timing {
         Timing { read_pace: Duration::from_millis(1500), sweep: Duration::from_secs(6 * 3600), backoff_first: Duration::from_secs(30), backoff_max: Duration::from_secs(600) };
 }
 
-/// One message to file: the caller resolves the recipient and files `mail::body(&record, owner)`.
+/// One message to file: the caller resolves the recipient and files `mail::body(&record, owner, channel_name)`.
 #[derive(Debug)]
 pub struct Filing {
     pub channel: String,

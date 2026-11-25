@@ -109,13 +109,13 @@ async fn a_handle_moved_before_the_append_is_not_filed() {
     w.session("cl", &row.workspace_id, 5);
     let to = w.recipient().unwrap();
     let rec = record("T0AAAA", "C0AAAA", "1700000100.000100", "hello");
-    assert_eq!(append(&w.th.env, &to, &rec, None).await, Ok(()));
+    assert_eq!(append(&w.th.env, &to, &rec, None, None).await, Ok(()));
     let lines = w.th.inbox("cl");
-    assert_eq!((lines.len(), lines[0]["from"].as_str(), lines[0]["repo"].as_str(), lines[0]["msg"].as_str()), (1, Some("#chat"), Some("daemon"), Some(body(&rec, None).as_str())));
+    assert_eq!((lines.len(), lines[0]["from"].as_str(), lines[0]["repo"].as_str(), lines[0]["msg"].as_str()), (1, Some("#chat"), Some("daemon"), Some(body(&rec, None, None).as_str())));
     // The handle's session now binds another row: the recipient was read before, and the append checks again.
     w.session("cl", "ws-another-0", 5);
     let later = record("T0AAAA", "C0AAAA", "1700000200.000100", "again");
-    let refused = append(&w.th.env, &to, &later, None).await.unwrap_err();
+    let refused = append(&w.th.env, &to, &later, None, None).await.unwrap_err();
     assert!(refused.starts_with("not_here: ") && refused.contains("no longer bound"), "the code and its sentence: {refused}");
     assert_eq!(w.th.inbox("cl").len(), 1, "a moved handle was filed to");
 }
@@ -146,15 +146,15 @@ async fn a_filing_job_files_nothing_once_the_topology_names_another_hub() {
     w.session("cl", &row.workspace_id, 5);
     let rec = record("T0AAAA", "C0AAAA", "1700000100.000100", "hello");
     w.hosts("hub = \"box1\"\n[host.box1]\ndaemon = true\n");
-    assert_eq!(file(&w.th.env, &w.rows, &w.name(), &rec, None).await, Ok(()));
+    assert_eq!(file(&w.th.env, &w.rows, &w.name(), &rec, None, None).await, Ok(()));
     // The hub moved to another computer between the queueing and the job.
     w.hosts("hub = \"far\"\n[host.far]\ndaemon = true\n[host.box1]\ndaemon = true\n");
     let next = record("T0AAAA", "C0AAAA", "1700000200.000100", "again");
-    assert_eq!(file(&w.th.env, &w.rows, &w.name(), &next, None).await, Err("other_hub".into()));
+    assert_eq!(file(&w.th.env, &w.rows, &w.name(), &next, None, None).await, Err("other_hub".into()));
     assert_eq!(w.th.inbox("cl").len(), 1, "a job filed after the hub moved");
     // A topology that cannot be read names no one else: the job files as before.
     w.hosts("this is [not a topology");
-    assert_eq!(file(&w.th.env, &w.rows, &w.name(), &next, None).await, Ok(()));
+    assert_eq!(file(&w.th.env, &w.rows, &w.name(), &next, None, None).await, Ok(()));
     assert_eq!(w.th.inbox("cl").len(), 2);
 }
 
@@ -171,7 +171,7 @@ fn inbox(w: &World, handle: &str, lines: &[String]) {
 #[test]
 fn the_starts_read_gives_each_channels_filings_from_every_inbox() {
     let w = World::new();
-    let mail = |ws: &str, ch: &str, ts: &str| body(&record(ws, ch, ts, "text"), None);
+    let mail = |ws: &str, ch: &str, ts: &str| body(&record(ws, ch, ts, "text"), None, None);
     let (a, b) = (mail("T0AAAA", "C0AAAA", "1700000100.000100"), mail("T0AAAA", "C0BBBB", "1700000200.000100"));
     // The first channel's filing is in the inbox of a handle no row holds now.
     inbox(&w, "gone", &[line("#chat", &a, true), line("someone", &mail("T0AAAA", "C0AAAA", "1700000500.000100"), true)]);

@@ -612,6 +612,24 @@ case_unpair_sends_one_row_pair_with_the_handle_and_prints_what_it_removed() {
     [ -z "$bad" ] || { echo "$bad"; return 1; }
 }
 
+# An unpairing of a channel that delivered says its posts no longer reach the session as mail, in this project's or that one's
+# words as a pairing's are; one that delivered nothing says nothing of mail.
+case_unpairing_a_delivering_channel_says_its_posts_stop_reaching_the_session() {
+    local bad="" session delivers want whose
+    for session in . "$ROW" alpha ws-other-3c4d; do
+        for delivers in true false none; do
+            case "$delivers" in none) pairing="$PAIRING" ;; *) pairing="${PAIRING%\}},\"delivers\":$delivers}" ;; esac
+            UNPAIR_SESSION="$session" unpair_answered "{\"outcome\":\"unpaired\",\"folder\":\"/p/alpha\",\"pairing\":$pairing}"
+            stop_stub_daemon
+            whose=that; { [ "$session" = . ] || [ "$session" = "$ROW" ]; } && whose=this
+            want="unpaired /p/alpha from #general (C0AAAA) in lab (T0AAAA)"
+            [ "$delivers" != true ] || want="$want; new posts there no longer reach $whose project's session as mail"
+            { [ "$CH_RC" = 0 ] && [ "$CH_OUT" = "$want" ]; } || bad="$bad [$session $delivers: rc=$CH_RC out=$CH_OUT]"
+        done
+    done
+    [ -z "$bad" ] || { echo "$bad"; return 1; }
+}
+
 # Each answer, the words and the code. `<session>` is as typed, and `this session's project` for `.`.
 case_each_unpair_answer_has_its_words_and_exit_code() {
     local bad="" want_rc want_text payload session
@@ -675,10 +693,11 @@ case_pair_sends_one_row_pair_with_the_channel_as_given_and_prints_the_pairing() 
                 by_row="$(paired_field .payload.by.row)"; by_name="$(paired_field .payload.by.name)"; row="$(paired_field .payload.row)"
                 ch="$(paired_field '.payload.channel')"; ws="$(paired_field '.payload.workspace // "none"')"; keys="$(paired_field '.payload | keys | join(",")')"
                 stop_stub_daemon
-                local want_row="$session" want_ws=none want_keys="by,channel,row"
-                [ "$session" != . ] || want_row="$ROW"
+                local want_row="$session" want_ws=none want_keys="by,channel,row" want_out="${body#*|}"
+                # This session's own project (`.`) reads "this project's"; another session's "that project's".
+                [ "$session" != . ] || { want_row="$ROW"; want_out="${want_out//that project/this project}"; }
                 [ -z "$flags" ] || { want_ws=T0BBBB; want_keys="by,channel,row,workspace"; }
-                { [ "$CH_RC" = 0 ] && [ "$CH_OUT" = "${body#*|}" ] && [ "$r" = 1 ] && [ "$rs" = 0 ] && [ "$by_row" = "$ROW" ] && [ "$by_name" = alpha-h ] \
+                { [ "$CH_RC" = 0 ] && [ "$CH_OUT" = "$want_out" ] && [ "$r" = 1 ] && [ "$rs" = 0 ] && [ "$by_row" = "$ROW" ] && [ "$by_name" = alpha-h ] \
                     && [ "$row" = "$want_row" ] && [ "$ch" = '#General' ] && [ "$ws" = "$want_ws" ] && [ "$keys" = "$want_keys" ]; } \
                     || bad="$bad [$session '$flags': rc=$CH_RC out=$CH_OUT requests=$r resolves=$rs by=$by_row/$by_name row=$row channel=$ch ws=$ws keys=$keys]"
             done
@@ -687,6 +706,23 @@ case_pair_sends_one_row_pair_with_the_channel_as_given_and_prints_the_pairing() 
     PAIR_SESSION=alpha PAIR_FLAGS="" pair_answered '{"outcome":"unchanged","folder":"/p/alpha","pairing":{"workspace":"T0AAAA","workspace_tag":"lab","channel":"C0AAAA","name":"general"}}'
     stop_stub_daemon
     { [ "$CH_RC" = 0 ] && [ "$CH_OUT" = "unchanged: /p/alpha already has #general (C0AAAA) in lab (T0AAAA)" ]; } || bad="$bad [unchanged: rc=$CH_RC out=$CH_OUT]"
+    [ -z "$bad" ] || { echo "$bad"; return 1; }
+}
+
+# Whose project the mail words name: this session's own, by `.` or by its own id, else another's, by slug or by id.
+case_pairing_this_sessions_own_project_says_this_projects_session() {
+    local bad="" session whose
+    for session in . "$ROW" alpha ws-other-3c4d; do
+        PAIR_SESSION="$session" pair_answered '{"outcome":"paired","folder":"/p/alpha","pairing":{"workspace":"T0AAAA","channel":"C0AAAA","name":"general","workspace_tag":"lab","delivers":true}}'
+        stop_stub_daemon
+        whose=that; { [ "$session" = . ] || [ "$session" = "$ROW" ]; } && whose=this
+        [ "$CH_RC" = 0 ] && [ "$CH_OUT" = "paired /p/alpha with #general (C0AAAA) in lab (T0AAAA); new posts there reach $whose project's session as mail" ] \
+            || bad="$bad [$session: rc=$CH_RC out=$CH_OUT]"
+    done
+    # A pairing that delivers nothing says nothing of mail.
+    PAIR_SESSION=. pair_answered '{"outcome":"paired","folder":"/p/alpha","pairing":{"workspace":"T0AAAA","channel":"C0AAAA","name":"general","workspace_tag":"lab","delivers":false}}'
+    stop_stub_daemon
+    [ "$CH_OUT" = "paired /p/alpha with #general (C0AAAA) in lab (T0AAAA)" ] || bad="$bad [not delivering: out=$CH_OUT]"
     [ -z "$bad" ] || { echo "$bad"; return 1; }
 }
 
@@ -960,6 +996,8 @@ check "each unpair answer prints its words and exits with its code"             
 check "an older daemon's unknown op is refused as unsupported, with exit 2"                  case_an_older_daemon_is_refused_unsupported
 check "no answer to a pairing is one request, never two, and exit 3"                        case_no_answer_to_a_pairing_is_one_request_and_exit_3
 check "a pair is one chat.row_pair with the channel as given and the workspace when named, and prints the pairing" case_pair_sends_one_row_pair_with_the_channel_as_given_and_prints_the_pairing
+check "a pairing of this session's own project says this project's session, another's that project's" case_pairing_this_sessions_own_project_says_this_projects_session
+check "an unpairing of a delivering channel says its posts no longer reach the session as mail" case_unpairing_a_delivering_channel_says_its_posts_stop_reaching_the_session
 check "each pair refusal prints its words and exits with its code"                          case_each_pair_refusal_has_its_words_and_exit_code
 check "a channel not found lists the workspaces and the app from one chat.workspaces read" case_a_channel_not_found_on_a_hub_of_several_lists_the_workspaces_and_the_app
 check "a capitalized name read as an ID says so in the refusal" case_a_capitalized_name_read_as_an_id_says_so

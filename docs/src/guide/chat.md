@@ -348,7 +348,9 @@ that Slack workspace's chat for a moment, so every window watching it shows the 
 project that has no channel says `no channel` for up to a minute after the pairing, then shows the channel. The agent changes
 only the projects and channels you named, and tells you what it changed. The command prints `paired <folder> with
 #<channel> (<id>) in <workspace>`, `unpaired <folder> from #<channel> (<id>) in <workspace>` or `unchanged: ...`, and exits
-0; it exits 2 with `refused` and a reason when nothing was changed, and 3 with `unknown` or `no answer` when the change may
+0 (when mail is on, a pairing adds `; new posts there reach this project's session as mail`, an unpairing of a channel that
+delivered adds `; new posts there no longer reach this project's session as mail`, and each says `that project's` for a
+session named other than by `.` or the agent's own id, one that names its own project by its name included); it exits 2 with `refused` and a reason when nothing was changed, and 3 with `unknown` or `no answer` when the change may
 have been made, in which case running the same command again is safe and says what is there now. If the computer that runs
 your sessions runs an older Ship of Tools, the command says so and changes nothing. As with deleting, Ship of Tools does not
 defend this against another program running under your own account, which can name another project's session.
@@ -367,7 +369,9 @@ panel included, reaches that project's session as a message to its agent. An idl
 once, and a busy one reads it when it finishes what it is doing. A Codex agent is asked to read it through Codex's
 own queue and takes the request when it is free; [messaging](messaging.md#A-message-wakes-the-recipient) says when
 that request cannot be made. An agent's own reply is not mail and does not come
-back to it. A post missed while the computer was down is filed later, once; the configuration page says how.
+back to it. A post missed while the computer was down is filed later, once; the configuration page says how. The mail's
+first line names the channel as `#<name> (<id>)` when the daemon already knows the channel's name, and by its id alone when it
+does not yet.
 
 A post made by the Slack account of the person who set the chat up on that computer (the one whose user token it holds,
 see [Setting up Slack](chat-setup.md)) reaches the agent marked as that person's own words, so the agent can tell it

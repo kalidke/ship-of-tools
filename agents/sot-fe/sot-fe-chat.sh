@@ -294,10 +294,12 @@ _chat_workspaces_read() {
 # The pairing's reply $1 (empty for none), for the verb and the session in CHAT_VERB and CHAT_SESSION, as `_chat_deleted`
 # reads a delete's. A refusal's words are the verb's own: they say only what that verb can meet.
 _chat_paired() {
-    local resp="$1" err code say="$CHAT_SESSION" words chan at caps
+    local resp="$1" err code say="$CHAT_SESSION" words chan at caps whose
     local maybe="the pairing may have been made; running the same command again is safe and says what is there now"
     local def='def at: if .workspace_tag then "\(.workspace_tag) (\(.workspace))" else "Slack workspace \(.workspace)" end; def chan: if .name then "#\(.name) (\(.channel))" else .channel end;'
     [ "$CHAT_SESSION" != . ] || say="this session's project"
+    # Whose project the mail words name: this session's own (`.`, or its own id), else another's.
+    whose=that; [ "$CHAT_SESSION" != . ] && [ "$CHAT_SESSION" != "$CHAT_ROW" ] || whose=this
     if [ -z "$resp" ]; then
         echo "no answer: $maybe" >&2
         exit 3
@@ -352,10 +354,10 @@ _chat_paired() {
     fi
     case "$(printf '%s' "$resp" | jq -r '.payload.outcome // empty')" in
         paired)
-            printf '%s' "$resp" | jq -r "$def"'.payload | "paired \(.folder)" + (.pairing | if . then " with \(chan) in \(at)" + (if .delivers then "; new posts there reach that project'"'"'s session as mail" else "" end) else "" end)'
+            printf '%s' "$resp" | jq -r --arg whose "$whose" "$def"'.payload | "paired \(.folder)" + (.pairing | if . then " with \(chan) in \(at)" + (if .delivers then "; new posts there reach \($whose) project'"'"'s session as mail" else "" end) else "" end)'
             ;;
         unpaired)
-            printf '%s' "$resp" | jq -r "$def"'.payload | "unpaired \(.folder)" + (.pairing | if . then " from \(chan) in \(at)" else "" end)'
+            printf '%s' "$resp" | jq -r --arg whose "$whose" "$def"'.payload | "unpaired \(.folder)" + (.pairing | if . then " from \(chan) in \(at)" + (if .delivers then "; new posts there no longer reach \($whose) project'"'"'s session as mail" else "" end) else "" end)'
             ;;
         unchanged)
             printf '%s' "$resp" | jq -r "$def"'.payload | .folder as $f | .pairing | if . then "unchanged: \($f) already has \(chan) in \(at)" else "unchanged: \($f) has no channel" end'

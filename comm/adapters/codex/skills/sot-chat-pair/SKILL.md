@@ -52,8 +52,8 @@ printed, whether or not the listing named one: a name or an ID is looked up in t
   `--slack-workspace <id>`; a refusal lists the workspaces and their IDs.
 
 Run it with a tool timeout of at least 180 s: it waits up to 150 s. It prints `paired <folder> with #<name> (<id>) in
-<workspace>`, with `; new posts there reach that project's session as mail` when they will, or `unchanged: ...` when the
-project already had that channel.
+<workspace>`, with `; new posts there reach this project's session as mail` when they will (`that project's` when you named the session
+by anything but `.` or your own id, its name included), or `unchanged: ...` when the project already had that channel.
 
 ## Unpair
 
@@ -61,8 +61,10 @@ project already had that channel.
 ~/.sot-comm/bin/sot-fe chat unpair <session>
 ```
 
-It prints `unpaired <folder> from #<name> (<id>) in <workspace>`, or `unchanged: <folder> has no channel`. That project's
-sessions can no longer post to the channel, and its posts no longer reach them as mail.
+It prints `unpaired <folder> from #<name> (<id>) in <workspace>`, with `; new posts there no longer reach this project's
+session as mail` when the channel had delivered mail (`that project's` by the same rule), or `unchanged:
+<folder> has no channel`. That project's sessions can no longer post to the channel, and its posts no longer reach them as
+mail.
 
 ## Exit codes
 

@@ -218,7 +218,8 @@ fn a_peers_first_line_stays_on_its_senders_start_line() {
 fn a_chat_mail_at_its_worst_is_printed_whole_and_none_is_starved() {
     let t = reader();
     let record = sot_protocol::chat::ChatRecord { text: "\n".repeat(20_000), ..sot_protocol::chat::ChatRecord::fixture() };
-    let stored = sot_chat::mail::body(&record, None);
+    // A channel name at its bound is in the header: the worst case stays the worst.
+    let stored = sot_chat::mail::body(&record, None, Some(&"n".repeat(160)));
     assert!(stored.len() <= sot_chat::mail::MAX_MAIL && stored.len() > sot_chat::mail::MAX_MAIL - 10, "{}", stored.len());
     let say = |from: &str, msg: &str| json!({"from": from, "to": "me-box1", "repo": "daemon", "msg": msg, "ts": "t"}).to_string();
     let worst = say("#chat", &stored);

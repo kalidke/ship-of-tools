@@ -52,18 +52,19 @@ pub(crate) fn recipient(rows: &Workspaces, folder: &str, env: &Env, now_secs: u6
 /// One filing: nothing at all unless the topology still names this computer (or no one) the hub, then the recipient, then
 /// the guarded append, which rechecks the binding and the liveness under the registry lock. `Ok` is `Verdict::Filed`; an
 /// `Err` is `Verdict::Refused`, and its text is what the owner logs: `other_hub`, one of `recipient`'s codes, or the filing's own `code: sentence`.
-pub(crate) async fn file(env: &Env, rows: &Workspaces, folder: &str, record: &ChatRecord, owner: Option<&str>) -> Result<(), String> {
+pub(crate) async fn file(env: &Env, rows: &Workspaces, folder: &str, record: &ChatRecord, owner: Option<&str>, name: Option<&str>) -> Result<(), String> {
     let (e, r, f) = (env.clone(), rows.clone(), folder.to_string());
     let to = tokio::task::spawn_blocking(move || if super::names_another_hub(&e) { Err("other_hub") } else { recipient(&r, &f, &e, unix_now_secs()) })
         .await
         .map_err(|_| "file_failed")??;
-    append(env, &to, record, owner).await
+    append(env, &to, record, owner, name).await
 }
 
 /// The guarded append of `record`'s mail to `to`, from `#chat`: it names the row it expects, so a handle moved since the
-/// recipient was read files nothing. `owner` is the Slack id the mail marks as the user's own (`mail::body`).
-pub(crate) async fn append(env: &Env, to: &Recipient, record: &ChatRecord, owner: Option<&str>) -> Result<(), String> {
-    let req = CommFileReq { from: SENDER.into(), to: to.handle.clone(), text: body(record, owner), broadcast: false, forwarded: false, expected_row: Some(to.row.clone()) };
+/// recipient was read files nothing. `owner` is the Slack id the mail marks as the user's own and `name` the channel's name the
+/// mail shows, when the name cache holds it (`mail::body`).
+pub(crate) async fn append(env: &Env, to: &Recipient, record: &ChatRecord, owner: Option<&str>, name: Option<&str>) -> Result<(), String> {
+    let req = CommFileReq { from: SENDER.into(), to: to.handle.clone(), text: body(record, owner, name), broadcast: false, forwarded: false, expected_row: Some(to.row.clone()) };
     match file_comm(env.clone(), req).await {
         Ok(Ok(())) => Ok(()),
         Ok(Err((code, sentence))) => Err(format!("{code}: {sentence}")),

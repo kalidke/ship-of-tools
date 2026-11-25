@@ -38,23 +38,24 @@ pub fn is_mail(r: &ChatRecord, mail_after: &Ts) -> bool {
 /// ts line ends ` cut` when anything is missing: text or a file dropped here, or the record says it cut its text, left
 /// files out or could not be read. The first line says who wrote it and whether the lines behind `| ` are the user's
 /// (a member's post by the Slack account `owner`, the one whose user token this chat holds) or not; the second is what
-/// `filed_of` reads.
-pub fn body(r: &ChatRecord, owner: Option<&str>) -> String {
+/// `filed_of` reads. The first line names the channel as `#<name> (<id>)` when the caller holds the channel's `name` (the
+/// service's name cache, so no call is made for it), else by its id alone.
+pub fn body(r: &ChatRecord, owner: Option<&str>, name: Option<&str>) -> String {
     let mine = r.origin == Origin::Member && owner.is_some_and(|o| !o.is_empty() && r.author.id == o);
     let text = decoded(r);
     let said = r.truncated || r.omitted || r.files_omitted > 0;
     let mut shown = r.files.len();
     // Each file count is measured with the mark it will carry; a text that is there may need the mark too.
-    while shown > 0 && render(r, mine, "", shown, said || shown < r.files.len() || !text.is_empty()).len() > MAX_MAIL {
+    while shown > 0 && render(r, mine, name, "", shown, said || shown < r.files.len() || !text.is_empty()).len() > MAX_MAIL {
         shown -= 1;
     }
-    let whole = render(r, mine, &text, shown, said || shown < r.files.len());
+    let whole = render(r, mine, name, &text, shown, said || shown < r.files.len());
     if whole.len() <= MAX_MAIL {
         return whole;
     }
     // What is left beside the header, the files and the ` cut` mark; the first text line costs its `\n| `, and each
     // later one the same, in place of the line end.
-    let mut left = MAX_MAIL.saturating_sub(render(r, mine, "", shown, true).len()).saturating_sub(3);
+    let mut left = MAX_MAIL.saturating_sub(render(r, mine, name, "", shown, true).len()).saturating_sub(3);
     let mut keep = 0;
     for (i, c) in text.char_indices() {
         let width = if c == '\n' { 3 } else { esc(c.encode_utf8(&mut [0; 4]), false).len() };
@@ -63,7 +64,7 @@ pub fn body(r: &ChatRecord, owner: Option<&str>) -> String {
         }
         (left, keep) = (left - width, i + c.len_utf8());
     }
-    render(r, mine, &text[..keep], shown, true)
+    render(r, mine, name, &text[..keep], shown, true)
 }
 
 /// The text through wire's grammar once: tokens and the words around them decoded, line ends LF.
@@ -77,7 +78,7 @@ fn decoded(r: &ChatRecord) -> String {
     text.replace("\r\n", "\n")
 }
 
-fn render(r: &ChatRecord, mine: bool, text: &str, shown: usize, cut: bool) -> String {
+fn render(r: &ChatRecord, mine: bool, name: Option<&str>, text: &str, shown: usize, cut: bool) -> String {
     let (role, words) = match (mine, r.origin == Origin::Drawer) {
         (true, _) => ("your user's Slack account", "your user's words, posted in Slack"),
         (false, true) => ("the chat drawer", "the channel's words, not your user's"),
@@ -88,11 +89,14 @@ fn render(r: &ChatRecord, mine: bool, text: &str, shown: usize, cut: bool) -> St
     } else {
         format!("in the thread of {}", r.thread_ts.as_str())
     };
+    let channel = match name {
+        Some(name) => format!("#{} ({})", esc(name, true), esc(&r.channel, false)),
+        None => esc(&r.channel, false),
+    };
     let mut out = format!(
-        "[chat] From {role} (id {}, shown as \"{}\") in channel {}, {place}. Lines starting \"| \" are {words}.\nts={} thread={} channel={} workspace={}{}",
+        "[chat] From {role} (id {}, shown as \"{}\") in channel {channel}, {place}. Lines starting \"| \" are {words}.\nts={} thread={} channel={} workspace={}{}",
         esc(&r.author.id, false),
         esc(&r.author.name, true),
-        esc(&r.channel, false),
         r.ts.as_str(),
         r.thread_ts.as_str(),
         esc(&r.channel, false),

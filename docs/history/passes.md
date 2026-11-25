@@ -3540,3 +3540,9 @@ the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the sa
       and the code; the delete's line gains the code. The wire is unchanged.
     - 69 product lines added and 27 changed or removed, 61 test lines. A file share's echoed error text, which a test already fed it, now reads
       `unknown_error` and is shown by that test to reach no caller.
+- Three chat words, 2026-11-25: the second landing of the plan for a session's read of its channel, found unclear by a
+    session operating the pairing verbs.
+    - A pairing of the session's own project says `this project's session`, an unpairing of a channel that delivered says its
+      posts no longer reach the session as mail, and a chat mail's first line names its channel by name when the daemon's
+      name cache holds it, with no call at filing time. The wire is unchanged.
+    - The mail's worst case in the poll test now carries a name at its bound.

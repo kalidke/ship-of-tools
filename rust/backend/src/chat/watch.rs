@@ -475,7 +475,9 @@ async fn file_job(env: Env, rows: Workspaces, service: Arc<Service>, folder: Str
             sot_platform::hold_point_async!("chat.mail.filing", folder);
             // The user token's account as it is at the filing, so a token forgotten while the job waited marks nothing.
             let owner = service.api().ok().and_then(|api| api.person_id());
-            mail::file(&env, &rows, &folder, &f.record, owner.as_deref()).await
+            // The channel's name from the name cache alone (no call): absent when the start's lookup has not found it.
+            let name = service.api().ok().and_then(|api| api.cached_name(&f.channel));
+            mail::file(&env, &rows, &folder, &f.record, owner.as_deref(), name.as_deref()).await
         })
         .await;
     Done::Filed { result: filed.unwrap_or_else(|| Err("ended".into())), channel, ts, live }

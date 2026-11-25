@@ -335,7 +335,7 @@ async fn an_unreadable_inbox_at_start_files_nothing_until_it_reads() {
     // first absent, still fails whole, and one removal of the second makes every inbox readable at once.
     serve(&w.lv, posts(&[1, 2]));
     let inbox = w.th.home.join("inbox").join("b.jsonl");
-    let before = sot_chat::mail::body(&post_record(1), None);
+    let before = sot_chat::mail::body(&post_record(1), None, None);
     std::fs::write(&inbox, format!("{}\n", json!({"from": "#chat", "to": "b", "repo": "daemon", "msg": before, "ts": "2026-01-01T00:00:00Z"}))).unwrap();
     let kept = std::fs::read(&inbox).unwrap();
     std::fs::remove_file(&inbox).unwrap();
@@ -940,4 +940,24 @@ async fn a_kept_workspaces_delivery_files_through_anothers_reload() {
     w.chat.request_stop();
     assert!(w.chat.wait_retired(LONG));
     assert_eq!((w.inbox("alpha-h").len(), w.inbox("beta-h").len()), (0, 1));
+}
+
+/// A mail names its channel by name when the service's name cache holds it at the filing (the start's lookup of the mapped
+/// channels, no call at filing time), and by id alone when it does not.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_filed_mail_names_its_channel_when_the_name_cache_holds_it() {
+    let w = world(true).await;
+    *w.lv.channel_name.lock().unwrap() = Some("build-notes".into());
+    let chat = w.start(&w.fake).await;
+    let service = w.service(&chat);
+    let api = service.api().unwrap();
+    until("the start's lookup of the mapped channel's name", || api.cached_name("C0AAAA").is_some()).await;
+    let asked = || w.fake.seen().iter().filter(|s| s.path().ends_with("/conversations.info")).count();
+    let before = asked();
+    send(&w.lv, 1, "e1");
+    w.filed_count(1).await;
+    assert_eq!(asked(), before, "a filing makes no call for the name");
+    assert!(w.inbox()[0].contains(" in channel #build-notes (C0AAAA), at the top level. "), "{}", w.inbox()[0]);
+    assert_eq!(w.filed(), vec![stamp(1)], "the second line is the filing's identity as before");
+    stop(chat);
 }

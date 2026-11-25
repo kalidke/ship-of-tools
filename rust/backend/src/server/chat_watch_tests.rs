@@ -60,6 +60,8 @@ pub(super) struct Levers {
     /// socket's hello names in its `connection_info` (unset: it names none).
     pub(super) bot_app: Arc<Mutex<Option<String>>>,
     pub(super) hello_app: Arc<Mutex<Option<String>>>,
+    /// The name `conversations.info` answers for any channel (unset: the call is unknown, so no channel has a name).
+    pub(super) channel_name: Arc<Mutex<Option<String>>>,
 }
 
 /// A fake Slack with a live socket: `auth.test` names the workspace, history answers an empty page, a file's upload is
@@ -80,10 +82,11 @@ pub(super) async fn live() -> (FakeSlack, Levers) {
         hello: Arc::new(tokio::sync::Semaphore::new(1000)),
         bot_app: Arc::new(Mutex::new(None)),
         hello_app: Arc::new(Mutex::new(None)),
+        channel_name: Arc::new(Mutex::new(None)),
     };
     let (mode, gate, acked, histories, hello, channel) = (lv.mode.clone(), lv.gate.clone(), lv.acked.clone(), lv.histories.clone(), lv.hello.clone(), lv.channel.clone());
     let (replies_fail, replies_failed, names_hang) = (lv.replies_fail.clone(), lv.replies_failed.clone(), lv.names_hang.clone());
-    let (bot_app, hello_app) = (lv.bot_app.clone(), lv.hello_app.clone());
+    let (bot_app, hello_app, channel_name) = (lv.bot_app.clone(), lv.hello_app.clone(), lv.channel_name.clone());
     let upload = Upload::new();
     let fake = FakeSlack::start(Identity::Trusted, move |seen, port| {
         let path = seen.path();
@@ -117,6 +120,9 @@ pub(super) async fn live() -> (FakeSlack, Levers) {
         }
         if path.ends_with("/conversations.info") && names_hang.load(Ordering::SeqCst) {
             return Reply::Hang;
+        }
+        if let (true, Some(name)) = (path.ends_with("/conversations.info"), channel_name.lock().unwrap().clone()) {
+            return Reply::json(&json!({"ok": true, "channel": {"name": name, "is_private": false}}));
         }
         if path.ends_with("/conversations.replies") && replies_fail.load(Ordering::SeqCst) {
             replies_failed.fetch_add(1, Ordering::SeqCst);

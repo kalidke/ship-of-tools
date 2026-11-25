@@ -532,7 +532,10 @@ of each.
   21's limit), so a no-answer is exit 3, and a pairing is idempotent, so the same command again is safe. `sot-fe` refuses
   `--thread`, `--file` and `--stdin` (`ERROR: --thread, --file and --stdin are only for chat post`) and a wrong count of
   arguments with exit 1, before anything is sent. Exit 0 with `paired <folder> with <chan> in <at>` (`; new posts there reach
-  that project's session as mail` when the file delivers), `unpaired <folder> from <chan> in <at>` (`<chan>` is `#<name>
+  this project's session as mail` when the file delivers, `that project's` for a session other than this one, which is `.` or
+  its own id: `case_pairing_this_sessions_own_project_says_this_projects_session`), `unpaired <folder> from <chan> in <at>`
+  (`; new posts there no longer reach this project's session as mail` or `that project's` by the same rule, when the removed
+  pairing delivered, `case_unpairing_a_delivering_channel_says_its_posts_stop_reaching_the_session`; `<chan>` is `#<name>
   (<id>)` when the daemon's cache or the channel's facts gave the name, else the id; `<at>` is `<tag> (<workspace id>)` when
   the workspace's short name is known, else `Slack workspace <id>`), `unchanged: <folder> already has <chan> in <at>` or
   `unchanged: <folder> has no channel`; 2, nothing changed for certain, with `refused <code> <words>` (`stale_row` (also a row
