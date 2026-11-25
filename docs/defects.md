@@ -1387,10 +1387,11 @@ owned by `docs/CLAUDE.md`.
 - **CHAT-POST-UNKNOWN-NOT-READ-BACK** [session] Seen by a session on 2026-11-25 on a hub running the first 0.7.4 candidate: one
   `sot-fe chat post` into a thread ended `unknown` (exit 3) after the daemon had waited five seconds for Slack, where the posts
   before and after it took under a third of a second; the post had not been made, and the same text sent a minute later
-  posted. The verb said what the contract says. Two things are missing: the daemon's log has only its slow-request line for
-  that post, so why it ended unknown (a timeout, a reset, which step) cannot be read back; and a session told not to send
-  again has no command that reads its channel or thread, so it cannot learn from the product whether its post exists (that
-  session read the thread with another tool). Neither is built or decided.
+  posted. The verb said what the contract says. Two things were missing. The daemon's log had only its slow-request line for
+  that post, so why it ended unknown (a timeout, a reset, which step) could not be read back: the log now carries one line
+  for each post or file post that ends unknown, with the step and a fixed code for why, built on `main` and not yet seen in
+  use. And a session told not to send again has no command that reads its channel or thread, so it cannot learn from the
+  product whether its post exists (that session read the thread with another tool): not built.
 - **CHAT-LIST-LIMITS** [note] From the three readings of a session's listing, none seen in use: a `chat.toml` that is valid TOML
   but that the load refuses is marked from its raw text, while every pairing then answers `not_saved`; a channel held only by
   a mapping whose folder is gone is told as held by a project; a listing does not tell a session its own project's channel

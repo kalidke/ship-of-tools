@@ -3532,3 +3532,11 @@ the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the sa
     - What it cost and showed: 2 hours 35 minutes from the ask to the last gate, seven readings over three
       landings. The reader new to the change found what the reader of five rounds had not. Nothing of it has
       been seen in a window (CHAT-PICKER-TREE-NOT-SEEN).
+- Why a post ended unknown, in the daemon's log, 2026-11-25: the first of three landings of a written plan (a session
+    reads its channel back, a file post can be found and deleted, and an unknown post says why).
+    - Every `Unknown` of a post, a file share and a delete now carries a fixed code for why (the HTTP core's code,
+      `http_<status>`, `not_json`, `no_ok`, Slack's transient code, `unknown_error`, `no_ts`, `no_file_id`), never
+      Slack's text, and the daemon logs one `warn` line for each post or file post that ended unknown, with the step
+      and the code; the delete's line gains the code. The wire is unchanged.
+    - 69 product lines added and 27 changed or removed, 61 test lines. A file share's echoed error text, which a test already fed it, now reads
+      `unknown_error` and is shown by that test to reach no caller.

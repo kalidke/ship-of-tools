@@ -222,8 +222,8 @@ pub enum DeleteOutcome {
     Refused(String),
     /// Slack was rate limited; nothing was deleted and nothing is resent. `assumed`: the wait is a guess.
     Limited { retry_after: Duration, assumed: bool },
-    /// No usable acknowledgement: the message may or may not be deleted. Never resent.
-    Unknown,
+    /// No usable acknowledgement: the message may or may not be deleted. Never resent. The code says why (`Ack::Unknown`'s).
+    Unknown(String),
 }
 
 /// The upper bound of a query. One variant at most, so `before` and `until` cannot both be asked for.
@@ -494,8 +494,9 @@ pub enum PostOutcome {
         retry_after: Duration,
         assumed: bool,
     },
-    /// No usable acknowledgement: the post may or may not exist. Never resent; the caller reads history.
-    Unknown,
+    /// No usable acknowledgement: the post may or may not exist. Never resent; the caller reads history. The code says
+    /// why (`Ack::Unknown`'s).
+    Unknown(String),
 }
 
 /// One of the `MAX_TRANSFERS` transfer permits, from `Api::transfer`: held by whoever reads a file for a post, so no
@@ -532,8 +533,9 @@ pub enum FileOutcome {
         retry_after: Duration,
         assumed: bool,
     },
-    /// The share was sent and not acknowledged: the file may or may not be in the channel. Never resent.
-    Unknown,
+    /// The share was sent and not acknowledged: the file may or may not be in the channel. Never resent. The code says
+    /// why (`Ack::Unknown`'s, or `no_file_id`).
+    Unknown(String),
 }
 
 /// Which rendition of a file a fetch reads.
@@ -1354,7 +1356,7 @@ impl Api {
             Ack::Done(_) => JoinOutcome::Joined,
             Ack::Refused(code) if code == "already_in_channel" => JoinOutcome::Joined,
             Ack::Refused(code) => JoinOutcome::Refused(code),
-            Ack::Limited { .. } | Ack::Unknown => JoinOutcome::Unknown,
+            Ack::Limited { .. } | Ack::Unknown(_) => JoinOutcome::Unknown,
         })
     }
 
@@ -1371,7 +1373,7 @@ impl Api {
             Ack::Refused(code) if code == "message_not_found" => DeleteOutcome::Gone,
             Ack::Refused(code) => DeleteOutcome::Refused(code),
             Ack::Limited { retry_after, assumed } => DeleteOutcome::Limited { retry_after, assumed },
-            Ack::Unknown => DeleteOutcome::Unknown,
+            Ack::Unknown(why) => DeleteOutcome::Unknown(why),
         })
     }
 
@@ -1807,7 +1809,10 @@ fn error_code(v: &Value) -> Option<&str> {
 }
 
 /// A mutation's answer. It is `Refused` or `Limited` only when Slack said so (a 429 or other non-5xx failure, or
-/// `ok: false` with a known, non-transient code); `Unknown` in every other case that is not an acknowledgement.
+/// `ok: false` with a known, non-transient code); `Unknown` in every other case that is not an acknowledgement, with a
+/// fixed code for why: the HTTP core's (`timeout`, `protocol`, `connect`, `tls`, `redirect`, `too_large`), `http_<status>`
+/// for a 5xx, `not_json`, `no_ok`, Slack's transient code itself, or `unknown_error` for a code not in Slack's form.
+/// Never Slack's text.
 enum Ack {
     /// `ok: true`, with the body.
     Done(Value),
@@ -1816,7 +1821,7 @@ enum Ack {
         retry_after: Duration,
         assumed: bool,
     },
-    Unknown,
+    Unknown(String),
 }
 
 fn acknowledgement(result: Result<Response, HttpError>) -> Ack {
@@ -1827,7 +1832,7 @@ fn acknowledgement(result: Result<Response, HttpError>) -> Ack {
             return Ack::Refused(e.code().into())
         }
         // Anything after a connection may have reached Slack: a timeout, a dropped answer, a redirect.
-        Err(_) => return Ack::Unknown,
+        Err(e) => return Ack::Unknown(e.code().into()),
     };
     let limited = || {
         let (retry_after, assumed) = retry_after(&response);
@@ -1839,21 +1844,23 @@ fn acknowledgement(result: Result<Response, HttpError>) -> Ack {
     match response.status() {
         429 => return limited(),
         200..=299 => {}
-        500..=599 => return Ack::Unknown,
+        other @ 500..=599 => return Ack::Unknown(format!("http_{other}")),
         other => return Ack::Refused(format!("http_{other}")),
     }
     let Ok(v) = serde_json::from_slice::<Value>(response.body()) else {
-        return Ack::Unknown;
+        return Ack::Unknown("not_json".into());
     };
     match v.get("ok").and_then(Value::as_bool) {
         Some(true) => Ack::Done(v),
         Some(false) => match error_code(&v) {
             Some("ratelimited") => limited(),
-            Some("internal_error" | "fatal_error" | "request_timeout" | "service_unavailable")
-            | None => Ack::Unknown,
+            Some(code @ ("internal_error" | "fatal_error" | "request_timeout" | "service_unavailable")) => {
+                Ack::Unknown(code.into())
+            }
+            None => Ack::Unknown("unknown_error".into()),
             Some(code) => Ack::Refused(code.into()),
         },
-        None => Ack::Unknown,
+        None => Ack::Unknown("no_ok".into()),
     }
 }
 
@@ -1864,10 +1871,10 @@ fn post_outcome(result: Result<Response, HttpError>) -> PostOutcome {
             .get("ts")
             .and_then(Value::as_str)
             .and_then(|t| Ts::parse(t).ok())
-            .map_or(PostOutcome::Unknown, PostOutcome::Posted),
+            .map_or(PostOutcome::Unknown("no_ts".into()), PostOutcome::Posted),
         Ack::Refused(code) => PostOutcome::Refused(code),
         Ack::Limited { retry_after, assumed } => PostOutcome::Limited { retry_after, assumed },
-        Ack::Unknown => PostOutcome::Unknown,
+        Ack::Unknown(why) => PostOutcome::Unknown(why),
     }
 }
 
@@ -1878,7 +1885,7 @@ fn share_outcome(result: Result<Response, HttpError>, channel: &str) -> FileOutc
         Ack::Done(v) => {
             let shared = v.pointer("/files/0");
             let Some(file) = shared.and_then(|f| answered_id(f, "id")) else {
-                return FileOutcome::Unknown;
+                return FileOutcome::Unknown("no_file_id".into());
             };
             let ts = ["public", "private"]
                 .iter()
@@ -1888,6 +1895,6 @@ fn share_outcome(result: Result<Response, HttpError>, channel: &str) -> FileOutc
         }
         Ack::Refused(code) => FileOutcome::Refused(code),
         Ack::Limited { retry_after, assumed } => FileOutcome::Limited { retry_after, assumed },
-        Ack::Unknown => FileOutcome::Unknown,
+        Ack::Unknown(why) => FileOutcome::Unknown(why),
     }
 }

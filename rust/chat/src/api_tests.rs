@@ -480,7 +480,7 @@ async fn lost_post_answer_is_unknown_and_never_resent() {
             .post("C0CHAN", None, PostKind::Person, "Ada Test", "hello")
             .await
             .unwrap();
-        assert_eq!(outcome, PostOutcome::Unknown);
+        assert_eq!(outcome, PostOutcome::Unknown("protocol".into()));
         tokio::time::sleep(Duration::from_millis(500)).await;
         assert_eq!(posts(&fake), 1, "submitted once, never resent");
 
@@ -547,8 +547,18 @@ async fn a_post_carries_its_author_and_every_unconfirmed_answer_is_unknown() {
 
         assert_eq!(post("C0REJ").await, Ok(PostOutcome::Refused("channel_not_found".into())));
         assert_eq!(post("C0FOUR").await, Ok(PostOutcome::Refused("http_403".into())));
-        for unconfirmed in ["C0INT", "C0ODD", "C0NOTS", "C0BADTS", "C0NOOK", "C0TEXT", "C0FIVE", "C0DROP"] {
-            assert_eq!(post(unconfirmed).await, Ok(PostOutcome::Unknown), "{unconfirmed}");
+        // Each unconfirmed answer carries the fixed code of why, never Slack's text.
+        for (unconfirmed, why) in [
+            ("C0INT", "internal_error"),
+            ("C0ODD", "unknown_error"),
+            ("C0NOTS", "no_ts"),
+            ("C0BADTS", "no_ts"),
+            ("C0NOOK", "no_ok"),
+            ("C0TEXT", "not_json"),
+            ("C0FIVE", "http_503"),
+            ("C0DROP", "protocol"),
+        ] {
+            assert_eq!(post(unconfirmed).await, Ok(PostOutcome::Unknown(why.into())), "{unconfirmed}");
         }
         for limited in ["C0RATE", "C0RATE2"] {
             assert!(
@@ -783,7 +793,7 @@ async fn every_operation_ends_at_its_deadline() {
         assert_eq!(
             api.post("C0CHAN", None, PostKind::Person, "Ada", "hi")
                 .await,
-            Ok(PostOutcome::Unknown)
+            Ok(PostOutcome::Unknown("timeout".into()))
         );
         let mut records = vec![member_record("U0HANG")];
         api.fill_names(&mut records).await;
@@ -2348,9 +2358,9 @@ async fn only_the_share_can_be_unknown() {
         assert!(fake.seen().iter().any(|s| s.path() == "/upload/hang2"), "hang2 timed out at the upload, not before it");
         assert_eq!(shared(&fake), 0, "no share is sent after a failure before it");
 
-        for at_the_share in ["drop3", "hang3", "five", "noid"] {
+        for (at_the_share, why) in [("drop3", "protocol"), ("hang3", "timeout"), ("five", "http_503"), ("noid", "no_file_id")] {
             let start = Instant::now();
-            assert_eq!(post(at_the_share).await, Ok(FileOutcome::Unknown), "{at_the_share}");
+            assert_eq!(post(at_the_share).await, Ok(FileOutcome::Unknown(why.into())), "{at_the_share}");
             assert!(start.elapsed() < Duration::from_secs(5), "{at_the_share} ended at {:?}", start.elapsed());
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
@@ -2549,7 +2559,7 @@ async fn a_file_post_shows_no_token_or_private_url_in_any_error() {
             "Refused(\"malformed\")",
             "Refused(\"destination\")",
             "Refused(\"http_403\")",
-            "Unknown",
+            "Unknown(\"unknown_error\")",
             "Refused(\"http_400\")",
             "BadRequest bad_request",
         ];
@@ -3397,8 +3407,8 @@ async fn a_delete_is_made_once_under_the_bots_token_and_each_answer_has_its_outc
         // A limit carries Slack's wait when its answer has one, and a guess flagged as one when it has none.
         assert_eq!(delete("C0RATE").await, Ok(DeleteOutcome::Limited { retry_after: ASSUMED_RETRY, assumed: true }));
         assert_eq!(delete("C0RATE7").await, Ok(DeleteOutcome::Limited { retry_after: Duration::from_secs(7), assumed: false }));
-        for unconfirmed in ["C0INT", "C0FIVE", "C0NOOK", "C0DROP"] {
-            assert_eq!(delete(unconfirmed).await, Ok(DeleteOutcome::Unknown), "{unconfirmed}");
+        for (unconfirmed, why) in [("C0INT", "internal_error"), ("C0FIVE", "http_503"), ("C0NOOK", "no_ok"), ("C0DROP", "protocol")] {
+            assert_eq!(delete(unconfirmed).await, Ok(DeleteOutcome::Unknown(why.into())), "{unconfirmed}");
         }
         // Ten deletes, ten requests: none repeated, and the person's token carried none of them.
         tokio::time::sleep(Duration::from_millis(300)).await;

@@ -492,7 +492,10 @@ project's channel is a tree, every running workspace a row that opens in place w
 its channels beneath it, drawn as the nav pane draws its rows (the maintainer asked that day that choosing a Slack
 workspace and channel look and work like the window's file and session navigation; the three landings of a
 written plan; the paging between workspaces with Left and Right is gone; proved by unit tests only, seen in no
-window, CHAT-PICKER-TREE-NOT-SEEN);
+window, CHAT-PICKER-TREE-NOT-SEEN); and, on `main` since 2026-11-25 and used by no person, the daemon's log carries
+one line for each post or file post that ends unknown, with the Slack step and a fixed code for why (a session had seen
+a post end unknown with nothing to say which failure it was; CHAT-POST-UNKNOWN-NOT-READ-BACK, whose second half, a
+session reading its channel back, is not built);
 SlackClaw's pause switch (its PR 18) merges on his word when the
 first channel moves. Also in progress: the agent sees what the user draws (`requirements.md`); the wire's drawing has
 landed, and so has the daemon's picture (the figure with the person's ink, inside the project), written through

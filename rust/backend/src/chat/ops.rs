@@ -7,6 +7,7 @@
 use std::io::Read;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::Result;
 use serde::Deserialize;
@@ -18,6 +19,7 @@ use sot_protocol::ops::{
     ChatPostReq, ChatPostRes, ChatResolveReq, ChatResolveRes, ChatTarget, ChatUnwatchReq, ChatUnwatchRes, ChatUpper,
     ChatWatchReq, ChatWatchRes, MAX_CHAT_FILE,
 };
+use sot_protocol::chat::Ts;
 use sot_protocol::reply::HandlerOutput;
 use sot_protocol::{BlobDescriptor, Frame};
 
@@ -200,6 +202,25 @@ pub(super) fn is_bound(name: &str, row: &str, rows: &Workspaces) -> bool {
     rows.resolve(Some(row)).is_some_and(|ws| bound_handle(&ws, &all) == name)
 }
 
+/// The one `warn` line for a post or a file post that ended unknown: which request, which Slack step, why (the fixed code
+/// of `Ack::Unknown`) and how long the call waited. Never the text, a comment, a file's name or bytes, a URL or a token.
+fn log_unknown(req_id: u64, op: &str, step: &str, why: &str, started: Instant, req: &PostLog) {
+    tracing::warn!(
+        id = req_id, op, step, why, waited_ms = started.elapsed().as_millis() as u64, row = req.target.row.as_str(),
+        channel = req.target.channel.as_str(), thread = req.thread.map_or("", |t| t.as_str()), kind = ?req.kind,
+        handle = if req.kind == ChatPostKind::Row { req.name } else { "" },
+        "project chat: a post may exist; Slack's answer did not say"
+    );
+}
+
+/// What a post's log line reads of its request.
+struct PostLog<'a> {
+    target: &'a ChatTarget,
+    thread: Option<&'a Ts>,
+    kind: ChatPostKind,
+    name: &'a str,
+}
+
 fn post_kind(kind: ChatPostKind) -> PostKind {
     match kind {
         ChatPostKind::Person => PostKind::Person,
@@ -227,6 +248,7 @@ pub(crate) async fn post(req_id: u64, payload: serde_json::Value, chat: &Arc<Cha
     };
     let refused_post = |code| reply(req_id, NAME, &ChatPostRes::Refused { code });
     // The one call: nothing below sends again, whatever it answers.
+    let started = Instant::now();
     let outcome = api.post_linked(req.target.channel.as_str(), req.thread.as_ref().map(|t| t.as_str()), post_kind(req.kind), &req.name, &req.text).await;
     match outcome {
         Err(e) => refused_post(code_of(&e)),
@@ -235,7 +257,11 @@ pub(crate) async fn post(req_id: u64, payload: serde_json::Value, chat: &Arc<Cha
         Ok((PostOutcome::Limited { retry_after, assumed }, _)) => {
             reply(req_id, NAME, &ChatPostRes::Limited { retry_after_secs: retry_after.as_secs(), assumed })
         }
-        Ok((PostOutcome::Unknown, _)) => reply(req_id, NAME, &ChatPostRes::Unknown),
+        Ok((PostOutcome::Unknown(why), _)) => {
+            let seen = PostLog { target: &req.target, thread: req.thread.as_ref(), kind: req.kind, name: &req.name };
+            log_unknown(req_id, NAME, "chat.postMessage", &why, started, &seen);
+            reply(req_id, NAME, &ChatPostRes::Unknown)
+        }
     }
 }
 
@@ -282,6 +308,7 @@ pub(crate) async fn post_file(req_id: u64, payload: serde_json::Value, chat: &Ar
     let refused_post = |code| reply(req_id, NAME, &ChatPostFileRes::Refused { code });
     let (channel, thread) = (req.target.channel.as_str(), req.thread.as_ref().map(|t| t.as_str()));
     // The one call: nothing below sends again, whatever it answers.
+    let started = Instant::now();
     let outcome = api.post_file_linked(transfer, channel, thread, post_kind(req.kind), &req.name, &file_name, bytes, req.comment.as_deref()).await;
     match outcome {
         Err(e) => refused_post(code_of(&e)),
@@ -292,7 +319,11 @@ pub(crate) async fn post_file(req_id: u64, payload: serde_json::Value, chat: &Ar
         Ok((FileOutcome::Limited { retry_after, assumed }, _)) => {
             reply(req_id, NAME, &ChatPostFileRes::Limited { retry_after_secs: retry_after.as_secs(), assumed })
         }
-        Ok((FileOutcome::Unknown, _)) => reply(req_id, NAME, &ChatPostFileRes::Unknown),
+        Ok((FileOutcome::Unknown(why), _)) => {
+            let seen = PostLog { target: &req.target, thread: req.thread.as_ref(), kind: req.kind, name: &req.name };
+            log_unknown(req_id, NAME, "files.completeUploadExternal", &why, started, &seen);
+            reply(req_id, NAME, &ChatPostFileRes::Unknown)
+        }
     }
 }
 
@@ -309,11 +340,11 @@ pub(crate) async fn delete(req_id: u64, payload: serde_json::Value, chat: &Arc<C
             return Ok(refuse(req_id, NAME, c));
         }
     };
-    let log = |outcome: &dyn std::fmt::Debug| {
-        tracing::info!(channel = req.target.channel.as_str(), ts = req.ts.as_str(), handle = req.name.as_str(), row = req.target.row.as_str(), outcome = ?outcome, "project chat: a session's delete")
+    let log = |outcome: &dyn std::fmt::Debug, why: &str| {
+        tracing::info!(channel = req.target.channel.as_str(), ts = req.ts.as_str(), handle = req.name.as_str(), row = req.target.row.as_str(), outcome = ?outcome, why, "project chat: a session's delete")
     };
     let refused = |code: ChatCode| -> Result<HandlerOutput> {
-        log(&code);
+        log(&code, "");
         Ok(refuse(req_id, NAME, code))
     };
     let service = match admitted(chat, rows, req.target.clone()).await {
@@ -329,6 +360,7 @@ pub(crate) async fn delete(req_id: u64, payload: serde_json::Value, chat: &Arc<C
     };
     // The one call: nothing below sends again, whatever it answers.
     let outcome = api.delete_message(req.target.channel.as_str(), req.ts.as_str()).await;
+    let mut why = String::new();
     let res = match outcome {
         Err(e) => ChatDeleteRes::Refused { code: code_of(&e) },
         Ok(DeleteOutcome::Deleted) => ChatDeleteRes::Deleted,
@@ -336,9 +368,12 @@ pub(crate) async fn delete(req_id: u64, payload: serde_json::Value, chat: &Arc<C
         Ok(DeleteOutcome::Refused(why)) if why == "cant_delete_message" => ChatDeleteRes::Refused { code: ChatCode::NotOwnMessage },
         Ok(DeleteOutcome::Refused(why)) => ChatDeleteRes::Refused { code: post_refusal_code(PostKind::Row, &why) },
         Ok(DeleteOutcome::Limited { retry_after, assumed }) => ChatDeleteRes::Limited { retry_after_secs: retry_after.as_secs(), assumed },
-        Ok(DeleteOutcome::Unknown) => ChatDeleteRes::Unknown,
+        Ok(DeleteOutcome::Unknown(code)) => {
+            why = code;
+            ChatDeleteRes::Unknown
+        }
     };
-    log(&res);
+    log(&res, &why);
     reply(req_id, NAME, &res)
 }
 

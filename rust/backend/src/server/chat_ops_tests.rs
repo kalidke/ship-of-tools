@@ -1026,3 +1026,44 @@ async fn a_row_delete_is_made_once_and_every_outcome_is_told_as_it_is() {
     assert_eq!(cli.ask(n, name, payload).await, json!({"outcome": "limited", "retry_after_secs": 30, "assumed": true}));
     assert_eq!(slack_calls(&fake, "/chat.delete"), 6, "one request for each ask");
 }
+
+/// A post, a file post and a delete that end unknown each log one line with the failure's code, and no line holds the
+/// post's text, the comment or a token.
+#[test]
+fn a_post_that_may_exist_is_logged_once_with_why_and_never_its_text() {
+    let text = super::chat_setup_tests::logged(|| async {
+        let mode = Arc::new(AtomicU8::new(DROP));
+        let fake = slack(&mode).await;
+        let rig = rig(&fake).await;
+        rig.rows.set_agent_handle(&rig.alpha, "alpha-h").unwrap();
+        std::fs::write(rig.folders[0].join("fit.png"), PNG).unwrap();
+        let mut cli = connect(rig.services.clone()).await;
+        let mut said = row_post(&rig.alpha, "C0AAAA", "alpha-h", Some("1700000100.000100"));
+        said["text"] = json!("ZQTEXTZ");
+        assert_eq!(cli.ask(10, op::CHAT_POST, said).await["outcome"], "unknown");
+        let mut shared = file_post(&rig.alpha, "C0AAAA", "row", "alpha-h", "files:fit.png");
+        shared["comment"] = json!("ZQCOMMENTZ");
+        assert_eq!(cli.ask(11, op::CHAT_POST_FILE, shared).await["outcome"], "unknown");
+        let deleted = cli.ask(12, op::CHAT_DELETE, row_delete(&rig.alpha, "C0AAAA", "alpha-h", "1700000000.000100")).await;
+        assert_eq!(deleted["outcome"], "unknown");
+    });
+    let lines = |needle: &str| text.lines().filter(|l| l.contains(needle)).collect::<Vec<_>>();
+    let may_exist = lines("a post may exist");
+    assert_eq!(may_exist.len(), 2, "{text}");
+    for (line, id, step, thread) in [
+        (may_exist[0], 10, "chat.postMessage", "1700000100.000100"),
+        (may_exist[1], 11, "files.completeUploadExternal", "1700000050.000000"),
+    ] {
+        assert!(line.contains(" WARN "), "{line}");
+        for field in [format!("id={id}"), format!("step=\"{step}\""), "why=\"protocol\"".into(), format!("thread=\"{thread}\""), "handle=\"alpha-h\"".into(), "kind=Row".into()] {
+            assert!(line.contains(&field), "{field} is missing from {line}");
+        }
+        assert!(line.contains("waited_ms="), "{line}");
+    }
+    let delete = lines("a session's delete");
+    assert_eq!(delete.len(), 1, "{text}");
+    assert!(delete[0].contains("why=\"protocol\""), "{}", delete[0]);
+    for secret in ["ZQTEXTZ", "ZQCOMMENTZ", "xoxb-"] {
+        assert!(!text.contains(secret), "a log line holds {secret}: {text}");
+    }
+}

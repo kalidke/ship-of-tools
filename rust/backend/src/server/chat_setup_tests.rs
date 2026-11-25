@@ -956,7 +956,7 @@ impl std::io::Write for Sink {
 /// Runs `test` on a runtime of its own whose every thread, its blocking pool included, logs into one capture with this
 /// thread's, and answers what was logged: a line from any part of a job is seen, not only a task's (`test_log`'s
 /// capture is one thread's).
-fn logged<F: std::future::Future<Output = ()>>(test: impl FnOnce() -> F) -> String {
+pub(super) fn logged<F: std::future::Future<Output = ()>>(test: impl FnOnce() -> F) -> String {
     let out = Arc::new(Mutex::new(Vec::new()));
     let sink = out.clone();
     let subscriber = tracing_subscriber::fmt()

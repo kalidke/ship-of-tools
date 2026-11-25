@@ -159,7 +159,18 @@ bot identity, workspace name, read-pacing instant, name cache, member list (guar
    `save_tokens` reads `chat.toml` through `Chat::load`, which logs the no-user-token warning once more for a three-key hub. `Refused` is Slack's definite rejection (a non-5xx status, or `ok: false` with a
    code that is not transient) or a request that never left (`busy`, `invalid`, `destination`); `Limited` is a 429 or
    `ratelimited`; every other case without a valid acknowledgement (transport error, timeout, 5xx, unparsable or `ok`-less
-   body, transient code, `ok` with no `ts`) is `Unknown`. Nothing resends, and a caller that stops waiting does not
+   body, transient code, `ok` with no `ts`) is `Unknown`, and an `Unknown` of a post, a share or a delete carries one fixed
+   code for why, never Slack's text: the HTTP core's (`timeout`, `protocol`, `connect`, `tls`, `redirect`, `too_large`),
+   `http_<status>` for a 5xx, `not_json` for a body that is not JSON, `no_ok` for one with no `ok`, Slack's transient code
+   itself (`internal_error`, `fatal_error`, `request_timeout`, `service_unavailable`), `unknown_error` for an `ok: false`
+   with no code in Slack's form, and `no_ts` for a post's `ok` with no valid `ts` (the join's `Unknown` stays a unit, its
+   caller settles it by a read). The daemon logs one `warn` line for each post or file post that ended `Unknown`,
+   `project chat: a post may exist; Slack's answer did not say`, with `id` (the request's), `op`, `step`
+   (`chat.postMessage`, or `files.completeUploadExternal` for a file post, the only step of one that can end unknown),
+   `why`, `waited_ms`, `row`, `channel`, `thread` (empty at the top level), `kind` and, for a row's post, `handle`; never
+   the text, a comment, a file's name or bytes, a URL or a token
+   (`chat_ops_tests::a_post_that_may_exist_is_logged_once_with_why_and_never_its_text`; the codes by `api_tests`,
+   `a_post_carries_its_author_and_every_unconfirmed_answer_is_unknown`). Nothing resends, and a caller that stops waiting does not
    cancel or repeat the request. Input a post cannot carry (id, name, text over 8 KiB, thread `ts`) is `Err` unsent. Every message text this crate sends (a post's `text`, a share's `initial_comment`) is plain text made Slack's after `post_text_fits` (wire's): escaped (`escape_text`), and linked through one private path, `Api::linked` over `mention::link`, when there is typed text (a row's file share with no comment sends its escaped label alone); the one exception to the escaping is a mention token that path built itself, guarantee 35's; the 8 KiB bound is on the sent size. The daemon's hello says the text is plain (`HelloRes.posts_plain_text`).
 13. **A retry header paces reads, never repeats a mutation.** The `Retry-After` header, in any case, in whole seconds
    (capped at one hour), makes every read refuse as `Limited` without a request until it passes; a missing or invalid
@@ -1006,7 +1017,8 @@ bot identity, workspace name, read-pacing instant, name cache, member list (guar
    before the answer, as a text post's does (unmeasured: `files:write` on a user token, the upload and share made under
    it). Its answer is read by
    the one `acknowledgement` a post's is: `ok` with an id at `files[0].id` is `Posted { file, ts }`, `ts` the share's in
-   the channel (`shares.public` or `shares.private`) when Slack names it, else `None`; `ok` without the id is `Unknown`;
+   the channel (`shares.public` or `shares.private`) when Slack names it, else `None`; `ok` without the id is `Unknown`
+   (`no_file_id`);
    Slack's definite refusal is `Refused`, a 429 `Limited`, anything else `Unknown`; nothing resends. The upload URL and
    the file id are held inside the call and never formatted; `FileOutcome` carries fixed codes, the file id and the
    `ts`. Limits: Slack keeps a PNG's pixels and not its text chunks, so the bytes read back are not the bytes sent; the
@@ -1191,8 +1203,11 @@ bot identity, workspace name, read-pacing instant, name cache, member list (guar
    which any program of the same account can read: among one account's programs this is attribution and
    accident-proofing, not a security boundary (as for posts, `may_post`), so a program of the account can name another
    folder's row and delete the app's messages in that folder's channel. It logs one line a delete (channel, `ts`, handle,
-   row, outcome; never text), and one for a delete refused before it reaches Slack (a request that is no request, a
-   refused admission, a window, a wrong handle); that these lines are written rests on review, no test reads the log.
+   row, outcome, and `why` for an `Unknown`: its code, guarantee 12's; never text), and one for a delete refused before it reaches Slack (a request that is no request, a
+   refused admission, a window, a wrong handle); two of these lines are pinned by a test and the rest rest on review: the line of a delete that ended unknown, `why`
+   included (`chat_ops_tests::a_post_that_may_exist_is_logged_once_with_why_and_never_its_text`), and the line of a delete
+   refused for a handle that holds a line break (`chat_setup_tests::a_log_line_never_carries_a_clients_text_as_structure`);
+   the line of a delete Slack answered, and of the other refusals, no test reads.
    Limits, noted and not fixed: an unknown field of a request is ignored, as for every chat request (`ChatDeleteReq` has
    no `deny_unknown_fields`, so a later option would be dropped by this daemon); what Slack answers a second delete of a
    thread's parent that has replies (it may keep the parent as a placeholder) is not measured, and `cant_delete_message`
@@ -1284,7 +1299,7 @@ Paths are under `rust/chat/src/`.
 | 9 | one send, one request | `http_tests.rs`: `one_send_is_one_request_even_when_the_server_closes_mid_response` |
 | 10 | no secret in a formatted value | `http_tests.rs`: `chat_secrets_stay_inside_daemon_boundaries` |
 | 11 | exact history pages | `api_tests.rs`: `history_pages_exact_query_without_silent_completion`, `a_bound_without_exactly_six_fraction_digits_is_refused_before_sending`, `a_thread_continuation_under_a_lower_bound_alone_is_refused_unsent`, `a_scan_reads_999_and_its_bound_is_its_own`, `a_scan_page_names_its_raw_extremes_and_every_parents_latest_reply`, `a_limited_page_is_a_page_with_its_flag`, `a_replies_scan_at_999_may_hold_1000_with_its_parent`, `a_replies_page_holding_only_its_parent_with_no_more_is_an_end`, `a_scan_rechecks_its_bounds_and_refuses_a_limit_over_999` |
-| 12 | one post, origin kept; a person's own token, nothing of the app | `api_tests.rs`: `a_persons_post_goes_with_their_token_and_names_nothing_of_the_app`, `with_no_person_token_a_persons_post_is_refused_unsent_and_a_refused_token_is_forgotten`, `lost_post_answer_is_unknown_and_never_resent`, `a_post_carries_its_author_and_every_unconfirmed_answer_is_unknown`, `a_post_read_back_through_history_keeps_its_origin`, `a_message_text_is_sent_escaped_and_bounded_escaped` |
+| 12 | one post, origin kept; a person's own token, nothing of the app | `api_tests.rs`: `a_persons_post_goes_with_their_token_and_names_nothing_of_the_app`, `with_no_person_token_a_persons_post_is_refused_unsent_and_a_refused_token_is_forgotten`, `lost_post_answer_is_unknown_and_never_resent`, `a_post_carries_its_author_and_every_unconfirmed_answer_is_unknown`, `a_post_read_back_through_history_keeps_its_origin`, `a_message_text_is_sent_escaped_and_bounded_escaped`; `rust/backend/src/server/chat_ops_tests.rs`: `a_post_that_may_exist_is_logged_once_with_why_and_never_its_text` |
 | 13 | retry header | `api_tests.rs`: `retry_header_paces_reads_and_preserves_mutation_draft` |
 | 14 | deadlines | `api_tests.rs`: `every_operation_ends_at_its_deadline`, `name_lookups_together_end_at_the_names_deadline` |
 | 15 | no raw Slack text | `api_tests.rs`: `slack_text_and_identity_failures_reach_no_caller_raw` |
