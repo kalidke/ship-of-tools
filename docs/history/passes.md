@@ -3477,3 +3477,57 @@ the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the sa
     - What it cost and showed: 82 minutes from the brief to the last commit of the round. The id commit ended at
       178 product lines added, the largest of the day, most of it words and refusals. Nothing ran on a live hub
       or against Slack: a session's pairing is checked on the first candidate that carries it.
+- The first 0.7.4 candidate, and what its first day of use found, 2026-11-24 and 25: v0.7.4-rc.1 was cut from
+    `main` on the maintainer's word once the whole local gate had passed at the commit before the release's, its
+    release workflow's builds, smokes and install smokes passed, and it was installed by archive on the hub that
+    evening and, the next morning, by its own session on one window computer.
+    - The comm matrix ran after the hub's install, not before the cut as the release procedure asks of a
+      candidate with a messaging change: six of six between the hub on the candidate and a window computer on
+      0.7.3.
+    - Seen working in use: a post by the owner's Slack account filed with its mark, and a multi-line mail printed
+      behind the continuation prefix; a session's deletes of its own posts (19 deleted, 11 already gone) and a
+      session's pairing of a project with a channel, after a first try refused for a name the Slack app could
+      not see; and, by the maintainer at the window computer, a page of large tables arriving at once on a
+      return, a previewed file replaced while shown, a drawing on a PDF page that reached the session with its
+      file and page, and text on a PDF page copied through a real clipboard.
+    - Found by that use, each an item for the next candidate: a post that shares a file cannot be deleted
+      (CHAT-DELETE-CANNOT-REACH-A-FILE-POST); a post that ended unknown had not posted, and a session cannot
+      read back whether it did (CHAT-POST-UNKNOWN-NOT-READ-BACK); a Codex session started before the update is
+      not woken by mail and nothing restarts its agent (CODEX-ROWS-BEFORE-AN-UPDATE-NOT-WOKEN); a session's
+      pairing command was stopped by its agent's own permission classifier until the person approved it
+      (CHAT-PAIR-STOPPED-BY-CLASSIFIER); and a PDF copy splits a heading and spaces out subscripts
+      (PDF-COPY-SPLITS-HEADINGS-AND-SUBSCRIPTS). Two asks came of it the same morning, the two landings below.
+- A session lists the Slack workspaces and channels it could pair a project with, 2026-11-25: one commit, asked
+    by the maintainer at 10:03 after the refused pairing above, built by 10:25 by one builder of the cheaper
+    kind, three readings, gated at 11:08.
+    - The first reading found no regression and two faults that mattered. The brief had said a listing with no
+      workspace named is of the asking project's own workspace, where a pairing with none named goes to the
+      default, so a session that listed and then paired by name could pair a channel of the same name in another
+      workspace and be told it had succeeded; and the mark for a channel a mapping holds was not the rule a
+      pairing refuses by. One round made both one rule each, in one place.
+    - The second reading found a test that passed on the old code, and that a settings file that cannot be read
+      failed a listing only after Slack's whole list had been read. The third found nothing to fix.
+    - What it cost and showed: 65 minutes from the ask to the gate, 119 product lines and then 32 in two rounds.
+      The fault that mattered most was the brief's own. Nothing ran against Slack (CHAT-LIST-UNMEASURED); what
+      the readings left is CHAT-LIST-LIMITS.
+- The Chat drawer's channel list as a tree of workspaces, 2026-11-25: three commits, the three landings of a
+    written plan, asked by the maintainer at 09:47 (that choosing a Slack workspace and channel look and work
+    like the window's file and session navigation), planned by 10:16, built by one builder of the cheaper kind,
+    the last gated at 12:22.
+    - The plan found the nav pane's own tree type and row formatter usable as they were, kept the list in the
+      Chat drawer (the nav pane has no place for the words above the list, and a full-height drawer covers it),
+      and left the wire unchanged. Its three questions were taken as it recommended, the maintainer told of
+      each: a tree that opens in place, in the drawer, the filter over the open workspaces.
+    - The first landing (the rows drawn as the nav's, 97 product lines) took three readings: a branch with no
+      test, then the cursor kept on the Connect row where no person had put it, then one operator with no test.
+      The second (each workspace's list kept, a pair's words read against its own workspace, 55 lines) took
+      two.
+    - The third (workspaces as rows that open) came to 179 product lines added and 139 removed where the plan
+      had said about 120. The builder stopped and offered a split; the maintaining session kept it whole,
+      because the first half would have landed a list without the words the paged list had for an empty list,
+      no match, a cut list and a missing channel. A reviewer who had read none of the earlier rounds found one
+      regression and one fault, both on a computer running an older release, whose one list is kept under no
+      workspace, and a test that had silently stopped reaching a second workspace. One round answered them.
+    - What it cost and showed: 2 hours 35 minutes from the ask to the last gate, seven readings over three
+      landings. The reader new to the change found what the reader of five rounds had not. Nothing of it has
+      been seen in a window (CHAT-PICKER-TREE-NOT-SEEN).

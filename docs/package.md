@@ -184,8 +184,18 @@ preview holds a markdown file with large tables arrives late at every switch to 
 PREVIEW-TABLES-REBUILT-AT-EVERY-ARRIVAL, Closed). It was installed by plain installs the same day on the hub (the
 daemon restarted, on the maintainer's word, ending two open REPLs) and by their own sessions on two window computers,
 the second the next morning on the maintainer's word; one more computer's session was asked and had not answered, and
-four computers had no session to ask. `main`
-carries 0.7.4-dev, and past the release it holds that fault's fix, which no person has used: built table sets are
+four computers had no session to ask. v0.7.4-rc.1 (2026-11-24) is an unpublished draft, cut from `main` on the
+maintainer's word after the whole local gate had passed at the commit before the release's; its release workflow's
+builds, smokes and install smokes passed. It carries everything this page says is on `main` past 0.7.3 up to and
+including a session's pairing, and nothing of the two changes of 2026-11-25 named below. It was installed by archive
+that evening by the maintaining session on the hub (the daemon restarted, every row there after it), and the next
+morning, on the maintainer's ask, by its own session on one window computer; the other window computers stay on
+0.7.3. The maintainer used it on 2026-11-25 at that window, and sessions used it on the hub; where this page says
+below that something was used on the candidate, it is that use, and what the use found wrong is in
+`docs/defects.md` (CHAT-DELETE-CANNOT-REACH-A-FILE-POST, CHAT-POST-UNKNOWN-NOT-READ-BACK,
+CODEX-ROWS-BEFORE-AN-UPDATE-NOT-WOKEN, CHAT-PAIR-STOPPED-BY-CLASSIFIER, PDF-COPY-SPLITS-HEADINGS-AND-SUBSCRIPTS).
+`main` carries 0.7.4-rc.2-dev, and past 0.7.3 it holds that fault's fix, which the maintainer used on the candidate
+and reported as passing (a page of twelve large tables, a switch away and back): built table sets are
 kept within a budget so a return to such a session draws them at once, no table is built in the frame that first
 draws an arriving session or uncovers the preview, and a covered preview builds nothing and keeps what it holds;
 and, since 2026-11-22, a frame shapes only the table rows in view and the rows beyond it in the frames that follow,
@@ -211,8 +221,9 @@ computer's daemon, or from the window's own start-up check on a computer that ru
 judged against the install (UPDATE-STATE-NOT-SHOWN and UPDATE-MARK-WINDOW-ONLY-COMPUTER, Closed; drawn on Linux
 under a virtual display only, used by no person; on a Mac that runs its own sessions no way is known to follow the
 ready words, MAC-NO-QUIT-KEEPING-SESSIONS, a note from reading code); and the fix for a fault the maintainer reported
-on 2026-11-22, that markdown files in the preview did not update when new versions appeared, in two halves, neither
-used by a person: the daemon tells a file's burst of changes once, when the burst closes, by whether the file then
+on 2026-11-22, that markdown files in the preview did not update when new versions appeared, in two halves, the first
+used by the maintainer on the candidate (a previewed file replaced while shown drew its new version), the second by
+no person: the daemon tells a file's burst of changes once, when the burst closes, by whether the file then
 exists, so a file replaced by a removal and a create is fetched again where the window had been told only the removal
 (PREVIEW-REPLACED-FILE-TOLD-REMOVED, Closed; it takes effect when a computer's daemon runs it, the wire unchanged),
 and a return to a session sends one read of the file its preview shows and draws the reply only when it differs, so
@@ -445,21 +456,23 @@ handle), so a channel post becomes mail and the row's answer reaches its thread 
 until a hub's `chat.toml` is made delivering, as the manual's configuration page says how (seen once on a live
 hub, 2026-11-24: a person's post filed as mail within a second, an idle Claude session woken by it, and the
 session's answer in the post's thread; a post missed while the hub was down and a Codex session's mail are not
-seen live); and, on `main` since 2026-11-24 and used by no person, a post by the Slack account whose user token the
+seen live); and, on `main` since 2026-11-24 and seen on the candidate that evening (a post by the owner in a thread
+was filed with its mark; another member's post beside it is not seen yet), a post by the Slack account whose user token the
 hub's chat holds is filed as mail whose first line says it is the user's own (the maintainer asked that day that
 a session can tell a post by the owner of its sessions from any other member's, with no Slack id or name in a
 session's rules; the session skills say what such a post may direct and the four things that still take the
 person's word in the session's pane; CHAT-OWNER-MARK-NOT-SEEN-LIVE, open), which rests on two rules for all mail
 that landed with it: a client files only under a valid name, so only the daemon's chat files as `#chat`, and a
 poll prints every line of a message after its first behind `> `, so no message's text can pose as the start of
-another (messaging's contract has the rules and their limits); and, the same day and used by no person, a session
+another (messaging's contract has the rules and their limits); and, the same day, a session
 deletes a message its project's Slack app posted in its own project's channel, with `sot-fe chat delete <ts>`
 (the maintainer asked that day that a session may delete messages in its channel when its owner has explicitly
 asked it to; the daemon admits a delete only for the asking session's own channel, Slack lets the app remove
 only its own posts, and the owner's permission is a rule of the session's skill, which the daemon cannot check;
-the files a message shared are not deleted, CHAT-DELETE-FILES-STAY; nothing of it has run against Slack, and its
-checks are owed on the first candidate that carries it, CHAT-DELETE-UNMEASURED); and, the same day and used by no
-person, a session pairs a project with a Slack channel and unpairs it, with `sot-fe chat pair <session> <channel>`
+the files a message shared are not deleted, CHAT-DELETE-FILES-STAY; a session used it on the candidate at its
+person's ask, 19 of its own posts deleted and 11 already gone, and a post that shared a file cannot be named to it,
+CHAT-DELETE-CANNOT-REACH-A-FILE-POST; the checks still owed are in CHAT-DELETE-UNMEASURED); and, the same day, a
+session pairs a project with a Slack channel and unpairs it, with `sot-fe chat pair <session> <channel>`
 (the channel by its name or its id) and `sot-fe chat unpair <session>`, and the daemon's log says who made each
 pairing, a window or a session by its handle (the maintainer asked that day that a session can pair a project
 folder with a Slack channel itself, and unpair it, without a person at a window; the three landings of a written
@@ -467,8 +480,19 @@ plan: a session may change the folder of any session of its own daemon, but only
 channel with a channel no mapping holds, or by unpairing, so moving a paired folder and taking a missing
 folder's channel stay a person's in the window; a window showing a project with no channel asks again each
 minute, so a session's pairing shows there within a minute; the window's own pairing runs through the same core
-as a session's and behaves as it did; nothing of it has run against Slack, and a pairing by a session is one of
-the checks owed on the first candidate that carries it);
+as a session's and behaves as it did; on the candidate a session, asked by the maintainer, was refused for a name
+the Slack app could not see and then paired its project with a channel he named; an unpairing by a session, mail
+from a channel a session paired and the window's showing of it are not seen); and, on `main` since 2026-11-25 and
+in no candidate, used by no person: a session lists the Slack workspaces this computer connects and the channels
+the Slack app can see in one of them, with `sot-fe chat workspaces` and `sot-fe chat channels` (the maintainer
+asked that day, after that refused pairing, that a session can compare what a person asked for with what exists;
+a listing writes and joins nothing, marks the channels a mapping holds, and with no workspace named is of the
+default, as a pairing is; CHAT-LIST-UNMEASURED, CHAT-LIST-LIMITS); and the Chat drawer's list for choosing a
+project's channel is a tree, every running workspace a row that opens in place with Right and closes with Left,
+its channels beneath it, drawn as the nav pane draws its rows (the maintainer asked that day that choosing a Slack
+workspace and channel look and work like the window's file and session navigation; the three landings of a
+written plan; the paging between workspaces with Left and Right is gone; proved by unit tests only, seen in no
+window, CHAT-PICKER-TREE-NOT-SEEN);
 SlackClaw's pause switch (its PR 18) merges on his word when the
 first channel moves. Also in progress: the agent sees what the user draws (`requirements.md`); the wire's drawing has
 landed, and so has the daemon's picture (the figure with the person's ink, inside the project), written through
@@ -479,15 +503,15 @@ pane over the preview without touching it; the daemon's hello says it takes a dr
 sends one only on a connection whose hello did; and the window shares the drawing with the row's agent and withdraws it,
 each reply on the status line, which builds the drawing for Claude rows; a person has used it through a window (on a
 picture, a blank canvas and a markdown file, 2026-11-11, on a release candidate); a Codex row on Unix takes a drawing
-since 2026-11-22, used by no person yet; and a drawing on a PDF page is on `main` since 2026-11-23, used by no person
-yet: the window takes the shown page as the base, the daemon has the row's kernel draw that page and puts the ink
+since 2026-11-22, used by no person yet; and a drawing on a PDF page is on `main` since 2026-11-23, used by the
+maintainer on the candidate (a Claude session was told the file and the page and saw his ink where he drew it): the window takes the shown page as the base, the daemon has the row's kernel draw that page and puts the ink
 over it, and the agent is told the file and the page (one drawing per session, so a stroke on another page replaces
 it; `docs/defects.md`, DRAW-ON-PDF-PAGES, open); and, the same day, a person selects text on a PDF page: a drag over
 the shown page marks whole words and the pane's copy chord copies them, from the page's words and their boxes, which
 the kernel's PDF plugin reads with the text tool beside its page tool and the daemon serves only as words (five of
 the seven landings of a written plan; the hosted run fetched Julia's copy of the tools and read a page's words on
-Ubuntu, macOS and Windows; drawn in the window's fixtures under a virtual display only, used by no person, never run
-through a real clipboard). The agent does not see that selection yet: the last two landings, the share and the
+Ubuntu, macOS and Windows; the maintainer selected and copied on the candidate, on Windows, the first copy through a
+real clipboard, and the text came whole with two differences from the page, PDF-COPY-SPLITS-HEADINGS-AND-SUBSCRIPTS). The agent does not see that selection yet: the last two landings, the share and the
 daemon's check of it, are unbuilt (`docs/defects.md`, PDF-TEXT-SELECTION, open). Also in
 progress: the daemon test run toward the maintainer's four minutes, and one shared test tool.
 The gate runs bash 3.2 per changed suite and its longest jobs first (a whole run about 4 minutes at 20 jobs), and

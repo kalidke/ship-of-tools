@@ -470,6 +470,15 @@ owned by `docs/CLAUDE.md`.
 
 ## messaging
 
+- **CODEX-ROWS-BEFORE-AN-UPDATE-NOT-WOKEN** [session] Seen by a session on 2026-11-25, the morning after a hub moved to the
+  first candidate with the Codex wake (CODEX-WAKE-QUEUE-LIVE): mail filed to a Codex row that had sat idle since before the
+  update started no turn, and the daemon logged that the row has unread mail and no conversation to ask, its session having
+  named none in this run. A Codex session names its conversation through a hook that only a leg the new daemon started
+  carries, with its variable; a leg started before the update never does, so every Codex row that was running through an
+  update stays unwoken until its agent is started again, and only that log line says so. Nothing tells the sender or the
+  person, and no command starts a Codex row's agent again under the current daemon (the account move is Claude's only); by
+  the contracts, ending Codex in the row and opening the row again from a window starts a new leg, and the conversation is
+  resumed inside Codex, which no one has seen done. Neither a notice nor a restart is built or decided.
 - **EDITOR-MODE-TYPED-AS-COMMANDS** [note] The free-prompt test (`comm/wake/screen.rs`) does not read Claude Code's
   editor mode. In its vim editor mode left in NORMAL mode, the wake's line and a page reply are read as commands: the
   typed-line gate withholds Enter, but the box can keep an altered remnant, without its mark, that the person's next
@@ -595,6 +604,12 @@ owned by `docs/CLAUDE.md`.
 
 ## agents
 
+- **CHAT-PAIR-STOPPED-BY-CLASSIFIER** [session] Seen on 2026-11-25, at a session's first pairing in use: its person asked a
+  Claude session to pair its project with a channel, and Claude Code's automatic permission mode refused the session's
+  `sot-fe chat pair` as a destructive or unwanted action until the person approved it in that session. So a verb the skill
+  `sot-chat-pair` tells a session to run is stopped before the product runs, where the session runs in that mode. What an
+  install or the skill may do about it is undecided: a person's permission settings are theirs, and the committed settings of
+  this repo cover only its own commands.
 - **CLEAR-REMOVES-ANOTHER-WINDOWS-SHARE** [note] From reading code, 2026-11-23; never seen. The daemon's clear
   (`agents/selection.rs`, `apply` under `publish`) removes the row's selection whoever set it, and a window's share
   (`rust/frontend/src/ui/preview/share.rs`) sends a clear by its own record of what the row holds from it. That record
@@ -876,6 +891,22 @@ owned by `docs/CLAUDE.md`.
 
 ## fe-ui
 
+- **CHAT-PICKER-TREE-NOT-SEEN** [note] The Chat drawer's channel list as a tree of workspaces (built 2026-11-25 at the
+  maintainer's ask, fe-ui's contract, the channel picker) is proved by unit tests only: no person has seen it in a window. To
+  look at on the first candidate that carries it: the plain rows are dim on the drawer's ground, 4.5 to 1 by arithmetic;
+  the words above the list name the workspace the cursor is in, so they change length as the cursor crosses workspaces and
+  the list can move by a row; a held list is not read again while the list stays open; the sentence for a list cut at its
+  bound is the last row under its workspace, after up to 1,000 channels; a pasted channel id with the cursor on `No channel
+  for this project` or on the Connect row goes to a workspace nothing on screen names; every row is built and formatted
+  again at each key. From the readings, not faults: the contract cites none of the tests for the keys that do nothing and for
+  an older computer's list asked again, and three simplifications were left (`pick_of` repeats `workspace_of`, the open set
+  could fold into the lists, a loop exists only to undo `set_flat`'s collapse).
+- **PDF-COPY-SPLITS-HEADINGS-AND-SUBSCRIPTS** [person] The maintainer, 2026-11-25, on a window running the first 0.7.4
+  candidate on Windows, selected a section heading and the sentence under it on a PDF page and copied them: the first copy
+  of a PDF selection through a real clipboard. The text came whole, Greek letters included, with two differences from the
+  page: the heading's number and its title, one line on the page, were two lines; and each subscript was a word of its own
+  with a space before it, where the text tool's plain output joins it to its letter. Not diagnosed; the copy is built
+  from the page's words and their boxes (PDF-TEXT-SELECTION).
 - **SHARE-CLEAR-FAILURE-NOT-TOLD** [note] From reading code, 2026-11-23; never seen. A withdrawal the daemon fails is
   not told and not tried again: `SelectionShare::on_reply` (`rust/frontend/src/ui/preview/share.rs`) gives a clear's
   reply no status line whatever it says, and by then the share holds that nothing is wanted and nothing is held, so
@@ -935,8 +966,10 @@ owned by `docs/CLAUDE.md`.
   and the hello's `serves_page_words`. The window's network side asks only a daemon whose hello says it serves them
   and answers each request as one typed event (fe-net's contract); the window's owner of a page's words and its
   selection (fe-ui's contract) is built, so a person can drag over a PDF page, see the words marked and copy them with
-  the copy chord (used by no person yet; a native fixture runs the drag, the chord's resolution and the copy through
-  the real window, and a frame's marks as the pass hands them to the renderer). The agent does not see the selection
+  the copy chord (a native fixture runs the drag, the chord's resolution and the copy through the real window, and a
+  frame's marks as the pass hands them to the renderer; the maintainer used it on 2026-11-25 on a window on Windows, and
+  what the copy held is PDF-COPY-SPLITS-HEADINGS-AND-SUBSCRIPTS; he also asked the session what he had selected, which it
+  could not say). The agent does not see the selection
   until the plan's last landing. Measured that day on Linux: poppler 22.02, 26.01 and Julia's copy (25.10) give the
   same word boxes, 10 to 70 ms a page, and Julia's copy holds `pdftotext` beside `pdftoppm` and runs; on macOS and
   Windows the copy's wrappers declare the program and nothing has run it there. Not built: the selection's page and
@@ -946,8 +979,9 @@ owned by `docs/CLAUDE.md`.
   as well, but not if it delays 0.7.1 significantly. He asked for it for 0.7.3 (2026-11-19, to draw on a PDF in the
   preview pane), which is the go-ahead. Built 2026-11-23, with one drawing per session as for pictures: the window
   takes a shown page as a base, keyed by its file and page, and the daemon has the row's kernel draw that page and
-  puts the ink over it (fe-ui's, files' and agents' contracts). Open until a person has drawn on a page through a
-  window: only unit tests with a stand-in kernel prove it, on Linux; macOS and Windows are unmeasured. Not built: a
+  puts the ink over it (fe-ui's, files' and agents' contracts). The maintainer drew on a page on 2026-11-25, through a
+  window on Windows whose hub runs on Linux, and the Claude session was told the file and the page and saw his ink over
+  that page where he had drawn it; a Codex session, and a kernel on macOS or Windows, are unmeasured. Open for what is not built: a
   drawing kept for each page of a file (a stroke on another page replaces the session's drawing). A limit, from
   reading: a PDF rebuilt in place while one of its pages holds a drawing is shown again with the ink over the new
   page at the same place, and nothing is shared again, so the agent holds the picture of the old page until the next
@@ -1350,6 +1384,26 @@ owned by `docs/CLAUDE.md`.
 
 ## chat
 
+- **CHAT-DELETE-CANNOT-REACH-A-FILE-POST** [session] Seen by a session on 2026-11-24, on the first candidate that carries the delete,
+  when its person asked it to remove its old posts from its channel: `sot-fe chat post --file` prints the file's id and no message
+  time, and `sot-fe chat delete` takes a message's time, so a post that shared a file cannot be named to the delete. The session's
+  19 text posts were deleted and its 91 posts of pictures and pages stayed, each thread under a deleted post keeping Slack's
+  placeholder while they remain. The session asked that the file post print its message's time, or that the delete take a file's
+  id; neither is built or decided (what Slack does with the file is CHAT-DELETE-FILES-STAY).
+- **CHAT-POST-UNKNOWN-NOT-READ-BACK** [session] Seen by a session on 2026-11-25 on a hub running the first 0.7.4 candidate: one
+  `sot-fe chat post` into a thread ended `unknown` (exit 3) after the daemon had waited five seconds for Slack, where the posts
+  before and after it took under a third of a second; the post had not been made, and the same text sent a minute later
+  posted. The verb said what the contract says. Two things are missing: the daemon's log has only its slow-request line for
+  that post, so why it ended unknown (a timeout, a reset, which step) cannot be read back; and a session told not to send
+  again has no command that reads its channel or thread, so it cannot learn from the product whether its post exists (that
+  session read the thread with another tool). Neither is built or decided.
+- **CHAT-LIST-LIMITS** [note] From the three readings of a session's listing, none seen in use: a `chat.toml` that is valid TOML
+  but that the load refuses is marked from its raw text, while every pairing then answers `not_saved`; a channel held only by
+  a mapping whose folder is gone is told as held by a project; a listing does not tell a session its own project's channel
+  from another project's (both are `taken`); no test pins the line logged for a file that cannot be read; and where two
+  connected workspaces list one channel id, a pairing the contracts call `unchanged` or `channel_taken` can be answered
+  `already_paired` (refused either way). A change of the default workspace by hand between a listing and its pairing is
+  closed only by the skill's rule to pass the listed workspace's id.
 - **CHAT-LIST-UNMEASURED** [note] A session's listing of the Slack workspaces and channels it could pair a project with (`sot-fe chat
   workspaces` and `sot-fe chat channels`, the daemon's `chat.channels` with `by`, chat guarantee 30), asked by the maintainer on 2026-11-25
   after a first pairing in use was refused for a channel name the hub's Slack app could not see, is proved against the fake Slack only: no
@@ -1387,7 +1441,11 @@ owned by `docs/CLAUDE.md`.
   (4) a post that shared a file, deleted: whether Slack accepts it (`cant_delete_message` for such a message would also be told
   `not_own_message`), and what became of the file, looked for in the channel and, for a file also shared in a second channel, in
   both channels. The words of `not_own_message` claim no more than that Slack would not let the app delete the message; a
-  workspace whose administrators restrict who may delete gives the same code. Close this item when these have been seen.
+  workspace whose administrators restrict who may delete gives the same code. Seen so far, by a session on a live hub on
+  2026-11-24, in its own channel and not a throwaway one: of (1), 19 of the app's own text posts in threads deleted (`deleted`);
+  of (3), 11 posts a person had already deleted in Slack answered `gone`, exit 0. Not seen: (2), a thread parent with replies,
+  and (4), which the command cannot reach at all (CHAT-DELETE-CANNOT-REACH-A-FILE-POST). Close this item when these have been
+  seen.
 - **CHAT-DELETE-FILES-STAY** [note] The command deletes the message and no file; what Slack then does with a file the message
   shared (removes it, unshares it, or leaves it with no message to show it in) is not measured. A delete of the files themselves is
   not built, because a right file delete needs more than the message's delete: (1) Slack's file
@@ -1572,7 +1630,9 @@ owned by `docs/CLAUDE.md`.
   guarantees 12 and 24). Not seen live: no hub has filed marked mail, so that Slack's `auth.test` under a real user token
   names the account's `user_id` and that the same id is a post's `user` is measured only against the fake. Check at a
   person's first post from Slack on a delivering hub; close this item when the mail reads marked there and a member's
-  post beside it does not. The limits are the contract's, guarantee 24.
+  post beside it does not. The limits are the contract's, guarantee 24. Seen on 2026-11-24 on a hub running the first
+  candidate that carries it: a post in a thread by the account whose user token the hub holds was filed with the marked
+  first line. Not seen yet: another member's post on that candidate, filed without the mark.
 
 ## records
 
