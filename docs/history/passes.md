@@ -3457,3 +3457,21 @@ the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the sa
       estimate of the daemon's lines was off by more than two, which a plan that names its functions did not
       prevent. Nothing ran on a live hub. Beside it, a hosted job failed once in its own setup and passed at its
       second run (HOSTED-RENDERER-CHECK-SILENT-ONCE).
+- A session pairs a project with a Slack channel, by its id or its name, and a window shows it within a minute,
+    2026-11-24: three commits, the second and third landings of the same plan, built from 15:50 to 17:12 by the
+    same builder.
+    - Pairing came as one build of 159 product lines, past its line of 150, and the builder split it itself:
+      pairing by the channel's id, with the dry run of the edit before any join in Slack, and pairing by its
+      name. Its tests were written with the code and shown red by breaking each line afterwards.
+    - One reading found no regression and no way for a session to make a pairing the plan refuses, and six
+      faults: a pairing that had been written could be answered as failed, because the reply came from a second
+      read; a refusal could print that a folder was already paired with nothing; two rules had no test that
+      failed without them; a name typed in capitals was read as an id; and a workspace id that is not connected
+      was worded as the chat not running. One round answered them, and made the reply from what the edit wrote,
+      which deleted the second read. Because that round changed code the window's own pairing shares, a second
+      reading was asked for regressions alone.
+    - The window's part is one product line, with a test written first and seen red: a project with no channel
+      is asked for again each minute, since no watch tells a window that a session paired it.
+    - What it cost and showed: 82 minutes from the brief to the last commit of the round. The id commit ended at
+      178 product lines added, the largest of the day, most of it words and refusals. Nothing ran on a live hub
+      or against Slack: a session's pairing is checked on the first candidate that carries it.
