@@ -257,8 +257,10 @@ Waking:
   before its row's pairs: the same login (a Codex row has no named account) and no mail identity or selection of the
   row's. `<id>` is the conversation the row's session last named in its binding file (`<state>/codex-thread`, agents'
   guarantee 7). That file is removed as each leg starts and a row reads Ready only once its leg has lived 2 s, so an
-  id read from a Ready row's file is that run's own. The file is read only for unread mail (to see whether mail
-  already asked for now has another conversation, and once after the Ready check before a request), only as a regular
+  id read from a Ready row's file is that run's own. The wake reads the file only for unread mail (to see whether mail
+  already asked for now has another conversation, and once after the Ready check before a request); rows' listing reads
+  it too, through the same bounded read, for every Ready Codex row whose state folder has no `selection-hook` marker
+  (below); the file is read only as a regular
   file of at most 64 bytes and never waiting (platform's `read_regular` after a check that the name is no link): a
   fifo, a device, a directory, a link or a longer file at that name is no binding and costs the look nothing. The
   link check and the open are two steps, so a name replaced by a link between them is read through it (about one
@@ -293,7 +295,15 @@ Waking:
   conversation as its input; that is one extra turn for each unread episode that begins during a turn, and it does
   not repeat (the extra turn files no mail, and a further request needs further mail). A request to a conversation the person has left waits there: between a
   switch of conversation and the session's next hook the binding names the one just left. A row whose plugin hooks did
-  not run names no conversation and is not woken. A request while an approval question is open, and one to a
+  not run names no conversation and is not woken.
+  That fact is `wake::codex::not_woken_by_mail(state_dir)`, true when the state folder has no `selection-hook` marker
+  (agents' `selection::leg_hooked`: `ccx` writes the marker only for a leg launched with the row's hooks, and the
+  producer removes it before each leg) and the binding names no conversation. The marker is read first, one `stat`. Every
+  Codex leg that was running before its computer moved to a daemon that sets the binding variable is such a leg for its
+  whole life. Rows' listing sets `WorkspaceListEntry.not_woken_by_mail` for a Ready Codex capsule row for which it holds,
+  and the window's Sessions mode shows `[not woken by mail]` after the row's phase tag; a send's result is not changed
+  (decision 0031). A Codex leg whose hooks never run but whose marker exists is not marked; the wake's log is its one
+  sign. A leg launched with the hooks is marked until `ccx` stamps its marker, which it does only just before it execs Codex (after the join, the context, the handoff line and a probe of Codex's help), while the row reads Ready 2 s into the leg's life: a slow start is listed marked, and by `sotd status`, for that time. The daemon keeps when the agent started (each start is a run whose id is a UUIDv7, minted just before the agent is forked, which the observer hands to the row's phase cell and the cell keeps) but does not compare it with the clock, and no age bound is built, so this is a limit, not a rule. A restart of a hooked session marked in that window ends the leg before Codex has started (the producer removed the old marker and binding, and the marker is stamped immediately before Codex is exec'd), so no conversation is lost, at the cost of one more start; and the success line's look at the mark again can read the mark in the same window. A request while an approval question is open, and one to a
   conversation later resumed by its id, are unmeasured, and no live row has been woken this way yet
   (docs/defects.md: CODEX-WAKE-QUEUE-LIVE). No Windows form: `ccx` is bash. Tests: `wake/codex_tests.rs` (the
   command's arguments, folder and home; the definite refusals; the unclear outcomes; the bound and the tree; the fired
@@ -305,7 +315,9 @@ Waking:
   `mail_to_a_codex_row_that_is_not_ready_asks_nothing` (a row never started whose folder holds an id),
   `a_codex_queue_refused_before_it_ran_is_not_tried_again_for_newer_mail` and
   `a_codex_queue_that_hangs_holds_no_other_row_and_ends_with_its_tree_at_the_bound` (over the hold point
-  `comm.wake.codex.queue`).
+  `comm.wake.codex.queue`); the mark's fact is pinned by `wake/codex_tests.rs`'s
+  `a_leg_without_the_hooks_or_a_conversation_is_not_woken_by_mail` and its listing by `comm_wake`'s
+  `a_codex_session_that_names_no_conversation_is_listed_not_woken_by_mail_until_it_does` and `rows/ops/list_not_woken_tests.rs`'s `only_a_ready_codex_session_with_neither_marker_nor_binding_is_marked`.
 - A busy session needs no typing: its end-of-turn check (the Stop hook, through `sotd comm unread`) does not let a turn
   end while unread mail waits, once per remainder (Reading's tick rule). A busy Codex row is still asked through its
   queue (the limit above). The Linux `comm_cli` fixture runs the shipped Codex prompt and Stop commands around a

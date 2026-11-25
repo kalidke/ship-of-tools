@@ -39,5 +39,6 @@ pub(in crate::ui) fn ws_info(slug: &str, session_name: &str) -> crate::net::tran
         runtime: String::new(),
         phase: None,
         account: String::new(),
+        not_woken_by_mail: false,
     }
 }

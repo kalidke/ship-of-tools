@@ -357,6 +357,15 @@ its name:
   so `comm/tests/test-status-floor.sh` checks variable names against 1.6 keywords in source. That scan leaves
   other syntax, built-in functions and their behavior, and indirectly supplied programs unchecked
   (docs/defects.md: JQ-16-FLOOR-CHECKED-BY-NAMES-ONLY).
+- `workspace.list` marks a Ready Codex capsule row `not_woken_by_mail` when messaging's
+  `wake::codex::not_woken_by_mail` holds for its state folder (no `selection-hook` marker, so its agent was launched
+  without the row's hooks, and a binding that names no conversation). The field is absent from every other entry, so an
+  older reader reads false and an older daemon marks nothing. The two file reads (a `stat` of the marker, and for an unmarked row
+  one bounded read of the binding) run on a blocking thread of their own, as the registry's read does. The window shows the
+  mark in Sessions mode. Limit: a leg launched with the hooks is marked until its launcher stamps the marker (messaging's
+  contract, Waking, says how long, and that the daemon keeps the leg's start time and does not compare it with the clock). Tests: `tests/comm_wake.rs`,
+  `a_codex_session_that_names_no_conversation_is_listed_not_woken_by_mail_until_it_does`, and `ops/list_not_woken_tests.rs`'s
+  `only_a_ready_codex_session_with_neither_marker_nor_binding_is_marked` (the Ready and Codex conditions).
 - Two reader paths. `workspace.list` carries each row's `agent_state`, `agent_summary` and `agent_status_at`, read fresh
   from the registry through the row's bound handle and only from an entry of this host (`work_state::shown_of`); the
   work-state poll compares the same answer every 1.5 s and publishes `workspace.changed` (action `agent_state`) when what
@@ -500,7 +509,7 @@ folder trust: `under_declared_prefix`, `claude_prepared_within`, `effective_clau
 `Repl`); files (`FilesMode`, `ConceptStore`, `Watcher`); messaging (`edit_entry`,
 `read_comm_agents`, `remove_comm_agents_for_workspace`, `stamp_last_seen`, `last_joiner`, the stamp's parser and
 formatter `epoch_of` and `iso8601_utc_from_secs`, the wake's `dialog_of`,
-`startup_of`, `type_if_free`);
+`startup_of`, `type_if_free`, the list's `wake::codex::not_woken_by_mail`);
 platform (dirs, the declared host, durable writes, locks); containment (`Signal`); pages (the `PageRow`, `PageOption`
 and `RowRef` data shapes its server-built closures return).
 

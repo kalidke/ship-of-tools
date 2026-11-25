@@ -75,6 +75,15 @@ again no sooner than ten minutes later), or when the command fails or runs past
 10 seconds (no second request is made for that batch). A request made to a
 conversation you have just left waits in that conversation.
 
+A Codex session whose agent started without Ship of Tools' Codex hooks never
+says which conversation it is in, so mail to it starts no turn and waits for its
+next `comm-poll.sh`, which comes only when something else starts a turn there.
+That is every Codex session that was already running when its computer moved
+from 0.7.3 or earlier to this version, and one started where the Codex hooks
+are not installed or Codex does not accept `--no-daemon`. Sessions mode marks
+such a session `[not woken by mail]`. Mail wakes it once its agent is started
+again with the hooks.
+
 ## What travels with it
 
 The same registry that routes messages carries each session's work state

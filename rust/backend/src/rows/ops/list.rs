@@ -11,7 +11,8 @@ use crate::comm::registry::registry::read_comm_agents;
 use crate::rows::handle::bound_handle;
 use crate::rows::work_state::{read_clear, shown_of};
 use crate::rows::Workspaces;
-#[cfg(test)]
+use std::sync::Arc;
+use crate::rows::workspace::Phase;
 use crate::rows::Workspace;
 
 /// A Pluto handle that never started a server, for the tests that list rows.
@@ -33,6 +34,11 @@ pub async fn handle_workspace_list(
     let comm_agents = tokio::task::spawn_blocking(read_comm_agents).await.ok().flatten();
     let host = crate::rows::store::declared_host();
     let ws_list = workspaces.list();
+    // The Ready Codex rows mail does not wake, read on a blocking thread too: the state folder's marker and binding.
+    let unwoken = {
+        let (rows, root) = (ws_list.clone(), sot_platform::host::state_dir::sot_state_dir());
+        tokio::task::spawn_blocking(move || root.map(|root| not_woken_ids(&rows, &root)).unwrap_or_default()).await.unwrap_or_default()
+    };
     // Pure memory: kept current by the row's lifecycle observer, no lane query.
     let mut entries: Vec<WorkspaceListEntry> = ws_list
         .iter()
@@ -90,6 +96,7 @@ pub async fn handle_workspace_list(
                 phase,
                 activation_error: ws.activation_error(),
                 account: ws.account(),
+                not_woken_by_mail: unwoken.contains(&ws.workspace_id),
             }
         })
         .collect();
@@ -106,6 +113,16 @@ pub async fn handle_workspace_list(
         Frame::res(req_id, op::WORKSPACE_LIST, serde_json::to_value(res)?),
         None,
     )])
+}
+
+/// The ids of the rows that are Ready Codex sessions mail does not wake (messaging's `not_woken_by_mail`). Blocking: it
+/// reads each such row's state folder under `root`.
+fn not_woken_ids(rows: &[Arc<Workspace>], root: &std::path::Path) -> std::collections::HashSet<String> {
+    rows.iter()
+        .filter(|ws| ws.agent() == "codex" && ws.runtime == "capsule" && ws.shown_phase() == Phase::Ready.as_wire_str())
+        .filter(|ws| crate::comm::wake::not_woken_by_mail(&crate::rows::spawn::state_root::state_dir_for(root, &ws.workspace_id)))
+        .map(|ws| ws.workspace_id.clone())
+        .collect()
 }
 
 /// `workspace.activate` — builds the ack. The connection-local state this
@@ -161,3 +178,7 @@ mod agent_str_host_filter_tests;
 #[cfg(test)]
 #[path = "list_canonical_root_tests.rs"]
 mod canonical_root_tests;
+
+#[cfg(test)]
+#[path = "list_not_woken_tests.rs"]
+mod not_woken_tests;

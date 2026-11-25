@@ -96,6 +96,9 @@ pub struct WorkspaceInfo {
     /// default directory — the common case, and the only value from a
     /// daemon that predates the field.
     pub account: String,
+    /// The wire's `not_woken_by_mail`: a Ready Codex session whose agent started without Ship of Tools' Codex hooks and
+    /// names no conversation, so mail to it starts no turn. False from a daemon that predates the field.
+    pub not_woken_by_mail: bool,
 }
 
 impl WorkspaceInfo {
@@ -464,6 +467,7 @@ pub(crate) fn on_workspace_list(
                     runtime: w.runtime,
                     phase: w.phase,
                     account: w.account,
+                    not_woken_by_mail: w.not_woken_by_mail,
                 })
                 .collect();
             emit(IncomingEvt::Workspaces { workspaces });

@@ -244,6 +244,11 @@ pub struct WorkspaceListEntry {
     /// appends `·<name>` only when this is non-empty.
     #[serde(default)]
     pub account: String,
+    /// True for a Ready Codex session whose agent was started without Ship of Tools' Codex hooks and has named no
+    /// conversation, so mail to it starts no turn (messaging's contract, Waking). Absent when false, so every other
+    /// entry's wire shape is unchanged and a daemon or window that predates the field reads false.
+    #[serde(default, skip_serializing_if = "crate::chat::is_false")]
+    pub not_woken_by_mail: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

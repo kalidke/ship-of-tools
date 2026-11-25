@@ -85,6 +85,7 @@ fn ws(phase: Option<&str>, account: &str) -> WorkspaceListEntry {
         phase: phase.map(str::to_string),
         activation_error: None,
         account: account.to_string(),
+        not_woken_by_mail: false,
     }
 }
 

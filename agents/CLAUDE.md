@@ -351,7 +351,7 @@ of each.
   supervisor then exits 70 on the held fence has written the marker from its own argv over the live leg's, which is wrong
   only when the two argvs differ): it exists exactly when the row's kind is `claude`, the leg's
   environment carries `SOT_SELECTION_FILE` and its argv's `--settings` carries the selection hook on UserPromptSubmit
-  (`layer::carries_selection_hook`); it is removed otherwise. `publish` reads the marker only to choose `shared` or `held` for an accepted selection; a kind that takes none answers `no_agent` whatever the marker says.
+  (`layer::carries_selection_hook`); it is removed otherwise. `selection::leg_hooked` is the one reading of the marker's meaning, that the row's current leg was launched with the row's hooks. `publish` reads it only to choose `shared` or `held` for an accepted selection (a kind that takes none answers `no_agent` whatever the marker says); the second reader is messaging's `wake::codex::not_woken_by_mail`, which marks a Ready Codex row whose leg has neither the marker nor a binding.
   A supervisor started before the release has no marker. The marker describes the last launch: between a leg's exit and
   its restart, or after a downgrade and an upgrade that adopts the older supervisor, it can describe another leg; and a
   failed write or removal (logged as not brought up to date) leaves the earlier launch's marker. A reset Claude leg in the same supervisor runs with that supervisor's

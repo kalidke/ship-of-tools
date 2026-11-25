@@ -164,7 +164,11 @@ modes. Details of each built-in mode are on the [Modes](modes.md) page.
   process has run for it yet), `[terminal]` (it ended and will not restart),
   `[unreachable]` (the backend could not query it), or `[queued]` (the backend
   has just started and the row waits its turn: the backend starts its sessions
-  a few seconds apart). The row is colored by the
+  a few seconds apart). A Codex session can also show `[not woken by mail]`: its
+  agent was started without Ship of Tools' Codex hooks (for example, it was
+  already running when its computer moved to this version), so mail sent to it
+  waits for its next turn instead of starting one; see
+  [Messaging](messaging.md). The row is colored by the
   agent's [work state](../concepts/work-state.md) and ends with the reason the
   agent last reported.
 - The bottom border of the window shows the frontend (`fe`) and backend (`be`)

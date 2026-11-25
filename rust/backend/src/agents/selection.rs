@@ -27,6 +27,12 @@ pub(crate) const FILE_NAME: &str = "selection.json";
 /// The marker's name in the row's state folder: present when the row's current agent was started with the hook.
 pub(crate) const MARKER_NAME: &str = "selection-hook";
 
+/// Whether the row's current leg was launched with the row's hooks: the marker is in its state folder. Agents' meaning;
+/// the selection's publisher and messaging's mark both read it here.
+pub(crate) fn leg_hooked(state_dir: &Path) -> bool {
+    state_dir.join(MARKER_NAME).exists()
+}
+
 /// Records, in the row's state folder, whether the leg just started hears a selection: the marker exists when the row's
 /// agent is Claude, the leg carries `SOT_SELECTION_FILE` in `env`, and its `argv` carries the selection hook; it is
 /// removed otherwise. A Codex leg clears its marker in the producer and ccx owns its write at native exec.
@@ -167,7 +173,7 @@ fn publish(
 ) -> Result<SelectionState, &'static str> {
     let sets = checked.is_some();
     let file = folder.join(FILE_NAME);
-    let hooked = folder.join(MARKER_NAME).exists();
+    let hooked = leg_hooked(folder);
     let mut map = setters();
     let result = apply(&file, checked, hooked);
     match (&result, sets) {

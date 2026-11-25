@@ -102,6 +102,7 @@ use crate::rows::Workspaces;
 
 mod attempt;
 mod codex;
+pub(crate) use codex::not_woken_by_mail;
 pub(crate) mod screen;
 mod unread;
 

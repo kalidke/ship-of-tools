@@ -319,7 +319,7 @@ pub fn post_text_fits(text: &str) -> bool {
     escape_text(text).len() <= MAX_TEXT
 }
 
-fn is_false(b: &bool) -> bool {
+pub(crate) fn is_false(b: &bool) -> bool {
     !*b
 }
 

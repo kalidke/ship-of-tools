@@ -464,6 +464,31 @@ async fn a_codex_row_that_names_no_conversation_is_asked_nothing_until_it_does()
     row.env.kill_daemon_bounded().await;
 }
 
+/// Whether `workspace.list` marks the row not woken by mail.
+async fn listed_not_woken(row: &mut Row, ws: &str) -> bool {
+    let id = row.next_id;
+    row.next_id += 1;
+    let payload = call(&mut row.conn, id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
+    find_row(&payload, ws).and_then(|r| r["not_woken_by_mail"].as_bool()).unwrap_or(false)
+}
+
+/// A Ready Codex session whose leg has neither the hook marker nor a binding is listed `not_woken_by_mail` (the stand-in
+/// plus the real `ccx` with no plugin cache writes no marker); once its session names a conversation it is not. The
+/// Claude row of the harness is never marked. Red before the change: the list has no such field.
+#[tokio::test]
+async fn a_codex_session_that_names_no_conversation_is_listed_not_woken_by_mail_until_it_does() {
+    let _serial = SERIAL.lock().await;
+    let mut row = start_full("cw-codex-marked", None, false, &[], &[], (0, 0), CODEX).await;
+    let cx = add_codex_row(&mut row, &[]).await;
+    let main = row.ws.clone();
+    assert!(listed_not_woken(&mut row, &cx.ws).await, "an unhooked Codex session with no binding is not marked");
+    assert!(!listed_not_woken(&mut row, &main).await, "a Claude session is marked");
+    cx.bind(&format!("{THREAD}\n")).await;
+    assert!(!listed_not_woken(&mut row, &cx.ws).await, "a session that named its conversation is still marked");
+    assert!(!listed_not_woken(&mut row, &main).await, "a Claude session is marked");
+    row.env.kill_daemon_bounded().await;
+}
+
 /// Rule 7. Mail to a Codex row that is not Ready asks nothing: neither the launcher nor the binary runs. The row was
 /// never started; its state folder holds a conversation id, as an ended run's would, so only the Ready rule keeps the
 /// request back (with the Ready check removed from the look this test is red on the launcher's question).

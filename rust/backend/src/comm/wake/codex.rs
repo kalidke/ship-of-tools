@@ -104,6 +104,14 @@ fn binding(state_dir: &Path) -> Result<String, &'static str> {
     }
 }
 
+/// Whether a Codex session in `state_dir` can never name its conversation: its leg was not launched with the row's hooks
+/// (no marker, agents' `leg_hooked`) and its binding names none. The marker is read first, one `stat`; a hooked leg needs
+/// nothing more. Rows' listing marks a Ready such session (`not_woken_by_mail`), and the wake's log says the same for
+/// mail waiting on it.
+pub(crate) fn not_woken_by_mail(state_dir: &Path) -> bool {
+    !crate::agents::selection::leg_hooked(state_dir) && binding(state_dir).is_err()
+}
+
 /// Blocking: a status round trip to the row and, when a request goes, the queue command's whole run. The command is
 /// the launcher a Codex leg runs (agents' recipe), in the row's folder, under the daemon's environment without the
 /// nesting variables: what a leg inherits before its row's pairs, so the same login (a Codex row has no named account)

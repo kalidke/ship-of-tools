@@ -38,3 +38,17 @@ fn a_list_entry_grows_by_its_last_activity_and_stays_additive() {
     let older: OlderEntry = serde_json::from_value(newer).unwrap();
     assert_eq!((older.slug.as_str(), older.agent_status_at.as_str()), ("proj", "2026-09-08T09:00:00Z"));
 }
+
+/// `not_woken_by_mail` is absent from an entry that is not marked, reads false when absent and survives a round trip.
+#[test]
+fn a_list_entry_marks_a_session_mail_does_not_wake_only_when_it_is() {
+    let entry: WorkspaceListEntry = serde_json::from_value(previous_entry()).unwrap();
+    assert!(!entry.not_woken_by_mail, "an entry without the field reads false");
+    assert!(serde_json::to_value(&entry).unwrap().get("not_woken_by_mail").is_none(), "false is sent");
+    let mut marked = previous_entry();
+    marked["not_woken_by_mail"] = serde_json::json!(true);
+    let entry: WorkspaceListEntry = serde_json::from_value(marked).unwrap();
+    assert!(entry.not_woken_by_mail);
+    let again: WorkspaceListEntry = serde_json::from_value(serde_json::to_value(&entry).unwrap()).unwrap();
+    assert!(again.not_woken_by_mail, "true is lost in a round trip");
+}

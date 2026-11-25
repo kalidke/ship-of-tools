@@ -129,6 +129,23 @@ fn build_session_row_appends_the_account_suffix_when_not_default() {
     );
 }
 
+/// A Codex session mail does not wake carries `[not woken by mail]` after its phase tag and before the glance; any other
+/// row's label is as it was.
+#[test]
+fn build_session_row_marks_a_codex_session_mail_does_not_wake() {
+    let mut w = crate::net::transport::WorkspaceInfo {
+        label: "proj".to_string(),
+        runtime: "capsule".to_string(),
+        phase: Some("ready".to_string()),
+        agent_state: "idle".to_string(),
+        ..ws_info("proj", "sot-be-proj")
+    };
+    let plain = State::build_session_row(&"local".to_string(), &w).label;
+    assert_eq!(plain, "proj · [ready] idle");
+    w.not_woken_by_mail = true;
+    assert_eq!(State::build_session_row(&"local".to_string(), &w).label, "proj · [ready] [not woken by mail] idle");
+}
+
 #[test]
 fn session_host_children_hides_the_default_capsule_row_when_it_has_no_agent() {
     // 2026-09-04 amendment: the default CAPSULE row with `agent ==

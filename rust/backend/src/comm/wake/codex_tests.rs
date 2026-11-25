@@ -251,3 +251,23 @@ fn a_conversation_id_is_a_uuids_36_characters() {
         assert!(!is_id(bad), "{bad:?}");
     }
 }
+
+/// Rule: a leg is not woken by mail when it has neither the hook marker nor a binding that names a conversation.
+#[test]
+fn a_leg_without_the_hooks_or_a_conversation_is_not_woken_by_mail() {
+    let marker = crate::agents::selection::MARKER_NAME;
+    let (binding_name, text) = (crate::agents::env::CODEX_THREAD_FILE, format!("{THREAD}\n"));
+    for (files, not_woken) in [
+        (vec![], true),
+        (vec![(binding_name, text.as_str())], false),
+        (vec![(marker, "")], false),
+        (vec![(marker, ""), (binding_name, text.as_str())], false),
+        (vec![(binding_name, "not an id\n")], true),
+    ] {
+        let tmp = tempfile::tempdir().unwrap();
+        for (name, body) in &files {
+            std::fs::write(tmp.path().join(name), body).unwrap();
+        }
+        assert_eq!(not_woken_by_mail(tmp.path()), not_woken, "{files:?}");
+    }
+}

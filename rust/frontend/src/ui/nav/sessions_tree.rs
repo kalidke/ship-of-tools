@@ -247,9 +247,11 @@ impl State {
         } else {
             glance_base
         };
+        // After the phase tag: a Codex session mail does not wake (messaging's contract, Waking).
+        let unwoken = if w.not_woken_by_mail { "[not woken by mail] " } else { "" };
         let glance = match capsule_phase {
-            Some(phase) => format!("{} {glance}", capsule_phase_tag(phase)),
-            None => glance,
+            Some(phase) => format!("{} {unwoken}{glance}", capsule_phase_tag(phase)),
+            None => format!("{unwoken}{glance}"),
         };
         let label = if w.label.is_empty() {
             w.slug.clone()
