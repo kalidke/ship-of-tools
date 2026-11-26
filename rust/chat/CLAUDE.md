@@ -97,7 +97,16 @@ bot identity, workspace name, read-pacing instant, name cache, member list (guar
 11. **History pages are exact, complete or an error.** `HistoryQuery` and `Bounds` are validated when built: a bound is
    a wire `Ts` (exactly six fraction digits) or `BadBound`, before anything is sent; `before` and `until` cannot both be
    given; the limit is 1 to 20. Bounds map `after` to `oldest`, `before` to `latest` with `inclusive=false`, `until` to
-   `latest` with `inclusive=true`; `include_all_metadata=true` is always sent. A `Continuation` wraps Slack's cursor with
+   `latest` with `inclusive=true`; `include_all_metadata=true` is always sent. **No scan sends a zero lower bound.**
+   Slack's `conversations.history` answers `oldest=0.000000` with `ok: false`, `invalid_ts_oldest` (HTTP 200); `oldest=0`,
+   `oldest=1.000000` and no `oldest` are accepted, and `conversations.replies` accepts `0.000000` (measured live,
+   2026-11-26, on two channels). `ScanQuery::new` refuses a zero `after`, in any spelling, as `BadRequest` before anything
+   is sent (`api_tests::a_scan_rechecks_its_bounds_and_refuses_a_limit_over_999`), and `fake_slack::History` (the fake
+   that plays a channel's measured pages) answers a history read from `0.000000` as Slack does, and a replies read from it
+   as ok (`traverse_tests::the_fake_history_refuses_a_zero_oldest_on_a_channel_and_not_on_a_thread`); the fake's `Teams`
+   script and the backend tests' default history page answer any `oldest` with ok. Not covered: `Api::history` sends the
+   bound it is given, and a channel whose floor (the later of its mapping's own `mail_after` and the hub's) is `0.000000`
+   gets no pass (CHAT-MAIL-AFTER-ZERO-REFUSED). A `Continuation` wraps Slack's cursor with
    its workspace, channel, thread, bounds and limit, is at most 1 KiB (`TooLarge`), and under any other query, or if not
    made by this client, is `Altered`, refused unsent. `has_more` with no cursor is `Missing`, the cursor just sent
    coming back is `Repeated`, a missing `messages` or `has_more`, more than the limit (plus the thread parent: 21), an
@@ -1267,8 +1276,9 @@ bot identity, workspace name, read-pacing instant, name cache, member list (guar
    `unavailable`), then the name must be that row's bound handle (`bad_request`), then the service's API; every refusal is
    before any Slack call. The role is not read, so a window that knew a row's handle could read too: attribution among one
    account's programs, not a security boundary, as for a delete and as `chat.history` already is for any connection. **One
-   Slack call:** `Api::scan` of `ScanQuery::new(channel, thread, Bounds::new(Some("0.000000"), Some(before), None), 50)`, the
-   read delivery's recovery already makes (both bounds, no cursor), `before` being the request's or the daemon's clock now
+   Slack call:** `Api::scan` of `ScanQuery::new(channel, thread, Bounds::new(Some("1.000000"), Some(before), None), 50)`, the
+   read delivery's recovery already makes (both bounds, no cursor; the lower bound is the first second, since history refuses
+   a zero one, guarantee 11, `chat_mail_tests::a_channel_read_never_sends_slack_a_zero_lower_bound`), `before` being the request's or the daemon's clock now
    (`setup::now`, the one clock-to-`Ts` rule), then one `Api::fill_names` over its records inside `NAMES_DEADLINE`, the scan
    within `READ_DEADLINE` under the read rules (a retry header in force refuses it `limited`). The reply is the lines
    (a channel read at most 50, a thread read at most 51 with the thread's first message on top), `more` (the page's oldest
@@ -1378,7 +1388,7 @@ Paths are under `rust/chat/src/`.
 | 7, 8 | deadline, admission, body bound | `http_tests.rs`: `chat_operations_keep_bounds_after_caller_drop`, `a_requests_own_body_bound_replaces_the_default_and_still_counts_the_stream` |
 | 9 | one send, one request | `http_tests.rs`: `one_send_is_one_request_even_when_the_server_closes_mid_response` |
 | 10 | no secret in a formatted value | `http_tests.rs`: `chat_secrets_stay_inside_daemon_boundaries` |
-| 11 | exact history pages | `api_tests.rs`: `history_pages_exact_query_without_silent_completion`, `a_bound_without_exactly_six_fraction_digits_is_refused_before_sending`, `a_thread_continuation_under_a_lower_bound_alone_is_refused_unsent`, `a_scan_reads_999_and_its_bound_is_its_own`, `a_scan_page_names_its_raw_extremes_and_every_parents_latest_reply`, `a_limited_page_is_a_page_with_its_flag`, `a_replies_scan_at_999_may_hold_1000_with_its_parent`, `a_replies_page_holding_only_its_parent_with_no_more_is_an_end`, `a_scan_rechecks_its_bounds_and_refuses_a_limit_over_999` |
+| 11 | exact history pages | `api_tests.rs`: `history_pages_exact_query_without_silent_completion`, `a_bound_without_exactly_six_fraction_digits_is_refused_before_sending`, `a_thread_continuation_under_a_lower_bound_alone_is_refused_unsent`, `a_scan_reads_999_and_its_bound_is_its_own`, `a_scan_page_names_its_raw_extremes_and_every_parents_latest_reply`, `a_limited_page_is_a_page_with_its_flag`, `a_replies_scan_at_999_may_hold_1000_with_its_parent`, `a_replies_page_holding_only_its_parent_with_no_more_is_an_end`, `a_scan_rechecks_its_bounds_and_refuses_a_limit_over_999`; `traverse_tests.rs`: `the_fake_history_refuses_a_zero_oldest_on_a_channel_and_not_on_a_thread` |
 | 12 | one post, origin kept; a person's own token, nothing of the app | `api_tests.rs`: `a_persons_post_goes_with_their_token_and_names_nothing_of_the_app`, `with_no_person_token_a_persons_post_is_refused_unsent_and_a_refused_token_is_forgotten`, `lost_post_answer_is_unknown_and_never_resent`, `a_post_carries_its_author_and_every_unconfirmed_answer_is_unknown`, `a_post_read_back_through_history_keeps_its_origin`, `a_message_text_is_sent_escaped_and_bounded_escaped`; `rust/backend/src/server/chat_ops_tests.rs`: `a_post_that_may_exist_is_logged_once_with_why_and_never_its_text` |
 | 13 | retry header | `api_tests.rs`: `retry_header_paces_reads_and_preserves_mutation_draft` |
 | 14 | deadlines | `api_tests.rs`: `every_operation_ends_at_its_deadline`, `name_lookups_together_end_at_the_names_deadline` |

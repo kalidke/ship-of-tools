@@ -1903,6 +1903,11 @@ async fn a_scan_rechecks_its_bounds_and_refuses_a_limit_over_999() {
         for r in refused {
             assert_eq!(r, Err(ApiError::BadRequest));
         }
+        // A zero lower bound, whatever its spelling, is refused unsent: Slack's history answers it `invalid_ts_oldest`.
+        for zero in ["0.000000", "000.000000"] {
+            let q = ScanQuery::new("C0EDGE", None, bounds(Some(zero), Some(SCAN_BEFORE), None), 10);
+            assert_eq!(q, Err(ApiError::BadRequest), "{zero}");
+        }
         let junk = ScanQuery::new("C0EDGE", Some("17000"), both(), 10);
         assert_eq!(junk, Err(ApiError::BadBound));
         assert!(ScanQuery::new("C0EDGE", None, both(), MAX_SCAN).is_ok());

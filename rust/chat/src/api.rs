@@ -421,7 +421,8 @@ pub struct Page {
 pub struct ScanQuery(HistoryQuery);
 
 impl ScanQuery {
-    /// `bounds` must hold `after` below `before` (an `until`, a missing bound or an empty window is `BadRequest`);
+    /// `bounds` must hold `after`, above zero, below `before` (an `until`, a missing bound, a zero `after` or an empty
+    /// window is `BadRequest`);
     /// `limit` is 1 to `MAX_SCAN`. Nothing is sent for a query that is refused here.
     pub fn new(
         channel: &str,
@@ -432,7 +433,8 @@ impl ScanQuery {
         let (Some(after), Some(Upper::Before(before))) = (&bounds.after, &bounds.upper) else {
             return Err(ApiError::BadRequest);
         };
-        if ts_key(after) >= ts_key(before) || !(1..=MAX_SCAN).contains(&limit) {
+        // Slack's history answers `invalid_ts_oldest` to a zero `oldest`, so none is sent.
+        if ts_key(after) == (0, 0) || ts_key(after) >= ts_key(before) || !(1..=MAX_SCAN).contains(&limit) {
             return Err(ApiError::BadRequest);
         }
         // `HistoryQuery::new` bounds the limit at the display page; a scan's own bound is checked above.

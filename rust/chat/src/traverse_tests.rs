@@ -10,7 +10,7 @@ use std::time::Duration;
 use serde_json::json;
 use sot_protocol::chat::Ts;
 
-use crate::api::{Api, ApiError, Identity, MAX_PAGE};
+use crate::api::{Api, ApiError, Bounds, HistoryQuery, Identity, MAX_PAGE};
 use crate::fake_slack::{FakeSlack, History, Identity as Trust, Reply};
 use crate::http::Secret;
 use crate::normalize::ts_key;
@@ -556,6 +556,24 @@ async fn thread_reads_are_paced_and_counted_by_the_guard() {
         let got = walk(&api, &order(Some(&at(5)), &[], None), &ts(U), NO_PACE, 2).await;
         assert_eq!((got.outcome.clone(), got.reads, mail_ts(&got)), (Outcome::TooLong, 2, vec![at(900)]), "the thread read is one of the guard's");
         assert_eq!(replies_reads(&fake).len(), 3, "two threads, then the first of the second pass, and no more");
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+/// The fake `History` answers a channel read from `oldest=0.000000` as Slack was measured to (`ok: false`,
+/// `invalid_ts_oldest`), a thread read from the same bound as ok, and a channel read from `1.000000` as ok.
+#[tokio::test]
+async fn the_fake_history_refuses_a_zero_oldest_on_a_channel_and_not_on_a_thread() {
+    bounded(async {
+        let (fake, api, _) = serve(History::new().parent(&at(100), &at(200)).reply(&at(100), &at(200))).await;
+        let query = |thread: Option<&str>, after: &str| {
+            HistoryQuery::new(CHANNEL, thread, Bounds::new(Some(after), Some(&at(300)), None).unwrap(), 10).unwrap()
+        };
+        let refused = api.history(&query(None, "0.000000"), None).await;
+        assert_eq!(refused.err(), Some(ApiError::Slack("invalid_ts_oldest".into())));
+        assert!(api.history(&query(Some(&at(100)), "0.000000"), None).await.is_ok(), "replies accepts a zero oldest");
+        assert!(api.history(&query(None, "1.000000"), None).await.is_ok(), "history accepts 1.000000");
         fake.shutdown().await;
     })
     .await;

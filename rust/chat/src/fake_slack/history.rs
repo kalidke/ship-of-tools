@@ -87,6 +87,11 @@ impl History {
         let bound = |name: &str| seen.param(name).map(|t| ts_key(&sot_protocol::chat::Ts::parse(&t).expect("a bound")));
         let (oldest, latest) = (bound("oldest"), bound("latest"));
         let replies = seen.path().ends_with("/conversations.replies");
+        // Slack's history refuses a zero lower bound written with its six fraction digits (measured live, HTTP 200);
+        // `0`, `1.000000` and none are accepted, and its replies accepts the same bound.
+        if !replies && seen.param("oldest").as_deref() == Some("0.000000") {
+            return Reply::json(&json!({"ok": false, "error": "invalid_ts_oldest"}));
+        }
         if seen.param("cursor").is_some() {
             return Reply::json(&json!({"ok": false, "error": "invalid_cursor"}));
         }

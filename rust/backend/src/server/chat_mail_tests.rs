@@ -1018,7 +1018,7 @@ async fn a_session_reads_its_own_channel_in_one_scan_and_is_told_where_older_one
     let seen = reads(&w.fake);
     assert_eq!(seen.len(), 1, "one read of Slack");
     let params: Vec<(&str, Option<String>)> = ["oldest", "inclusive", "limit", "cursor", "ts"].iter().map(|k| (*k, seen[0].param(k))).collect();
-    assert_eq!(params, [("oldest", Some("0.000000".into())), ("inclusive", Some("false".into())), ("limit", Some("50".into())), ("cursor", None), ("ts", None)]);
+    assert_eq!(params, [("oldest", Some("1.000000".into())), ("inclusive", Some("false".into())), ("limit", Some("50".into())), ("cursor", None), ("ts", None)]);
     assert!(seen[0].path().ends_with("/conversations.history") && seen[0].param("latest").is_some());
 
     let lines = lines_of(&first);
@@ -1100,6 +1100,24 @@ async fn a_thread_followed_through_its_more_time_lists_each_reply_once_and_its_f
     once.sort_unstable();
     once.dedup();
     assert_eq!((once.len(), replies.len()), (60, 60), "a reply was read twice or missed");
+    stop(chat);
+}
+
+/// Slack's history refuses a zero lower bound (`invalid_ts_oldest`, measured on 2026-11-26), so no read of a session's
+/// channel, with or without a bound, asks from zero, and each is answered as a read and not as a refusal.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_channel_read_never_sends_slack_a_zero_lower_bound() {
+    let w = world(false).await;
+    let chat = w.start(&w.fake).await;
+    serve(&w.lv, (1..=5).fold(History::new(), |h, n| h.post(&stamp(n))));
+    let (mut conn, _root, alpha) = session(&w, &chat).await;
+    for (id, before) in [(10, None), (11, Some(stamp(3))), (12, Some("1.000001".to_string()))] {
+        let reply = conn.ask(id, op::CHAT_READ, read_of(&alpha, "C0AAAA", "alpha-h", None, before.as_deref())).await;
+        assert!(reply.get("lines").is_some(), "before {before:?}: {reply}");
+    }
+    let seen = reads(&w.fake);
+    assert_eq!(seen.len(), 3);
+    assert!(seen.iter().all(|s| s.param("oldest").as_deref() == Some("1.000000")), "{:?}", seen.iter().map(|s| s.param("oldest")).collect::<Vec<_>>());
     stop(chat);
 }
 

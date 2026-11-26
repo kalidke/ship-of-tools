@@ -1406,7 +1406,13 @@ owned by `docs/CLAUDE.md`.
   it lists the replies or nothing (the probe CHAT-DELETED-PARENT-THREAD-UNSERVED owed), after which the person deletes those
   replies in Slack; (4) a channel of more than 50 messages: `more` and `--before` read on with none twice and none missing; (5)
   after an exit 3 of a post, the daemon's log names the step and the code. Also unmeasured: when Slack puts a share into the
-  channel's history, and which failures real posts meet. Close this item when these have been seen.
+  channel's history, and which failures real posts meet. Seen so far, on the second 0.7.4 candidate on 2026-11-26, by a
+  session against real Slack: a thread read printed a reply's line (time, `reply thread=<parent>`, `session`, the handle,
+  `files=none`, first words); every channel read was refused (CHAT-READ-REFUSED-AT-ZERO-OLDEST, Closed); two file posts, one
+  at the top level with a comment and one into its thread with none, each printed `posted <ts>` (which of the share's own
+  answer and the one `files.info` read decided is not known); and the thread read listed both by file id, as `app` where they
+  should read as `session`. Owed, besides the five checks above: a channel read and a thread read on a candidate that
+  carries the fix (the read now asks from `1.000000`). Close this item when the five checks have been seen.
 - **CHAT-DRAWER-HIDES-DELETED-PARENT-THREADS** [note] From reading the code, not seen in a window: the Chat drawer shows no thread
   whose first message was deleted and has replies, because Slack lists such a parent as a tombstone, which the chat normalizes as
   `Unsupported` and never as a record, and the drawer's history pages keep only records. A session's read lists such a parent as a
@@ -1631,6 +1637,12 @@ owned by `docs/CLAUDE.md`.
   `bots.info` under a new app's bot token names that app. Check them at a person's first use of either screen; close this
   item when a person keeps the connected app through one.
 - **CHAT-STATUS-READS-STOPPING-AFTER-AN-END** [note] From a review, not seen in use: after a service ends on its own, `Chat::status()` reads `Stopping` until the stop it began returns, so two readers depend on timing: the owner waits a bounded time for `Off(Failed(code))` before it tells its watchers (CHAT-WATCHERS-TOLD-BEFORE-THE-CHAT-IS-OFF), and a watch refused by `Hub::ensure_owner` can make a window resolve the row while the chat still reads `Stopping`. Letting the status read `Failed(code)` from `service_ended` on, whatever the stop still does, would close both and delete the owner's wait.
+- **CHAT-MAIL-AFTER-ZERO-REFUSED** [note] From reading the code after CHAT-READ-REFUSED-AT-ZERO-OLDEST, not seen in use: a
+  delivering channel's floor is the later of its mapping's own `mail_after` and the hub's (a delivering file refuses a mapping
+  with none of its own), so only a channel whose floor comes out `0.000000` has delivery's passes scan history from that bound,
+  which `ScanQuery::new` now refuses unsent (and Slack refused before as `invalid_ts_oldest`): such a channel gets no pass,
+  before and after that change. A hub value of zero changes nothing while the mappings carry real times. A live post is still
+  filed. Not changed: the configuration accepts the value; a floor of `1.000000` or later reads.
 - **CHAT-OWNER-MARK-NOT-SEEN-LIVE** [note] Built on 2026-11-24 at the maintainer's ask that a session can tell a channel post
   by the owner of its sessions from any other member's: channel mail whose author's Slack id is the id the start's
   `auth.test` named under the held user token reads `[chat] From your user's Slack account ...` (`rust/chat/CLAUDE.md`,
@@ -1886,3 +1898,5 @@ An item closes by moving here as one line: id, subsystem, the fixing commit or l
 - **LANE-BRIDGE-RELAY-HALF-CLOSE** (capsule) closed by 0f7cdf875: the throttled relay half-closes each destination as its copy returns.
 - **INSTALL-WIN-UNBOUNDED-STEPS** (distribution) closed by 7cd579500, merged at 3678eaf20: the Windows process listing and end-state version asks are bounded at 60 s, and a listing with no answer is never "none runs".
 - **SOTD-UNIT-RESTART-LOOP** (topology) closed by the landing that fixes it, 2026-11-13, seen by reading the code and a test, not in use: a `sotd.service` start refused by a daemon that answers on the socket or holds the daemon lock was restarted without limit (`Restart=on-failure`, `StartLimitIntervalSec=0`), every 2 s or every 152 s, and each 152 s try ran the relay refresh (reset-failed, a daemon-reload of the user manager, a restart of every relay socket) before it took the lock. Now the refresh starts only once the lock is held, and such a refusal exits `EXIT_SEAT_HELD` (69), which the unit lists in `RestartPreventExitStatus=`, so it rests until the next launch starts it.
+
+- **CHAT-READ-REFUSED-AT-ZERO-OLDEST** (chat) [session] Closed on 2026-11-26 by the landing that fixes it. Seen by a session operating the product on the second 0.7.4 candidate, on 2026-11-26, on a hub connected to real Slack: every read of its paired channel with `sot-fe chat read` ended `refused failed`, exit 2, with no bound and with `--before` a known time and a time years before the workspace, while a read of one thread worked. The read asked Slack's `conversations.history` from `oldest=0.000000`, which Slack answers `ok: false`, `invalid_ts_oldest` (measured the same day, reads only: `0`, `1.000000` and no `oldest` are accepted, and `conversations.replies` accepts `0.000000`); the fake Slack accepted it, so no test failed. The read now asks from `1.000000`, `ScanQuery::new` refuses a zero lower bound unsent, and `fake_slack::History` answers a history read from `0.000000` as Slack does (the fake's `Teams` script and the backend tests' default page answer any `oldest`; `chat_mail_tests::a_channel_read_never_sends_slack_a_zero_lower_bound`, `api_tests::a_scan_rechecks_its_bounds_and_refuses_a_limit_over_999`, `traverse_tests::the_fake_history_refuses_a_zero_oldest_on_a_channel_and_not_on_a_thread`). The daemon's log said nothing of why the read failed; the next landing logs it. Not seen after the fix on real Slack (CHAT-READ-UNMEASURED).

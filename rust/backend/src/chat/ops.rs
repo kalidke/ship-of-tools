@@ -379,6 +379,10 @@ pub(crate) async fn delete(req_id: u64, payload: serde_json::Value, chat: &Arc<C
     reply(req_id, NAME, &res)
 }
 
+/// The lower bound of a session's read: Slack's history refuses a zero `oldest` written with six fraction digits
+/// (`invalid_ts_oldest`, measured), and a read asks for the newest messages whatever it is, so this is the first second.
+const READ_AFTER: &str = "1.000000";
+
 /// `chat.read`: a session's read of its own channel, or of one thread of it, as the daemon's words (`read_lines`). After
 /// admission, as a delete's, and before any Slack call: the name must be the row's bound handle (`bad_request`). One
 /// `Api::scan` of the newest `MAX_CHAT_READ` messages before the request's `before` (the clock's now when absent), one
@@ -402,7 +406,7 @@ pub(crate) async fn read(req_id: u64, payload: serde_json::Value, chat: &Arc<Cha
     };
     let before = req.before.clone().unwrap_or_else(now);
     let thread = req.thread.as_ref().map(|t| t.as_str());
-    let query = Bounds::new(Some("0.000000"), Some(before.as_str()), None).and_then(|b| ScanQuery::new(req.target.channel.as_str(), thread, b, MAX_CHAT_READ));
+    let query = Bounds::new(Some(READ_AFTER), Some(before.as_str()), None).and_then(|b| ScanQuery::new(req.target.channel.as_str(), thread, b, MAX_CHAT_READ));
     let query = match query {
         Ok(q) => q,
         Err(e) => return Ok(refuse(req_id, NAME, code_of(&e))),
