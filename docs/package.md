@@ -214,8 +214,16 @@ asks from a bound Slack was measured to accept, no scan sends a zero one, and a 
 a fixed code for why), and a session's own file posts read back as an app's, because Slack lists the app's share
 with no subtype where the chat looked for one (CHAT-OWN-SHARE-READS-AS-APP, Closed; an own message that carries a
 file has its origin read from its label whatever its subtype, in a session's read and in the Chat drawer). The
-maintainer asked that day for a third candidate with the fix, installed when it is ready.
-`main` carries 0.7.4-rc.3-dev, and past 0.7.3 it holds that fault's fix, which the maintainer used on the candidate
+maintainer asked that day for a third candidate with the fix, installed when it is ready. v0.7.4-rc.3 (2026-11-26)
+is an unpublished draft, cut from `main` that morning on that word after the whole local gate had passed at the
+commit before the release's; its release workflow's builds, smokes and install smokes passed. It is the second
+candidate with those two changes. It was installed by archive within the hour by the maintaining session on the
+hub (the daemon restarted, every session there after it) and, on the maintainer's word, by its own session on the
+window computer he uses, and the comm matrix passed between the two, six lines of six. On the hub a session then
+read its own channel (its messages one line each, then the line saying Slack's plan hides the older ones) and saw
+its two file posts of that morning listed as its own, in the channel and in their thread: both changes seen
+against real Slack. What `main` holds since that cut is in no candidate.
+`main` carries 0.7.4-rc.4-dev, and past 0.7.3 it holds that fault's fix, which the maintainer used on the candidate
 and reported as passing (a page of twelve large tables, a switch away and back): built table sets are
 kept within a budget so a return to such a session draws them at once, no table is built in the frame that first
 draws an arriving session or uncovers the preview, and a covered preview builds nothing and keeps what it holds;
@@ -232,7 +240,12 @@ another session, moves it, at most 10 s behind, where what a program prints does
 (RECENT-ORDER-LEAVES-SESSIONS-WITHOUT-AN-AGENT, Closed; mail moves a session only through what follows it, the
 wake's typed line for an idle Claude session or the turn a Codex session's queue request starts, the second by the
 code and not seen in a live row, so mail to a busy session or with a refused wake moves none,
-MAIL-ALONE-MOVES-NO-SESSION, open); and `sotd status` ends each row with the
+MAIL-ALONE-MOVES-NO-SESSION, open); and, on `main` since 2026-11-26, in no candidate and used by no person, two
+keys, `Ctrl+Alt+ArrowLeft` and `Ctrl+Alt+ArrowRight`, switch the window to the first and to the last session of the
+shown session's computer in the session strip, in the order the strip shows (the maintainer asked that day for
+keys to the leftmost and the rightmost session of a computer's group; they never cross to another computer's
+sessions and do nothing on the session that is already there; a default GNOME desktop takes both chords for its
+own workspaces, which the manual's key page says with what to do; STRIP-END-KEYS-NOT-SEEN); and `sotd status` ends each row with the
 state of that computer's update (up to date and when it was checked, a release found, preparing, ready and what
 applies it, not applied or off with the reason), with one line of the same in `sot-fe version`, where the one sign
 had been a notice held 10 s; and the window draws a mark after its version stamp on the bottom border while there

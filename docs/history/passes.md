@@ -3670,3 +3670,24 @@ the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the sa
       daemon was replaced shows those file posts as before.
     - 55 minutes from the fault to `main`: 8 finding the cause, 8 building, 15 reading, 3 folding, the rest
       waiting for the change beneath it and in the gate.
+- The third 0.7.4 candidate, 2026-11-26: the whole local gate passed at 10:31 and the cut followed at 10:32, on
+    the maintainer's word of 09:23; the release workflow's jobs were green at 10:56; the hub was installed by
+    archive from 10:56 to 10:58, with 35 sessions before and after, and at 10:58 a session's read of its own
+    channel and of its two file posts showed both changes against real Slack. The window computer's session was
+    not reachable after the hub's restart; the maintainer opened one there, it installed at 11:22, and the comm
+    matrix passed at 11:23. From the first fault seen on the second candidate to the third running on both
+    computers: 2 hours 5 minutes, 24 of them the release workflow and 24 waiting for a session to ask.
+- Two keys go to the first and the last session of a computer's group, 2026-11-26: one commit
+    (STRIP-END-KEYS-NOT-SEEN). Asked by the maintainer at 11:02; built by one builder of the cheaper kind from
+    11:05 to 11:12; read from 11:13 to 11:30; folded in by 11:33; gated from 11:34 to 11:38 and on `main` at 11:39.
+    - The builder met a standing test that refuses every default chord of Ctrl with Alt, written because AltGr
+      arrives as both on Windows, and narrowed it to name these two arrow chords as its exceptions. The reading
+      found the code correct and the narrowing safe (the windowing library drops both modifiers while AltGr is
+      held, read in its source, not tried), and found what no one had asked: a default GNOME desktop binds both
+      chords to its own workspaces, so there the keys never reach the window. The entry and the manual's key
+      page now say so. One behavior changed in the fold: from a computer's base session the keys reach that
+      computer's ends, where the first build did nothing.
+    - 37 minutes from the ask to `main`: 7 building, 17 reading, 3 folding, 4 in the gate. The keys then waited
+      for a candidate behind a larger change asked the same morning, which was the session's choice and wrong:
+      a change a person asked for and can use at once should not wait in a candidate for one that is still being
+      built.
