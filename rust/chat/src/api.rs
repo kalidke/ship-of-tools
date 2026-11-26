@@ -27,6 +27,7 @@ use crate::watch::MAX_CHANNELS;
 
 #[path = "delete.rs"]
 pub mod delete;
+use delete::DELETE_POST_DEADLINE;
 
 /// A read (`auth.test`, history, replies, `users.info`, `conversations.info`): Slack answers in well under a second, so
 /// fifteen seconds covers a slow link and still frees a drawer waiting on a stalled page.
@@ -587,6 +588,8 @@ struct Deadlines {
     transfer: Duration,
     /// How long a member list serves posts (`MEMBERS_FRESH`).
     fresh: Duration,
+    /// A delete of a post, all of it (`DELETE_POST_DEADLINE`).
+    delete: Duration,
 }
 
 #[derive(Default)]
@@ -718,6 +721,7 @@ impl Api {
                 names: NAMES_DEADLINE,
                 transfer: TRANSFER_DEADLINE,
                 fresh: MEMBERS_FRESH,
+                delete: DELETE_POST_DEADLINE,
             },
             own: Mutex::new(None),
             eligible: Mutex::new(None),
@@ -823,6 +827,12 @@ impl Api {
     #[cfg(test)]
     pub(crate) fn with_members_fresh(mut self, fresh: Duration) -> Api {
         self.deadlines.fresh = fresh;
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_delete_deadline(mut self, delete: Duration) -> Api {
+        self.deadlines.delete = delete;
         self
     }
 

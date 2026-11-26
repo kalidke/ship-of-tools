@@ -5,16 +5,23 @@
 //! gave.
 
 use std::collections::BTreeSet;
+use std::future::Future;
+use std::time::Duration;
 
-use serde_json::Value;
+use serde_json::{json, Value};
 use sot_protocol::chat::Ts;
+use sot_protocol::ops::ChatCode;
+use tokio::time::Instant;
 
-use super::{page_parts, ApiError, Api, Bounds, ScanQuery};
-use crate::http::MAX_SCAN_BODY;
+use super::{page_parts, Ack, Api, ApiError, Bounds, DeleteOutcome, ScanQuery};
+use crate::http::{MAX_BODY, MAX_SCAN_BODY};
 use crate::normalize::{is_own, ts_key, valid_id, Context, MAX_FILES};
 
 /// The messages one read of a post asks for: the page inside the one-second window around its time.
 pub const POST_READ_LIMIT: u16 = 100;
+/// A delete of a post, all of it, counted from its start: a call begins only when its own deadline fits in what is left.
+/// A post with one file needs at most a read, a `files.info`, a `files.delete` and a `chat.delete`, 15 + 15 + 30 + 30 s.
+pub const DELETE_POST_DEADLINE: Duration = Duration::from_secs(120);
 
 /// What the read of a post found.
 #[derive(Clone, Debug, PartialEq)]
@@ -28,13 +35,51 @@ pub enum Listed {
     Incomplete,
 }
 
-/// Why the delete stops before it sends anything but the read and the file reads.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Why a delete stopped with the post, or part of it, left standing.
+#[derive(Clone, Debug, PartialEq)]
 pub enum Refusal {
-    /// The message is not one this app posted.
+    /// The message is not one this app posted, or Slack would not let the app delete it.
     NotOwnMessage,
-    /// A file of the post could not be read as the app's own and shared in this post alone.
+    /// A file of the post could not be read as the app's own and shared in this post alone; nothing was deleted.
     UnclearFile,
+    /// The page that should hold the message had more behind it, so nothing is known.
+    Incomplete,
+    /// The next call's own deadline did not fit in what was left of the delete's.
+    Deadline,
+    /// The fresh admission before a call refused.
+    Recheck(ChatCode),
+    /// A call that never left, or a read Slack or the client refused, as the caller's code for it.
+    Call(ApiError),
+    /// Slack refused a mutation with this code (or the call never left: `busy`, `invalid`, `destination`).
+    Slack(String),
+}
+
+/// How a delete of a post ended.
+#[derive(Clone, Debug, PartialEq)]
+pub enum PostEnd {
+    /// The message is gone, deleted by this ask.
+    Deleted,
+    /// The message is not listed: deleted already, or never posted (and, asked with no thread, a reply is not looked for).
+    Gone,
+    /// The message stands, and nothing is in doubt.
+    Refused(Refusal),
+    /// Slack asked to wait; nothing is resent. `assumed`: the wait is a guess.
+    Limited { retry_after: Duration, assumed: bool },
+    /// An answer was lost: a file or the message may be deleted. The same ask again finishes it. The code says why.
+    Unknown(String),
+}
+
+/// A delete of a post: how it ended and what that left of its files, with where it ended for the log.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PostDelete {
+    pub end: PostEnd,
+    /// The post's files that are deleted now, whichever ask deleted them, and the files kept; a file the delete had not
+    /// reached is in neither.
+    pub files: PostFiles,
+    /// The Slack method that ended it, or `recheck` or `deadline` for a stop before a call; empty before any.
+    pub step: &'static str,
+    /// The file the step was about, or empty.
+    pub file: String,
 }
 
 /// Why a file is kept.
@@ -211,4 +256,156 @@ fn listed_ids(file: &Value) -> Option<Vec<String>> {
         }
     }
     Some(out)
+}
+
+/// What a delete has done so far, and the budget its calls are held to.
+struct Run {
+    start: Instant,
+    budget: Duration,
+    calls: u32,
+    step: &'static str,
+    file: String,
+    order: Vec<String>,
+    files: PostFiles,
+}
+
+impl Run {
+    /// Before a call: its own deadline must fit in what is left, and every call but the first is preceded by a fresh
+    /// admission. A stop names itself as the step.
+    async fn gate<F, Fut>(&mut self, need: Duration, step: &'static str, file: &str, recheck: &mut F) -> Result<(), PostEnd>
+    where
+        F: FnMut() -> Fut,
+        Fut: Future<Output = Result<(), ChatCode>>,
+    {
+        self.step = step;
+        self.file = file.to_string();
+        // Before the admission, so a delete that is out of time asks nothing, and after it, so a slow admission cannot let
+        // a call begin past the deadline.
+        let late = |run: &Run| run.start.elapsed() + need > run.budget;
+        if late(self) {
+            self.step = "deadline";
+            return Err(PostEnd::Refused(Refusal::Deadline));
+        }
+        if self.calls > 0 {
+            if let Err(code) = recheck().await {
+                self.step = "recheck";
+                return Err(PostEnd::Refused(Refusal::Recheck(code)));
+            }
+            if late(self) {
+                self.step = "deadline";
+                return Err(PostEnd::Refused(Refusal::Deadline));
+            }
+        }
+        self.calls += 1;
+        Ok(())
+    }
+
+    fn finish(mut self, end: PostEnd) -> PostDelete {
+        let at = |id: &String| self.order.iter().position(|o| o == id);
+        let mut deleted = std::mem::take(&mut self.files.deleted);
+        deleted.sort_by_key(at);
+        self.files.deleted = deleted;
+        PostDelete { end, files: self.files, step: self.step, file: self.file }
+    }
+}
+
+/// A read that failed ends the delete: a limit as itself, anything else as the caller's code for the error.
+fn read_failed(e: ApiError) -> PostEnd {
+    match e {
+        ApiError::Limited { retry_after, assumed } => PostEnd::Limited { retry_after, assumed },
+        e => PostEnd::Refused(Refusal::Call(e)),
+    }
+}
+
+impl Api {
+    /// Delete the message `ts` of `channel` (a reply with its `thread`) and every file the app itself posted with it,
+    /// the files first, so that the message, which alone names them, goes last. The message is read once, before any
+    /// other call, and its files come from that read alone; every file is judged by one `files.info` before any is
+    /// deleted, and an unclear one stops the delete with nothing deleted (`file_verdict`). Then one `files.delete` for
+    /// each file judged delete, and one `chat.delete` once every one of them is gone. Every mutation is sent once; the
+    /// first answer that is not an acknowledgement ends the delete, and nothing more is sent. Each stop leaves a state
+    /// the same ask, made again, finishes: a deleted file reads `file_deleted` and counts as deleted, and a message
+    /// whose files are all gone is deleted. `recheck` is called before every call but the first and a refusal ends the
+    /// delete before that call; one deadline, `DELETE_POST_DEADLINE`, holds the whole.
+    pub async fn delete_post<F, Fut>(&self, channel: &str, thread: Option<&str>, ts: &str, mut recheck: F) -> PostDelete
+    where
+        F: FnMut() -> Fut,
+        Fut: Future<Output = Result<(), ChatCode>>,
+    {
+        let mut run = Run { start: Instant::now(), budget: self.deadlines.delete, calls: 0, step: "", file: String::new(), order: Vec::new(), files: PostFiles::default() };
+        let end = self.delete_post_run(channel, thread, ts, &mut recheck, &mut run).await;
+        run.finish(end)
+    }
+
+    async fn delete_post_run<F, Fut>(&self, channel: &str, thread: Option<&str>, ts: &str, recheck: &mut F, run: &mut Run) -> PostEnd
+    where
+        F: FnMut() -> Fut,
+        Fut: Future<Output = Result<(), ChatCode>>,
+    {
+        let (read, post) = (self.deadlines.read, self.deadlines.post);
+        let method = if thread.is_some() { "conversations.replies" } else { "conversations.history" };
+        if let Err(end) = run.gate(read, method, "", recheck).await {
+            return end;
+        }
+        let message = match self.find_post(channel, thread, ts).await {
+            Ok(Listed::Message(message)) => message,
+            Ok(Listed::Gone) => return PostEnd::Gone,
+            Ok(Listed::Incomplete) => return PostEnd::Refused(Refusal::Incomplete),
+            Err(e) => return read_failed(e),
+        };
+        match self.is_apps_message(&message) {
+            Ok(true) => {}
+            Ok(false) => return PostEnd::Refused(Refusal::NotOwnMessage),
+            Err(e) => return PostEnd::Refused(Refusal::Call(e)),
+        }
+        let ids = match own_post_files(&message) {
+            Ok(ids) => ids,
+            Err(refusal) => return PostEnd::Refused(refusal),
+        };
+        run.order = ids.clone();
+        let own = match self.identity() {
+            Ok(own) => own.user_id,
+            Err(e) => return PostEnd::Refused(Refusal::Call(e)),
+        };
+        // Every file is judged before any is deleted.
+        let mut doomed = Vec::new();
+        for id in &ids {
+            if let Err(end) = run.gate(read, "files.info", id, recheck).await {
+                return end;
+            }
+            let answer = self.read("files.info", &[("file", id.clone())], MAX_BODY).await;
+            match file_verdict(&own, &answer, id, channel, ts) {
+                Verdict::Delete => doomed.push(id),
+                Verdict::AlreadyDeleted => run.files.deleted.push(id.clone()),
+                Verdict::Kept(why) => run.files.kept.push((id.clone(), why)),
+                Verdict::Unclear => return PostEnd::Refused(Refusal::UnclearFile),
+                Verdict::Failed(e) => return read_failed(e),
+            }
+        }
+        for id in doomed {
+            if let Err(end) = run.gate(post, "files.delete", id, recheck).await {
+                return end;
+            }
+            match self.mutate("files.delete", &json!({"file": id})).await {
+                Err(e) => return PostEnd::Refused(Refusal::Call(e)),
+                Ok(Ack::Done(_)) => run.files.deleted.push(id.clone()),
+                Ok(Ack::Refused(code)) if code == "file_deleted" => run.files.deleted.push(id.clone()),
+                Ok(Ack::Refused(code)) => return PostEnd::Refused(Refusal::Slack(code)),
+                Ok(Ack::Limited { retry_after, assumed }) => return PostEnd::Limited { retry_after, assumed },
+                Ok(Ack::Unknown(why)) => return PostEnd::Unknown(why),
+            }
+        }
+        if let Err(end) = run.gate(post, "chat.delete", "", recheck).await {
+            return end;
+        }
+        match self.delete_message(channel, ts).await {
+            Err(e) => PostEnd::Refused(Refusal::Call(e)),
+            Ok(DeleteOutcome::Deleted) => PostEnd::Deleted,
+            Ok(DeleteOutcome::Gone) => PostEnd::Gone,
+            Ok(DeleteOutcome::Refused(code)) if code == "cant_delete_message" => PostEnd::Refused(Refusal::NotOwnMessage),
+            Ok(DeleteOutcome::Refused(code)) => PostEnd::Refused(Refusal::Slack(code)),
+            Ok(DeleteOutcome::Limited { retry_after, assumed }) => PostEnd::Limited { retry_after, assumed },
+            Ok(DeleteOutcome::Unknown(why)) => PostEnd::Unknown(why),
+        }
+    }
 }

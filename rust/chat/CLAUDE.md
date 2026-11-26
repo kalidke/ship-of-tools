@@ -2,7 +2,7 @@
 
 The project chat's policy. This stage holds normalization (Slack's raw message JSON into the wire's one record,
 `sot_protocol::chat::ChatRecord`), `http`, the one way out of the crate to the network, `api`, the Slack Web API calls
-the first stage needs (`auth.test`, `bots.info` for the bot's app, and `identify`, the setup's `auth.test` before a workspace is configured, history and replies, `chat.postMessage`, a file's share (`files.getUploadURLExternal`, the upload, `files.completeUploadExternal`), the fetch of a picture of a channel (`files.info`, one GET of the file's URL), `users.info`, `users.list` for a post's mentions, `conversations.info`, the picker's `conversations.list` and `conversations.join`), and `mention`, a post's `@` names made Slack's mentions, and `socket`, the Socket Mode
+the first stage needs (`auth.test`, `bots.info` for the bot's app, and `identify`, the setup's `auth.test` before a workspace is configured, history and replies, `chat.postMessage`, a file's share (`files.getUploadURLExternal`, the upload, `files.completeUploadExternal`), the fetch of a picture of a channel (`files.info`, one GET of the file's URL), a delete of a post with its own files (`delete_post`: the message's read, a `files.info` and a `files.delete` for each file, then `chat.delete`), `users.info`, `users.list` for a post's mentions, `conversations.info`, the picker's `conversations.list` and `conversations.join`), and `mention`, a post's `@` names made Slack's mentions, and `socket`, the Socket Mode
 listener, and `config`, the two configuration files, and `service`, the running listener of one workspace, and `watch`, the model of the watched channels, and `mail`, one record as the body of one mail message and a session's read of its channel as one line a message, and `state`, a delivering channel's boundary file and filed set, and `traverse`, the recovery walk of one channel and its threads, and `delivery`, the filing queue, the schedule of passes and the commit of the boundary. The crate (`sot-chat`) depends on `sot-protocol`, `sot-platform` (the config folder), `toml`, `serde_json` and the web stack recorded below. `sot-backend` depends on it, and `sotd`'s `rust/backend/src/chat.rs` is the only code that names it (the caller paragraph is guarantee 21's). It owns no runtime state beyond `Http`'s client and admission count, `Api`'s
 bot identity, workspace name, read-pacing instant, name cache, member list (guarantee 35), closed flag and the transfer permits it draws on (`Transfers`, `MAX_TRANSFERS`, shared by the services given one, guarantees 32 and 33), a `Socket`'s one task, queue and gap, a `Service`'s workspace lock, phase, the claim that makes `Service::watches` give one `Watches` (three states: free, held until its `Watches` is dropped, and ended by a stop or an end for good) and its end (the first code it ended with on its own, guarantee 22) and the name Slack gave its bot at the start (guarantee 22), and a `Watches`' channels (bounded, guarantee 23) and its set of delivering channel ids (bounded by the configuration alone, guarantee 23; it holds no record), and a `Delivery`'s filing queue (at most `MAX_QUEUED` records), the one filing in flight and each delivering channel's `State` (guarantee 27). `traverse::pass` holds nothing between calls. Its file calls are `config`'s two reads (guarantee 21), the one lock file `service` takes through platform (guarantee 22) and `state`'s one file a channel (guarantee 25); it reads no token from the environment.
 
@@ -199,7 +199,7 @@ bot identity, workspace name, read-pacing instant, name cache, member list (guar
    header is an assumed 30 s (`assumed: true`). A post that is limited is returned with its wait and is not gated by the
    reads' wait.
 14. **Every operation has a stated deadline.** Reads 15 s, a post, a join, a file's share and a delete 30 s (none is resent, so an
-   early give-up only makes `Unknown`), a file's upload and a fetch's original 60 s (`TRANSFER_DEADLINE`), a file post's read of its share's time one read's 15 s more, a fetch's thumbnail 15 s, all of a page's name lookups together 10 s; each through `Http`'s owner-held deadline.
+   early give-up only makes `Unknown`), a file's upload and a fetch's original 60 s (`TRANSFER_DEADLINE`), a file post's read of its share's time one read's 15 s more, a fetch's thumbnail 15 s, all of a page's name lookups together 10 s, a delete of a post all together `DELETE_POST_DEADLINE` (120 s, guarantee 36); each call through `Http`'s owner-held deadline.
 15. **Slack's text reaches no caller.** `ApiError` is a fixed code; Slack's `error` is carried only when it is
    `[a-z0-9_.]{1,64}`, else `unknown_error`; bodies and URLs are dropped; `auth.test` for another workspace is
    `WrongWorkspace`; history without the bot identity is `NoIdentity`, unsent.
@@ -1282,28 +1282,78 @@ bot identity, workspace name, read-pacing instant, name cache, member list (guar
    The message's `ts` to delete can come from guarantee 37's read, a file post's included: a file post's own answer names no
    time when Slack's share names none, and the read names it beside the file's id
    (`chat_mail_tests::a_file_post_that_names_no_time_is_found_by_a_read_and_deleted`).
-   **The read and the verdicts of a delete that will take a post's own files with it** (`api/delete.rs`, read-only, not yet
-   used by the daemon): `Api::find_post(channel, thread?, ts)` is one page of the measured read (guarantees 13 to 15) with
-   both bounds exclusive a second either side of `ts`, limit `POST_READ_LIMIT` (100), no cursor, `conversations.history`
-   without a thread and `conversations.replies` of that thread with one; the message is the entry whose `ts` is `ts`
-   exactly, so Slack's treatment of a bound is never relied on. A complete page that lacks it, a thread Slack answers
-   `thread_not_found`, and an entry of subtype `tombstone` (Slack's placeholder, shape unmeasured, so another shape falls to
-   the ownership rule) are `Gone`; a page with more behind it that lacks it is `Incomplete`, and nothing is known. A reply
-   asked for with no thread is `Gone`, since a reply is not in the channel's history. `Api::is_apps_message` is normalize's
-   one rule for an own post (`is_own`: the bot's `bot_id` or user id) and so does not rest on Slack's check on
-   `chat.delete`, which a delete of files would run too late. `own_post_files(message)` takes the file ids from that
-   message alone: none for a missing or null `files`, each id once in the message's order, and `UnclearFile` for anything
-   else (not an array, an entry that is no object or has no valid id, more than `MAX_FILES`). `file_verdict(own_user,
-   files.info answer, file, channel, ts)` is `Delete` only for a file whose `user` is the bot's and whose listed shares
-   (`shares.public` and `shares.private`, with `channels`, `groups` and `ims`) are exactly this message in this channel;
-   `Kept(NotTheApps)` for another's file whatever else it says; `Kept(SharedElsewhere)` for a file also listed in another
-   channel, group or direct message or in this channel at another time too; `AlreadyDeleted` for Slack's `file_deleted`;
-   `Failed` for a read that failed (a limit, a refusal); and `Unclear` for every other shape, `file_not_found` (a made-up
-   id's answer and possibly "not visible to the app", never "deleted") and a file no share lists included, since keeping
-   such a file would orphan it once its message goes. The limit that remains: a share Slack does not list to the app is not
-   seen. Tests (`delete_tests.rs`): `the_read_finds_the_message_by_its_exact_time_or_ends_the_delete`,
+   **A delete that takes the post's own files with it** (`api/delete.rs`, `Api::delete_post(channel, thread?, ts, recheck)`,
+   not yet used by the daemon; its `chat.delete` still deletes the message alone). One delete is one sequence, every call
+   of it under the bot's token, and it ends at the first thing that is not going on as planned:
+   1. *The read* (`Api::find_post`), before any other call and made once: one page of the measured read (guarantees 13 to
+      15), both bounds exclusive a second either side of `ts`, limit `POST_READ_LIMIT` (100), no cursor,
+      `conversations.history` without a thread and `conversations.replies` of that thread with one. The message is the
+      entry whose `ts` is `ts` exactly, so Slack's treatment of a bound is never relied on. A complete page that lacks it,
+      a thread Slack answers `thread_not_found`, and an entry of subtype `tombstone` (the placeholder Slack is said to keep
+      for a deleted parent with replies; its shape is unmeasured, so another shape falls to rule 2) are `Gone`, and nothing
+      is sent after them; a page with more behind it that lacks it is `Incomplete`, a refusal with nothing known. A reply
+      asked for with no thread is `Gone`, since a reply is not in the channel's history. No `chat.delete` is ever sent for a
+      message the read did not return.
+   2. *Whose message* (`Api::is_apps_message`): normalize's one rule for an own post (`is_own`: the bot's `bot_id` or user
+      id). Any other message is `NotOwnMessage` with only the read sent. Files are deleted before Slack's own check on
+      `chat.delete` would run, so that check cannot be the first.
+   3. *The files, from that message alone* (`own_post_files`): none for a missing or null `files`, each id once in the
+      message's order, and `UnclearFile` for anything else (not an array, an entry that is no object or has no valid id,
+      more than `MAX_FILES`). A caller never names a file.
+   4. *Each file's verdict, before any mutation* (`file_verdict`, from one `files.info` a file, in order): `Kept(NotTheApps)`
+      for a file whose `user` is not the bot's, whatever else it says. Of the bot's files three cases: this message is among
+      the file's shares (`shares.public` and `shares.private`; a share listed twice for it is still this message) and nothing
+      else is listed, in a share or in `channels`, `groups` or `ims`: `Delete`; this message is among them and something else
+      is too (another channel or direct message, or this channel at another time): `Kept(SharedElsewhere)`; this message is
+      not among them: `Unclear`. `AlreadyDeleted` is Slack's `file_deleted`; a read that fails ends the delete (a limit as
+      `Limited`); and `Unclear` is also every other shape: `file_not_found` (a made-up id's answer and possibly "not visible
+      to the app", never "deleted"), a file no share lists, a share in this channel at another time only, a `shares` kind
+      other than `public` or `private`, a part of another type, since keeping such a file would orphan it once its message
+      goes. An unclear file ends the delete as `UnclearFile` with no mutation sent, for any file.
+   5. *The order*: one `files.delete` for each file judged `Delete`, in the message's order, then one `chat.delete`, only
+      when every one of them is gone. A file deleted counts, and so does `file_deleted`. The measured reason: a message
+      deleted alone leaves its file alive and shared nowhere, and nothing then names it, while a file deleted alone leaves
+      the message listed with a tombstone entry, so a stopped delete asked again finds every state it can leave. The first
+      answer that is not an acknowledgement ends the delete and nothing is resent: a 429 or `ratelimited` is `Limited`
+      (a mutation never waits inside the call); Slack's refusal is `Refused` (`cant_delete_message` on the message is
+      `NotOwnMessage`); a request that never left is `Refused` with its code; a lost answer is `Unknown`. A refusal with
+      a code of `TOKEN_REFUSALS` ends the service, as for every bot-token call (guarantee 22). Asked again, a delete finds:
+      files deleted and the message standing (their entries are tombstones and `files.info` says `file_deleted`, so they
+      count and it goes on); a `files.delete` whose answer was lost (a tombstone or a whole file, and `files.info` says
+      which); a `chat.delete` whose answer was lost and that Slack performed (the read finds nothing, `Gone`, which is true
+      and complete since every own file went first, though that ask reports no files).
+   6. *A fresh admission before each later call*: `delete_post` calls `recheck` before every call after the first and a
+      refusal ends the delete before that call (`Refusal::Recheck`, with the files deleted so far reported). One `Api` serves
+      the whole delete; a restart of the workspace's service closes it, and the next call is `Closed`, unsent (guarantee 22).
+   7. *One deadline*: `DELETE_POST_DEADLINE`, 120 s from the delete's start; a call begins only when its own deadline (a
+      read's 15 s, a mutation's 30 s) fits in what is left, checked before the call's admission and again after it, so a
+      slow admission cannot let a call begin past the deadline, else the delete ends before it as `Refusal::Deadline`. A post of
+      one file needs at most 15 + 15 + 30 + 30 s.
+   8. *The report* (`PostDelete`): how it ended, the post's files that are deleted now, whichever ask deleted them, and the
+      files kept with why, the Slack method it ended at (`step`, or `recheck`, or `deadline`) and the file that step was
+      about. A file the delete had not reached when it stopped is in neither list.
+   At most 18 Slack calls (the read, eight `files.info`, eight `files.delete`, the `chat.delete`), one after another.
+   Limits, noted and not fixed: a share Slack does not list to the app is not seen, so such a file is deleted with the post;
+   a share a person makes between a file's `files.info` and its `files.delete` (seconds apart) is deleted with it; a
+   post's files that an earlier delete of the message alone left unshared are not found (nothing names them). Measured live on 2026-11-26 (a throwaway
+   public channel, the bot token): a reply's share is listed once, under `shares.public`, at the reply's own `ts` with
+   `thread_ts` the parent's, so the match by `ts` holds for a reply; an image is listed as a text file is; a share entry's other
+   keys (`is_silent_share`, `reply_users`, `share_user_id`, `source`, `team_id` and more) are ignored by the rule;
+   `files.delete` and `chat.delete` take a JSON body; and the read's one-second window lists a share. Unmeasured: a private
+   channel's shape (any other shape than the one assumed is `UnclearFile`, so nothing is deleted), a person's file, several
+   files in one message, `files.delete`'s rate limits and what Slack answers `files.delete` for a file the bot does not own
+   (never sent).
+   Tests (`delete_tests.rs`): `the_read_finds_the_message_by_its_exact_time_or_ends_the_delete`,
    `a_message_that_is_not_the_apps_is_refused_after_the_read_alone`, `a_posts_files_are_read_from_the_message_alone`,
-   `a_files_verdict_is_delete_only_for_the_apps_file_shared_in_this_one_message`.
+   `a_files_verdict_is_delete_only_for_the_apps_file_shared_in_this_one_message`,
+   `an_unclear_file_stops_the_delete_before_any_mutation`,
+   `the_files_go_before_the_message_and_each_stop_leaves_a_state_the_next_ask_finishes` (each mutation under each fault, and
+   the same ask again), `a_post_with_several_files_judges_them_all_first_and_deletes_only_the_apps`,
+   `the_delete_ends_at_the_read_when_the_message_is_not_to_be_deleted`,
+   `a_recheck_that_fails_stops_the_delete_before_its_next_call`, `a_call_whose_deadline_does_not_fit_is_never_sent`,
+   `a_slow_recheck_does_not_let_a_call_start_past_the_deadline`, `a_failed_files_info_ends_the_delete_before_any_mutation` (a
+   dropped read, a 429 with and without a wait, two refusals, an answer that is no JSON and one that never comes each end the
+   delete with nothing deleted, and the same ask again finishes it).
 
 37. **A session reads its own channel back in one read, and a text of the channel never poses as a line of it.** The daemon's
    `chat.read {target, name, thread?, before?}` (`rust/backend/src/chat/ops.rs`, `read`) answers one line a message of the
@@ -1462,6 +1512,7 @@ Paths are under `rust/chat/src/`.
 | 31 | a window's only; the hub fact at the op; the three tokens checked, nothing written before; only Slack's answers that name the token refuse it, its state and the transport are `failed`; the closed mark read again under the lock; another workspace and a refused `chat.toml` refused and left as they are; the secrets owner-only and whole, a fresh `chat.toml` only when missing; a failed write `not_saved`; the reload; no token byte in a log line of any thread or a reply; the reply after a failed start; `resolve`'s `unconfigured` | `rust/backend/src/server/chat_setup_tests.rs`: the plan's done test `from_nothing_a_window_connects_pairs_and_reads_its_channel` (from no chat file a window connects, `chat.toml` is the fresh one, lists, pairs, watches and gets a socket post as `chat.changed`; the secrets owner-only and the four keys, `chat.toml` loads with the mapping, no token byte in a reply, an event or a log line of any thread), `each_answer_of_the_two_checks_has_its_code_and_writes_nothing` (the forms, the token refusals and Slack's state and the transport on each check), `a_connect_from_a_row_or_on_a_computer_that_is_not_the_hub_writes_nothing`, `a_retirement_that_begins_while_slack_is_asked_writes_nothing`, `a_write_that_fails_is_not_saved`, `a_connect_whose_start_fails_is_saved_and_resolve_says_start_failed`, `resolve_says_why_a_service_ended` (`wrong_app`, `tokens_refused` for each refused token), `a_connect_of_another_workspace_adds_it`, `a_connect_that_would_push_a_served_workspace_past_the_bound_is_refused`, `resolve_says_unconfigured_for_each_reason_a_connect_fixes`, `a_connect_while_running_replaces_the_tokens_and_restarts` (asked about first: its running app is not told), `a_new_slack_app_outside_a_mapped_channel_is_told_not_in_channel_until_it_is_invited` (the workspace's `unread`, with two apps in one workspace), `a_connect_replies_before_its_mapped_channels_are_read`, `the_reads_of_the_channels_an_app_cannot_read_end_at_their_bound`, `the_channels_an_app_cannot_read_are_at_most_max_watched_with_bounded_names`, `what_a_connects_task_found_goes_with_the_service_it_read_through`, `an_older_connects_task_never_replaces_a_newer_connects_list`; `socket_tests.rs`: `an_app_token_check_tells_the_app_by_one_socket_and_refuses_a_foreign_url` (a 503 and `ratelimited` are `unavailable`); `dispatch_place_tests.rs`: `the_lists_are_disjoint_and_reasoned` (the setup ops are jobs) |
 | 35 | an `@` name a mention of one member; nothing typed unescaped; the member list paged, bounded, kept, never waited past its deadline | `mention_tests.rs`: `a_unique_name_becomes_a_mention_by_any_of_its_names`, `the_rule_whole_names_first_then_a_first_name`, `mentioned_shows_the_real_name_beside_a_display_name_that_differs`, `no_member_name_can_forge_the_report`, `every_entry_ends_with_the_handle_and_fits_its_bound`, `the_documented_report_lines_are_the_functions_output`, `a_name_that_extends_another_by_punctuation_never_takes_the_mention`, `every_mention_made_is_to_a_member_one_of_whose_names_is_spelled_there` (every text of up to four tokens over thirteen, about 30,000, for a person and a row: each mention is to a member one of whose names is spelled at its `@`, and `mentioned` is exactly the members sent), `a_combining_mark_after_a_name_is_part_of_the_word`, `a_member_whose_id_is_not_an_id_is_no_member`, `a_post_reads_at_most_max_read_names`, `a_reverted_link_is_named_first_even_past_the_cap`, `an_expired_member_list_is_read_again`, `case_punctuation_a_possessive_two_mentions_and_both_ends`, `no_member_stays_text_and_is_named`, `nothing_typed_reaches_slack_unescaped`, `a_persons_channel_wide_words_notify_and_a_rows_never_do`, `inside_code_a_quote_an_address_or_a_word_nothing_is_linked`, `a_list_not_read_or_too_large_links_no_name_and_says_why`, `a_text_that_linking_would_push_past_its_room_goes_as_typed`, `the_names_left_as_text_are_at_most_max_mentions_and_each_once`, `a_person_and_a_row_mention_in_a_channel_and_a_thread`, `a_file_comment_mentions_and_a_rows_label_never_does`, `the_member_list_is_read_only_for_a_name_paged_and_kept`, `a_workspace_over_the_bound_links_no_name_and_says_so`, `a_failed_or_slow_member_list_posts_the_text_once_and_says_so`, `a_name_resolves_only_among_its_own_workspaces_members`; the daemon's replies: `rust/backend/src/server/chat_setup_tests.rs`: `two_workspaces_from_nothing_each_project_reads_and_posts_in_its_own` (step 8), `chat_ops_tests.rs`: `row_verbs_target_current_thread_and_submit_once`, `a_row_posts_a_file_of_its_folder_under_its_own_handle_once` |
 | 33 | a picture of the channel, bounded | `api_tests.rs`: `a_fetch_reads_only_a_picture_shared_in_its_channel` (the thumbnail and the original with the bearer, to the file's host; another channel's file, a file shared nowhere, a PDF, an SVG, a direct message's share and an original over the bound each with no GET; a JPEG, a GIF and a WebP; a thumbnail of a large original or with no `size`, an original with no `size` `Malformed`; both membership forms and a private share; `url_private` without a download URL; a file Slack does not know, an `info` for another file, a bad id, a closed client and one closed while `files.info` was answered, which sends no GET; the `Debug` of a result), `a_thumbnail_falls_back_to_a_small_original_and_never_to_a_large_one` (the three keys' order; a small original at exactly `MAX_THUMB`; one byte over `NoThumbnail` with no GET), `an_answer_that_is_not_an_image_is_refused` (HTML, octet-stream, `image/` alone, SVG, icon, `image/jpg` and no type refused; a type in capitals with parameters, JPEG, GIF and WebP accepted; no bytes), `each_variant_is_read_under_its_own_deadline` (a stalled thumbnail times out at a read's deadline and a stalled original at the transfer's), `a_fetch_is_bounded_while_it_streams` (a false `size`; one byte over and exactly the bound, both variants), `a_fetch_redirected_off_slack_sends_nothing_there` (two foreign hosts, no request reaches them; a redirect within Slack keeps the bearer), `a_fetch_shares_the_transfer_permits_and_a_rate_limit_waits_the_next_read` (two stalled originals make a fetch and a post `busy` at once; a dropped one frees its permit; a 429 on the URL), and the token test `a_file_post_shows_no_token_or_private_url_in_any_error` (extended: a fetch's errors) |
+| 36 | a delete of a post: the read first, the app's own message only, each file judged before any is deleted, files then message, each stop finished by the same ask, a fresh admission before each later call, one deadline | `delete_tests.rs`: the twelve named in guarantee 36 (`a_files_verdict_is_delete_only_for_the_apps_file_shared_in_this_one_message` is a table over `files.info` as the fake plays it from Slack's measured answers and the variants of each part); `api_tests.rs`: `the_fake_plays_a_shares_deletes_as_slack_was_measured` (the fake they run on) |
 | 37 | a session's read of its channel: admission as a delete's, one scan, `not-shown`, a thread Slack does not find, a file post found by its id | `rust/backend/src/server/chat_mail_tests.rs`: `a_session_reads_its_own_channel_in_one_scan_and_is_told_where_older_ones_begin`, `a_session_reads_a_thread_and_one_slack_does_not_find_is_empty`, `a_read_under_another_name_or_of_another_projects_channel_reaches_no_slack_call`, `a_file_post_that_names_no_time_is_found_by_a_read_and_deleted`; the lines: `mail_tests.rs` (guarantee 24) |
 
 ## Files

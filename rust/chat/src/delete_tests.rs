@@ -1,14 +1,17 @@
 //! The read and the verdicts of a delete of a post (chat guarantee 36), against the fake Slack's `Posts`. Every id,
 //! name and time is synthetic.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde_json::{json, Value};
+use sot_protocol::ops::ChatCode;
 
-use crate::api::delete::{file_verdict, own_post_files, Kept, Listed, Refusal, Verdict, POST_READ_LIMIT};
-use crate::api::ApiError;
+use crate::api::delete::{file_verdict, own_post_files, Kept, Listed, PostDelete, PostEnd, PostFiles, Refusal, Verdict, POST_READ_LIMIT};
+use crate::api::{Api, ApiError, ASSUMED_RETRY, NAMES_DEADLINE};
 use crate::api_tests::{bounded, code, info, posts_fake, ready, OWN_BOT, OWN_USER};
-use crate::fake_slack::{FakeSlack, Posts};
+use crate::fake_slack::{Fault, FakeSlack, Posts};
 
 /// The Slack methods the fake was asked, in order, without `auth.test`.
 fn asked(fake: &FakeSlack) -> Vec<String> {
@@ -345,4 +348,311 @@ async fn a_files_verdict_is_delete_only_for_the_apps_file_shared_in_this_one_mes
     assert_eq!(file_verdict(OWN_USER, &Ok(reply), "F0AAAA", "C0CHAN", "1700000100.000300"), Verdict::Unclear, "the parent's time is not the share's");
     // A time that is not a time cannot be matched to anything.
     assert_eq!(file_verdict(OWN_USER, &Ok(one()), "F0AAAA", "C0CHAN", "soon"), Verdict::Unclear);
+}
+
+/// The delete once, with an admission that always passes.
+async fn delete(api: &Api, thread: Option<&str>, ts: &str) -> PostDelete {
+    api.delete_post("C0CHAN", thread, ts, || async { Ok(()) }).await
+}
+
+fn ids(list: &[&str]) -> Vec<String> {
+    list.iter().map(|s| s.to_string()).collect()
+}
+
+fn files(deleted: &[&str]) -> PostFiles {
+    PostFiles { deleted: ids(deleted), kept: Vec::new() }
+}
+
+const ASK: &str = "1700000100.000100";
+const READ: &str = "conversations.history";
+
+/// Files go before the message, every file is judged before one is deleted, each mutation is sent once, and the first
+/// answer that is not an acknowledgement ends the delete. Each stop leaves a state the same ask, made again, finishes: a
+/// file deleted but its answer lost reads as deleted, and a message whose files are all gone is deleted.
+#[tokio::test]
+async fn the_files_go_before_the_message_and_each_stop_leaves_a_state_the_next_ask_finishes() {
+    bounded(async {
+        let limited = |secs, assumed| PostEnd::Limited { retry_after: Duration::from_secs(secs), assumed };
+        let refused = |why: &str| PostEnd::Refused(Refusal::Slack(why.into()));
+        const WHOLE: [&str; 4] = [READ, "files.info", "files.delete", "chat.delete"];
+        // (the mutation, its fault, how the first ask ends or None for any lost answer, the files it reports deleted, the
+        // calls of the first ask, whether the file and the message stand after it, the second ask's calls and end)
+        type Case = (&'static str, Fault, Option<PostEnd>, &'static [&'static str], &'static [&'static str], (bool, bool), &'static [&'static str], PostEnd);
+        let cases: Vec<Case> = vec![
+            ("files.delete", Fault::Drop, None, &[], &WHOLE[..3], (true, true), &WHOLE, PostEnd::Deleted),
+            ("files.delete", Fault::DropAfter, None, &[], &WHOLE[..3], (false, true), &[READ, "files.info", "chat.delete"], PostEnd::Deleted),
+            ("files.delete", Fault::Limit(Some(7)), Some(limited(7, false)), &[], &WHOLE[..3], (true, true), &WHOLE, PostEnd::Deleted),
+            ("files.delete", Fault::Limit(None), Some(limited(ASSUMED_RETRY.as_secs(), true)), &[], &WHOLE[..3], (true, true), &WHOLE, PostEnd::Deleted),
+            ("files.delete", Fault::Error("cant_delete_file"), Some(refused("cant_delete_file")), &[], &WHOLE[..3], (true, true), &WHOLE, PostEnd::Deleted),
+            ("chat.delete", Fault::Drop, None, &["F0AAAA"], &WHOLE, (false, true), &[READ, "files.info", "chat.delete"], PostEnd::Deleted),
+            ("chat.delete", Fault::DropAfter, None, &["F0AAAA"], &WHOLE, (false, false), &[READ], PostEnd::Gone),
+            ("chat.delete", Fault::Limit(Some(7)), Some(limited(7, false)), &["F0AAAA"], &WHOLE, (false, true), &[READ, "files.info", "chat.delete"], PostEnd::Deleted),
+            ("chat.delete", Fault::Error("cant_delete_message"), Some(PostEnd::Refused(Refusal::NotOwnMessage)), &["F0AAAA"], &WHOLE, (false, true), &[READ, "files.info", "chat.delete"], PostEnd::Deleted),
+        ];
+        for (method, fault, end, deleted, calls, (file_stands, message_stands), again, second) in cases {
+            let what = format!("{method} {fault:?}");
+            let posts = Arc::new(world().share("C0CHAN", ASK, None, "F0AAAA"));
+            let fake = posts_fake(&posts).await;
+            let api = ready(&fake).await;
+            posts.fault(method, fault);
+            let first = delete(&api, None, ASK).await;
+            match end {
+                Some(end) => assert_eq!(first.end, end, "{what}"),
+                None => assert!(matches!(first.end, PostEnd::Unknown(ref why) if !why.is_empty()), "{what}: {:?}", first.end),
+            }
+            assert_eq!(first.files, files(deleted), "{what}");
+            assert_eq!(first.step, method, "{what}");
+            assert_eq!(asked(&fake), calls, "{what}: each call once, nothing after the stop");
+            assert_eq!((posts.holds_file("F0AAAA"), posts.holds_message("C0CHAN", ASK)), (file_stands, message_stands), "{what}");
+
+            // The same ask again, with nothing wrong, finishes it, and sends nothing but what is left.
+            let before = asked(&fake).len();
+            let next = delete(&api, None, ASK).await;
+            assert_eq!(next.end, second, "{what}: the second ask");
+            assert_eq!(asked(&fake)[before..], *again, "{what}: the second ask's calls");
+            if second == PostEnd::Deleted {
+                assert_eq!(next.files, files(&["F0AAAA"]), "{what}: the same files");
+            }
+            assert_eq!((posts.holds_file("F0AAAA"), posts.holds_message("C0CHAN", ASK)), (false, false), "{what}");
+            fake.shutdown().await;
+        }
+    })
+    .await;
+}
+
+/// Every file is judged, in the message's order, before any is deleted: the app's are deleted, in order, then the message;
+/// a file also shared elsewhere is kept and said so, and one already deleted counts as deleted.
+#[tokio::test]
+async fn a_post_with_several_files_judges_them_all_first_and_deletes_only_the_apps() {
+    bounded(async {
+        let posts = Arc::new(
+            world()
+                .share_many("C0CHAN", ASK, None, &["F0AAAA", "F0BBBB", "F0CCCC", "F0DDDD"])
+                .also_shared("F0BBBB", "C0OTHER", "1700000100.000900"),
+        );
+        let fake = posts_fake(&posts).await;
+        let api = ready(&fake).await;
+        // A person deleted one of them in Slack already.
+        assert_eq!(code(&crate::api_tests::slack(&fake, "files.delete", "", Some(json!({"file": "F0DDDD"}))).await.unwrap().1), "ok");
+        let done = delete(&api, None, ASK).await;
+        assert_eq!(done.end, PostEnd::Deleted);
+        assert_eq!(done.files, PostFiles { deleted: ids(&["F0AAAA", "F0CCCC", "F0DDDD"]), kept: vec![("F0BBBB".into(), Kept::SharedElsewhere)] });
+        let seen = asked(&fake);
+        assert_eq!(seen[1..], [READ, "files.info", "files.info", "files.info", "files.info", "files.delete", "files.delete", "chat.delete"][..], "{seen:?}");
+        let deleted: Vec<String> = fake.seen().iter().filter(|s| s.path() == "/api/files.delete").skip(1).map(|s| s.json().unwrap()["file"].as_str().unwrap().to_string()).collect();
+        assert_eq!(deleted, ["F0AAAA", "F0CCCC"], "in the message's order, the kept and the deleted ones never sent");
+        assert_eq!((posts.holds_file("F0BBBB"), posts.holds_message("C0CHAN", ASK)), (true, false));
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+/// A file the delete cannot judge stops it before any mutation, for any file: the one before it, which it would have
+/// deleted, is deleted by nothing.
+#[tokio::test]
+async fn an_unclear_file_stops_the_delete_before_any_mutation() {
+    bounded(async {
+        let posts = Arc::new(world().share_many("C0CHAN", ASK, None, &["F0AAAA", "F0BBBB"]).unshared("F0BBBB"));
+        let fake = posts_fake(&posts).await;
+        let api = ready(&fake).await;
+        let done = delete(&api, None, ASK).await;
+        assert_eq!(done.end, PostEnd::Refused(Refusal::UnclearFile));
+        assert_eq!((done.step, done.file.as_str(), done.files), ("files.info", "F0BBBB", PostFiles::default()));
+        assert_eq!(asked(&fake), [READ, "files.info", "files.info"]);
+        assert!(posts.holds_file("F0AAAA") && posts.holds_file("F0BBBB") && posts.holds_message("C0CHAN", ASK));
+
+        // A file Slack does not know is unclear too, never deleted already.
+        let posts = Arc::new(world().share("C0CHAN", ASK, None, "F0AAAA"));
+        posts.fault("files.info", Fault::Error("file_not_found"));
+        let fake = posts_fake(&posts).await;
+        let api = ready(&fake).await;
+        assert_eq!(delete(&api, None, ASK).await.end, PostEnd::Refused(Refusal::UnclearFile));
+        assert_eq!(asked(&fake), [READ, "files.info"]);
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+/// Where the read ends it: a message that is not the app's, a reply asked for with no thread, a thread or time Slack does
+/// not list, a page with more behind it, and a limit; each sends only the read and leaves everything as it was. The same
+/// delete of a reply, given its thread, deletes it whole.
+#[tokio::test]
+async fn the_delete_ends_at_the_read_when_the_message_is_not_to_be_deleted() {
+    bounded(async {
+        let mut world = world()
+            .member_post("C0CHAN", "1700000100.000200", None, Some("F0PERS"))
+            .bot_post("C0CHAN", "1700000100.000300", None)
+            .bot_post("C0CHAN", "1700000100.000400", Some("1700000100.000300"))
+            .share("C0CHAN", "1700000100.000500", Some("1700000100.000300"), "F0REPLY")
+            .tombstone("C0CHAN", "1700000100.000700");
+        for i in 1..=101 {
+            world = world.member_post("C0CHAN", &format!("1700000200.{i:06}"), None, None);
+        }
+        let posts = Arc::new(world);
+        let fake = posts_fake(&posts).await;
+        let api = ready(&fake).await;
+        let mut calls = 0;
+        for (what, thread, ts, end, step) in [
+            ("a member's post with a file", None, "1700000100.000200", PostEnd::Refused(Refusal::NotOwnMessage), READ),
+            ("a reply, asked with no thread", None, "1700000100.000400", PostEnd::Gone, READ),
+            ("a reply, asked in another thread", Some("1700000100.000200"), "1700000100.000400", PostEnd::Gone, "conversations.replies"),
+            ("no such time", None, "1700000100.000600", PostEnd::Gone, READ),
+            ("a deleted parent's placeholder", None, "1700000100.000700", PostEnd::Gone, READ),
+            ("a page of many", None, "1700000200.500000", PostEnd::Refused(Refusal::Incomplete), READ),
+        ] {
+            let done = api.delete_post("C0CHAN", thread, ts, || async { Ok(()) }).await;
+            assert_eq!((done.end, done.step, done.files), (end, step, PostFiles::default()), "{what}");
+            calls += 1;
+            assert_eq!(asked(&fake).len(), calls, "{what}: the read alone");
+        }
+        assert!(posts.holds_file("F0PERS") && posts.holds_message("C0CHAN", "1700000100.000200") && posts.holds_message("C0CHAN", "1700000100.000400"));
+
+        // A read Slack limits ends it, and the pause that follows keeps the next ask from sending anything.
+        posts.fault(READ, Fault::Limit(Some(5)));
+        let limited = PostEnd::Limited { retry_after: Duration::from_secs(5), assumed: false };
+        assert_eq!(delete(&api, None, "1700000100.000300").await.end, limited);
+        assert_eq!(asked(&fake).len(), calls + 1);
+        assert!(matches!(delete(&api, None, "1700000100.000300").await.end, PostEnd::Limited { .. }));
+        assert_eq!(asked(&fake).len(), calls + 1, "a read pause is kept");
+
+        // A reply is found in its thread, and deleted with the file it shared.
+        let api = ready(&fake).await;
+        let done = delete(&api, Some("1700000100.000300"), "1700000100.000500").await;
+        assert_eq!((done.end, done.files), (PostEnd::Deleted, files(&["F0REPLY"])));
+        assert_eq!(asked(&fake)[calls + 1..], ["conversations.replies", "files.info", "files.delete", "chat.delete"]);
+        assert!(!posts.holds_file("F0REPLY") && !posts.holds_message("C0CHAN", "1700000100.000500"));
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+/// A fresh admission precedes every call but the first, and one that refuses ends the delete before that call, whatever
+/// was done until then; the same ask with a good admission then finishes it.
+#[tokio::test]
+async fn a_recheck_that_fails_stops_the_delete_before_its_next_call() {
+    bounded(async {
+        for k in 2..=4usize {
+            let posts = Arc::new(world().share("C0CHAN", ASK, None, "F0AAAA"));
+            let fake = posts_fake(&posts).await;
+            let api = ready(&fake).await;
+            let rechecks = Arc::new(AtomicUsize::new(0));
+            let counted = rechecks.clone();
+            let failing = move || {
+                let nth = counted.fetch_add(1, Ordering::SeqCst) + 2;
+                async move { if nth == k { Err(ChatCode::StaleRow) } else { Ok(()) } }
+            };
+            let done = api.delete_post("C0CHAN", None, ASK, failing).await;
+            assert_eq!(done.end, PostEnd::Refused(Refusal::Recheck(ChatCode::StaleRow)), "k={k}");
+            assert_eq!((done.step, rechecks.load(Ordering::SeqCst)), ("recheck", k - 1), "k={k}");
+            let all = [READ, "files.info", "files.delete", "chat.delete"];
+            assert_eq!(asked(&fake), all[..k - 1], "k={k}: no call at or past the refused one");
+            assert_eq!(done.files, files(if k == 4 { &["F0AAAA"] } else { &[] }), "k={k}");
+            let next = delete(&api, None, ASK).await;
+            assert_eq!((next.end, next.files), (PostEnd::Deleted, files(&["F0AAAA"])), "k={k}: a second ask finishes");
+            assert!(!posts.holds_file("F0AAAA") && !posts.holds_message("C0CHAN", ASK), "k={k}");
+            fake.shutdown().await;
+        }
+    })
+    .await;
+}
+
+/// A call begins only when its own deadline fits in what is left of the delete's one deadline, a mutation's longer than a
+/// read's; otherwise the delete ends before it, with the post as it was.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_call_whose_deadline_does_not_fit_is_never_sent() {
+    bounded(async {
+        let posts = Arc::new(world().share("C0CHAN", ASK, None, "F0AAAA"));
+        let fake = posts_fake(&posts).await;
+        // Under the real read and mutation deadlines (15 s and 30 s): none fits in 10 s, the reads fit in 20 s.
+        for (budget, calls, step, file) in [(10, 0, "deadline", ""), (20, 2, "deadline", "F0AAAA")] {
+            let api = ready(&fake).await.with_delete_deadline(Duration::from_secs(budget));
+            let before = asked(&fake).len();
+            let done = delete(&api, None, ASK).await;
+            assert_eq!(done.end, PostEnd::Refused(Refusal::Deadline), "{budget} s");
+            assert_eq!((done.step, done.file.as_str()), (step, file), "{budget} s");
+            assert_eq!(asked(&fake).len() - before, calls, "{budget} s");
+            assert!(posts.holds_file("F0AAAA") && posts.holds_message("C0CHAN", ASK));
+        }
+        // What is left shrinks as the delete goes: a slow `files.info` leaves too little for the mutation after it.
+        let scaled = |api: Api| api.with_deadlines(Duration::from_secs(2), Duration::from_secs(3), NAMES_DEADLINE).with_delete_deadline(Duration::from_secs(4));
+        let slow = scaled(ready(&fake).await);
+        posts.before("files.info", || std::thread::sleep(Duration::from_millis(1500)));
+        let before = asked(&fake).len();
+        let done = delete(&slow, None, ASK).await;
+        assert_eq!((done.end, done.step), (PostEnd::Refused(Refusal::Deadline), "deadline"));
+        assert_eq!(asked(&fake)[before..], [READ, "files.info"]);
+        assert!(posts.holds_file("F0AAAA"));
+        // With nothing slow the same budget is enough.
+        let posts = Arc::new(world().share("C0CHAN", ASK, None, "F0AAAA"));
+        let fake = posts_fake(&posts).await;
+        let done = delete(&scaled(ready(&fake).await), None, ASK).await;
+        assert_eq!((done.end, done.files), (PostEnd::Deleted, files(&["F0AAAA"])));
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+/// A `files.info` that fails ends the delete before any mutation, whatever way it fails: a file whose shares were not read is
+/// not judged, so a delete that went on to the message would leave the file alive and shared nowhere. Each fault is once, and
+/// the same ask again, on a client with no read pause left, finishes the delete.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_files_info_ends_the_delete_before_any_mutation() {
+    bounded(async {
+        type Check = fn(&PostEnd) -> bool;
+        let cases: Vec<(&str, Fault, Check)> = vec![
+            ("a dropped connection", Fault::Drop, |e| matches!(e, PostEnd::Refused(Refusal::Call(ApiError::Http(_))))),
+            ("a 429 with a wait", Fault::Limit(Some(7)), |e| matches!(e, PostEnd::Limited { assumed: false, .. })),
+            ("a 429 with none", Fault::Limit(None), |e| matches!(e, PostEnd::Limited { assumed: true, .. })),
+            ("a refusal", Fault::Error("internal_error"), |e| matches!(e, PostEnd::Refused(Refusal::Call(ApiError::Slack(c))) if c == "internal_error")),
+            ("a refusal of the channel", Fault::Error("not_in_channel"), |e| matches!(e, PostEnd::Refused(Refusal::Call(ApiError::Slack(c))) if c == "not_in_channel")),
+            ("an answer that is no JSON", Fault::Garbled, |e| matches!(e, PostEnd::Refused(Refusal::Call(ApiError::Malformed)))),
+            ("an answer that never comes", Fault::Hang, |e| matches!(e, PostEnd::Refused(Refusal::Call(ApiError::Http(_))))),
+        ];
+        for (what, fault, ends) in cases {
+            let posts = Arc::new(world().share("C0CHAN", ASK, None, "F0AAAA"));
+            let fake = posts_fake(&posts).await;
+            // A short read deadline, so the answer that never comes times out within the test.
+            let api = ready(&fake).await.with_deadlines(Duration::from_millis(400), Duration::from_secs(3), NAMES_DEADLINE);
+            posts.fault("files.info", fault);
+            let first = delete(&api, None, ASK).await;
+            assert!(ends(&first.end), "{what}: {:?}", first.end);
+            assert_eq!(first.step, "files.info", "{what}");
+            assert_eq!(asked(&fake), [READ, "files.info"], "{what}: nothing is sent after the failed read");
+            assert!(posts.holds_file("F0AAAA") && posts.holds_message("C0CHAN", ASK), "{what}: nothing was deleted");
+            let next = delete(&ready(&fake).await, None, ASK).await;
+            assert_eq!((next.end, next.files), (PostEnd::Deleted, files(&["F0AAAA"])), "{what}: the same ask finishes it");
+            fake.shutdown().await;
+        }
+    })
+    .await;
+}
+
+/// One deadline holds the whole delete, so a slow admission before a call cannot let that call begin past it: the deadline is
+/// checked again after the recheck.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_slow_recheck_does_not_let_a_call_start_past_the_deadline() {
+    bounded(async {
+        let posts = Arc::new(world().share("C0CHAN", ASK, None, "F0AAAA"));
+        let fake = posts_fake(&posts).await;
+        let api = ready(&fake).await.with_deadlines(Duration::from_millis(300), Duration::from_millis(300), NAMES_DEADLINE).with_delete_deadline(Duration::from_secs(1));
+        let rechecks = Arc::new(AtomicUsize::new(0));
+        let counted = rechecks.clone();
+        // The second admission (before `files.delete`) takes longer than the whole delete's budget.
+        let slow = move || {
+            let nth = counted.fetch_add(1, Ordering::SeqCst) + 1;
+            async move {
+                if nth == 2 {
+                    tokio::time::sleep(Duration::from_millis(1500)).await;
+                }
+                Ok(())
+            }
+        };
+        let done = api.delete_post("C0CHAN", None, ASK, slow).await;
+        assert_eq!(done.end, PostEnd::Refused(Refusal::Deadline));
+        assert_eq!(done.step, "deadline");
+        assert_eq!(asked(&fake), [READ, "files.info"], "no mutation began past the deadline");
+        assert!(posts.holds_file("F0AAAA") && posts.holds_message("C0CHAN", ASK));
+        fake.shutdown().await;
+    })
+    .await;
 }
