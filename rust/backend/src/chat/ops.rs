@@ -386,7 +386,8 @@ const READ_AFTER: &str = "1.000000";
 /// `chat.read`: a session's read of its own channel, or of one thread of it, as the daemon's words (`read_lines`). After
 /// admission, as a delete's, and before any Slack call: the name must be the row's bound handle (`bad_request`). One
 /// `Api::scan` of the newest `MAX_CHAT_READ` messages before the request's `before` (the clock's now when absent), one
-/// name fill, no cursor and no write. A thread Slack does not find reads as no message.
+/// name fill, no cursor and no write. A thread Slack does not find reads as no message; any other refusal is logged once
+/// with why (`log_read_refused`).
 pub(crate) async fn read(req_id: u64, payload: serde_json::Value, chat: &Arc<Chat>, rows: &Workspaces) -> Result<HandlerOutput> {
     const NAME: &str = op::CHAT_READ;
     let req = match decode::<ChatReadReq>(payload) {
@@ -407,18 +408,37 @@ pub(crate) async fn read(req_id: u64, payload: serde_json::Value, chat: &Arc<Cha
     let before = req.before.clone().unwrap_or_else(now);
     let thread = req.thread.as_ref().map(|t| t.as_str());
     let query = Bounds::new(Some(READ_AFTER), Some(before.as_str()), None).and_then(|b| ScanQuery::new(req.target.channel.as_str(), thread, b, MAX_CHAT_READ));
+    let refused = |e: &ApiError, code: ChatCode| {
+        log_read_refused(req_id, NAME, e, &req);
+        Ok(refuse(req_id, NAME, code))
+    };
     let query = match query {
         Ok(q) => q,
-        Err(e) => return Ok(refuse(req_id, NAME, code_of(&e))),
+        Err(e) => return refused(&e, code_of(&e)),
     };
     let mut page = match api.scan(&query).await {
         Ok(p) => p,
         Err(ApiError::Slack(code)) if code == "thread_not_found" && thread.is_some() => ScanPage::default(),
-        Err(e) => return Ok(refuse(req_id, NAME, read_code(&e))),
+        Err(e) => return refused(&e, read_code(&e)),
     };
     api.fill_names(&mut page.records).await;
     let more = if page.has_more { page.oldest.clone() } else { None };
     reply(req_id, NAME, &ChatReadRes { lines: read_lines(&page, thread.is_some()), more, limited: page.limited })
+}
+
+/// The one `warn` line for a read Slack or the client refused after admission: which request, which row, channel and
+/// thread (empty for a channel read) and why, a fixed code: Slack's own code for a refusal by Slack (the client holds it
+/// to `[a-z0-9_.]{1,64}`), else the error's. Never a message's text, a name, a URL or a token.
+fn log_read_refused(req_id: u64, op: &str, e: &ApiError, req: &ChatReadReq) {
+    let why = match e {
+        ApiError::Slack(code) => code.as_str(),
+        other => other.code(),
+    };
+    tracing::warn!(
+        id = req_id, op, why, row = req.target.row.as_str(), channel = req.target.channel.as_str(),
+        thread = req.thread.as_ref().map_or("", |t| t.as_str()),
+        "project chat: a session's read was refused"
+    );
 }
 
 /// The file `node_id` names beneath the row's root, read whole once, so the bytes shared are the bytes read: its base

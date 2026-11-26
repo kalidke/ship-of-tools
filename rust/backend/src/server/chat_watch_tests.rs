@@ -18,7 +18,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 /// What the fake answers a history call with, besides `OK` and `HOLD`.
-const FAIL: u8 = 3;
+pub(super) const FAIL: u8 = 3;
 /// A bound no test relies on meeting: a wait that finishes is what a test asserts.
 const LONG: Duration = Duration::from_secs(30);
 

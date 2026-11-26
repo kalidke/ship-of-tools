@@ -2,7 +2,7 @@
 //! becomes marked mail in the mapped row's inbox, and the inboxes are the record of what was filed.
 
 use super::chat_ops_tests::{running, starter};
-use super::chat_watch_tests::{live, message, stamp, until, Levers};
+use super::chat_watch_tests::{live, message, stamp, until, Levers, FAIL};
 use super::Services;
 use crate::chat::tests::{Home, SELF};
 use crate::chat::{Chat, Status, HUB_CHECK};
@@ -1119,6 +1119,39 @@ async fn a_channel_read_never_sends_slack_a_zero_lower_bound() {
     assert_eq!(seen.len(), 3);
     assert!(seen.iter().all(|s| s.param("oldest").as_deref() == Some("1.000000")), "{:?}", seen.iter().map(|s| s.param("oldest")).collect::<Vec<_>>());
     stop(chat);
+}
+
+/// A read Slack refuses is logged once with Slack's own code, the row, the channel and the thread, and never a message's
+/// text; a thread Slack does not find reads as empty and logs nothing.
+#[test]
+fn a_refused_read_is_logged_once_with_slacks_code_and_never_a_message() {
+    let text = super::chat_setup_tests::logged(|| async {
+        let w = world(false).await;
+        let chat = w.start(&w.fake).await;
+        let (mut conn, _root, alpha) = session(&w, &chat).await;
+        // History answers `internal_error` and replies `unknown_method`: each a refusal by Slack.
+        w.lv.mode.store(FAIL, Ordering::SeqCst);
+        let channel = conn.ask(10, op::CHAT_READ, read_of(&alpha, "C0AAAA", "alpha-h", None, None)).await;
+        assert_eq!(super::chat_ops_tests::code(&channel), "failed", "{channel}");
+        let thread = conn.ask(11, op::CHAT_READ, read_of(&alpha, "C0AAAA", "alpha-h", Some("1700000100.000100"), None)).await;
+        assert_eq!(super::chat_ops_tests::code(&thread), "failed", "{thread}");
+        // A thread Slack does not find is no refusal.
+        serve(&w.lv, History::new().post(&stamp(1)).raw(json!({"ts": stamp(2), "user": "U0MEM", "text": "ZQTEXTZ"})));
+        let none = conn.ask(12, op::CHAT_READ, read_of(&alpha, "C0AAAA", "alpha-h", Some("1700000999.000100"), None)).await;
+        assert_eq!(none["lines"], json!([]), "{none}");
+        stop(chat);
+    });
+    let refused: Vec<&str> = text.lines().filter(|l| l.contains("a session's read was refused")).collect();
+    assert_eq!(refused.len(), 2, "{text}");
+    for (line, id, why, thread) in [(refused[0], 10, "internal_error", ""), (refused[1], 11, "unknown_method", "1700000100.000100")] {
+        assert!(line.contains(" WARN "), "{line}");
+        for field in [format!("id={id}"), "op=\"chat.read\"".into(), format!("why=\"{why}\""), "channel=\"C0AAAA\"".into(), format!("thread=\"{thread}\""), "row=".into()] {
+            assert!(line.contains(&field), "{field} is missing from {line}");
+        }
+    }
+    for secret in ["ZQTEXTZ", "xoxb-"] {
+        assert!(!text.contains(secret), "a log line holds {secret}: {text}");
+    }
 }
 
 /// A name that is not the row's bound handle, another project's channel, a row that is gone and a request that is none

@@ -1290,7 +1290,11 @@ bot identity, workspace name, read-pacing instant, name cache, member list (guar
    read (most often a deleted parent whose thread still has replies, which `chat.history` and the Chat drawer cannot show:
    a tombstone is `Unsupported`, never a record); the thread under it is read with `thread`. A thread Slack answers
    `thread_not_found` reads as no message, with no refusal, as the recovery pass reads it
-   (`a_session_reads_a_thread_and_one_slack_does_not_find_is_empty`); any other error is `read_code`'s. The read marks no
+   (`a_session_reads_a_thread_and_one_slack_does_not_find_is_empty`); any other error is `read_code`'s, and a read refused
+   after admission (by Slack, or by the client's own checks of the query) logs one `warn` line, `a session's read was
+   refused`, with the request's id, the op, the row, the channel, the thread (empty for a channel read) and `why`: Slack's
+   own code for a refusal by Slack (held to `[a-z0-9_.]{1,64}`), else the error's fixed code, never a message's text, a
+   name, a URL or a token (`chat_mail_tests::a_refused_read_is_logged_once_with_slacks_code_and_never_a_message`). The read marks no
    post as the user's own (only mail does, guarantee 24), and no line of it is a request to the session. Wire: `ChatReadReq`
    and `ChatReadRes`, additive, in the one op table; an older daemon answers `unknown op: chat.read`
    (`rust/protocol/CLAUDE.md`, guarantee 12). The read is bounded at 50 messages a call and nothing but the session's skill
