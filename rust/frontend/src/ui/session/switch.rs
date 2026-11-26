@@ -51,7 +51,27 @@ impl State {
         ) else {
             return;
         };
-        let target = match self.row_directory.resolve(&next_host, &next_slug) {
+        self.step_to_strip_row(&next_host, &next_slug, direction, person_driven);
+    }
+
+    /// The first-session and last-session keys: switch to the first or the last session, in the strip's shown order, of the
+    /// shown session's computer's block; nothing when it is there already or when no session is shown. Never leaves the
+    /// block. The switch is the cycle keys' (`step_to_strip_row`). Returns
+    /// whether a row was named to go to; the key's label is shown only then.
+    pub(in crate::ui) fn go_to_strip_end(&mut self, last: bool, person_driven: bool) -> bool {
+        let Some((host, slug)) = self.row_presentation.end_row(
+            last, self.selected.host(), self.selected.workspace_id().as_deref(),
+        ) else {
+            return false;
+        };
+        self.step_to_strip_row(&host, &slug, if last { 1 } else { -1 }, person_driven);
+        true
+    }
+
+    /// The step both the cycle and the end keys take to a row of the strip: resolve it, flick the wheels toward it, and
+    /// switch as every switch does.
+    fn step_to_strip_row(&mut self, host: &HostKey, slug: &str, direction: i32, person_driven: bool) {
+        let target = match self.row_directory.resolve(host, slug) {
             Ok(target) => target,
             Err(reason) => {
                 self.refuse_result(&reason);

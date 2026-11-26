@@ -87,6 +87,7 @@ context while you read; switching away leaves Julia and terminal processes runni
 | Wide-preview: hide the LLM column, hand its width to the preview | `Alt++` |
 | Restore the layout, one layer per press (un-maximize, then exit wide-preview) | `Esc` (only while maximized or in wide-preview) |
 | Switch to the next / previous session | `Shift+Arrow` |
+| Switch to the first / last session of the shown session's computer, as the strip orders them | `Ctrl+Alt+ArrowLeft` / `Ctrl+Alt+ArrowRight` |
 | Temporary pane actions / promote to Help drawer | `Ctrl+?` / press again |
 | Open Help directly | `F1` |
 

@@ -264,6 +264,21 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   wilt keep the stamp. `set_order` re-sorts at once without the pin; the key action `strip.cycle_order`
   (`Primary+Shift+o`) cycles state, alphabetical, recent and the choice is kept as `strip_order` in the resume state,
   applied at startup before the first listing.
+  The keys `workspace.first` and `workspace.last` (`Ctrl+Alt+ArrowLeft` and `Ctrl+Alt+ArrowRight`, in the cycle keys'
+  Workspace scope and at the same place in `navigation_chords`, so edit mode and a locked workspace stop them as they stop
+  the cycle) switch to the first and to the last session of the block of the computer that holds the shown session, in the
+  strip's order as it is now: `RowPresentation::end_row` reads `workspace_slugs`, the one owner of that order, by the shown
+  session's computer, so a shown row the strip leaves out (a base row with no agent) reaches its computer's ends too, and
+  names nothing when the shown session is that row already (no switch, no wheel flick, no `last_key`), when no session is
+  shown, and never a row of another computer, a block of one included. `State::go_to_strip_end`
+  then takes the cycle's own step (`step_to_strip_row`: resolve the row, flick the wheels toward it, `switch_to_resolved_workspace`),
+  so the preview, the drawers kept per session and the strip's scroll follow as they do after a cycle key. The chords are
+  `Ctrl` and not `Primary`: on macOS they are Control+Option, where `Primary` would be Command+Option, and Control with
+  an arrow alone is the system's own for its spaces. Every other Ctrl or Primary with Alt default is refused by
+  `no_default_chord_is_ctrl_or_primary_with_alt_but_the_two_arrow_chords` (AltGr types on Windows); an arrow types nothing,
+  and the windowing library drops Ctrl and Alt from the modifiers it reports while AltGr is held (read in its source, not
+  tried on Windows), so the test names these two chords as its only exceptions. Whether the system leaves the chords to the window is not checked
+  (`docs/defects.md`, STRIP-END-KEYS-NOT-SEEN).
   Known changes flash; missing rows retain history. Sessions/strip share the 600 ms fade. Destroy forgets only
   labels/roots; capture supports flashes without demo rows.
   The clock is sampled separately at each changed-row insertion after projection and at each explicit demo flash
@@ -275,7 +290,13 @@ The remaining concepts below still reach shared fields through `impl State` bloc
   where the state order and the status time disagree),
   `a_session_started_from_this_window_is_first_whether_its_listing_or_its_reply_comes_first`,
   `changing_the_order_resorts_at_once_and_does_not_pin`, `the_order_cycles_state_alphabetical_recent`,
-  `next_row_follows_the_chosen_order`), and the resume round trip in `persist::resume_tests`.
+  `next_row_follows_the_chosen_order`, and for the end keys
+  `the_end_rows_are_the_first_and_last_of_the_selected_computers_block_in_the_strips_order`,
+  `the_end_rows_name_nothing_without_a_shown_session_or_a_block`,
+  `the_end_rows_read_the_selection_of_a_default_row_by_its_host`,
+  `the_end_rows_are_read_by_the_shown_sessions_computer_from_a_row_the_strip_does_not_hold`, and in `keybindings_tests`
+  `the_first_and_last_session_keys_are_ctrl_alt_arrows_in_the_workspace_scope`, and `preview_reference_rows_match_catalog`
+  for the two rows of the manual's table), and the resume round trip in `persist::resume_tests`.
 - `ResultLedger` privately owns canonical owed results, the listed badge index, both checked serials and the
   hostless issuing reveal token. Replacements reset attempts; retries advance independently, and neither beginning
   an attempt, releasing reveal ownership nor abandoning an unsent attempt consumes the owed result. Admission

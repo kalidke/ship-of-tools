@@ -237,6 +237,17 @@ impl RowPresentation {
         Some(self.workspace_slugs[next].clone())
     }
 
+    /// The first (or, with `last`, the last) row, in the strip's shown order, of the shown session's computer's block.
+    /// The block is read by the computer, so a shown row the strip leaves out (a base row with no agent, or a session
+    /// no listing has shown yet) reaches its computer's ends too. `None` when the shown session is that row already,
+    /// when the computer has no block, and when no session is shown (no slug and no default row of the computer).
+    pub(in crate::ui) fn end_row(&self, last: bool, host: &str, slug: Option<&str>) -> Option<WsKey> {
+        let selected = self.selected_key(host, slug)?;
+        let mut block = self.workspace_slugs.iter().filter(|k| k.0 == host);
+        let end = if last { block.next_back() } else { block.next() }?;
+        (*end != selected).then(|| end.clone())
+    }
+
     pub(in crate::ui) fn label(&self, host: &str, slug: &str) -> Option<&str> {
         self.workspace_labels
             .get(&(host.to_string(), slug.to_string()))

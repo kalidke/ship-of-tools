@@ -145,6 +145,7 @@ Mode switches share the keymap with pane focus and layout. The relevant chords:
 |-------|--------|
 | `f` / `m` / `s` / `h` | switch nav mode (nav focus only) |
 | `Shift+ArrowLeft` / `Shift+ArrowRight` | cycle the active workspace |
+| `Ctrl+Alt+ArrowLeft` / `Ctrl+Alt+ArrowRight` | go to the first / last session of the shown session's computer |
 | `Ctrl+ArrowLeft/Right/Up/Down` | move pane focus (4-way, spatial) |
 | `Alt+=` | maximize the focused pane; `Escape` restores |
 | `Ctrl+j` / `Ctrl+t` / `Ctrl+m` | show the REPL / Terminal / Monitor drawer, again for full height, again to hide it |

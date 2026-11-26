@@ -893,6 +893,19 @@ owned by `docs/CLAUDE.md`.
 
 ## fe-ui
 
+- **STRIP-END-KEYS-NOT-SEEN** [note] `workspace.first` and `workspace.last` (`Ctrl+Alt+ArrowLeft` and `Ctrl+Alt+ArrowRight`,
+  built 2026-11-26 at the maintainer's ask: switch to the first and to the last session of the shown session's computer
+  block) are proved by unit tests and seen in no window. Known from the desktop's shipped defaults and not tried: GNOME
+  binds both chords to switching its own workspaces (its window-manager keybindings schema), so on a default Ubuntu desktop
+  the desktop is expected to take them and they never reach the window; the manual's keybindings page says how to rebind or
+  free them. Other desktops were not checked, nor macOS (VoiceOver takes Control+Option+arrow while it is on) and Windows
+  (graphics drivers' hotkeys can rotate the screen on these chords) in use. The windowing library drops Ctrl and Alt from the
+  modifiers it reports while AltGr is held (read in its source, not tried on Windows), so AltGr with an arrow is a plain
+  arrow and, on a layout that has AltGr, the keys need left Ctrl and left Alt. Limits: no test drives the key handler
+  (`navigation_chords`), for these keys or for the cycle keys, so a swapped key, a lost person flag or a removed
+  repeat or edit gate passes the suite; no fixture drives the switch itself through a `State`; holding the chord sends each
+  repeat to the focused pane as a plain arrow, so a session just switched to receives arrows as with Shift+Arrow (from
+  reading the code); an end row that cannot be attached is refused at every press, as a cycle key's neighbor is.
 - **WINDOW-TAKES-NO-OS-TEXT-INPUT** [person] The maintainer, 2026-11-25, at a window on Windows running the first 0.7.4
   candidate, pressed the system's voice typing key with a session in focus, and Windows answered that no text box was
   selected. The window never tells the operating system that it takes text (no input-method events are enabled or handled

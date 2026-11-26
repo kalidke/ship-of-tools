@@ -94,6 +94,11 @@ instead of the cross-platform `Primary+?` pattern. On Mac laptop keyboards
 F1/F5/F11 need the fn key unless "Use F1, F2, etc. keys as standard function
 keys" is on in System Settings.
 
+On a default GNOME desktop (Ubuntu's included) the desktop takes `Ctrl+Alt+ArrowLeft` and `Ctrl+Alt+ArrowRight` to
+switch its own workspaces, so `workspace.first` and `workspace.last` never reach the window there. Rebind the two actions
+to chords the desktop leaves alone, as in Configuration above, or free the chords in the desktop's keyboard settings
+(the shortcuts that switch to the workspace on the left and on the right).
+
 ## Default actions
 
 These are built-in defaults. In-app Help displays the bindings actually loaded.
@@ -114,6 +119,8 @@ Normal text entry and terminal-application controls retain their own input handl
 | `focus.pane_down` | `Primary+ArrowDown` | Move keyboard focus to the drawer or pane below. |
 | `workspace.cycle_next` | `Shift+ArrowRight` | Switch to the next workspace. |
 | `workspace.cycle_prev` | `Shift+ArrowLeft` | Switch to the previous workspace. |
+| `workspace.first` | `Ctrl+Alt+ArrowLeft` | Switch to the first session of the shown session's computer in the session strip, in the order the strip shows. |
+| `workspace.last` | `Ctrl+Alt+ArrowRight` | Switch to the last session of the shown session's computer in the session strip, in the order the strip shows. |
 | `pane.maximize` | `Alt+=` | Fill the window with the focused pane. |
 | `pane.restore` | `Escape` | Undo maximization, then wide preview, one layer at a time. |
 | `layout.wide_preview` | `Alt++` | Hide or show the agent column to give the preview more room. |

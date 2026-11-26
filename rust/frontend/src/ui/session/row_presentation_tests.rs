@@ -655,3 +655,113 @@ fn a_session_started_from_this_window_is_first_whether_its_listing_or_its_reply_
     refresh_selected(&mut p, &d, "n");
     assert_eq!(slugs(&p), ["a/n", "a/a2", "a/a3", "a/s"], "the first listing with the new session");
 }
+
+fn key_of(host: &str, slug: &str) -> Option<WsKey> {
+    Some((host.to_string(), slug.to_string()))
+}
+
+/// Computer a holds three sessions, b one and c two; the strip is a, b, c.
+fn three_computers() -> (RowDirectory, RowPresentation) {
+    let mut d = RowDirectory::default();
+    replace(
+        &mut d,
+        "a",
+        vec![
+            labeled("a1", "c", "blocked", ""),
+            labeled("a2", "a", "idle", ""),
+            labeled("a3", "b", "working", ""),
+        ],
+    );
+    replace(&mut d, "b", vec![labeled("b1", "only", "working", "")]);
+    replace(&mut d, "c", vec![labeled("c1", "x", "idle", ""), labeled("c2", "y", "blocked", "")]);
+    let mut p = RowPresentation::default();
+    p.refresh(&d, &["a".into(), "b".into(), "c".into()], "a", None, HashSet::new(), Instant::now);
+    (d, p)
+}
+
+#[test]
+fn the_end_rows_are_the_first_and_last_of_the_selected_computers_block_in_the_strips_order() {
+    let (_d, mut p) = three_computers();
+    assert_eq!(slugs(&p), ["a/a1", "a/a3", "a/a2", "b/b1", "c/c2", "c/c1"]);
+    // From the middle row: the first and the last of the block, never a row of another computer.
+    assert_eq!(p.end_row(false, "a", Some("a3")), key_of("a", "a1"));
+    assert_eq!(p.end_row(true, "a", Some("a3")), key_of("a", "a2"));
+    // On the first or the last already, the key names nothing.
+    assert_eq!(p.end_row(false, "a", Some("a1")), None);
+    assert_eq!(p.end_row(true, "a", Some("a2")), None);
+    // The other end is still reachable from there.
+    assert_eq!(p.end_row(true, "a", Some("a1")), key_of("a", "a2"));
+    assert_eq!(p.end_row(false, "a", Some("a2")), key_of("a", "a1"));
+    // The block of another computer, and a block of one session: nothing, and no crossing to a neighbor.
+    assert_eq!(p.end_row(false, "c", Some("c1")), key_of("c", "c2"));
+    assert_eq!(p.end_row(true, "c", Some("c2")), key_of("c", "c1"));
+    assert_eq!(p.end_row(false, "b", Some("b1")), None);
+    assert_eq!(p.end_row(true, "b", Some("b1")), None);
+    // The strip's order is read as it is now: a change of order moves the ends.
+    p.set_order(StripOrder::Alphabetical, HashSet::new());
+    assert_eq!(slugs(&p), ["a/a2", "a/a3", "a/a1", "b/b1", "c/c1", "c/c2"]);
+    assert_eq!(p.end_row(false, "a", Some("a3")), key_of("a", "a2"));
+    assert_eq!(p.end_row(true, "a", Some("a3")), key_of("a", "a1"));
+    assert_eq!(p.end_row(false, "a", Some("a1")), key_of("a", "a2"));
+    assert_eq!(p.end_row(true, "a", Some("a1")), None);
+}
+
+#[test]
+fn the_end_rows_name_nothing_without_a_shown_session_or_a_block() {
+    let (_d, p) = three_computers();
+    // No session shown: no slug and no default row for the host.
+    assert_eq!(p.end_row(false, "a", None), None);
+    assert_eq!(p.end_row(true, "a", None), None);
+    // A computer the strip holds no block of.
+    assert_eq!(p.end_row(false, "unknown", Some("a1")), None);
+    assert_eq!(p.end_row(true, "unknown", Some("a1")), None);
+    let empty = RowPresentation::default();
+    assert_eq!(empty.end_row(false, "a", Some("a1")), None);
+    assert_eq!(empty.end_row(true, "a", Some("a1")), None);
+}
+
+#[test]
+fn the_end_rows_read_the_selection_of_a_default_row_by_its_host() {
+    let mut d = RowDirectory::default();
+    let mut base = labeled("base", "base", "idle", "");
+    base.is_default = true;
+    replace(&mut d, "a", vec![base, labeled("a2", "other", "working", "")]);
+    replace(&mut d, "b", vec![labeled("b1", "b", "idle", "")]);
+    let mut p = RowPresentation::default();
+    p.refresh(&d, &["a".into(), "b".into()], "a", None, HashSet::new(), Instant::now);
+    assert_eq!(slugs(&p), ["a/a2", "a/base", "b/b1"]);
+    // The shown session is the host's default row (no slug): its block's first row.
+    assert_eq!(p.end_row(false, "a", None), key_of("a", "a2"));
+    assert_eq!(p.end_row(true, "a", None), None);
+}
+
+#[test]
+fn the_end_rows_are_read_by_the_shown_sessions_computer_from_a_row_the_strip_does_not_hold() {
+    let mut d = RowDirectory::default();
+    // A computer's base row with no agent is an inert anchor: the strip leaves it out, yet it can be the shown session.
+    let mut base = labeled("base", "base", "", "");
+    base.is_default = true;
+    base.agent = "none".into();
+    assert!(base.is_inert_anchor());
+    replace(&mut d, "a", vec![labeled("a1", "x", "working", ""), base, labeled("a2", "y", "idle", "")]);
+    replace(&mut d, "b", vec![labeled("b1", "z", "idle", "")]);
+    let mut p = RowPresentation::default();
+    p.refresh(&d, &["a".into(), "b".into()], "a", None, HashSet::new(), Instant::now);
+    assert_eq!(slugs(&p), ["a/a1", "a/a2", "b/b1"], "the strip does not hold the base row");
+    // From the base row, the first and the last session of its computer, never the other computer's.
+    assert_eq!(p.end_row(false, "a", None), key_of("a", "a1"));
+    assert_eq!(p.end_row(true, "a", None), key_of("a", "a2"));
+    // A session the listing has not shown yet is read by its computer as well.
+    assert_eq!(p.end_row(false, "a", Some("gone")), key_of("a", "a1"));
+    assert_eq!(p.end_row(true, "a", Some("gone")), key_of("a", "a2"));
+    // From a row already first or last, the key still names nothing.
+    assert_eq!(p.end_row(false, "a", Some("a1")), None);
+    assert_eq!(p.end_row(true, "a", Some("a2")), None);
+    // Nothing shown at all (no slug, no default row of the computer): still nothing.
+    let mut e = RowDirectory::default();
+    replace(&mut e, "a", vec![labeled("a1", "x", "working", ""), labeled("a2", "y", "idle", "")]);
+    let mut q = RowPresentation::default();
+    q.refresh(&e, &["a".into()], "a", None, HashSet::new(), Instant::now);
+    assert_eq!(q.end_row(false, "a", None), None);
+    assert_eq!(q.end_row(true, "a", None), None);
+}

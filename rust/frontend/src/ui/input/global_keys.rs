@@ -287,6 +287,12 @@ pub(in crate::ui) fn navigation_chords(state: &mut State, key: KeyPress<'_>, lab
             state.last_key = Some(label);
             return Break(());
         }
+        if action == Some(Action::WorkspaceFirst) || action == Some(Action::WorkspaceLast) {
+            if state.go_to_strip_end(action == Some(Action::WorkspaceLast), true) {
+                state.last_key = Some(label);
+            }
+            return Break(());
+        }
     }
     Continue(())
 }

@@ -170,6 +170,7 @@ A few global keys manage the window itself:
 |--------|-----|--------------|
 | Move pane focus | `Ctrl+Arrow` | shift focus spatially between the panes |
 | Next / previous session | `Shift+Arrow` | make the next or previous session in the strip the active one (left / right) |
+| First / last session of the shown session's computer | `Ctrl+Alt+ArrowLeft` / `Ctrl+Alt+ArrowRight` | make the first or the last session of the shown session's computer, in the strip's order, the active one |
 | Maximize pane | `Alt+=` | fill the window with the focused pane |
 | Wide-preview | `Alt++` | hide the agent pane and widen the preview pane |
 | Restore layout | `Esc` | one layer per press: un-maximize first, then exit wide-preview (only while maximized or in wide-preview) |

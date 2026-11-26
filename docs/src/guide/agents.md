@@ -25,6 +25,7 @@ running when you switch rows, close the frontend, or lose the connection (see
 |-----|--------|
 | `s` | Sessions mode — every row on every connected host, grouped by host |
 | `Shift+ArrowRight` / `Shift+ArrowLeft` | cycle the active session from anywhere |
+| `Ctrl+Alt+ArrowRight` / `Ctrl+Alt+ArrowLeft` | go to the last / first session of the shown session's computer, in the strip's order |
 | `Ctrl+Arrow` | move focus between panes inside the session |
 
 Switching rows is a frontend state change: it never restarts a session's

@@ -23,15 +23,51 @@ fn defaults_parse_clean() {
 }
 
 /// Ctrl with Alt is AltGr on Windows and types a character on several layouts; a bound chord wins over that rule, so no
-/// default may be one (Alt with Shift or Super is not AltGr).
+/// default may be one (Alt with Shift or Super is not AltGr), but the two arrow chords of `workspace.first` and
+/// `workspace.last` named below: an arrow types nothing, and the windowing library drops Ctrl and Alt from the modifiers
+/// it reports while AltGr is held, so AltGr with an arrow is a plain arrow.
 #[test]
-fn no_default_chord_is_ctrl_or_primary_with_alt() {
+fn no_default_chord_is_ctrl_or_primary_with_alt_but_the_two_arrow_chords() {
+    let named_key_exceptions = ["Ctrl+Alt+ArrowLeft", "Ctrl+Alt+ArrowRight"];
     for spec in ACTIONS {
         for chord in spec.defaults {
             let parts: Vec<&str> = chord.split('+').collect();
             let ctrl = parts.contains(&"Primary") || parts.contains(&"Ctrl");
-            assert!(!(ctrl && parts.contains(&"Alt")), "{} binds {chord}", spec.name);
+            assert!(
+                !(ctrl && parts.contains(&"Alt")) || named_key_exceptions.contains(chord),
+                "{} binds {chord}", spec.name
+            );
         }
+    }
+}
+
+#[test]
+fn the_first_and_last_session_keys_are_ctrl_alt_arrows_in_the_workspace_scope() {
+    use crate::ui::input::help::{Context, Pane};
+    let b = KeyBindings::defaults();
+    let ctrl_alt = Modifiers { ctrl: true, alt: true, ..Modifiers::default() };
+    let resolve = |name: NamedKey, m: Modifiers, context: &Context| {
+        b.resolve(&Key::Named(name), None, m, context.consumes_text(), |a| context.allows(a))
+    };
+    let shown = Context::default();
+    assert_eq!(resolve(NamedKey::ArrowLeft, ctrl_alt, &shown), Some(Action::WorkspaceFirst));
+    assert_eq!(resolve(NamedKey::ArrowRight, ctrl_alt, &shown), Some(Action::WorkspaceLast));
+    // The cycle keys and the pane focus keys keep their chords: the modifiers are matched whole.
+    assert_eq!(resolve(NamedKey::ArrowRight, Modifiers { shift: true, ..Modifiers::default() }, &shown), Some(Action::WorkspaceCycleNext));
+    assert_eq!(resolve(NamedKey::ArrowLeft, primary(), &shown), Some(Action::FocusPaneLeft));
+    // Whatever stops the cycle keys stops these: in edit mode, and with the workspace locked, neither resolves.
+    for context in [Context { editing: true, ..Context::default() }, Context { workspace_locked: true, ..Context::default() }] {
+        assert_ne!(resolve(NamedKey::ArrowLeft, Modifiers { shift: true, ..Modifiers::default() }, &context), Some(Action::WorkspaceCyclePrev));
+        assert_eq!(resolve(NamedKey::ArrowLeft, ctrl_alt, &context), None);
+        assert_eq!(resolve(NamedKey::ArrowRight, ctrl_alt, &context), None);
+    }
+    // Every pane that takes the cycle keys takes these.
+    for pane in [Pane::Nav, Pane::Preview, Pane::Agent, Pane::Repl, Pane::Terminal, Pane::Chat] {
+        let context = Context { pane, ..Context::default() };
+        assert_eq!(
+            context.allows(Action::WorkspaceFirst), context.allows(Action::WorkspaceCycleNext), "{pane:?}"
+        );
+        assert_eq!(context.allows(Action::WorkspaceLast), context.allows(Action::WorkspaceCyclePrev), "{pane:?}");
     }
 }
 
@@ -149,7 +185,7 @@ fn primary_k_opens_the_chat_drawer_and_primary_shift_k_chooses_its_channel_in_th
 #[test]
 fn preview_reference_rows_match_catalog() {
     let manual = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/src/ref/keybindings.md"));
-    for name in ["agent.copy", "agent.copy_line", "preview.copy_selection", "preview.draw", "preview.ink_undo", "preview.ink_clear", "drawer.chat", "chat.latest", "chat.mark_older", "chat.mark_newer", "chat.thread_open", "chat.thread_close", "chat.open_image", "chat.copy_selection", "chat.setup", "chat.send", "chat.newline"] {
+    for name in ["agent.copy", "agent.copy_line", "preview.copy_selection", "preview.draw", "preview.ink_undo", "preview.ink_clear", "drawer.chat", "chat.latest", "chat.mark_older", "chat.mark_newer", "chat.thread_open", "chat.thread_close", "chat.open_image", "chat.copy_selection", "chat.setup", "chat.send", "chat.newline", "workspace.first", "workspace.last"] {
         let spec = ACTIONS.iter().find(|s| s.name == name).expect("preview action");
         let row = manual.lines().find(|line| line.starts_with(&format!("| `{name}` |"))).expect("manual row");
         let shortcuts = spec.defaults.iter().map(|s| format!("`{s}`")).collect::<Vec<_>>().join(" / ");

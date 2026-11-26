@@ -97,6 +97,8 @@ actions! {
     FocusPaneDown, "focus.pane_down", ["Primary+ArrowDown"], "Focus below", "Move keyboard focus to the drawer or pane below.", "Window", Global;
     WorkspaceCycleNext, "workspace.cycle_next", ["Shift+ArrowRight"], "Next session", "Switch to the next workspace.", "Window", Workspace;
     WorkspaceCyclePrev, "workspace.cycle_prev", ["Shift+ArrowLeft"], "Previous session", "Switch to the previous workspace.", "Window", Workspace;
+    WorkspaceFirst, "workspace.first", ["Ctrl+Alt+ArrowLeft"], "First session", "Switch to the first session of the shown session's computer in the session strip, in the order the strip shows.", "Window", Workspace;
+    WorkspaceLast, "workspace.last", ["Ctrl+Alt+ArrowRight"], "Last session", "Switch to the last session of the shown session's computer in the session strip, in the order the strip shows.", "Window", Workspace;
     MaximizePane, "pane.maximize", ["Alt+="], "Maximize pane", "Fill the window with the focused pane.", "Window", Global;
     RestoreLayout, "pane.restore", ["Escape"], "Restore layout", "Undo maximization, then wide preview, one layer at a time.", "Window", Restore;
     ToggleWidePreview, "layout.wide_preview", ["Alt++"], "Wide preview", "Hide or show the agent column to give the preview more room.", "Window", Global;
