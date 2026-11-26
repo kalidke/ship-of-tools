@@ -360,8 +360,10 @@ async fn paired_world(text: String) -> World {
 async fn a_session_unpairs_another_projects_folder_by_slug_and_again_changes_nothing() {
     let w = paired_world(fresh()).await;
     assert_eq!((w.mappings(), w.starts()), (vec![w.mapped(0, "C0PUB")], 2));
-    // A channel list fills the running app's cache with the channels' names.
-    assert_eq!(connect_window(w.services.clone()).await.ask(3, op::CHAT_CHANNELS, json!({})).await["channels"][0]["name"], "general");
+    // The removed pairing is named from the running service's name cache, which the pairing's restart emptied and the
+    // start's lookup fills on a task of its own that nothing orders before this test's next request; the test fills it.
+    let api = w.services.chat.admit(&w.rows, &w.target(0, "C0PUB")).expect("the service runs").api().unwrap();
+    assert!(api.channel_names(&["C0PUB".to_string()]).await.is_empty(), "the channel's name was looked up");
     let mut cli = connect(w.services.clone()).await;
     let folder = w.folders[0].to_string_lossy().into_owned();
     let done = cli.row_pair(row_pair(&w.ids[1], "beta-h", "alpha", None)).await;
@@ -527,6 +529,10 @@ async fn a_session_pairs_another_project_by_name_and_never_moves_or_takes_a_chan
     let again = cli.row_pair(row_pair(&w.ids[1], "beta-h", "alpha", Some("general"))).await;
     assert_eq!((again["outcome"].as_str(), again["pairing"]["channel"].as_str(), again["pairing"]["name"].as_str()), (Some("unchanged"), Some("C0PUB"), Some("general")), "{again}");
     assert_eq!((w.file(), w.calls("/conversations.join"), w.starts()), (before.clone(), 1, 2));
+    // The refusal names the channel from the running service's name cache, which the pairing's restart emptied and the
+    // start's lookup fills on a task of its own that nothing orders before this test's next request; the test fills it.
+    let api = w.services.chat.admit(&w.rows, &w.target(0, "C0PUB")).expect("the service runs").api().unwrap();
+    assert!(api.channel_names(&["C0PUB".to_string()]).await.is_empty(), "the channel's name was looked up");
     // The project that has a channel is not moved to another, by name or by id; the refusal says what it has.
     for channel in ["lab-one", "C0ONE"] {
         let moved = cli.row_pair(row_pair(&w.ids[1], "beta-h", "alpha", Some(channel))).await;
