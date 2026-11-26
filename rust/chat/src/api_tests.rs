@@ -13,8 +13,8 @@ use crate::api::{
     Identified, JoinOutcome, PostKind, PostOutcome, ScanQuery, ASSUMED_RETRY, MAX_CHAT_FILE, MAX_CURSOR, MAX_LISTED,
     MAX_NAMES, MAX_RETRY, MAX_SCAN, MAX_THUMB,
 };
-use crate::fake_slack::{eventually, listed_share, FakeSlack, Files, Identity, Reply, Seen, Upload};
-use crate::http::{HttpError, Secret};
+use crate::fake_slack::{eventually, listed_share, Fault, FakeSlack, Files, Identity, Posts, Reply, Seen, Upload};
+use crate::http::{HttpError, Request, Secret};
 use crate::normalize::MAX_TEXT;
 
 const TOKEN: &str = "sentinel-bot-token-not-a-credential";
@@ -3571,4 +3571,179 @@ fn a_channel_is_given_by_its_id_or_its_name_without_case_or_one_hash() {
     assert_eq!(ids("##odd"), ["C4"], "only one hash is dropped, so a name that begins with one is the listed one");
     assert_eq!(ids("#odd"), Vec::<String>::new());
     assert_eq!(ids(""), Vec::<String>::new());
+}
+
+/// A fake over `posts`, answering `auth.test` too.
+async fn posts_fake(posts: &Arc<Posts>) -> FakeSlack {
+    let posts = posts.clone();
+    FakeSlack::start(Identity::Trusted, move |seen, _| auth(seen).or_else(|| posts.reply(seen)).unwrap_or(Reply::Drop)).await
+}
+
+/// One call to the fake, as a reply's status and JSON body; a call the fake never answers is `None`.
+async fn slack(fake: &FakeSlack, method: &str, query: &str, body: Option<Value>) -> Option<(u16, Value)> {
+    let url = fake.url("slack.com", &format!("/api/{method}?{query}"));
+    let deadline = Duration::from_secs(5);
+    let request = match body {
+        Some(body) => Request::post(url, deadline, "application/json", body.to_string().into_bytes()),
+        None => Request::get(url, deadline),
+    };
+    let response = fake.http().send(request.bearer(Secret::new(TOKEN))).await.ok()?;
+    Some((response.status(), serde_json::from_slice(response.body()).unwrap_or_default()))
+}
+
+async fn info(fake: &FakeSlack, file: &str) -> Value {
+    slack(fake, "files.info", &format!("file={file}"), None).await.expect("an answer").1
+}
+
+async fn files_delete(fake: &FakeSlack, file: &str) -> Value {
+    slack(fake, "files.delete", "", Some(json!({"file": file}))).await.expect("an answer").1
+}
+
+async fn chat_delete(fake: &FakeSlack, channel: &str, ts: &str) -> Value {
+    slack(fake, "chat.delete", "", Some(json!({"channel": channel, "ts": ts}))).await.expect("an answer").1
+}
+
+/// The messages `conversations.history` lists for `channel` (both bounds one second either side of `ts`).
+async fn held_in(fake: &FakeSlack, channel: &str, ts: &str) -> Vec<Value> {
+    let (oldest, latest) = (ts.replace("1700000100", "1700000099"), ts.replace("1700000100", "1700000101"));
+    let query = format!("channel={channel}&oldest={oldest}&latest={latest}&limit=100&inclusive=false");
+    let answer = slack(fake, "conversations.history", &query, None).await.expect("an answer").1;
+    answer["messages"].as_array().cloned().unwrap_or_default()
+}
+
+fn code(answer: &Value) -> &str {
+    answer["error"].as_str().unwrap_or("ok")
+}
+
+/// `Posts` plays what Slack was measured to do on 2026-11-26, each fact of it: a share's message and its `files.info`, a
+/// message deleted alone (the file survives unshared), a file deleted alone (a tombstone entry in the message), either
+/// order finishing, and the repeat answers. A test that rests on the fake rests on these.
+#[tokio::test]
+async fn the_fake_plays_a_shares_deletes_as_slack_was_measured() {
+    bounded(async {
+        const TS: &str = "1700000100.000100";
+        let posts = Arc::new(
+            Posts::new(OWN_USER, OWN_BOT)
+                .share("C0CHAN", TS, None, "F0AAAA")
+                .share("C0CHAN", "1700000100.000200", None, "F0BBBB")
+                .share("G0PRIV", "1700000100.000300", Some("1700000100.000250"), "F0CCCC")
+                .bot_post("G0PRIV", "1700000100.000250", None)
+                .member_post("C0CHAN", "1700000100.000400", None, Some("F0DDDD")),
+        );
+        let fake = posts_fake(&posts).await;
+
+        // A share's message: no subtype, the bot's, `upload`, one `files` entry; its file as `files.info` lists it.
+        let held_before = held_in(&fake, "C0CHAN", TS).await;
+        let message = held_before.iter().find(|m| m["ts"] == TS).expect("the share is listed");
+        assert_eq!(message.get("subtype"), None);
+        assert_eq!((message["bot_id"].as_str(), message["user"].as_str(), message["upload"].as_bool()), (Some(OWN_BOT), Some(OWN_USER), Some(true)));
+        assert_eq!(message["files"].as_array().unwrap().len(), 1);
+        let file = &info(&fake, "F0AAAA").await["file"];
+        assert_eq!((file["user"].as_str(), file["channels"].clone(), file["groups"].clone(), file["ims"].clone()), (Some(OWN_USER), json!(["C0CHAN"]), json!([]), json!([])));
+        assert_eq!(file["shares"].as_object().unwrap().keys().collect::<Vec<_>>(), ["public"]);
+        assert_eq!(file["shares"]["public"]["C0CHAN"][0]["ts"], TS);
+        assert_eq!(file["shares"]["public"]["C0CHAN"][0].get("thread_ts"), None);
+        // The entry's keys as Slack was measured to list them: more than the rule reads.
+        let keys = |entry: &Value| entry.as_object().unwrap().keys().cloned().collect::<std::collections::BTreeSet<_>>();
+        let measured = ["channel_name", "is_silent_share", "reply_count", "reply_users", "reply_users_count", "share_user_id", "source", "team_id", "ts"];
+        assert_eq!(keys(&file["shares"]["public"]["C0CHAN"][0]), measured.iter().map(|k| k.to_string()).collect());
+        assert_eq!((file["is_public"].as_bool(), file["is_external"].as_bool()), (Some(true), Some(false)));
+
+        // The message deleted alone is gone from the list, and the file survives, shared nowhere.
+        assert_eq!(code(&chat_delete(&fake, "C0CHAN", TS).await), "ok");
+        assert!(!held_in(&fake, "C0CHAN", TS).await.iter().any(|m| m["ts"] == TS), "no tombstone is left");
+        let survivor = info(&fake, "F0AAAA").await;
+        assert_eq!((code(&survivor), survivor["file"]["shares"].clone(), survivor["file"]["channels"].clone()), ("ok", json!({}), json!([])));
+        assert_eq!(survivor["file"]["user"], OWN_USER);
+        // A file delete then finishes it, and the file reads as deleted.
+        assert_eq!(code(&files_delete(&fake, "F0AAAA").await), "ok");
+        assert_eq!(code(&info(&fake, "F0AAAA").await), "file_deleted");
+
+        // The file deleted alone leaves the message listed, its text unchanged and its entry a tombstone.
+        assert_eq!(code(&files_delete(&fake, "F0BBBB").await), "ok");
+        let kept = held_in(&fake, "C0CHAN", TS).await;
+        let message = kept.iter().find(|m| m["ts"] == "1700000100.000200").expect("the message stays");
+        assert_eq!((message.get("subtype"), message["text"].as_str()), (None, Some("text 1700000100.000200")));
+        assert_eq!(message["files"], json!([{"id": "F0BBBB", "mode": "tombstone"}]));
+        assert_eq!(code(&info(&fake, "F0BBBB").await), "file_deleted");
+        assert_eq!(code(&chat_delete(&fake, "C0CHAN", "1700000100.000200").await), "ok");
+        assert!(held_in(&fake, "C0CHAN", TS).await.iter().all(|m| m["ts"] != "1700000100.000200"));
+
+        // The repeats.
+        assert_eq!(code(&files_delete(&fake, "F0AAAA").await), "file_deleted");
+        assert_eq!(code(&files_delete(&fake, "F0NOPE").await), "file_not_found");
+        assert_eq!(code(&info(&fake, "F0NOPE").await), "file_not_found");
+        assert_eq!(code(&chat_delete(&fake, "C0CHAN", TS).await), "message_not_found");
+        assert_eq!(code(&chat_delete(&fake, "C0CHAN", TS).await), "message_not_found");
+
+        // A private channel's share is under `shares.private` and `groups`; a share made in a thread names the thread, and
+        // its message is listed in the thread, not in the channel.
+        let file = &info(&fake, "F0CCCC").await["file"];
+        assert_eq!((file["channels"].clone(), file["groups"].clone()), (json!([]), json!(["G0PRIV"])));
+        assert_eq!((file["shares"]["private"]["G0PRIV"][0]["ts"].as_str(), file["shares"]["private"]["G0PRIV"][0]["thread_ts"].as_str()), (Some("1700000100.000300"), Some("1700000100.000250")));
+        assert_eq!(file["is_public"], false);
+        let thread_keys = keys(&file["shares"]["private"]["G0PRIV"][0]);
+        assert_eq!(thread_keys, measured.iter().chain(&["latest_reply", "thread_ts"]).map(|k| k.to_string()).collect(), "a thread share's entry also has latest_reply and thread_ts");
+        assert_eq!(file["shares"]["private"]["G0PRIV"][0]["latest_reply"], "1700000100.000300");
+        let replies = slack(&fake, "conversations.replies", "channel=G0PRIV&ts=1700000100.000250&oldest=1700000100.000299&latest=1700000100.000301&limit=100&inclusive=false", None).await.unwrap().1;
+        let ts_of = |v: &Value| v["messages"].as_array().unwrap().iter().map(|m| m["ts"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+        assert_eq!(ts_of(&replies), ["1700000100.000250", "1700000100.000300"]);
+        assert!(!held_in(&fake, "G0PRIV", "1700000100.000300").await.iter().any(|m| m["ts"] == "1700000100.000300"));
+
+        // What Slack refuses by its documented codes: a person's file and a person's message.
+        assert_eq!(code(&files_delete(&fake, "F0DDDD").await), "cant_delete_file");
+        assert_eq!(code(&chat_delete(&fake, "C0CHAN", "1700000100.000400").await), "cant_delete_message");
+        assert!(posts.holds_file("F0DDDD") && posts.holds_message("C0CHAN", "1700000100.000400"));
+        fake.shutdown().await;
+    })
+    .await;
+}
+
+/// A fault is once, per method, and `DropAfter` is Slack acting while its answer is lost; a hook runs before the call it
+/// names; a share also made elsewhere is listed there.
+#[tokio::test]
+async fn the_fake_posts_fail_once_and_a_dropped_answer_may_follow_a_change() {
+    bounded(async {
+        const TS: &str = "1700000100.000100";
+        let posts = Arc::new(
+            Posts::new(OWN_USER, OWN_BOT)
+                .share("C0CHAN", TS, None, "F0AAAA")
+                .also_shared("F0AAAA", "C0OTHER", "1700000100.000900")
+                .in_im("F0AAAA", "D0DIRECT"),
+        );
+        let fake = posts_fake(&posts).await;
+        let file = &info(&fake, "F0AAAA").await["file"];
+        assert_eq!((file["channels"].clone(), file["ims"].clone()), (json!(["C0CHAN", "C0OTHER"]), json!(["D0DIRECT"])));
+
+        posts.fault("files.delete", Fault::Drop);
+        posts.fault("files.delete", Fault::DropAfter);
+        assert!(slack(&fake, "files.delete", "", Some(json!({"file": "F0AAAA"}))).await.is_none());
+        assert!(posts.holds_file("F0AAAA"), "a drop before Slack acts changes nothing");
+        assert!(slack(&fake, "files.delete", "", Some(json!({"file": "F0AAAA"}))).await.is_none());
+        assert!(!posts.holds_file("F0AAAA"), "a drop after Slack acts leaves the change");
+        assert_eq!(code(&files_delete(&fake, "F0AAAA").await), "file_deleted", "each fault fires once");
+
+        posts.fault("files.info", Fault::Garbled);
+        let garbled = fake.http().send(Request::get(fake.url("slack.com", "/api/files.info?file=F0AAAA"), Duration::from_secs(5)).bearer(Secret::new(TOKEN))).await.unwrap();
+        assert_eq!((garbled.status(), serde_json::from_slice::<Value>(garbled.body()).is_err()), (200, true), "a 200 that is no JSON");
+        posts.fault("chat.delete", Fault::Limit(Some(7)));
+        posts.fault("chat.delete", Fault::Error("ratelimited"));
+        let limited = fake.http().send(Request::post(fake.url("slack.com", "/api/chat.delete"), Duration::from_secs(5), "application/json", json!({"channel": "C0CHAN", "ts": TS}).to_string().into_bytes()).bearer(Secret::new(TOKEN))).await.unwrap();
+        assert_eq!((limited.status(), limited.header("retry-after")), (429, Some("7")));
+        assert_eq!(code(&chat_delete(&fake, "C0CHAN", TS).await), "ratelimited");
+        assert!(posts.holds_message("C0CHAN", TS));
+        assert_eq!(code(&chat_delete(&fake, "C0CHAN", TS).await), "ok");
+
+        // A hook runs before the call it names, and every other method is not the fake's to answer.
+        let hooked = Arc::new(AtomicUsize::new(0));
+        let seen = hooked.clone();
+        posts.before("files.info", move || {
+            seen.fetch_add(1, Ordering::SeqCst);
+        });
+        info(&fake, "F0AAAA").await;
+        assert_eq!(hooked.load(Ordering::SeqCst), 1);
+        assert_eq!(code(&slack(&fake, "users.list", "", None).await.unwrap_or((0, json!({"error": "dropped"}))).1), "dropped");
+        fake.shutdown().await;
+    })
+    .await;
 }
