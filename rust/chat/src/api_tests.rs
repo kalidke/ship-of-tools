@@ -17,26 +17,26 @@ use crate::fake_slack::{eventually, listed_share, Fault, FakeSlack, Files, Ident
 use crate::http::{HttpError, Request, Secret};
 use crate::normalize::MAX_TEXT;
 
-const TOKEN: &str = "sentinel-bot-token-not-a-credential";
+pub(crate) const TOKEN: &str = "sentinel-bot-token-not-a-credential";
 /// The person's user token, a different bearer from the bot's so a test can tell which one a request carried.
 const PERSON: &str = "sentinel-person-token-not-a-credential";
 const WS: &str = "T0TEAM";
-const OWN_USER: &str = "U0BOT";
-const OWN_BOT: &str = "B0BOT";
+pub(crate) const OWN_USER: &str = "U0BOT";
+pub(crate) const OWN_BOT: &str = "B0BOT";
 /// Retry headers a limited answer carries, the wait they mean, and whether it was assumed.
 type Case<'a> = (&'a [(&'a str, &'a str)], Duration, bool);
 
 const T0: &str = "1700000000.000000";
 
 /// Every test body runs under one bound: a hung fixture fails here instead of waiting.
-async fn bounded<T>(body: impl Future<Output = T>) -> T {
+pub(crate) async fn bounded<T>(body: impl Future<Output = T>) -> T {
     tokio::time::timeout(Duration::from_secs(90), body)
         .await
         .expect("the test exceeded its bound")
 }
 
 /// An `Api` holding the bot's token and the person's.
-fn new_api(fake: &FakeSlack) -> Api {
+pub(crate) fn new_api(fake: &FakeSlack) -> Api {
     new_api_with(fake, Some(PERSON))
 }
 
@@ -48,14 +48,14 @@ fn new_api_with(fake: &FakeSlack, person: Option<&str>) -> Api {
 }
 
 /// An `Api` that has read the bot identity.
-async fn ready(fake: &FakeSlack) -> Api {
+pub(crate) async fn ready(fake: &FakeSlack) -> Api {
     let api = new_api(fake);
     api.auth_test().await.expect("auth.test");
     api
 }
 
 /// `auth.test`, answered for every script.
-fn auth(seen: &Seen) -> Option<Reply> {
+pub(crate) fn auth(seen: &Seen) -> Option<Reply> {
     (seen.path() == "/api/auth.test").then(|| {
         Reply::json(&json!({"ok": true, "team_id": WS, "user_id": OWN_USER, "bot_id": OWN_BOT}))
     })
@@ -72,7 +72,7 @@ fn status(code: u16, headers: &[(&str, &str)], body: &Value) -> Reply {
     }
 }
 
-fn calls(fake: &FakeSlack, method: &str) -> usize {
+pub(crate) fn calls(fake: &FakeSlack, method: &str) -> usize {
     let path = format!("/api/{method}");
     fake.seen().iter().filter(|s| s.path() == path).count()
 }
@@ -3574,13 +3574,13 @@ fn a_channel_is_given_by_its_id_or_its_name_without_case_or_one_hash() {
 }
 
 /// A fake over `posts`, answering `auth.test` too.
-async fn posts_fake(posts: &Arc<Posts>) -> FakeSlack {
+pub(crate) async fn posts_fake(posts: &Arc<Posts>) -> FakeSlack {
     let posts = posts.clone();
     FakeSlack::start(Identity::Trusted, move |seen, _| auth(seen).or_else(|| posts.reply(seen)).unwrap_or(Reply::Drop)).await
 }
 
 /// One call to the fake, as a reply's status and JSON body; a call the fake never answers is `None`.
-async fn slack(fake: &FakeSlack, method: &str, query: &str, body: Option<Value>) -> Option<(u16, Value)> {
+pub(crate) async fn slack(fake: &FakeSlack, method: &str, query: &str, body: Option<Value>) -> Option<(u16, Value)> {
     let url = fake.url("slack.com", &format!("/api/{method}?{query}"));
     let deadline = Duration::from_secs(5);
     let request = match body {
@@ -3591,7 +3591,7 @@ async fn slack(fake: &FakeSlack, method: &str, query: &str, body: Option<Value>)
     Some((response.status(), serde_json::from_slice(response.body()).unwrap_or_default()))
 }
 
-async fn info(fake: &FakeSlack, file: &str) -> Value {
+pub(crate) async fn info(fake: &FakeSlack, file: &str) -> Value {
     slack(fake, "files.info", &format!("file={file}"), None).await.expect("an answer").1
 }
 
@@ -3611,7 +3611,7 @@ async fn held_in(fake: &FakeSlack, channel: &str, ts: &str) -> Vec<Value> {
     answer["messages"].as_array().cloned().unwrap_or_default()
 }
 
-fn code(answer: &Value) -> &str {
+pub(crate) fn code(answer: &Value) -> &str {
     answer["error"].as_str().unwrap_or("ok")
 }
 

@@ -192,7 +192,7 @@ fn lenient_ts(o: &Map<String, Value>, k: &str) -> Option<Ts> {
 }
 
 /// Own-app is decided by the supplied bot identity alone; an identity not supplied matches nothing.
-fn is_own(ctx: &Context, user: Option<&str>, bot_id: Option<&str>) -> bool {
+pub(crate) fn is_own(ctx: &Context, user: Option<&str>, bot_id: Option<&str>) -> bool {
     (ctx.own_bot_id.is_some() && bot_id == ctx.own_bot_id)
         || (ctx.own_user_id.is_some() && user == ctx.own_user_id)
 }

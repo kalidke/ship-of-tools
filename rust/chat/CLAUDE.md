@@ -1282,6 +1282,28 @@ bot identity, workspace name, read-pacing instant, name cache, member list (guar
    The message's `ts` to delete can come from guarantee 37's read, a file post's included: a file post's own answer names no
    time when Slack's share names none, and the read names it beside the file's id
    (`chat_mail_tests::a_file_post_that_names_no_time_is_found_by_a_read_and_deleted`).
+   **The read and the verdicts of a delete that will take a post's own files with it** (`api/delete.rs`, read-only, not yet
+   used by the daemon): `Api::find_post(channel, thread?, ts)` is one page of the measured read (guarantees 13 to 15) with
+   both bounds exclusive a second either side of `ts`, limit `POST_READ_LIMIT` (100), no cursor, `conversations.history`
+   without a thread and `conversations.replies` of that thread with one; the message is the entry whose `ts` is `ts`
+   exactly, so Slack's treatment of a bound is never relied on. A complete page that lacks it, a thread Slack answers
+   `thread_not_found`, and an entry of subtype `tombstone` (Slack's placeholder, shape unmeasured, so another shape falls to
+   the ownership rule) are `Gone`; a page with more behind it that lacks it is `Incomplete`, and nothing is known. A reply
+   asked for with no thread is `Gone`, since a reply is not in the channel's history. `Api::is_apps_message` is normalize's
+   one rule for an own post (`is_own`: the bot's `bot_id` or user id) and so does not rest on Slack's check on
+   `chat.delete`, which a delete of files would run too late. `own_post_files(message)` takes the file ids from that
+   message alone: none for a missing or null `files`, each id once in the message's order, and `UnclearFile` for anything
+   else (not an array, an entry that is no object or has no valid id, more than `MAX_FILES`). `file_verdict(own_user,
+   files.info answer, file, channel, ts)` is `Delete` only for a file whose `user` is the bot's and whose listed shares
+   (`shares.public` and `shares.private`, with `channels`, `groups` and `ims`) are exactly this message in this channel;
+   `Kept(NotTheApps)` for another's file whatever else it says; `Kept(SharedElsewhere)` for a file also listed in another
+   channel, group or direct message or in this channel at another time too; `AlreadyDeleted` for Slack's `file_deleted`;
+   `Failed` for a read that failed (a limit, a refusal); and `Unclear` for every other shape, `file_not_found` (a made-up
+   id's answer and possibly "not visible to the app", never "deleted") and a file no share lists included, since keeping
+   such a file would orphan it once its message goes. The limit that remains: a share Slack does not list to the app is not
+   seen. Tests (`delete_tests.rs`): `the_read_finds_the_message_by_its_exact_time_or_ends_the_delete`,
+   `a_message_that_is_not_the_apps_is_refused_after_the_read_alone`, `a_posts_files_are_read_from_the_message_alone`,
+   `a_files_verdict_is_delete_only_for_the_apps_file_shared_in_this_one_message`.
 
 37. **A session reads its own channel back in one read, and a text of the channel never poses as a line of it.** The daemon's
    `chat.read {target, name, thread?, before?}` (`rust/backend/src/chat/ops.rs`, `read`) answers one line a message of the
@@ -1447,6 +1469,7 @@ Paths are under `rust/chat/src/`.
 - `src/lib.rs`: the modules and re-exports.
 - `src/normalize.rs`: the normalization. `src/config.rs`: the configuration; `src/config_tests.rs`: its tests.
 - `src/http.rs`: the HTTP core and `Http::websocket`. `src/api.rs`: the Slack calls; `src/api_tests.rs`: their tests.
+- `src/delete.rs` (a module of `api`): the read and the verdicts of a delete of a post; `src/delete_tests.rs`: their tests.
 - `src/socket.rs`: the Socket Mode listener; `src/socket_tests.rs`: its tests.
 - `src/service.rs`: the service; `src/service_tests.rs`: its tests.
 - `src/watch.rs`: the watch model; `src/watch_tests.rs`: its tests.

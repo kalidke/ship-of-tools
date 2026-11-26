@@ -25,6 +25,9 @@ use crate::normalize::{clean, normalize, ts_key, valid_id, Context, Normalized, 
 use crate::service::{End, BOT_TOKEN_REFUSED};
 use crate::watch::MAX_CHANNELS;
 
+#[path = "delete.rs"]
+pub mod delete;
+
 /// A read (`auth.test`, history, replies, `users.info`, `conversations.info`): Slack answers in well under a second, so
 /// fifteen seconds covers a slow link and still frees a drawer waiting on a stalled page.
 pub const READ_DEADLINE: Duration = Duration::from_secs(15);
