@@ -14,17 +14,25 @@ _chat_handle() {
 # carries. Prints "refused <code> <words>" and exits 2.
 _chat_refused() {
     local code="$1" words="${2:-}"
-    if [ -z "$words" ]; then
-        case "$code" in
-            busy)        words="the chat is busy; try again in a moment" ;;
-            not_own_message) words="Slack would not let this project's Slack app delete that message (a person's or another app's message stays)" ;;
-            unavailable) words="the chat is not available here; nothing was sent" ;;
-            bad_request) words="the request is not valid (empty or over-long text, or a name that is not this session's)" ;;
-            failed)      words="the chat request failed" ;;
-        esac
-    fi
+    [ -n "$words" ] || words="$(_chat_words "$code")"
     echo "refused $code${words:+ $words}" >&2
     exit 2
+}
+
+# The words for a refusal's code when the daemon's reply carries none (an outcome's refusal has a code and no text).
+_chat_words() {
+    case "$1" in
+        busy)            echo "the chat is busy; try again in a moment" ;;
+        not_own_message) echo "that message is not one this project's Slack app posted, or Slack would not let the app delete it (a person's or another app's message stays)" ;;
+        unclear_file)    echo "a file of that post could not be checked as this project's Slack app's own and shared only in that post, so nothing was deleted (a person can delete the post in Slack)" ;;
+        unavailable)     echo "the chat is not available here; nothing was sent" ;;
+        unmapped)        echo "the session's project has no channel" ;;
+        stale_row)       echo "the session is gone or was replaced" ;;
+        stale_mapping)   echo "the session's project now has another channel" ;;
+        not_in_channel)  echo "your Slack app is not in that channel" ;;
+        bad_request)     echo "the request is not valid (empty or over-long text, or a name that is not this session's)" ;;
+        failed)          echo "the chat request failed" ;;
+    esac
 }
 
 # The post may exist: exit 3, the one code that means "never post again". Every exit 2 is a certain "nothing was posted".
@@ -245,27 +253,41 @@ _chat_read_told() {
     fi
 }
 
-# $1=the message's ts, which sot-fe has checked is `<seconds>.<six digits>`. Deletes that message of the channel mapped to
-# the row this session runs in, under its comm handle: ONE `chat.delete`, never sent again. Exits 0 with `deleted <ts>`
-# or `gone <ts>: ...` (the channel has no such message); 2 when nothing was deleted; 3 when the message may be deleted (no answer, unknown).
+# $1=the post's ts, $2=its thread's ts or "" (a reply is read in its thread; sot-fe has checked both are `<seconds>.<six
+# digits>`). Deletes that post of the channel mapped to the row this session runs in, under its comm handle, with every file
+# the project's Slack app posted with it: ONE `chat.delete_post`, never sent again (the daemon finds the files itself and
+# deletes them first). Exits 0 with `deleted <ts>` or `gone <ts>: ...`, then a line for each file; 2 when the post stands and
+# nothing is in doubt; 3 when an answer was lost (run it again, which finishes it or says it is gone).
 send_chat_delete() {
-    local ts="$1" req
+    local ts="$1" thread="${2:-}" req
     CHAT_DONE=deleted
     _chat_identity
     _chat_resolve
     req="$({ printf '%s\n' "$CHAT_PAIR"; sot_json_escape "$CHAT_ROW"; sot_json_escape "$CHAT_HANDLE"; } \
-        | jq -cn --arg ts "$ts" 'input as $r | input as $row | input as $name
-            | {v:1, id:3, kind:"req", op:"chat.delete",
-               payload: {target:{row:$row, workspace:$r.workspace, channel:$r.channel}, name:$name, ts:$ts}}')"
-    # Past the daemon's own bound with a margin: the delete's 30 s (sot-chat's POST_DEADLINE).
-    export SEND_TIMEOUT="${TIMEOUT:-45}"
-    _chat_deleted "$(_chat_ask chat.delete "$req")" "$ts"
+        | jq -cn --arg ts "$ts" --arg thread "$thread" 'input as $r | input as $row | input as $name
+            | {v:1, id:3, kind:"req", op:"chat.delete_post",
+               payload: ({target:{row:$row, workspace:$r.workspace, channel:$r.channel}, name:$name, ts:$ts}
+                         + (if $thread == "" then {} else {thread:$thread} end))}')"
+    # Past the daemon's own bound with a margin: the whole delete's 120 s (sot-chat's DELETE_POST_DEADLINE).
+    export SEND_TIMEOUT="${TIMEOUT:-135}"
+    _chat_deleted "$(_chat_ask chat.delete_post "$req")" "$ts" "$thread"
 }
 
-# The delete's reply $1 (empty for none) for the message $2, as `_chat_posted` reads a post's.
+# The reply's files, one line each: the ones deleted now, then the ones kept and why. An id is the daemon's text, so every
+# control byte of it is a space.
+_chat_post_files() {
+    printf '%s' "$1" | jq -r '
+        ((.payload.files.deleted // [])[] | strings | "file \(.) deleted"),
+        ((.payload.files.kept // [])[] | objects | (.file | strings) as $f
+            | "file \($f) kept" + (if .why == "not_the_apps" then ": it is not this project\u0027s Slack app\u0027s file (a person\u0027s or another app\u0027s)"
+                                    elif .why == "shared_elsewhere" then ": it is also shared somewhere else in Slack" else "" end))
+        | split("\n") | join(" ")' | LC_ALL=C tr '\000-\011\013-\037\177' ' '
+}
+
+# The delete's reply $1 (empty for none) for the post $2 and its thread $3 ("" for none), as `_chat_posted` reads a post's.
 _chat_deleted() {
-    local resp="$1" ts="$2" err code
-    local maybe="the message may have been deleted; run the same command again, which tells what is true now"
+    local resp="$1" ts="$2" thread="$3" err code words
+    local maybe="the post may be partly deleted; run the same command again, which finishes it or says it is gone"
     if [ -z "$resp" ]; then
         echo "no answer: $maybe" >&2
         exit 3
@@ -274,31 +296,43 @@ _chat_deleted() {
     if [ -n "$err" ]; then
         case "$err" in
             "unknown op"*)
-                echo "refused: the computer that runs your sessions runs an older Ship of Tools that cannot delete chat messages. Nothing was deleted." >&2
+                echo "refused unsupported: the computer that runs your sessions runs an older Ship of Tools, which cannot delete a post with its files. Nothing was deleted." >&2
                 exit 2 ;;
         esac
         code="$(printf '%s' "$resp" | jq -r '.payload.code // "?"')"
-        # A panic in the daemon's job after the send began is an error reply too: the message may be deleted.
+        # A panic in the daemon's job after the send began is an error reply too: the post may be partly deleted.
         [ "$code" != handler_error ] || { echo "unknown: $maybe" >&2; exit 3; }
         _chat_refused "$code" "$err"
     fi
     case "$(printf '%s' "$resp" | jq -r '.payload.outcome // empty')" in
         deleted)
             echo "deleted $ts"
+            _chat_post_files "$resp"
             ;;
         gone)
-            echo "gone $ts: the channel has no message with that time (it was deleted already, or never posted)"
+            if [ -z "$thread" ]; then
+                echo "gone $ts: no message with that time at the top of the channel (deleted already, or never posted); a reply was not looked for: run again with --thread <the time of its thread's first message>"
+            else
+                echo "gone $ts: thread $thread lists no message with that time (deleted already, or never posted)"
+            fi
+            _chat_post_files "$resp"
             ;;
         refused)
             code="$(printf '%s' "$resp" | jq -r '.payload.code // "?"')"
-            if [ "$code" = bad_request ]; then
-                _chat_refused bad_request "the request could not be sent; nothing was deleted"
-            fi
-            _chat_refused "$code"
+            case "$code" in
+                busy)        words="Slack answered too slowly to finish in time, or the chat is busy; the post is not deleted yet; run the same command again" ;;
+                failed)      words="the chat request failed; the post is not deleted" ;;
+                bad_request) words="the request could not be sent (this session's handle is not its session's, or a time is not a message's time); nothing was deleted" ;;
+                *)           words="$(_chat_words "$code")" ;;
+            esac
+            echo "refused $code${words:+ $words}" >&2
+            _chat_post_files "$resp" >&2
+            exit 2
             ;;
         limited)
-            printf '%s' "$resp" | jq -r 'if .payload.assumed then "limited, try again later: Slack asked for a pause, and nothing was deleted"
-                else "limited, wait \(.payload.retry_after_secs) s: Slack asked to wait, and nothing was deleted" end' >&2
+            printf '%s' "$resp" | jq -r 'if .payload.assumed then "limited, try again later: Slack asked for a pause; the post is not deleted yet"
+                else "limited, wait \(.payload.retry_after_secs) s: Slack asked to wait; the post is not deleted yet" end' >&2
+            _chat_post_files "$resp" >&2
             exit 2
             ;;
         *)

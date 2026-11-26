@@ -1423,8 +1423,7 @@ owned by `docs/CLAUDE.md`.
   `posted <ts>` from the share's own answer, from the daemon's one `files.info` read, or neither (this settles which of the
   two decided the posts seen on 2026-11-25, which printed a time with a comment and none without), and that no printed time is a
   thread parent's; then `read --thread` of the thread ones: each line names the id `posted file <id>` printed, as `session`
-  (`app` if Slack's share carries no mark of the app's own); and `sot-fe chat delete` of one's time: whether Slack deletes a file post (the fourth check of CHAT-DELETE-UNMEASURED), and what became of the
-  file; (3) delete a thread's parent that has replies, then read the channel: one `not-shown` line, and whether `read --thread` of
+  (`app` if Slack's share carries no mark of the app's own); and `sot-fe chat delete` of one's time (check C1 of CHAT-DELETE-UNMEASURED: the post and its file go); (3) delete a thread's parent that has replies, then read the channel: one `not-shown` line, and whether `read --thread` of
   it lists the replies or nothing (the probe CHAT-DELETED-PARENT-THREAD-UNSERVED owed), after which the person deletes those
   replies in Slack; (4) a channel of more than 50 messages: `more` and `--before` read on with none twice and none missing; (5)
   after an exit 3 of a post, the daemon's log names the step and the code. Also unmeasured: when Slack puts a share into the
@@ -1459,41 +1458,58 @@ owned by `docs/CLAUDE.md`.
   plan changed, so a window's unpairing of a folder mapped in another workspace replies before that workspace's restart ends.
   A session's `chat.row_pair` waits on the workspace the removed mapping named. Left as it is: the window's own behavior
   does not change.
-- **CHAT-DELETE-UNMEASURED** [note] A session's delete of a message its project's Slack app posted (`sot-fe chat delete <ts>`,
-  `Api::delete_message`, chat guarantee 36), asked by the maintainer on 2026-11-24, is proved against the fake Slack only: no real
-  Slack message has been deleted by it. The checks are made on the first release candidate that carries the command, on a live hub
-  and in a throwaway channel, before a release is published (nothing in the build or the release gate enforces it). In order:
-  (1) a session's delete of a message the app posted, with a custom `username`, is deleted; (2) a session's delete of a message a
-  person posted from the window's Chat drawer, which goes out under that person's own user token though through the same Slack
-  app, is refused (`not_own_message`), and so is a message a person typed in Slack and one another app posted: if Slack lets the
-  bot token delete a person's message, a session can delete a person's words, and the command is changed before a release; (3) a
-  second delete of a deleted message answers `message_not_found` (`gone`), and what a delete of a thread parent that has replies
-  answers, and a second delete of it (`cant_delete_message` there would be told `not_own_message` of the app's own message);
-  (4) a post that shared a file, deleted: whether Slack accepts it (`cant_delete_message` for such a message would also be told
-  `not_own_message`), and what became of the file, looked for in the channel and, for a file also shared in a second channel, in
-  both channels. The words of `not_own_message` claim no more than that Slack would not let the app delete the message; a
-  workspace whose administrators restrict who may delete gives the same code. Seen so far, by a session on a live hub on
-  2026-11-24, in its own channel and not a throwaway one: of (1), 19 of the app's own text posts in threads deleted (`deleted`);
-  of (3), 11 posts a person had already deleted in Slack answered `gone`, exit 0. Seen on 2026-11-25, by another session on
-  the same hub in a throwaway channel, on its person's word naming each message: of (2), a message the maintainer had typed
-  in Slack was refused (`not_own_message`, exit 2); of (3), the session's own post with a reply under it was deleted
-  (`deleted`), and the maintainer then saw in Slack that the reply stayed, as a delete removes one message; of (4), the
-  session's own post that shared a file, whose answer had named its time, was deleted (`deleted`). Not seen: of (2), a
-  message a person posted from the window's Chat drawer and one another app posted; of (3), a second delete of a deleted
-  parent; of (4), what became of the file, and a file post whose time a session finds with `sot-fe chat read`
-  (CHAT-READ-UNMEASURED lists the check). Close this item when these have been seen.
-- **CHAT-DELETE-FILES-STAY** [note] The command deletes the message and no file; what Slack then does with a file the message
-  shared (removes it, unshares it, or leaves it with no message to show it in) is not measured. A delete of the files themselves is
-  not built, because a right file delete needs more than the message's delete: (1) Slack's file
-  delete removes the file everywhere it is shared (another channel, a direct message, a second message of this channel), so it
-  must first learn where each file is shared (`files.info`'s shares) and delete only a file whose one share is this message;
-  (2) the message must be read first, and a message the read does not return must not be reported as having no files (a thread
-  reply is the common case, and the read's edge rule is not measured), nor a file entry with no usable id, nor a read refused by
-  the rate-limit wait or as busy, which would lose the file ids for good; (3) whether deleting the message itself removes,
-  unshares or leaves the file is unmeasured, and decides which of `file_deleted` and `file_not_found` every delete with a file
-  meets, the second also meaning "not visible to the caller"; (4) the read sits between admission and the delete, so a remap
-  during it deletes in the old channel unless it admits again; (5) a delete answered `unknown` that Slack performed is told
-  `gone` by the next ask, which cannot find the files. Rule if built: each of these, with a test that is red first.
+- **CHAT-DELETE-UNMEASURED** [note] A session's delete of a post its project's Slack app made, with the files the app posted
+  with it (`sot-fe chat delete <ts> [--thread <ts>]`, `chat.delete_post`, `Api::delete_post`, chat guarantee 36), asked by the
+  maintainer on 2026-11-24 for the message and on 2026-11-26 for its files too, is proved against the fake Slack only: the
+  fake plays what Slack was measured to do on 2026-11-26 (a throwaway channel, the hub app's bot token, four shares made the way
+  the daemon makes them), and that measurement covered a top-level share's message and its `files.info`, a thread share's entry (the reply's own `ts` with
+  `thread_ts` and `latest_reply`), an image, JSON bodies for `files.delete` and `chat.delete`, the read's one-second window, a message deleted
+  alone (the file survives, shared nowhere), a file deleted alone (the message stays with a tombstone entry) and the repeat
+  answers. The checks are made on the first release candidate that carries the command, on a live hub and in a throwaway
+  channel, before a release is published (nothing in the build or the release gate enforces it). In order: C1, a top-level file
+  post of one text file and one PNG (the measured files were small snippets, and a 1x1 PNG, listed alike): `deleted <ts>` and `file <id> deleted`; Slack shows
+  neither, and the file's `files.info` is `file_deleted`. C2, a reply file post: with no `--thread` it is `gone` (a reply was
+  not looked for) and nothing is deleted, then with it it is deleted whole (that a reply's share is listed in `files.info` at the
+  reply's own time was measured on 2026-11-26, so this checks the whole delete of it). C3, a file post in a private channel the app is in (its `shares.private` and `groups`).
+  C4, the one whose failure is unsafe: a person shares a session's posted file into a second channel the app is in, and into a
+  direct message the app is not in, and the session then deletes its post; the file must be kept (`shared_elsewhere`) and stay
+  in the second channel, and whether `files.info` under the bot token lists the direct message's share is recorded: if it does
+  not, that file was deleted from that conversation too, which no design can see (the options: accept it and say so in the skill
+  and the manual, or do not ship the file delete). C5, a message a person typed in Slack, and a post a person made with a file
+  from the Chat drawer under their own user token: `refused not_own_message`, and the daemon's log names
+  `step=conversations.history` with no `files.info` and no `chat.delete` sent; this rests on a person's post carrying no `bot_id`
+  of the app (CHAT-PERSON-POST-NOT-ANSWERED), and no longer on Slack's own refusal of the bot token. C6, a text post with no
+  file: `deleted <ts>` and no file line. C7, a thread parent with replies, deleted, then deleted again: the second answer is
+  `gone` (the placeholder Slack keeps for such a parent is read as gone by its `subtype`, whose shape is unmeasured; if it
+  differs, the second delete is refused `not_own_message` or `unclear_file`, safely); the replies stay, as a delete removes one
+  message. Also unmeasured: a private channel's `files.info` shape (C3: any other shape than the assumed one is `unclear_file`, so
+  nothing is deleted), `files.delete`'s rate limits, several files in one message, and what Slack answers
+  `files.delete` for a file the bot does not own (never sent). The words of `not_own_message` claim no more than that the
+  message is not the app's, or Slack would not let the app delete it; a workspace whose administrators restrict who may delete
+  gives Slack's code. Seen so far, by a session on a live hub on 2026-11-24, in its own channel and not a throwaway one, with
+  the older delete of a message alone: of a custom-`username` own post, 19 of the app's own text posts in threads deleted; 11
+  posts a person had already deleted in Slack answered `gone`. Seen on 2026-11-25, by another session on the same hub in a
+  throwaway channel, on its person's word naming each message, with the older delete: a message the maintainer had typed in Slack
+  was refused; the session's own post with a reply under it was deleted and the reply stayed; the session's own post that shared a
+  file was deleted, and its file stayed in Slack shared nowhere (CHAT-DELETED-POSTS-LEFT-FILES). Limits of the delete as built,
+  from its review: (a) finishing a half-done delete rests on Slack still answering `file_deleted` for a file it deleted (measured
+  the same day only); an answer of `file_not_found` there makes the post `unclear_file`, with the message left standing, and
+  counting the `{id, mode: "tombstone"}` entry the daemon's own read already shows as deleted, with no call, would remove that
+  dependence; (b) a person's or another app's file inside the app's own message is kept and the message is deleted, so that
+  file is left shared nowhere (the product makes no such message today); (c) a reply asked for by its time alone, with no
+  `--thread`, is not looked for and answers `gone` with exit 0, where the older command deleted a reply by its time, so an
+  older habit can report a standing reply as already gone (the words and the skill say to add `--thread`). Close this item
+  when C1 to C7 have been seen.
+- **CHAT-DELETED-POSTS-LEFT-FILES** [session] Earlier deletes of a session's posts, made with the command that deleted the message
+  alone (on a live hub on 2026-11-25 and 2026-11-26), left the files those posts shared in Slack, alive and shared nowhere: a
+  message deleted alone leaves its file unshared and nothing then names it, as the 2026-11-26 measurement showed. The new delete
+  cannot find them: no message names them, and `files.info` of one shows no channel and no share, so it cannot be told which
+  project's post it was. Nothing in the product records them. Slack's `files.list` filtered by the bot's user might list them, but
+  that is unmeasured (only a per-channel list was seen, and it no longer finds such a file), and the app is one person's app across
+  all their projects, so a sweep would cross projects and exceed one session's authority. Left as they are for now (the maintainer has been told and may decide otherwise); the other option
+  is a one-off removal, from a session's untracked dev folder, of the ids that session still has in its own transcript, each read
+  by `files.info` first as the app's and shared nowhere. Posts still standing, such as a session's earlier picture and page posts,
+  are not affected: the new command deletes them with their files.
 - **CHAT-MENTION-NO-AUTOCOMPLETE** [feature] Seen in use by a person on the 0.7.3 candidate, 2026-11-20 (the maintainer reported of a mention in a chat post that it works and is good enough for now, but that the user has to remember the exact spelling and name used, with no autocomplete): the Chat drawer's draft offers no names while a person types after `@`, so a mention needs the member's name as Slack has it, and a misspelled one goes out as plain text and is told back as unlinked only after the post. Wanted: the workspace's members offered as the name is typed, from the names the daemon already resolves a post against. Unbuilt, and not in 0.7.3 on his word that the mention is good enough for now; it needs his go-ahead.
 - **CHAT-MAY-EXIST-NAMES-NO-MENTIONS** [note] A post whose answer was lost (`chat.post` or `chat.post_file` answered `unknown`, "may exist") tells the poster no `mentioned` or `unlinked` names, though the daemon knows what it sent: the reply is wire's unit variant `Unknown` (`#[serde(other)]`, which carries no field). From the mentions landing's review, reading code; never seen. A person is sent to the channel, where the drawer shows the posted message with its mentions by name. The fix named: a new reply variant (for example `unknown_told`) carrying the optional, lenient `mentioned` and `unlinked`, which older readers already take as `unknown` through `#[serde(other)]` (an older `sot-fe` exits 3 on it); the daemon sends it for an `Unknown` outcome with names to tell, and fe-net's reply mapping, the owner's `PostReply` and `PostShown`, the status words and `sot-fe`'s case print the may-exist words and then the report, for a text and a file post: measured at about 35 product lines with its pairing test, over the 30 its landing allowed, so it is its own change.
 - **CHAT-MEMBER-WALK-NEVER-COMPLETES** [note] A post's member list walk (`Api::roster`, `rust/chat/src/api.rs`) runs inside the post's 10 s names deadline and is dropped with it, so in a workspace whose ten `users.list` pages take more than 10 s no walk ever completes: every post that names someone waits 10 s, goes out with its names as text (`the member list could not be read` on the status line and in `sot-fe chat post`'s output), and spends up to ten tier-2 reads, a rate limit among which pauses every read of the workspace. From the review of the mentions landing, reading code; never seen. The fix decided: the walk runs to its end as its own task and fills the cache while the post waits for it at most the names deadline; it needs `Api` held in an `Arc` by the task and a rule that the task ends with its workspace's service, so it is its own change.
@@ -1722,6 +1738,7 @@ owned by `docs/CLAUDE.md`.
 
 ## Closed
 
+- **CHAT-DELETE-FILES-STAY** (chat) [note] Closed on 2026-11-26 by the landing that fixes it. The command that deleted a session's post deleted the message and no file, and Slack left the file alive and shared nowhere with nothing to name it (measured that day), so a session could not delete the whole of a post that shared a file; the maintainer asked that day that sessions can. `sot-fe chat delete` now sends `chat.delete_post`, and the daemon reads the message once, judges every file it names by one `files.info`, deletes the app's own files that are shared in that post alone and nowhere else, and only then the message, each step once, with a fresh admission before each call and one deadline (chat guarantee 36; `delete_tests.rs`, `chat_ops_tests.rs`, `chat_mail_tests::a_sessions_post_is_deleted_with_its_own_files_and_a_second_ask_finishes_a_half_done_one`). Its five points are answered: a file shared elsewhere is kept and said so (the limit that remains is a share Slack does not list to the app); the message is read first, a reply in its thread, and a message the read does not return is never deleted; a file `files.info` cannot match to the post stops the delete before any mutation; a remap between the calls stops it as `stale_mapping` or `stale_row`; and a delete whose answer was lost is finished by the same ask. Proved against the fake Slack only; the checks on a live hub are CHAT-DELETE-UNMEASURED's C1 to C7.
 - **CHAT-OWN-SHARE-READS-AS-APP** (chat) [session] Closed on 2026-11-26 by the landing that fixes it. Seen by a session operating the product on the second 0.7.4 candidate on that day, against real Slack: it posted two files to its own project's channel with `sot-fe chat post --file`, one with a comment at the top level and one with none into that post's thread, and `sot-fe chat read --thread` then listed both as `app "bot"` with the session's label (`<handle> (row via Ship of Tools)`) at the start of the words, where a session's own post is listed as `session` under its handle with the label left out. The cause, measured the same day by reads of both posts: Slack lists a share made under the bot token with no `subtype` (`type` is `message`), with `bot_id`, `user`, `app_id`, `upload: true`, one `files` entry and no `username` or `metadata`, and the chat read the label only for a `file_share`. An own message that carries a file now has its origin read from its label whatever its `subtype` (chat guarantee 2; `normalize_tests::an_own_share_as_slack_lists_it_with_no_subtype_reads_as_the_rows`, `chat_mail_tests::a_session_reads_its_own_file_posts_back_as_its_own`; the fake Slack lists shares as measured, `fake_slack::listed_share`). On that candidate the Chat drawer shows a session's file post as the app's (the name `bot`, the label in the text) and the daemon's reads, `chat.history` and `chat.read`, give the same origin; the drawer by the code only, seen by no person. A share is still never mail: only a member's or the drawer's post is. Proved against the fake Slack and the live shape read on 2026-11-26; unmeasured: the `subtype` of the Socket Mode event of a share (the fake's events carry `file_share`, and the tests send one with and one without), and a share under a person's user token (it reads as theirs, as before). Limits, from review and reading the code, none seen: whether the live event of a share carries `files` is unmeasured as well as its subtype, and an own event with neither reads as the app's, which the watch model keeps in a watched channel's top level until the next snapshot (thread replies do not go through it); if Slack gave a person's user-token post the app's `bot_id` (CHAT-PERSON-POST-NOT-ANSWERED's premise), a person's file share whose comment starts with a session's label would read as that session, never mail either way; a window that held older pages before its daemon was replaced shows those older file posts as the app's, and the newer ones as the session's, until it drops those pages. No person has used the fix.
 - **CHAT-PAIR-TESTS-RACE-THE-NAME-LOOKUP** (chat) [note] closed by the landing that fixes it, 2026-11-25, a red in one hosted run with no use behind it: on the Ubuntu shard that runs the daemon's chat setup tests, on a commit that changed no chat code, `chat_setup_tests::a_session_pairs_another_project_by_name_and_never_moves_or_takes_a_channel` read an `already_paired` refusal that named the project's channel by its id alone. A session's refusal and its unpairing's reply name the channel from the running service's name cache (`setup::pairing_of`); a pairing restarts the workspace's service with an empty cache, and the start's lookup of the mapped channels' names (`Chat::own`) fills it on a detached task that nothing orders before the next request. That test, and `a_session_unpairs_another_projects_folder_by_slug_and_again_changes_nothing`, which reads the same cache after a restart and took a channel list for what fills it, assumed the lookup had ended: with a pause placed before the lookup each failed 20 of 20 runs, and with no pause the second failed 5 of 30 runs of its module on two CPUs. Each test now fills the cache itself, through the running service's `Api::channel_names`, before the request that reads it. The product is unchanged: the chat's contract gives the cached name, absent until the start's lookup ends, and the `sot-fe chat pair` verb then names the channel by its id.
 

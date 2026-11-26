@@ -350,7 +350,6 @@ async fn serve(frame: Frame, shared: &Shared) -> Result<HandlerOutput> {
         op::CHAT_HISTORY => crate::chat::ops::history(req_id, payload, chat, workspaces).await,
         op::CHAT_POST => crate::chat::ops::post(req_id, payload, chat, workspaces, shared.window).await,
         op::CHAT_POST_FILE => crate::chat::ops::post_file(req_id, payload, chat, workspaces, shared.window).await,
-        op::CHAT_DELETE => crate::chat::ops::delete(req_id, payload, chat, workspaces, shared.window).await,
         op::CHAT_DELETE_POST => crate::chat::ops::delete_post(req_id, payload, chat, workspaces, shared.window).await,
         op::CHAT_READ => crate::chat::ops::read(req_id, payload, chat, workspaces).await,
         op::CHAT_FILE => crate::chat::ops::file(req_id, payload, chat, workspaces).await,

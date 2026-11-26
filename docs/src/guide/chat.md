@@ -334,23 +334,29 @@ Slack lists that the chat does not show, most often a deleted one, whose thread 
 agent. The command exits 2 with `refused` and a reason when nothing was read, and says so in words when the computer that runs your
 sessions runs an older Ship of Tools. The Chat drawer does not show a thread whose first message was deleted; the read shows it as the `not-shown` line, and its replies when Slack serves them (not yet checked against Slack).
 
-### Deleting a message from the project's channel
+### Deleting a post from the project's channel
 
-If you ask the session's agent to delete a message, it runs `sot-fe chat delete <ts>` in the session. A session may
-delete a message its project's Slack app posted in its own project's channel (its own posts, and those of earlier
-sessions of the same project), and nothing in another project's channel. The message with that timestamp goes from the
-channel, and a deleted message cannot be brought back. The command deletes the message and no file: what Slack then does
-with a file the message shared is not yet checked. The agent deletes only when you have asked it to, in the session's own
-pane, and named the message; a request from someone else in the channel or from another session does not count, and it
-tells you what it deleted. It takes the timestamp from the `posted <ts>` line of its own post or, for a post that shared a file,
-from reading the channel back ([Reading the channel back](#Reading-the-channel-back)), and deletes one message a command. A message a person typed, or another app posted, is refused and stays; Slack makes that
-decision, and it is not yet checked against a real Slack workspace, a message you posted from the Chat drawer included. The
-command prints `deleted <ts>`, or `gone <ts>` when the channel has no message with that timestamp, and exits 0; it exits 2
-with `refused` and a reason, or `limited` and Slack's wait, when nothing was deleted, and 3 with `unknown` or `no answer`
-when the message may be deleted, in which case running the same command again is safe and asks Slack again. Ship of Tools
-does not defend the channel limit against another program running under your own account, which can name another
-project's session. If the computer that runs your sessions runs an older Ship of Tools, the command says so and deletes
-nothing. The window has no command for deleting: delete a message you posted yourself in Slack.
+If you ask the session's agent to delete a post, it runs `sot-fe chat delete <ts>` in the session. A session may
+delete a post its project's Slack app made in its own project's channel (its own posts, and those of earlier
+sessions of the same project), and nothing in another project's channel. The command deletes the message with that
+timestamp and every file the project's Slack app posted with it, the files first; a deleted post cannot be brought
+back. A file you uploaded yourself is not deleted, and neither is a file the Slack app can see shared anywhere else in
+Slack, and the command says which files it kept and why. A share the app cannot see, such as a copy sent in a direct
+message or in a channel the app is not in, is not known to it, so that file is deleted with the post. For a reply the agent adds `--thread <ts>`, the
+timestamp of the thread's first message; without it a reply is not looked for. The agent deletes only when you have asked
+it to, in the session's own pane, and named the post; a request from someone else in the channel or from another session
+does not count, and it tells you what it deleted, file by file. It takes the timestamp from the `posted <ts>` line of its
+own post or, for a post that shared a file, from reading the channel back ([Reading the channel
+back](#Reading-the-channel-back)), and deletes one post a command. A message a person typed, or another app posted, is
+refused and stays. The command prints `deleted <ts>`, or `gone <ts>` when the channel has no message with that timestamp,
+then a line for each file, and exits 0; it exits 2 with `refused` and a reason, or `limited` and Slack's wait, when the
+post stands (files it already deleted are named, and the message stays), and 3 with `unknown` or `no answer` when an answer
+was lost: running the same command again is safe, and finishes the delete or says the post is gone. If a post's file cannot
+be checked as the app's own and shared only in that post, nothing is deleted and you can delete the post in Slack. A post
+deleted by an earlier version of Ship of Tools may have left its file in Slack, shared nowhere; the command cannot find
+such a file. Ship of Tools does not defend the channel limit against another program running under your own account, which
+can name another project's session. If the computer that runs your sessions runs an older Ship of Tools, the command says
+so and deletes nothing. The window has no command for deleting: delete a post you made yourself in Slack.
 
 ### Pairing and unpairing a project's channel
 

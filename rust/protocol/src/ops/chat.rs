@@ -125,7 +125,7 @@ pub enum ChatCode {
     /// nothing was saved. A window sends the person back to the app-level token's step, the other two kept, and shows the
     /// text there and on its status line.
     MixedApps,
-    /// A `chat.delete` or `chat.delete_post` of a message that is not the hub's Slack app's, as the daemon read it, or that Slack
+    /// A `chat.delete_post` of a post whose message is not the hub's Slack app's, as the daemon read it, or that Slack
     /// refused with `cant_delete_message`: the app does not delete it (the words claim no more).
     NotOwnMessage,
     /// A session's `chat.row_pair` of a project that already has a channel: nothing was changed, and the refusal's body is
@@ -750,9 +750,8 @@ pub enum ChatPostFileRes {
     Unknown,
 }
 
-/// `chat.delete` and `chat.delete_post`: the message `ts` of the row's own channel (a reply with the `thread` it is in),
-/// deleted under the Slack app's own token and never resent; `chat.delete_post` also deletes the files the app posted with
-/// it. A row's request only (a window's is `bad_request`): `name` is the row's bound handle, checked as a row's post's is.
+/// `chat.delete_post`: the message `ts` of the row's own channel (a reply with the `thread` it is in),
+/// deleted under the Slack app's own token with the files the app posted with it, each step once and none resent. A row's request only (a window's is `bad_request`): `name` is the row's bound handle, checked as a row's post's is.
 /// There is no kind and no channel but the target's, which the daemon rechecks against the row's mapping, and no file: the
 /// daemon finds the post's files itself. `thread` is the time of the thread's first message, which a reply is read in;
 /// absent, the message is looked for at the top of the channel.
@@ -808,14 +807,13 @@ fn file_ids<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Er
     Ok(at_most::<_, Id, MAX_FILES>(d)?.into_iter().map(|id| id.0).collect())
 }
 
-/// Reply to `chat.delete`, by `outcome`; `chat.delete_post` answers with it too. `deleted`: the message is gone. `gone`:
+/// Reply to `chat.delete_post`, by `outcome`. `deleted`: the message is gone. `gone`:
 /// Slack lists no such message (also what a second ask after a delete reads; a reply asked for with no `thread` is not
 /// looked for, so it reads `gone` too). `refused`: the message stands and nothing is in doubt (`not_own_message`: it is
 /// not the app's, or Slack would not let the app delete it; `unclear_file`: a file of the post could not be checked, so
 /// nothing was deleted). `limited`: Slack asked for a wait of `retry_after_secs` (`assumed` when it is a guess), and
 /// nothing more was sent. `unknown`: an answer was lost, so the post may be partly deleted: ask again, which finishes it
-/// or says it is gone. Every outcome but `unknown` carries `files`, what the post's files are now; `chat.delete`'s says
-/// none.
+/// or says it is gone. Every outcome but `unknown` carries `files`, what the post's files are now.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum ChatDeleteRes {

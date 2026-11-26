@@ -1216,7 +1216,7 @@ async fn a_read_under_another_name_or_of_another_projects_channel_reaches_no_sla
 }
 
 /// Slack's share of a file named no message time, so `sot-fe chat post --file` printed only the file's id; the read of the
-/// thread names the id beside the message's time, and that time is the delete's.
+/// thread names the id beside the message's time, and that time is the delete's, with the thread the read was made in.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_file_post_that_names_no_time_is_found_by_a_read_and_deleted() {
     let q = "1700000050.000000";
@@ -1238,9 +1238,13 @@ async fn a_file_post_that_names_no_time_is_found_by_a_read_and_deleted() {
     let found: Vec<String> = lines_of(&read).into_iter().filter(|l| l.contains("F0FILE")).collect();
     assert_eq!(found, [format!("{at} reply thread={q} session \"alpha-h\" files=F0FILE:\"fig.png\" | the fit")]);
 
+    // The delete is of that time in that thread, and takes the file the post shared with it.
     let time = found[0].split(' ').next().unwrap();
-    let deleted = conn.ask(12, op::CHAT_DELETE, json!({"target": target, "name": "alpha-h", "ts": time})).await;
-    assert_eq!(deleted, json!({"outcome": "deleted"}));
+    *w.lv.posts.lock().unwrap() = Some(Arc::new(
+        Posts::new("U0BOT", "B0BOT").bot_post("C0AAAA", q, None).share("C0AAAA", at, Some(q), "F0FILE"),
+    ));
+    let deleted = conn.ask(12, op::CHAT_DELETE_POST, json!({"target": target, "name": "alpha-h", "ts": time, "thread": q})).await;
+    assert_eq!(deleted, json!({"outcome": "deleted", "files": {"deleted": ["F0FILE"], "kept": []}}));
     let sent = w.fake.seen().into_iter().rfind(|s| s.path().ends_with("/chat.delete")).and_then(|s| s.json()).unwrap();
     assert_eq!(sent, json!({"channel": "C0AAAA", "ts": at}));
     stop(chat);

@@ -949,7 +949,7 @@ bot identity, workspace name, read-pacing instant, name cache, member list (guar
    (`setup::edit_and_reload`: the setup lock, `save` on the blocking pool, and, only when the file changed, one info line and
    the reload), which logs every changed pairing with who made it (`by="window"`, or a session's, below), the row, workspace, channel and outcome
    (`paired` or `unpaired`), never a folder path or a channel name; every field is a quoted, escaped string, so text a client
-   chose (a handle, a row as typed) never ends or forges a line, and `chat.delete`'s log line is written the same way
+   chose (a handle, a row as typed) never ends or forges a line, and `chat.delete_post`'s log line is written the same way
    (`a_log_line_never_carries_a_clients_text_as_structure`); the window's reply waits on its request's workspace
    (CHAT-WINDOW-UNPAIR-WAITS-ON-ITS-REQUEST). The log shows one line for a pairing that also takes over a missing folder's
    channel, not the two mappings it changed. Tests, in `rust/backend/src/server/chat_setup_tests.rs`:
@@ -1238,52 +1238,20 @@ bot identity, workspace name, read-pacing instant, name cache, member list (guar
    Slack's tier-2 `users.list`; a name is not matched by the account's handle (`name`); that Slack notifies on `<@U…>`
    and `<!here>` in a post sent with no `parse` or `link_names`, under a user token and under the bot's, is Slack's
    documented behavior, not yet seen in this product.
-36. **A session deletes a message of the app's own once.** `Api::delete_message(channel, ts)` is one `chat.delete` under the
-   bot's token alone (never the person's), a mutation sent once and never again, and, like every call of this client,
-   never sent once a stop has begun (`mutate` refuses a closed client `Closed`, guarantee 22:
+36. **A session deletes a post of the app's own: its files, then the message, each step once.** `Api::delete_message(channel, ts)`
+   is one `chat.delete` under the bot's token alone (never the person's), a mutation sent once and never again, and, like every
+   call of this client, never sent once a stop has begun (`mutate` refuses a closed client `Closed`, guarantee 22:
    `a_delete_is_made_once_under_the_bots_token_and_each_answer_has_its_outcome`). A delete Slack refuses with a code of
    `TOKEN_REFUSALS` ends the workspace's service, as every bot-token call does (`mutate`'s `refused`, guarantee 22:
-   `a_delete_the_bot_token_refuses_ends_the_service`). The outcome is `Deleted`, `Gone` (`message_not_found`: the answer
-   to a message already removed, so asking again after an `Unknown` asks Slack again), `Refused(code)` (Slack's rejection,
-   or a request that never left; `cant_delete_message` is the daemon's `not_own_message`, whose words say only that Slack
-   would not let the app delete that message), `Limited` (a 429 or `ratelimited`, with Slack's wait or a guess flagged
-   `assumed`, as a post's; `chat_ops_tests::a_row_delete_is_made_once_and_every_outcome_is_told_as_it_is`) or `Unknown`,
-   and nothing resends: a caller that stops waiting repeats nothing. **Whether the message is the app's is Slack's check,
-   not this crate's or the daemon's:** there is no author test before the call. **The first premise, unmeasured and the one
-   whose failure is unsafe:** that Slack refuses the app's bot token a delete of a person's message, a person's post from
-   the window's drawer included, which goes out under that person's own user token though through this same Slack app
-   (guarantee 12); if Slack let the bot token delete it, a session could delete a person's words. The others, also
-   unmeasured: that the bot token's `chat:write` scope is enough to delete the app's own message, one posted with a
-   custom `username` included; that another app's message is answered `cant_delete_message` (the documented code); and
-   that a message already removed is answered `message_not_found`. These are checked on the first release candidate that
-   carries the command, on a live hub, before a release is published, in the order `docs/defects.md`
-   CHAT-DELETE-UNMEASURED lists; no gate enforces that. No real Slack message has been deleted by this code. **This
-   command deletes the message and no file:** what Slack then does with a file the message shared is not measured (it may
-   remove it, even from another channel where it is also shared, or leave it), and a delete of the files themselves is not
-   built (`docs/defects.md`, CHAT-DELETE-FILES-STAY). Input the delete cannot carry (a channel that is no id, a `ts` that is
-   not wire's form) is `Err` unsent. The daemon's `chat.delete` (`rust/backend/src/chat/ops.rs`) admits it as a row's post
-   (`Chat::admit`, then `may_post` for kind row) and refuses a window's connection, all before any Slack call, and names
-   no channel but the row's mapped one. What it checks of the asker is the row's id and the handle bound to that row,
-   which any program of the same account can read: among one account's programs this is attribution and
-   accident-proofing, not a security boundary (as for posts, `may_post`), so a program of the account can name another
-   folder's row and delete the app's messages in that folder's channel. It logs one line a delete (channel, `ts`, handle,
-   row, outcome, and `why` for an `Unknown`: its code, guarantee 12's; never text), and one for a delete refused before it reaches Slack (a request that is no request, a
-   refused admission, a window, a wrong handle); two of these lines are pinned by a test and the rest rest on review: the line of a delete that ended unknown, `why`
-   included (`chat_ops_tests::a_post_that_may_exist_is_logged_once_with_why_and_never_its_text`), and the line of a delete
-   refused for a handle that holds a line break (`chat_setup_tests::a_log_line_never_carries_a_clients_text_as_structure`);
-   the line of a delete Slack answered, and of the other refusals, no test reads.
-   Limits, noted and not fixed: an unknown field of a request is ignored, as for every chat request (`ChatDeleteReq` has
-   no `deny_unknown_fields`, so a later option would be dropped by this daemon); what Slack answers a second delete of a
-   thread's parent that has replies (it may keep the parent as a placeholder) is not measured, and `cant_delete_message`
-   there would be told `not_own_message` of the app's own message; `cant_delete_message` may also be Slack's answer for the
-   app's own post that shares a file, or in a workspace whose administrators restrict who may delete, and the words then
-   say only that Slack would not let the app do it; deleting a thread's parent may leave its replies.
-   Tests: `api_tests.rs`, `a_delete_is_made_once_under_the_bots_token_and_each_answer_has_its_outcome`.
-   The message's `ts` to delete can come from guarantee 37's read, a file post's included: a file post's own answer names no
-   time when Slack's share names none, and the read names it beside the file's id
-   (`chat_mail_tests::a_file_post_that_names_no_time_is_found_by_a_read_and_deleted`).
+   `a_delete_the_bot_token_refuses_ends_the_service`). Its outcome is `Deleted`, `Gone` (`message_not_found`), `Refused(code)`
+   (`cant_delete_message` is Slack's refusal of a message the app may not delete), `Limited` (a 429 or `ratelimited`, with
+   Slack's wait or a guess flagged `assumed`, as a post's) or `Unknown`; input it cannot carry (a channel that is no id, a
+   `ts` that is not wire's form) is `Err` unsent. It is the last step of the delete below and no longer a command of its
+   own: the daemon serves no delete of a message alone. The message's `ts` to delete can come from guarantee 37's read, a
+   file post's included: a file post's own answer names no time when Slack's share names none, and the read names it beside
+   the file's id (`chat_mail_tests::a_file_post_that_names_no_time_is_found_by_a_read_and_deleted`).
    **A delete that takes the post's own files with it** (`api/delete.rs`, `Api::delete_post(channel, thread?, ts, recheck)`,
-   the daemon's `chat.delete_post` runs it; its older `chat.delete` deletes the message alone until the verb switches). One delete is one sequence, every call
+   the daemon's `chat.delete_post` runs it). One delete is one sequence, every call
    of it under the bot's token, and it ends at the first thing that is not going on as planned:
    1. *The read* (`Api::find_post`), before any other call and made once: one page of the measured read (guarantees 13 to
       15), both bounds exclusive a second either side of `ts`, limit `POST_READ_LIMIT` (100), no cursor,

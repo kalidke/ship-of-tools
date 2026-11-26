@@ -1,4 +1,4 @@
-//! The chat's request ops: `chat.resolve`, `chat.history`, `chat.post`, `chat.post_file`, `chat.delete`, `chat.delete_post`, `chat.read` and `chat.file`, each a job (never the
+//! The chat's request ops: `chat.resolve`, `chat.history`, `chat.post`, `chat.post_file`, `chat.delete_post`, `chat.read` and `chat.file`, each a job (never the
 //! loop), and `chat.watch` and `chat.unwatch`, which run in the loop. Every action that reaches Slack passes `Chat::admit` first, on the blocking pool, since admission
 //! canonicalizes the row's folder on the shared home; the Slack call then runs on the job's own task, and each of its
 //! bounds is the API's own deadline. A post is made once here and never again: no path of this file retries, and an
@@ -12,7 +12,7 @@ use std::time::Instant;
 use anyhow::Result;
 use serde::Deserialize;
 use sot_chat::api::delete::{Kept, PostDelete, PostEnd, Refusal};
-use sot_chat::api::{refuses_the_token, ApiError, Bounds, Continuation, DeleteOutcome, FileFetch, FileOutcome, FileVariant, HistoryQuery, PostKind, PostOutcome, ScanPage, ScanQuery};
+use sot_chat::api::{refuses_the_token, ApiError, Bounds, Continuation, FileFetch, FileOutcome, FileVariant, HistoryQuery, PostKind, PostOutcome, ScanPage, ScanQuery};
 use sot_chat::config::{self, Resolution};
 use sot_chat::http::HttpError;
 use sot_chat::mail::read_lines;
@@ -328,56 +328,6 @@ pub(crate) async fn post_file(req_id: u64, payload: serde_json::Value, chat: &Ar
             reply(req_id, NAME, &ChatPostFileRes::Unknown)
         }
     }
-}
-
-/// `chat.delete`: one message of the row's own channel deleted once under the app's token. After admission, a row's
-/// request only: a window's, or a row's under a name that is not its bound handle, is `bad_request`, before any Slack call.
-/// Whether the message is the app's is Slack's to say (`cant_delete_message` is `not_own_message`). One log line each,
-/// refused before Slack included, with who asked and how it ended, never the message.
-pub(crate) async fn delete(req_id: u64, payload: serde_json::Value, chat: &Arc<Chat>, rows: &Workspaces, window: bool) -> Result<HandlerOutput> {
-    const NAME: &str = op::CHAT_DELETE;
-    let req = match decode::<ChatDeleteReq>(payload) {
-        Ok(r) => r,
-        Err(c) => {
-            tracing::info!(outcome = ?c, "project chat: a session's delete was not a request");
-            return Ok(refuse(req_id, NAME, c));
-        }
-    };
-    let log = |outcome: &dyn std::fmt::Debug, why: &str| {
-        tracing::info!(channel = req.target.channel.as_str(), ts = req.ts.as_str(), handle = req.name.as_str(), row = req.target.row.as_str(), outcome = ?outcome, why, "project chat: a session's delete")
-    };
-    let refused = |code: ChatCode| -> Result<HandlerOutput> {
-        log(&code, "");
-        Ok(refuse(req_id, NAME, code))
-    };
-    let service = match admitted(chat, rows, req.target.clone()).await {
-        Ok(s) => s,
-        Err(c) => return refused(c),
-    };
-    if window || !may_post(ChatPostKind::Row, &req.name, &req.target.row, rows, window) {
-        return refused(ChatCode::BadRequest);
-    }
-    let api = match service.api() {
-        Ok(a) => a,
-        Err(_) => return refused(ChatCode::Unavailable),
-    };
-    // The one call: nothing below sends again, whatever it answers.
-    let outcome = api.delete_message(req.target.channel.as_str(), req.ts.as_str()).await;
-    let mut why = String::new();
-    let res = match outcome {
-        Err(e) => ChatDeleteRes::Refused { code: code_of(&e), files: ChatPostFiles::default() },
-        Ok(DeleteOutcome::Deleted) => ChatDeleteRes::Deleted { files: ChatPostFiles::default() },
-        Ok(DeleteOutcome::Gone) => ChatDeleteRes::Gone { files: ChatPostFiles::default() },
-        Ok(DeleteOutcome::Refused(why)) if why == "cant_delete_message" => ChatDeleteRes::Refused { code: ChatCode::NotOwnMessage, files: ChatPostFiles::default() },
-        Ok(DeleteOutcome::Refused(why)) => ChatDeleteRes::Refused { code: post_refusal_code(PostKind::Row, &why), files: ChatPostFiles::default() },
-        Ok(DeleteOutcome::Limited { retry_after, assumed }) => ChatDeleteRes::Limited { retry_after_secs: retry_after.as_secs(), assumed, files: ChatPostFiles::default() },
-        Ok(DeleteOutcome::Unknown(code)) => {
-            why = code;
-            ChatDeleteRes::Unknown
-        }
-    };
-    log(&res, &why);
-    reply(req_id, NAME, &res)
 }
 
 /// What a delete of a post ended as, for the reply and the log: the reply, the Slack code (or fixed one) that says why for

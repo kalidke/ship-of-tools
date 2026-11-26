@@ -31,7 +31,6 @@ const OPS: &[(&str, Answer)] = &[
     (op::CHAT_HISTORY, Answer::Handled),
     (op::CHAT_POST, Answer::Handled),
     (op::CHAT_POST_FILE, Answer::Handled),
-    (op::CHAT_DELETE, Answer::Handled),
     (op::CHAT_DELETE_POST, Answer::Handled),
     (op::CHAT_READ, Answer::Handled),
     (op::CHAT_FILE, Answer::Handled),
@@ -60,12 +59,6 @@ const TOKEN_GONE: u8 = 6;
 /// A file's first step refused `invalid_auth`, and its share refused `not_in_channel`.
 const ASK_TOKEN_GONE: u8 = 7;
 const SHARE_NOT_IN: u8 = 8;
-/// A delete Slack refuses as a message of another's (`cant_delete_message`), and one it answers `message_not_found`.
-const NOT_OWN: u8 = 9;
-const GONE: u8 = 10;
-/// A delete Slack answers 429 with a wait of 7 s, and one it answers 429 with none.
-const WAIT_7: u8 = 11;
-const WAIT_NONE: u8 = 12;
 
 /// The calls a request makes. The listener's own `auth.test` and `apps.connections.open` are in the fake's record too
 /// and are not counted: they run with no admission.
@@ -130,10 +123,6 @@ pub(super) async fn slack_over(mode: &Arc<AtomicU8>, posts: Option<Arc<Posts>>) 
         } else if path.ends_with("/chat.delete") {
             match now {
                 DROP => Reply::Drop,
-                NOT_OWN => Reply::json(&json!({"ok": false, "error": "cant_delete_message"})),
-                GONE => Reply::json(&json!({"ok": false, "error": "message_not_found"})),
-                WAIT_7 => Reply::Status { code: 429, headers: vec![("Retry-After".into(), "7".into())], body: b"{}".to_vec() },
-                WAIT_NONE => Reply::Status { code: 429, headers: Vec::new(), body: b"{}".to_vec() },
                 _ => Reply::json(&json!({"ok": true})),
             }
         } else {
@@ -953,7 +942,7 @@ async fn a_persons_file_post_from_a_window_goes_under_their_token_once() {
     assert_eq!(calls(&fake), before, "a forgotten token's next posts were sent");
 }
 
-/// A row's delete as the verb sends it: the row's bound handle as the name.
+/// A row's delete as the verb sends it, without a thread: the row's bound handle as the name.
 fn row_delete(row: &str, channel: &str, name: &str, ts: &str) -> Value {
     json!({"target": target(row, channel), "name": name, "ts": ts})
 }
@@ -963,83 +952,8 @@ fn slack_calls(fake: &FakeSlack, method: &str) -> usize {
     fake.seen().iter().filter(|s| s.path().ends_with(method)).count()
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn a_row_deletes_only_in_its_own_channel_under_its_own_handle_and_never_from_a_window() {
-    let mode = Arc::new(AtomicU8::new(OK));
-    let fake = slack(&mode).await;
-    let rig = rig(&fake).await;
-    rig.rows.set_agent_handle(&rig.alpha, "alpha-h").unwrap();
-    let ts = "1700000000.000100";
-    let mut cli = connect(rig.services.clone()).await;
-    let mut window = connect_window(rig.services.clone()).await;
-    // A window's delete, under the row's own handle even: a person deletes in Slack.
-    assert_eq!(code(&window.ask(10, op::CHAT_DELETE, row_delete(&rig.alpha, "C0AAAA", "alpha-h", ts)).await), "bad_request");
-    // The handle is the row's bound one, compared exactly: another's, none, other spellings, and the other row's channel
-    // under alpha's handle.
-    let refused = [
-        row_delete(&rig.alpha, "C0AAAA", "someone-else", ts),
-        row_delete(&rig.alpha, "C0AAAA", "", ts),
-        row_delete(&rig.alpha, "C0AAAA", "ALPHA-H", ts),
-        row_delete(&rig.alpha, "C0AAAA", " alpha-h", ts),
-        row_delete(&rig.beta, "C0BBBB", "alpha-h", ts),
-        // Not a ts, and not a request.
-        row_delete(&rig.alpha, "C0AAAA", "alpha-h", "17.5"),
-        json!({"target": 3}),
-    ];
-    for (n, payload) in refused.into_iter().enumerate() {
-        let reply = cli.ask(20 + n as u64, op::CHAT_DELETE, payload).await;
-        assert_eq!((code(&reply), reply.get("outcome")), ("bad_request", None), "refused delete {n}: {reply}");
-    }
-    // A request names no channel a session can choose: the row's own mapping is rechecked, and another channel, the other
-    // row's included, is a stale mapping; a row that is gone is a stale row.
-    assert_eq!(code(&cli.ask(40, op::CHAT_DELETE, row_delete(&rig.alpha, "C0BBBB", "alpha-h", ts)).await), "stale_mapping");
-    assert_eq!(code(&cli.ask(41, op::CHAT_DELETE, row_delete("ws-gone-0000", "C0AAAA", "alpha-h", ts)).await), "stale_row");
-    rig.rows.set_default(&rig.alpha);
-    assert_eq!(code(&cli.ask(42, op::CHAT_DELETE, row_delete(&rig.alpha, "C0AAAA", "alpha-h", ts)).await), "unmapped", "the anchor never acts");
-    assert_eq!(calls(&fake), 0, "a refused delete reached Slack");
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn a_row_delete_is_made_once_and_every_outcome_is_told_as_it_is() {
-    let mode = Arc::new(AtomicU8::new(DROP));
-    let fake = slack(&mode).await;
-    let rig = rig(&fake).await;
-    rig.rows.set_agent_handle(&rig.alpha, "alpha-h").unwrap();
-    let ts = "1700000000.000100";
-    let mut cli = connect(rig.services.clone()).await;
-    let delete = |n: u64| (n, op::CHAT_DELETE, row_delete(&rig.alpha, "C0AAAA", "alpha-h", ts));
-    // No answer: unknown, one request (the message may or may not be deleted).
-    let (n, name, payload) = delete(10);
-    assert_eq!(cli.ask(n, name, payload).await["outcome"], "unknown");
-    assert_eq!(slack_calls(&fake, "/chat.delete"), 1, "the handler sent the delete again");
-    // The same ask again, Slack answering now: the message is deleted, and the sent request is the row's.
-    mode.store(OK, Ordering::SeqCst);
-    let (n, name, payload) = delete(11);
-    let done = cli.ask(n, name, payload).await;
-    assert_eq!(done, json!({"outcome": "deleted"}));
-    assert_eq!(slack_calls(&fake, "/chat.delete"), 2);
-    let sent = fake.seen().into_iter().rfind(|s| s.path().ends_with("/chat.delete")).and_then(|s| s.json()).unwrap();
-    assert_eq!(sent, json!({"channel": "C0AAAA", "ts": ts}));
-    // Then it is gone, a plain outcome; a message that is not the app's is refused with its own code and stays.
-    mode.store(GONE, Ordering::SeqCst);
-    let (n, name, payload) = delete(12);
-    assert_eq!(cli.ask(n, name, payload).await, json!({"outcome": "gone"}));
-    mode.store(NOT_OWN, Ordering::SeqCst);
-    let (n, name, payload) = delete(13);
-    let refused = cli.ask(n, name, payload).await;
-    assert_eq!((refused["outcome"].as_str(), refused["code"].as_str()), (Some("refused"), Some("not_own_message")), "{refused}");
-    // Slack's pause is told with its wait, or with a flagged guess when it named none, and nothing is resent.
-    mode.store(WAIT_7, Ordering::SeqCst);
-    let (n, name, payload) = delete(14);
-    assert_eq!(cli.ask(n, name, payload).await, json!({"outcome": "limited", "retry_after_secs": 7, "assumed": false}));
-    mode.store(WAIT_NONE, Ordering::SeqCst);
-    let (n, name, payload) = delete(15);
-    assert_eq!(cli.ask(n, name, payload).await, json!({"outcome": "limited", "retry_after_secs": 30, "assumed": true}));
-    assert_eq!(slack_calls(&fake, "/chat.delete"), 6, "one request for each ask");
-}
-
-/// A post, a file post and a delete that end unknown each log one line with the failure's code, and no line holds the
-/// post's text, the comment or a token.
+/// A post and a file post that end unknown each log one line with the failure's code, and no line holds the post's text,
+/// the comment or a token.
 #[test]
 fn a_post_that_may_exist_is_logged_once_with_why_and_never_its_text() {
     let text = super::chat_setup_tests::logged(|| async {
@@ -1055,8 +969,6 @@ fn a_post_that_may_exist_is_logged_once_with_why_and_never_its_text() {
         let mut shared = file_post(&rig.alpha, "C0AAAA", "row", "alpha-h", "files:fit.png");
         shared["comment"] = json!("ZQCOMMENTZ");
         assert_eq!(cli.ask(11, op::CHAT_POST_FILE, shared).await["outcome"], "unknown");
-        let deleted = cli.ask(12, op::CHAT_DELETE, row_delete(&rig.alpha, "C0AAAA", "alpha-h", "1700000000.000100")).await;
-        assert_eq!(deleted["outcome"], "unknown");
     });
     let lines = |needle: &str| text.lines().filter(|l| l.contains(needle)).collect::<Vec<_>>();
     let may_exist = lines("a post may exist");
@@ -1071,9 +983,6 @@ fn a_post_that_may_exist_is_logged_once_with_why_and_never_its_text() {
         }
         assert!(line.contains("waited_ms="), "{line}");
     }
-    let delete = lines("a session's delete");
-    assert_eq!(delete.len(), 1, "{text}");
-    assert!(delete[0].contains("why=\"protocol\""), "{}", delete[0]);
     for secret in ["ZQTEXTZ", "ZQCOMMENTZ", "xoxb-"] {
         assert!(!text.contains(secret), "a log line holds {secret}: {text}");
     }
@@ -1185,6 +1094,10 @@ async fn a_post_delete_is_told_as_it_ended_and_each_mutation_is_made_once() {
     let reply = told(&mut cli, ask(t5, None)).await;
     assert_eq!(reply, json!({"outcome": "deleted", "files": {"deleted": ["F0DDDD"], "kept": []}}), "{reply}");
     assert!(!posts.holds_message("C0AAAA", t5));
+    // A limit with no wait named is told with a flagged guess.
+    posts.fault("files.delete", Fault::Limit(None));
+    let reply = told(&mut cli, ask(t6, None)).await;
+    assert_eq!(reply, json!({"outcome": "limited", "retry_after_secs": 30, "assumed": true}), "{reply}");
     // A post whose message Slack will not let the app delete after its files are gone.
     posts.fault("chat.delete", Fault::Error("cant_delete_message"));
     let reply = told(&mut cli, ask(t6, None)).await;
@@ -1258,19 +1171,26 @@ fn a_delete_is_logged_once_with_where_it_stopped_and_only_ids_and_codes() {
         assert_eq!(reply["outcome"], "limited");
         let reply = cli.ask(11, op::CHAT_DELETE_POST, post_delete(&rig.alpha, "C0AAAA", "alpha-h", ts, None)).await;
         assert_eq!(reply["outcome"], "deleted");
+        // A lost answer is unknown, and the line says why by the HTTP core's fixed code.
+        posts.fault("chat.delete", Fault::DropAfter);
+        let reply = cli.ask(13, op::CHAT_DELETE_POST, post_delete(&rig.alpha, "C0AAAA", "alpha-h", "1700000100.000200", None)).await;
+        assert_eq!(reply["outcome"], "unknown");
         // A refusal before Slack keeps its own line.
         let reply = cli.ask(12, op::CHAT_DELETE_POST, post_delete(&rig.alpha, "C0AAAA", "someone-else", ts, None)).await;
         assert_eq!(code(&reply), "bad_request");
     });
     let lines: Vec<&str> = text.lines().filter(|l| l.contains("a session's delete")).collect();
-    assert_eq!(lines.len(), 3, "{text}");
+    assert_eq!(lines.len(), 4, "{text}");
     for field in ["outcome=\"limited\"", "step=\"files.delete\"", "file=\"F0AAAA\"", "thread=\"\"", "handle=\"alpha-h\"", "channel=\"C0AAAA\"", "ts=\"1700000100.000100\"", "deleted=\"\"", "kept=\"F0KEPT:shared_elsewhere\""] {
         assert!(lines[0].contains(field), "{field} is missing from {}", lines[0]);
     }
     for field in ["outcome=\"deleted\"", "step=\"chat.delete\"", "deleted=\"F0AAAA\"", "kept=\"F0KEPT:shared_elsewhere\"", "why=\"\""] {
         assert!(lines[1].contains(field), "{field} is missing from {}", lines[1]);
     }
-    assert!(lines[2].contains("BadRequest"), "{}", lines[2]);
+    for field in ["outcome=\"unknown\"", "step=\"chat.delete\"", "file=\"\"", "why=\"protocol\"", "deleted=\"F0LATER\""] {
+        assert!(lines[2].contains(field), "{field} is missing from {}", lines[2]);
+    }
+    assert!(lines[3].contains("BadRequest"), "{}", lines[3]);
     for secret in ["xoxb-", "text 1700000100", ".png"] {
         assert!(!text.contains(secret), "a log line holds {secret}: {text}");
     }

@@ -736,7 +736,7 @@ fn a_log_line_never_carries_a_clients_text_as_structure() {
         assert_eq!(connect_window(w.services.clone()).await.pair(&w.ids[0], Some("C0PUB")).await, json!({}));
         let mut cli = connect(w.services.clone()).await;
         let hostile = "x\nWARN forged by=window outcome=\"paired\" ";
-        let refused = cli.ask(20, op::CHAT_DELETE, json!({"target": w.target(0, "C0PUB"), "name": hostile, "ts": "1700000000.000100"})).await;
+        let refused = cli.ask(20, op::CHAT_DELETE_POST, json!({"target": w.target(0, "C0PUB"), "name": hostile, "ts": "1700000000.000100"})).await;
         assert_eq!(code(&refused), "bad_request");
     });
     let ours: Vec<&str> = text.lines().filter(|l| l.contains("a session's delete")).collect();

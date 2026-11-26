@@ -9,8 +9,9 @@
 # node id in the row's folder; a path outside the folder is refused before an
 # endpoint is found.
 # Exit codes: 0 posted; 1 usage; 2 nothing was posted (refused, limited); 3 the post may exist (unknown, no answer).
-# `sot-fe chat delete <ts>` is one `chat.resolve`, then ONE `chat.delete` for that ts with the row's handle and the
-# resolved channel, never a second; its exit codes are a post's (0 deleted or gone, 1 usage, 2 refused, 3 unknown).
+# `sot-fe chat delete <ts> [--thread <ts>]` is one `chat.resolve`, then ONE `chat.delete_post` for that ts (and thread) with
+# the row's handle and the resolved channel, never a second; it prints a line for each file the post's delete deleted or
+# kept; its exit codes are a post's (0 deleted or gone, 1 usage, 2 refused, 3 unknown).
 # `sot-fe chat unpair <session>` is ONE `chat.row_pair` with the row, the handle and a null channel and no resolve, never a
 # second; its exit codes are 0 unpaired or unchanged, 1 usage, 2 refused (nothing changed), 3 no answer (it may have been made).
 #
@@ -490,21 +491,22 @@ case_each_wait_is_past_the_daemons_own_bounds() {
         || { echo "read=$read post=$post transfer=$transfer names=$names text=$text file=$file"; return 1; }
 }
 
-# --- chat delete -----------------------------------------------------------
+# --- chat delete ---------------------------------------------------------
 
 TS=1700000000.000100
-# The row mapped and the delete answered with the JSON object $1; the verb run for $TS.
+THR=1700000000.000050
+# The row mapped and the delete answered with the JSON object $1; the verb run for $TS (and the thread $2, when given).
 delete_answered() {
     stage_reply chat.resolve "$MAPPED"
-    stage_reply chat.delete "{\"v\":1,\"id\":3,\"kind\":\"res\",\"op\":\"chat.delete\",\"payload\":$1}"
+    stage_reply chat.delete_post "{\"v\":1,\"id\":3,\"kind\":\"res\",\"op\":\"chat.delete_post\",\"payload\":$1}"
     start_stub_daemon
-    CH_VERB=delete run_chat "" SOT_WORKSPACE_ID=$ROW STUB_NAME=alpha-h -- $TS
+    CH_VERB=delete run_chat "" SOT_WORKSPACE_ID=$ROW STUB_NAME=alpha-h -- $TS ${2:+--thread $2}
 }
-deleted_field() { jq -r "select(.op==\"chat.delete\") | $1" "$WORK/req-$STUBN.log"; }
+deleted_field() { jq -r "select(.op==\"chat.delete_post\") | $1" "$WORK/req-$STUBN.log"; }
 
 case_a_delete_outside_a_row_or_with_no_handle_sends_nothing() {
     local bad="" envs n
-    stage_reply chat.resolve "$MAPPED"; stage_reply chat.delete '{}'; start_stub_daemon
+    stage_reply chat.resolve "$MAPPED"; stage_reply chat.delete_post '{}'; start_stub_daemon
     for envs in "STUB_NAME=alpha-h" "SOT_WORKSPACE_ID=$ROW"; do
         # shellcheck disable=SC2086
         CH_VERB=delete run_chat "" $envs -- $TS
@@ -514,56 +516,98 @@ case_a_delete_outside_a_row_or_with_no_handle_sends_nothing() {
     [ -z "$bad" ] && [ "$n" = 0 ] || { echo "$bad sent=$n"; return 1; }
 }
 
-case_a_delete_is_one_resolve_then_one_delete_of_that_ts_in_the_resolved_channel() {
-    delete_answered '{"outcome":"deleted"}'
-    local r d first rw w c h n t k keys
-    r="$(sent chat.resolve)"; d="$(sent chat.delete)"
-    first="$(jq -r 'select(.op=="chat.resolve" or .op=="chat.delete") | .op' "$WORK/req-$STUBN.log" | head -n 1)"
+# One chat.resolve, then ONE chat.delete_post for that ts with the row's handle and the resolved channel, no thread when none
+# was given, and never the older op; each file the reply names is a line, an id with a control byte in it with spaces.
+case_delete_sends_one_delete_post_and_prints_each_file() {
+    delete_answered '{"outcome":"deleted","files":{"deleted":["F0AAAA","F0BB\u0007BB"],"kept":[{"file":"F0CCCC","why":"not_the_apps"},{"file":"F0DDDD","why":"shared_elsewhere"},{"file":"F0EEEE","why":"from_the_future"}]}}'
+    local r d old first rw w c h n t k keys want
+    r="$(sent chat.resolve)"; d="$(sent chat.delete_post)"; old="$(sent chat.delete)"
+    first="$(jq -r 'select(.op=="chat.resolve" or .op=="chat.delete_post") | .op' "$WORK/req-$STUBN.log" | head -n 1)"
     rw="$(jq -r 'select(.op=="chat.resolve") | .payload.row' "$WORK/req-$STUBN.log")"
     h="$(deleted_field .payload.target.row)"; w="$(deleted_field .payload.target.workspace)"; c="$(deleted_field .payload.target.channel)"
     n="$(deleted_field .payload.name)"; t="$(deleted_field .payload.ts)"; k="$(deleted_field '.payload | has("kind")')"
     keys="$(deleted_field '.payload | keys | join(",")')"
     stop_stub_daemon
-    [ "$CH_RC" = 0 ] && [ "$CH_OUT" = "deleted $TS" ] && [ "$r" = 1 ] && [ "$d" = 1 ] && [ "$first" = chat.resolve ] && [ "$rw" = "$ROW" ] \
+    want="$(printf '%s\n' "deleted $TS" "file F0AAAA deleted" "file F0BB BB deleted" \
+        "file F0CCCC kept: it is not this project's Slack app's file (a person's or another app's)" \
+        "file F0DDDD kept: it is also shared somewhere else in Slack" "file F0EEEE kept")"
+    [ "$CH_RC" = 0 ] && [ "$CH_OUT" = "$want" ] && [ "$r" = 1 ] && [ "$d" = 1 ] && [ "$old" = 0 ] && [ "$first" = chat.resolve ] && [ "$rw" = "$ROW" ] \
         && [ "$h" = "$ROW" ] && [ "$w" = T0AAAA ] && [ "$c" = C0AAAA ] && [ "$n" = alpha-h ] && [ "$t" = "$TS" ] && [ "$k" = false ] \
         && [ "$keys" = "name,target,ts" ] \
-        || { echo "rc=$CH_RC out=$CH_OUT resolve=$r delete=$d first=$first row=$rw target_row=$h ws=$w ch=$c name=$n ts=$t kind=$k keys=$keys"; return 1; }
+        || { echo "rc=$CH_RC out=$CH_OUT resolve=$r delete_post=$d old=$old first=$first row=$rw target_row=$h ws=$w ch=$c name=$n ts=$t kind=$k keys=$keys"; return 1; }
 }
 
-case_each_delete_outcome_has_its_words_and_exit_code() {
+case_each_delete_post_answer_has_its_words_and_exit_code() {
     local bad="" want_rc want_text payload
     while IFS='|' read -r payload want_rc want_text; do
         delete_answered "$payload"
         stop_stub_daemon
+        want_text="$(printf '%b' "$want_text")"
         { [ "$CH_RC" = "$want_rc" ] && [ "$CH_OUT" = "$want_text" ]; } \
             || bad="$bad [$payload: rc=$CH_RC out=$CH_OUT]"
     done <<'EOF'
 {"outcome":"deleted"}|0|deleted 1700000000.000100
-{"outcome":"gone"}|0|gone 1700000000.000100: the channel has no message with that time (it was deleted already, or never posted)
-{"outcome":"refused","code":"not_own_message"}|2|refused not_own_message Slack would not let this project's Slack app delete that message (a person's or another app's message stays)
+{"outcome":"deleted","files":{"deleted":["F0AAAA"]}}|0|deleted 1700000000.000100\nfile F0AAAA deleted
+{"outcome":"gone"}|0|gone 1700000000.000100: no message with that time at the top of the channel (deleted already, or never posted); a reply was not looked for: run again with --thread <the time of its thread's first message>
+{"outcome":"gone","files":{"kept":[{"file":"F0CCCC","why":"not_the_apps"}]}}|0|gone 1700000000.000100: no message with that time at the top of the channel (deleted already, or never posted); a reply was not looked for: run again with --thread <the time of its thread's first message>\nfile F0CCCC kept: it is not this project's Slack app's file (a person's or another app's)
+{"outcome":"refused","code":"not_own_message"}|2|refused not_own_message that message is not one this project's Slack app posted, or Slack would not let the app delete it (a person's or another app's message stays)
+{"outcome":"refused","code":"unclear_file","files":{"deleted":["F0AAAA"]}}|2|refused unclear_file a file of that post could not be checked as this project's Slack app's own and shared only in that post, so nothing was deleted (a person can delete the post in Slack)\nfile F0AAAA deleted
 {"outcome":"refused","code":"unavailable"}|2|refused unavailable the chat is not available here; nothing was sent
-{"outcome":"limited","retry_after_secs":12,"assumed":false}|2|limited, wait 12 s: Slack asked to wait, and nothing was deleted
-{"outcome":"limited","retry_after_secs":30,"assumed":true}|2|limited, try again later: Slack asked for a pause, and nothing was deleted
-{"outcome":"refused","code":"busy"}|2|refused busy the chat is busy; try again in a moment
-{"outcome":"refused","code":"bad_request"}|2|refused bad_request the request could not be sent; nothing was deleted
+{"outcome":"refused","code":"busy","files":{"deleted":["F0AAAA"]}}|2|refused busy Slack answered too slowly to finish in time, or the chat is busy; the post is not deleted yet; run the same command again\nfile F0AAAA deleted
+{"outcome":"refused","code":"bad_request"}|2|refused bad_request the request could not be sent (this session's handle is not its session's, or a time is not a message's time); nothing was deleted
 {"error":"the request is not valid","code":"bad_request"}|2|refused bad_request the request is not valid
-{"outcome":"refused","code":"failed"}|2|refused failed the chat request failed
-{"outcome":"unknown"}|3|unknown: the message may have been deleted; run the same command again, which tells what is true now
-{"outcome":"somethingelse"}|3|unknown: the message may have been deleted; run the same command again, which tells what is true now
-{"error":"the chat request failed","code":"handler_error"}|3|unknown: the message may have been deleted; run the same command again, which tells what is true now
+{"outcome":"refused","code":"failed"}|2|refused failed the chat request failed; the post is not deleted
+{"outcome":"refused","code":"stale_row"}|2|refused stale_row the session is gone or was replaced
+{"outcome":"refused","code":"stale_mapping","files":{"deleted":["F0AAAA"]}}|2|refused stale_mapping the session's project now has another channel\nfile F0AAAA deleted
+{"outcome":"refused","code":"unmapped"}|2|refused unmapped the session's project has no channel
+{"outcome":"refused","code":"not_in_channel"}|2|refused not_in_channel your Slack app is not in that channel
+{"outcome":"limited","retry_after_secs":12,"assumed":false}|2|limited, wait 12 s: Slack asked to wait; the post is not deleted yet
+{"outcome":"limited","retry_after_secs":30,"assumed":true,"files":{"deleted":["F0AAAA"]}}|2|limited, try again later: Slack asked for a pause; the post is not deleted yet\nfile F0AAAA deleted
+{"outcome":"unknown"}|3|unknown: the post may be partly deleted; run the same command again, which finishes it or says it is gone
+{"outcome":"somethingelse"}|3|unknown: the post may be partly deleted; run the same command again, which finishes it or says it is gone
+{"error":"the chat request failed","code":"handler_error"}|3|unknown: the post may be partly deleted; run the same command again, which finishes it or says it is gone
 {"error":"the session's project now has another channel","code":"stale_mapping"}|2|refused stale_mapping the session's project now has another channel
-{"error":"unknown op: chat.delete"}|2|refused: the computer that runs your sessions runs an older Ship of Tools that cannot delete chat messages. Nothing was deleted.
 EOF
     [ -z "$bad" ] || { echo "$bad"; return 1; }
+}
+
+# A reply is deleted with the thread it is in: the thread rides in the request, the words of `gone` name it, and a thread
+# that is no ts is a usage error before anything is sent.
+case_delete_takes_a_thread_and_refuses_one_that_is_no_ts() {
+    local bad="" t keys args n
+    delete_answered '{"outcome":"gone"}' $THR
+    t="$(deleted_field .payload.thread)"; keys="$(deleted_field '.payload | keys | join(",")')"
+    stop_stub_daemon
+    [ "$CH_RC" = 0 ] && [ "$CH_OUT" = "gone $TS: thread $THR lists no message with that time (deleted already, or never posted)" ] \
+        && [ "$t" = "$THR" ] && [ "$keys" = "name,target,thread,ts" ] || bad="$bad [gone: rc=$CH_RC out=$CH_OUT thread=$t keys=$keys]"
+    delete_answered '{"outcome":"deleted","files":{"deleted":["F0AAAA"]}}' $THR
+    t="$(deleted_field .payload.thread)"; stop_stub_daemon
+    [ "$CH_RC" = 0 ] && [ "$CH_OUT" = "$(printf '%s\n' "deleted $TS" "file F0AAAA deleted")" ] && [ "$t" = "$THR" ] || bad="$bad [deleted: rc=$CH_RC out=$CH_OUT thread=$t]"
+    stage_reply chat.resolve "$MAPPED"; stage_reply chat.delete_post '{}'; start_stub_daemon
+    for args in "$TS --thread notats" "$TS --thread 17.5" "$TS --thread 1700000000.00005" "$TS --thread 1700000000.0000500" "$TS --thread"; do
+        # shellcheck disable=SC2086
+        CH_VERB=delete run_chat "" SOT_WORKSPACE_ID=$ROW STUB_NAME=alpha-h -- $args
+        [ "$CH_RC" = 1 ] || bad="$bad [$args: rc=$CH_RC out=$CH_OUT]"
+    done
+    n="$(sent_any)"; stop_stub_daemon
+    [ -z "$bad" ] && [ "$n" = 0 ] || { echo "$bad sent=$n"; return 1; }
+}
+
+# A daemon that does not know the op deletes nothing, and the words say why; the older op is never tried.
+case_an_older_daemon_cannot_delete_a_post_with_its_files() {
+    delete_answered '{"error":"unknown op: chat.delete_post"}'
+    local old d; old="$(sent chat.delete)"; d="$(sent chat.delete_post)"; stop_stub_daemon
+    [ "$CH_RC" = 2 ] && [ "$CH_OUT" = "refused unsupported: the computer that runs your sessions runs an older Ship of Tools, which cannot delete a post with its files. Nothing was deleted." ] \
+        && [ "$d" = 1 ] && [ "$old" = 0 ] || { echo "rc=$CH_RC out=$CH_OUT delete_post=$d old=$old"; return 1; }
 }
 
 case_a_delete_that_maps_nothing_deletes_nothing() {
     local bad="" payload want d
     while IFS='|' read -r payload want; do
         stage_reply chat.resolve "{\"v\":1,\"id\":2,\"kind\":\"res\",\"op\":\"chat.resolve\",\"payload\":$payload}"
-        stage_reply chat.delete '{}'; start_stub_daemon
+        stage_reply chat.delete_post '{}'; start_stub_daemon
         CH_VERB=delete run_chat "" SOT_WORKSPACE_ID=$ROW STUB_NAME=alpha-h -- $TS
-        d="$(sent chat.delete)"; stop_stub_daemon
+        d="$(sent chat.delete_post)"; stop_stub_daemon
         { [ "$CH_RC" = 2 ] && [ "$CH_OUT" = "$want" ] && [ "$d" = 0 ]; } || bad="$bad [$payload: rc=$CH_RC delete=$d out=$CH_OUT]"
     done <<'EOF'
 {"state":"unmapped"}|refused unmapped this session's project has no channel
@@ -576,23 +620,23 @@ EOF
 case_no_answer_to_the_delete_is_one_request_and_exit_3() {
     stage_reply chat.resolve "$MAPPED"; start_stub_daemon
     CH_VERB=delete run_chat "" SOT_WORKSPACE_ID=$ROW STUB_NAME=alpha-h -- $TS
-    local d; d="$(sent chat.delete)"; stop_stub_daemon
-    [ "$CH_RC" = 3 ] && contains "$CH_OUT" "no answer: the message may have been deleted; run the same command again, which tells what is true now" && [ "$d" = 1 ] \
+    local d; d="$(sent chat.delete_post)"; stop_stub_daemon
+    [ "$CH_RC" = 3 ] && contains "$CH_OUT" "no answer: the post may be partly deleted; run the same command again, which finishes it or says it is gone" && [ "$d" = 1 ] \
         || { echo "rc=$CH_RC delete_requests=$d out=$CH_OUT"; return 1; }
 }
 
 case_no_answer_to_the_resolve_deletes_nothing() {
     start_stub_daemon
     CH_VERB=delete run_chat "" SOT_WORKSPACE_ID=$ROW STUB_NAME=alpha-h -- $TS
-    local d; d="$(sent chat.delete)"; stop_stub_daemon
+    local d; d="$(sent chat.delete_post)"; stop_stub_daemon
     [ "$CH_RC" = 2 ] && contains "$CH_OUT" "Nothing was deleted" && ! contains "$CH_OUT" "chat.resolve" && [ "$d" = 0 ] \
         || { echo "rc=$CH_RC delete_requests=$d out=$CH_OUT"; return 1; }
 }
 
 case_a_delete_usage_error_sends_nothing_and_exits_1() {
     local bad="" args n
-    stage_reply chat.resolve "$MAPPED"; stage_reply chat.delete '{}'; start_stub_daemon
-    for args in "" "notats" "17.5" "1700000000.00010" "1700000000.0001000" "1700000000.000100 1700000000.000101" "$TS --thread $TS" "$TS --stdin" "$TS --file x.png" "--thread $TS"; do
+    stage_reply chat.resolve "$MAPPED"; stage_reply chat.delete_post '{}'; start_stub_daemon
+    for args in "" "notats" "17.5" "1700000000.00010" "1700000000.0001000" "1700000000.000100 1700000000.000101" "$TS --stdin" "$TS --file x.png" "--thread $TS"; do
         # shellcheck disable=SC2086
         CH_VERB=delete run_chat "text" SOT_WORKSPACE_ID=$ROW STUB_NAME=alpha-h -- $args
         [ "$CH_RC" = 1 ] || bad="$bad [$args: rc=$CH_RC out=$CH_OUT]"
@@ -601,15 +645,14 @@ case_a_delete_usage_error_sends_nothing_and_exits_1() {
     [ -z "$bad" ] && [ "$n" = 0 ] || { echo "$bad sent=$n"; return 1; }
 }
 
-# The delete's wait is past the daemon's own bound for it, read from sot-chat's constant, by at least 5 s: the delete's
-# POST_DEADLINE.
+# The delete's wait is past the daemon's own bound for the whole delete, read from sot-chat's constant, by at least 5 s:
+# DELETE_POST_DEADLINE.
 case_the_delete_wait_is_past_the_daemons_own_bounds() {
-    local api="$SCRIPT_DIR/../../rust/chat/src/api.rs" chat="$SCRIPT_DIR/../sot-fe/sot-fe-chat.sh" post wait
-    secs() { sed -n "s/^pub const $1: Duration = Duration::from_secs(\([0-9]*\));.*/\1/p" "$api"; }
-    post="$(secs POST_DEADLINE)"
+    local del="$SCRIPT_DIR/../../rust/chat/src/delete.rs" chat="$SCRIPT_DIR/../sot-fe/sot-fe-chat.sh" bound wait
+    bound="$(sed -n "s/^pub const DELETE_POST_DEADLINE: Duration = Duration::from_secs(\([0-9]*\));.*/\1/p" "$del")"
     wait="$(sed -n '/^send_chat_delete()/,/^}/s/.*TIMEOUT:-\([0-9]*\)}.*/\1/p' "$chat")"
-    [ -n "$post" ] && [ -n "$wait" ] && [ "$wait" -ge $((post + 5)) ] \
-        || { echo "post=$post wait=$wait"; return 1; }
+    [ -n "$bound" ] && [ -n "$wait" ] && [ "$wait" -ge $((bound + 5)) ] \
+        || { echo "bound=$bound wait=$wait"; return 1; }
 }
 
 # --- chat unpair -----------------------------------------------------------
@@ -1156,8 +1199,10 @@ check "sot-fe prints wire's report for every case of told_words_cases.tsv"      
 check "the mentioned report splits back into exactly the entries sent"                      case_the_mentioned_report_splits_back_into_the_entries_sent
 check "each wait is past the daemon's own bounds for that post, with a margin"             case_each_wait_is_past_the_daemons_own_bounds
 check "a delete outside a row, or with no comm handle, sends nothing"                       case_a_delete_outside_a_row_or_with_no_handle_sends_nothing
-check "a delete is one chat.resolve, then one chat.delete of that ts in the resolved channel" case_a_delete_is_one_resolve_then_one_delete_of_that_ts_in_the_resolved_channel
-check "each delete outcome prints its words and exits with its code"                        case_each_delete_outcome_has_its_words_and_exit_code
+check "a delete is one chat.resolve, then one chat.delete_post, and prints each file"      case_delete_sends_one_delete_post_and_prints_each_file
+check "each delete_post answer prints its words and exits with its code"                    case_each_delete_post_answer_has_its_words_and_exit_code
+check "a delete takes a thread, and refuses one that is no ts"                              case_delete_takes_a_thread_and_refuses_one_that_is_no_ts
+check "an older daemon cannot delete a post with its files, and the older op is not tried"  case_an_older_daemon_cannot_delete_a_post_with_its_files
 check "a delete whose resolve maps nothing deletes nothing"                                 case_a_delete_that_maps_nothing_deletes_nothing
 check "no answer to the delete is one request, never two, and exit 3"                       case_no_answer_to_the_delete_is_one_request_and_exit_3
 check "no answer to the resolve deletes nothing, in plain words"                            case_no_answer_to_the_resolve_deletes_nothing

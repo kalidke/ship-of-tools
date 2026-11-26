@@ -51,7 +51,6 @@ fn the_chat_ops_are_declared_in_the_one_table() {
         "chat.history",
         "chat.post",
         "chat.post_file",
-        "chat.delete",
         "chat.delete_post",
         "chat.read",
         "chat.file",
