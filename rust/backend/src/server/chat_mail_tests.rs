@@ -13,7 +13,7 @@ use crate::rows::{Workspace, Workspaces};
 use serde_json::{json, Value};
 use sot_chat::config;
 use sot_chat::delivery::Timing;
-use sot_chat::fake_slack::{FakeSlack, History, Upload};
+use sot_chat::fake_slack::{listed_share, FakeSlack, History, Upload};
 use sot_chat::service::{Service, Status as ServiceStatus};
 use sot_platform::test_hold::Holds;
 use sot_protocol::chat::Ts;
@@ -750,10 +750,10 @@ async fn a_rows_figure_reaches_its_thread_once() {
     assert_eq!((body["channel_id"].as_str(), body["thread_ts"].as_str()), (Some("C0AAAA"), Some(q)), "{body}");
     assert_eq!(body["initial_comment"], "alpha-h (row via Ship of Tools): the fit");
 
-    // As Slack stores the share: the app's own file_share in the thread, its comment the text. Read back through
-    // history it is the row's, under the row's name.
-    let file = json!([{"id": "F0FILE", "name": "fig.png", "mimetype": "image/png", "size": png.len()}]);
-    let stored = json!({"ts": ts, "thread_ts": q, "subtype": "file_share", "bot_id": "B0BOT", "user": "U0BOT", "text": body["initial_comment"], "files": file});
+    // As Slack lists the share: the app's own message in the thread with no subtype, its label and comment the text.
+    // Read back through history it is the row's, under the row's name.
+    let file = json!({"id": "F0FILE", "name": "fig.png", "mimetype": "image/png"});
+    let stored = listed_share(&ts, Some(q), "B0BOT", "U0BOT", body["initial_comment"].as_str().unwrap(), &file);
     let parent = json!({"ts": q, "thread_ts": q, "bot_id": "B0OTHER", "text": "the run", "reply_count": 1, "latest_reply": ts});
     serve(&w.lv, History::new().raw(parent).raw(stored.clone()));
     let page = conn.ask(11, op::CHAT_HISTORY, json!({"target": target, "thread": q, "limit": 5})).await;
@@ -762,13 +762,22 @@ async fn a_rows_figure_reaches_its_thread_once() {
     let read = (record["origin"].as_str(), record["author"]["name"].as_str(), record["text"].as_str());
     assert_eq!(read, (Some("row"), Some("alpha-h"), Some("the fit")), "{record}");
 
-    // The socket sends the share and then a member's post: only the member's is mail.
+    // The socket sends the share and then a member's post: only the member's is mail. What Slack's event of a share
+    // carries is unmeasured, so it is sent under the `file_share` subtype and again with none.
     let mut event = message("C0AAAA", 1);
     event["envelope_id"] = json!("e-share");
     let mut shared = stored;
     shared["type"] = json!("message");
+    shared["subtype"] = json!("file_share");
     shared["channel"] = json!("C0AAAA");
+    let mut bare = shared.clone();
+    bare.as_object_mut().unwrap().remove("subtype");
+    bare["ts"] = json!("1700000800.000200");
     event["payload"]["event"] = shared;
+    w.lv.feed.send(event).unwrap();
+    let mut event = message("C0AAAA", 1);
+    event["envelope_id"] = json!("e-share-bare");
+    event["payload"]["event"] = bare;
     w.lv.feed.send(event).unwrap();
     send(&w.lv, 2, "e2");
     w.filed_count(1).await;
@@ -991,16 +1000,46 @@ fn lines_of(reply: &Value) -> Vec<String> {
     reply["lines"].as_array().unwrap_or_else(|| panic!("{reply}")).iter().map(|l| l.as_str().unwrap().to_string()).collect()
 }
 
-/// The app's own file share, as Slack stores it: a row's label and comment, the file, in `thread` when given.
+/// The app's own file share, as Slack lists it (no subtype): a row's label and comment, the file, in `thread` when given.
 fn stored_share(ts: &str, thread: Option<&str>, comment: &str, file: &str, name: &str) -> Value {
-    let mut share = json!({
-        "ts": ts, "subtype": "file_share", "bot_id": "B0BOT", "user": "U0BOT", "text": format!("alpha-h (row via Ship of Tools): {comment}"),
-        "files": [{"id": file, "name": name, "mimetype": "image/png", "size": 5}],
-    });
-    if let Some(thread) = thread {
-        share["thread_ts"] = json!(thread);
-    }
-    share
+    listed_share(ts, thread, "B0BOT", "U0BOT", &format!("alpha-h (row via Ship of Tools): {comment}"), &json!({"id": file, "name": name, "mimetype": "image/png"}))
+}
+
+/// A session's file posts, listed by Slack as shares with no subtype, are read back as the session's own under its
+/// handle, with the label left out of the words and the file's id on the line: with a comment, and with the label alone.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_reads_its_own_file_posts_back_as_its_own() {
+    let q = "1700000050.000000";
+    let w = world(false).await;
+    std::fs::write(std::path::Path::new(&w.folder).join("fig.png"), b"\x89PNG\r\n\x1a\n a row's synthetic figure").unwrap();
+    let chat = w.start(&w.fake).await;
+    let (mut conn, _root, alpha) = session(&w, &chat).await;
+    let target = super::chat_ops_tests::target(&alpha, "C0AAAA");
+
+    let with = conn.ask(10, op::CHAT_POST_FILE, json!({"target": target, "thread": q, "kind": "row", "name": "alpha-h", "node_id": "files:fig.png", "comment": "the fit"})).await;
+    let bare = conn.ask(11, op::CHAT_POST_FILE, json!({"target": target, "thread": q, "kind": "row", "name": "alpha-h", "node_id": "files:fig.png"})).await;
+    let (with_at, bare_at) = (with["ts"].as_str().expect("a share's ts").to_string(), "1700000800.000200");
+    assert_eq!(bare["outcome"], "posted", "{bare}");
+
+    // The fake answers every share under one time, so the second is listed under a time of the test's own. Each is
+    // listed with the text its post sent.
+    let sent: Vec<Value> = w.fake.seen().into_iter().filter(|s| s.path() == "/api/files.completeUploadExternal").map(|s| s.json().unwrap()).collect();
+    let file = json!({"id": "F0FILE", "name": "fig.png", "mimetype": "image/png"});
+    let text = |i: usize| sent[i]["initial_comment"].as_str().unwrap().to_string();
+    let parent = json!({"ts": q, "thread_ts": q, "user": "U0MEM", "text": "the run", "reply_count": 2, "latest_reply": bare_at});
+    let first = listed_share(&with_at, Some(q), "B0BOT", "U0BOT", &text(0), &file);
+    let second = listed_share(bare_at, Some(q), "B0BOT", "U0BOT", &text(1), &file);
+    serve(&w.lv, History::new().raw(parent).raw(first).raw(second));
+    let read = conn.ask(12, op::CHAT_READ, read_of(&alpha, "C0AAAA", "alpha-h", Some(q), None)).await;
+    let found: Vec<String> = lines_of(&read).into_iter().filter(|l| l.contains("F0FILE")).collect();
+    assert_eq!(
+        found,
+        [
+            format!("{with_at} reply thread={q} session \"alpha-h\" files=F0FILE:\"fig.png\" | the fit"),
+            format!("{bare_at} reply thread={q} session \"alpha-h\" files=F0FILE:\"fig.png\" |"),
+        ]
+    );
+    stop(chat);
 }
 
 /// A session's read of its channel is one scan of the newest fifty messages, oldest first, its deleted parent one
@@ -1191,7 +1230,7 @@ async fn a_file_post_that_names_no_time_is_found_by_a_read_and_deleted() {
     let posted = conn.ask(10, op::CHAT_POST_FILE, json!({"target": target, "thread": q, "kind": "row", "name": "alpha-h", "node_id": "files:fig.png", "comment": "the fit"})).await;
     assert_eq!(posted, json!({"outcome": "posted", "file": "F0FILE"}), "the share named no time");
 
-    // As Slack stores that share: the app's own file_share in the thread, under a time the post never heard.
+    // As Slack lists that share: the app's own message with no subtype in the thread, under a time the post never heard.
     let at = "1700000800.000300";
     let parent = json!({"ts": q, "thread_ts": q, "user": "U0MEM", "text": "the run", "reply_count": 1, "latest_reply": at});
     serve(&w.lv, History::new().raw(parent).raw(stored_share(at, Some(q), "the fit", "F0FILE", "fig.png")));

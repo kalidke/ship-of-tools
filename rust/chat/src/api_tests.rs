@@ -13,7 +13,7 @@ use crate::api::{
     Identified, JoinOutcome, PostKind, PostOutcome, ScanQuery, ASSUMED_RETRY, MAX_CHAT_FILE, MAX_CURSOR, MAX_LISTED,
     MAX_NAMES, MAX_RETRY, MAX_SCAN, MAX_THUMB,
 };
-use crate::fake_slack::{eventually, FakeSlack, Files, Identity, Reply, Seen, Upload};
+use crate::fake_slack::{eventually, listed_share, FakeSlack, Files, Identity, Reply, Seen, Upload};
 use crate::http::{HttpError, Secret};
 use crate::normalize::MAX_TEXT;
 
@@ -2492,8 +2492,9 @@ async fn a_share_with_no_ts_is_posted_with_its_file() {
     .await;
 }
 
-/// A file this client shared, read back through history in the fake as a `file_share` message from the app with the
-/// share's comment as its text, normalizes to the origin and name it was posted as, its text the comment alone.
+/// A file this client shared, read back through history in the fake as Slack lists a share (a message from the app with
+/// no `subtype`, the label and the comment as its text), normalizes to the origin and name it was posted as, its text
+/// the comment alone.
 #[tokio::test]
 async fn a_file_share_read_back_through_history_keeps_its_origin() {
     bounded(async {
@@ -2510,12 +2511,9 @@ async fn a_file_share_read_back_through_history_keeps_its_origin() {
                     let mut store = store.lock().unwrap();
                     let ts = format!("1700000{:03}.000100", store.len() + 1);
                     let (channel, file) = (body["channel_id"].clone(), &body["files"][0]);
-                    // As Slack stores a share: the app's bot id and user, the comment as text, the file.
-                    store.push(json!({
-                        "ts": ts, "subtype": "file_share", "bot_id": OWN_BOT, "user": OWN_USER,
-                        "text": body["initial_comment"], "upload": false,
-                        "files": [{"id": file["id"], "name": file["title"], "mimetype": "image/png", "size": PNG.len()}],
-                    }));
+                    // As Slack lists a share: no subtype, the app's bot id and user, the label and comment as text, the file.
+                    let file = json!({"id": file["id"], "name": file["title"], "mimetype": "image/png"});
+                    store.push(listed_share(&ts, None, OWN_BOT, OWN_USER, body["initial_comment"].as_str().unwrap_or(""), &file));
                     let shares = json!({channel.as_str().unwrap(): [{"ts": ts}]});
                     Reply::json(&json!({"ok": true, "files": [{"id": file["id"], "shares": {"public": shares}}]}))
                 }

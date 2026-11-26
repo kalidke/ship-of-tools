@@ -4,7 +4,7 @@
 //! `initial_comment` and, inferred and not measured, `thread_ts`) shares the file and answers it with its shares.
 //! Every request is recorded by the fake as any other, the upload's raw body and its `Authorization` header included.
 
-use serde_json::json;
+use serde_json::{json, Value};
 
 use super::{Reply, Seen};
 
@@ -83,4 +83,26 @@ impl Default for Upload {
     fn default() -> Upload {
         Upload::new()
     }
+}
+
+/// A file share as `conversations.history` and `conversations.replies` list it, measured against Slack on 2026-11-26 for
+/// a share made by `files.completeUploadExternal` under a bot token: `type` is `message` and there is **no `subtype`**;
+/// the message carries `bot_id`, `user`, `app_id`, `upload`, `display_as_bot` (false), `files` (one entry) and `blocks`,
+/// and no `username`, `bot_profile` or `metadata`. `text` is what the share sent as `initial_comment`. `file` is the
+/// entry's `id`, `name` and `mimetype`; the rest of the entry is filled as Slack fills it. What the Socket Mode event of
+/// such a share carries is unmeasured, so a test that sends one adds whatever `subtype` it means to try.
+pub fn listed_share(ts: &str, thread: Option<&str>, bot_id: &str, user: &str, text: &str, file: &Value) -> Value {
+    let mut share = json!({
+        "type": "message", "ts": ts, "bot_id": bot_id, "user": user, "app_id": "A0APP", "text": text,
+        "upload": true, "display_as_bot": false,
+        "files": [{
+            "id": file["id"], "name": file["name"], "title": file["name"], "mimetype": file["mimetype"], "filetype": "png",
+            "mode": "hosted", "file_access": "visible",
+        }],
+        "blocks": [{"type": "rich_text", "block_id": "b0", "elements": []}],
+    });
+    if let Some(thread) = thread {
+        share["thread_ts"] = json!(thread);
+    }
+    share
 }

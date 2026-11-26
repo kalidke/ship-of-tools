@@ -1,5 +1,6 @@
 use super::*;
 use serde_json::json;
+use crate::fake_slack::listed_share;
 
 const OWN_BOT: &str = "B0OWN";
 const OWN_USER: &str = "U0OWN";
@@ -455,6 +456,52 @@ fn an_own_file_share_takes_its_origin_from_its_label_and_a_members_does_not() {
         Normalized::Edited(r) => assert_eq!((r.origin, r.text.as_str()), (Origin::Row, "now")),
         other => panic!("{other:?}"),
     }
+}
+
+/// Slack lists a share made by `files.completeUploadExternal` with no `subtype` (measured 2026-11-26): the app's `bot_id`
+/// and `user`, `upload: true`, one `files` entry and the label first in the text, so the label is read for an own
+/// message that carries a file whatever its `subtype`, and for no message that carries none.
+#[test]
+fn an_own_share_as_slack_lists_it_with_no_subtype_reads_as_the_rows() {
+    let file = json!({"id": "F0FILE", "name": "fig.png", "mimetype": "image/png"});
+    let listed = |ts: &str, who: Value, text: &str| {
+        let mut m = listed_share(ts, Some("1700000000.000050"), OWN_BOT, OWN_USER, text, &file);
+        m.as_object_mut().unwrap().extend(who.as_object().unwrap().clone());
+        m
+    };
+    let seen = |r: &ChatRecord| (r.origin, r.author.name.clone(), r.text.clone(), r.files.iter().map(|f| f.id.clone()).collect::<Vec<_>>());
+    let ids = vec!["F0FILE".to_string()];
+    let own = json!({});
+
+    // With a comment, and with the label alone.
+    let r = new(listed("1700000000.000100", own.clone(), "build-7 (row via Ship of Tools): the &lt;fit&gt;"));
+    assert_eq!(seen(&r), (Origin::Row, "build-7".into(), "the &lt;fit&gt;".into(), ids.clone()));
+    let r = new(listed("1700000000.000200", own.clone(), "build-7 (row via Ship of Tools)"));
+    assert_eq!(seen(&r), (Origin::Row, "build-7".into(), String::new(), ids.clone()));
+
+    // The same shape from another app's bot id or a member's is theirs, its text untouched.
+    let label = "build-7 (row via Ship of Tools): hi";
+    let r = new(listed("1700000000.000300", json!({"bot_id": "B9", "user": "U9"}), label));
+    assert_eq!((r.origin, r.text.as_str()), (Origin::Bot, label));
+    let r = new(listed("1700000000.000400", json!({"bot_id": null, "user": "U9"}), label));
+    assert_eq!((r.origin, r.text.as_str()), (Origin::Member, label));
+
+    // An own message with the label and no file is `Bot`, its text untouched, with `upload` set or not; so is a file with
+    // no label.
+    for upload in [false, true] {
+        let r = new(json!({"ts": "1700000000.000500", "user": OWN_USER, "bot_id": OWN_BOT, "text": label, "upload": upload}));
+        assert_eq!((r.origin, r.text.as_str()), (Origin::Bot, label), "upload {upload}");
+    }
+    let r = new(listed("1700000000.000600", own.clone(), "a figure for you"));
+    assert_eq!((r.origin, r.text.as_str(), r.files.len()), (Origin::Bot, "a figure for you", 1));
+
+    // Each of the other two ways to share a file counts alone: the `file_share` subtype with no `files` at all, and a
+    // message whose only entry has no id (summarized as none, counted in `files_omitted`).
+    let label = "build-7 (row via Ship of Tools): the fit";
+    let r = new(json!({"ts": "1700000000.000700", "subtype": "file_share", "user": OWN_USER, "bot_id": OWN_BOT, "text": label}));
+    assert_eq!((r.origin, r.author.name.as_str(), r.text.as_str(), r.files.len()), (Origin::Row, "build-7", "the fit", 0));
+    let r = new(json!({"ts": "1700000000.000800", "user": OWN_USER, "bot_id": OWN_BOT, "text": label, "files": [{"name": "fig.png"}]}));
+    assert_eq!((r.origin, r.author.name.as_str(), r.text.as_str(), r.files.len(), r.files_omitted), (Origin::Row, "build-7", "the fit", 0, 1));
 }
 
 #[test]

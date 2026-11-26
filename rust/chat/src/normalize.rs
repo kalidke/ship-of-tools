@@ -253,7 +253,9 @@ fn content(
     let subtype = opt_str(o, "subtype")?;
     let is_bot = bot_id.is_some() || subtype == Some("bot_message");
     let (origin, name) = if own {
-        let label = (subtype == Some("file_share")).then(|| share_label(text)).flatten();
+        // Slack lists an app's share with no `subtype`, so the file it carries is what makes it a share.
+        let shares = subtype == Some("file_share") || !files.is_empty() || files_omitted > 0;
+        let label = shares.then(|| share_label(text)).flatten();
         match (own_origin(o)?, label) {
             (Some(found), _) => found,
             (None, Some((found, comment))) => {
@@ -331,7 +333,8 @@ fn own_origin(o: &Map<String, Value>) -> Result<Option<Recovered>, ()> {
 /// A row's file share label, as `Api::post_file` sends it: the escaped `<name> (row via Ship of Tools)`, alone or then
 /// `: ` and the comment (a person's share carries no label: it goes out under their own token and reads as theirs). The first marker ends it, and the name must be one `post_file` accepts, escaped exactly as it
 /// escapes it. The origin, the name, and the text after the label. A file share takes no custom author or metadata, so
-/// this is how its origin is read, and only for a `file_share` the bot identity already marked as the app's own.
+/// this is how its origin is read, and only for a message that shares a file (a `file_share`, or any message with a
+/// `files` entry) that the bot identity already marked as the app's own.
 fn share_label(text: &str) -> Option<(Recovered, &str)> {
     for (at, _) in text.match_indices(" (") {
         let Some(rest) = text[at..].strip_prefix(" (row via Ship of Tools)") else {

@@ -19,16 +19,29 @@ bot identity, workspace name, read-pacing instant, name cache, member list (guar
 2. **Own posts are decided only by the supplied bot identity, and a forged marker never makes one.** Own-app is
    `Context.own_bot_id` or `own_user_id` matching the message; an identity not supplied matches nothing. Only an own
    post has its origin recovered, in order from `metadata`, then the `username` suffix ` (<kind> via Ship of Tools)`,
-   giving `Drawer` (person) or `Row`, then, for an own `file_share` alone (a file share takes no custom author or
-   metadata, guarantee 32), from the row's label its text starts with as `Api::post_file` sent it: the escaped `<name>
+   giving `Drawer` (person) or `Row`, then, for an own message that shares a file alone (a `file_share`, or any message with a
+   `files` entry, whatever its `subtype`; a file share takes no custom author or metadata, guarantee 32), from the row's label its text starts with as `Api::post_file` sent it: the escaped `<name>
    (row via Ship of Tools)`, ended by the first marker (a person's share carries no label and reads as theirs, so a
    person's label on an own share is no label and reads `Bot`), alone or followed by `: `, its name one `post_file` accepts
    and escaped exactly so; the record's text is then what follows the label (the comment, or empty). An own post with
    none of these is `Bot` (display only), its text untouched, even when the text carries a marker. A member who types a
    marker, a forged `username` or `metadata` from anyone else, and another bot stay `Member` and `Bot`. Limits: a
    name that itself holds a marker followed by `: ` reads back cut at that marker (the origin is still the app's own
-   kind of post); that Slack lists the share as a `file_share` from the app with the comment as its text is unmeasured
-   until a person's first use, and if not, the share reads as `Bot` (never mail). A person's post made with their own
+   kind of post). Measured against Slack on 2026-11-26 (a session's two shares made by `files.completeUploadExternal` under
+   the bot token, read by `conversations.history` and `conversations.replies`, identical): the message has **no `subtype`**
+   (`type` is `message`), and carries `bot_id`, `user`, `app_id`, `upload: true`, `display_as_bot: false`, one `files` entry
+   and `blocks`, with no `username`, `bot_profile` or `metadata`; its text is the label as sent, then `: ` and the comment
+   when there is one. So "carries a file" is read from `files` (an entry the record shows, or one it left out, pinned
+   separately: `an_own_share_as_slack_lists_it_with_no_subtype_reads_as_the_rows`), or from the `file_share` subtype for an
+   event that carries it with no `files`, and not from `upload` (a flag, and a message that has it with no entry shows no
+   file); a message with none of these has no label read, so an own post with no file, no metadata and no `username`
+   whose text starts with a label stays `Bot` with its text untouched (with metadata or a `username` it is read by those,
+   as before). Unmeasured: the `subtype` of the Socket Mode event of a share and whether it carries the `files` entry (the
+   one test that sends such an event sends it with `file_share` and with none, both with `files`; an own event with
+   neither reads `Bot`, and in a watched channel stays so in the watch model until its next snapshot; delivery never takes
+   a `Row` or `Bot` record for mail either way), and a share made under a person's user token (if Slack gave it the app's
+   `bot_id`, one whose comment starts with a session's label would read as that session; never mail either way);
+   where a share is not read as the row's it reads `Bot` (never mail). A person's post made with their own
    user token is not an own post: it has their `user`, no `bot_id` and none of the app's marks, so it reads `Member` by
    this same rule, and nothing new reads it. Unmeasured, and what the goal rests on: that Slack's message for a post
    made with a user token has no `bot_id` and no `subtype`. Check, at the first real post: a message typed in Slack's
@@ -1384,7 +1397,7 @@ Paths are under `rust/chat/src/`.
 | # | guarantee | test |
 |---|---|---|
 | 1 | result for every shape | `normalize_tests.rs`: `normalize_members_bots_edits_deletes_and_file_stubs`, `hostile_json_gives_an_explicit_result` |
-| 2 | own posts by supplied identity only | `normalize_tests.rs`: `a_post_made_with_a_persons_token_reads_as_theirs` (pins the existing rule, green before the person's post changed), `normalize_members_bots_edits_deletes_and_file_stubs` (member prefix, member username, other bot), `with_no_identity_supplied_a_member_with_a_forged_prefix_is_a_member`, `a_prefix_in_an_own_posts_text_is_only_text`, `an_unreadable_own_post_keeps_its_origin_and_an_unreadable_reply_its_thread`, `an_own_file_share_takes_its_origin_from_its_label_and_a_members_does_not` (a row's label, a person's read as no label, an escaped name, a label with no comment, a comment holding a marker, five texts that are no label as sent, a member's and another bot's labeled share, metadata first, an own text post's label left to its metadata, an edit); `api_tests.rs`: `a_file_share_read_back_through_history_keeps_its_origin` (`post_file`'s shares answered by the fake's history) |
+| 2 | own posts by supplied identity only | `normalize_tests.rs`: `a_post_made_with_a_persons_token_reads_as_theirs` (pins the existing rule, green before the person's post changed), `normalize_members_bots_edits_deletes_and_file_stubs` (member prefix, member username, other bot), `with_no_identity_supplied_a_member_with_a_forged_prefix_is_a_member`, `a_prefix_in_an_own_posts_text_is_only_text`, `an_unreadable_own_post_keeps_its_origin_and_an_unreadable_reply_its_thread`, `an_own_share_as_slack_lists_it_with_no_subtype_reads_as_the_rows` (the measured shape with a comment and with the label alone is the row's, the same from another app's `bot_id` and from a member is theirs, an own message with the label and no file, `upload` set or not, is `Bot`, a file with no label is `Bot`), `an_own_file_share_takes_its_origin_from_its_label_and_a_members_does_not` (a row's label, a person's read as no label, an escaped name, a label with no comment, a comment holding a marker, five texts that are no label as sent, a member's and another bot's labeled share, metadata first, an own text post's label left to its metadata, an edit); `api_tests.rs`: `a_file_share_read_back_through_history_keeps_its_origin` (`post_file`'s shares answered by the fake's history as `fake_slack::listed_share` lists one, with no `subtype`) |
 | 3 | bounds | `normalize_tests.rs`: `text_is_cut_on_a_character_boundary_and_marked`, `names_filenames_and_mime_are_cut_and_marked`, `only_eight_files_are_summarized_and_the_rest_counted`, `an_id_over_64_bytes_or_not_ascii_is_not_carried`, `a_record_never_exceeds_32_kib_of_json`, `names_lose_control_characters`, `a_normalized_record_round_trips_through_the_wire`, `a_filled_record_stays_within_the_record_bound` |
 | 4 | attachment only | `normalize_tests.rs`: `an_attachment_only_message_keeps_its_files_and_has_no_text` |
 | 5 | Slack destinations and authorization | `http_tests.rs`: `private_redirect_keeps_slack_auth_and_refuses_foreign_destinations` (the bot's token and a person's user token), `slack_hosts_are_slack_com_and_its_dot_boundary_subdomains`, `a_mutation_is_sent_once_and_never_followed_to_a_redirect`, `an_ambient_proxy_variable_is_ignored` (the test re-runs itself through `sot_platform::test_isolated` as a child with every proxy variable naming a dead address and expects a direct request; the helper fails the parent when the body was not entered exactly once or exited non-zero), `the_product_client_builds_and_refuses_off_port_plain_and_ip_destinations` (no network) |

@@ -42,7 +42,7 @@ pub use files::Files;
 pub use history::History;
 pub use members::Members;
 pub use teams::{TeamChannel, Teams};
-pub use upload::Upload;
+pub use upload::{listed_share, Upload};
 pub use ws::{Flood, WsPeer};
 
 /// The names the test resolver maps to loopback: Slack's, two lookalikes, a foreign host, and one Slack name the
