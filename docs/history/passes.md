@@ -3565,3 +3565,66 @@ the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the sa
     or names another thread is never taken, from either answer. The verb prints a second line that says how to find the
     time with the read when neither names it, and waits 145 s. Whether a bot token's `files.info` lists the share, and how
     soon, are unmeasured (CHAT-READ-UNMEASURED).
+- How those five landings went, 2026-11-25: planned from 15:13 to 15:30 and again by 15:36, when two facts from a
+    session's test of the Slack commands that afternoon were added (a file post that printed its time, and the three
+    words); built by one builder of the cheaper kind by 16:39; two readings; gated at 17:42.
+    - The plan was revised in place while the builder was already reading it, so the builder first built three of
+      the five from the earlier text and was sent back for the other two. A plan that changes after its builder
+      starts is sent to the builder at once, or not changed.
+    - The first reading found no regression and one fault that mattered: a member's name or a file's name holding a
+      bar put the line's one separating bar inside its quotes, so words a member chose could read as the message's
+      text. It also found the records saying a thread's read lists nothing twice, where its first message heads
+      every page. One round answered both; the second reading found each of the five commits true of its own code.
+    - What it cost and showed: 2 hours 29 minutes from the plan's start to the gate, 66 minutes of it building and
+      45 reading. Nothing ran against Slack (CHAT-READ-UNMEASURED).
+- A PDF selection's text keeps a heading on one line and a subscript on its letter, 2026-11-25: one commit, from the
+    maintainer's copy on the first 0.7.4 candidate that morning. Diagnosed with its diff from 15:13 to 15:36, two
+    readings, gated at 16:14.
+    - The diagnosis found that the window joins the PDF tool's lines and words and groups nothing itself: the tool
+      gives a heading's number and its title as two lines, and a subscript as a word of its own. A rule on the
+      boxes alone joined 39 pairs of lines across the columns of a generated two-column page, so only a lone number
+      is joined to the line beside it.
+    - The first reading found a regression: the rule for touching words measured across the page only, so a line
+      set sideways lost every space, where the candidate had copied it right. It also found a lone number joined to
+      a line far to its right. One round measured along the direction the words are apart in and bounded the join
+      at four of the number's heights; the second reading found no regression on any page it tried.
+    - What it cost and showed: 61 minutes from the diagnosis's start to the gate, 62 product lines. The reader's
+      own pages (a sideways axis label, a two-column page) found what the sample page could not. No person has
+      copied with it.
+- Two pairing tests fill the name cache they read, 2026-11-25: one commit, tests only. A hosted run of the commit
+    above, which changed no chat code, failed one test of the daemon's chat setup once: a refusal named a channel
+    by its id alone. Diagnosed from 17:17 to 17:43, gated at 17:47.
+    - A pairing restarts the workspace's service with an empty cache of names, and the start's lookup fills it on a
+      task of its own that nothing orders before the next request; two tests assumed it had finished. With the
+      lookup held back each failed 20 runs of 20, and none of 20 once the test fills the cache itself. The product
+      matches its contract (the cached name, the id until then).
+- A Codex session mail does not wake is marked, and one command starts its agent again, 2026-11-25: four commits,
+    the four landings of a written plan, from what sessions saw on the hub after it moved to the first 0.7.4
+    candidate (CODEX-ROWS-BEFORE-AN-UPDATE-NOT-WOKEN). Planned from 15:13 to 15:37, built by one builder of the
+    cheaper kind by 16:31, three readings, gated at 18:31, the last reading at 18:49.
+    - The plan found no safe way to wake such a session without a person: typing into Codex can land on a paste
+      that reads as empty, a conversation the session never named would be a guess, and a restart by the daemon
+      would end the person's conversation unasked. So the session is marked in the window's Sessions list and in
+      `sotd status`, and `sot-fe restart <session>` starts its agent again in a new conversation. Its three
+      questions were taken as it recommended, the maintainer told of each: a send says nothing new, a restart
+      starts a new conversation, the daemon restarts nothing by itself.
+    - The first reading found no regression and that the change promised more than it does: the words said a
+      restart makes mail wake the session, which holds only where the computer's install starts Codex with its
+      hooks; any Ready Codex session could be restarted, marked or not; a registry that could not be read was taken
+      as no turn running; and a session could restart itself by its name. One round refused each (a session not
+      marked, a registry not readable, the asker's own session by any name) and rewrote the words.
+    - The second reading found one sentence of the records false (that the daemon keeps no time of an agent's
+      start; it keeps it and does not compare it with the clock). The third read the joins with the five chat
+      landings, which had reached `main` meanwhile, and found nothing lost.
+    - What it cost and showed: 3 hours 36 minutes from the plan's start to the last reading, 46 minutes of it
+      building and 77 reading, 261 product lines in the first build. The faults were in what the change claimed and
+      whom it could end, not in what its tests ran. Proved against a stand-in Codex only: no live session has been
+      restarted or then woken (CODEX-WAKE-QUEUE-LIVE).
+- More seen of the first 0.7.4 candidate that afternoon, 2026-11-25, on the maintainer's ask to a session paired
+    with a throwaway channel: a text post and a reply in its thread, a file post whose answer named its time, the
+    first unpairing by a session and a pairing again, a post by the maintainer reaching that session as mail marked
+    as its user's own and waking it, and three deletes on his word (the session's own post with a reply under it,
+    its own file post, and a message he had typed, refused). The session's notes on three words became a landing
+    above. A second Codex session that had run through the update was not woken, as the first; no Codex session
+    started after the update exists on that hub, so the wake itself is still unseen. The system's voice typing
+    key, tried at a window on Windows, found no text box (WINDOW-TAKES-NO-OS-TEXT-INPUT).

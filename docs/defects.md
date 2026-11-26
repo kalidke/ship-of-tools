@@ -403,7 +403,7 @@ owned by `docs/CLAUDE.md`.
   `workspace.restart` owned by rows, `sot-fe restart <ws> [--resume <id>]`, Shift+r in Sessions; same workspace id and
   handle, a fresh leg, resume by id on request. Recorded as unbuilt in the rows contract.
   `workspace.restart` is built for a Ready Codex session (its agent stopped and started again with the row's recipe,
-  in a new conversation; refused during a turn, for the asker's own session and for a session mail already wakes); the
+  in a new conversation; refused during a turn, for the asker's own session and for a session that is not marked); the
   rest stays unbuilt: a row in `terminal` or `ended_no_respawn`,
   Claude rows, `--resume <id>` and Shift+r.
 - **PTY-INPUT-MARK** [note] A row's prompt carries no record of how its bytes arrived. `pty.input`, and so
@@ -888,6 +888,12 @@ owned by `docs/CLAUDE.md`.
 
 ## fe-ui
 
+- **WINDOW-TAKES-NO-OS-TEXT-INPUT** [person] The maintainer, 2026-11-25, at a window on Windows running the first 0.7.4
+  candidate, pressed the system's voice typing key with a session in focus, and Windows answered that no text box was
+  selected. The window never tells the operating system that it takes text (no input-method events are enabled or handled
+  under `rust/frontend/src`), so the system's dictation cannot type into a session, and by the same cause a system input
+  method (composed text, the emoji picker) probably cannot either, which no one has tried. Not built and not planned: it
+  waits on the maintainer's word.
 - **CHAT-PICKER-TREE-NOT-SEEN** [note] The Chat drawer's channel list as a tree of workspaces (built 2026-11-25 at the
   maintainer's ask, fe-ui's contract, the channel picker) is proved by unit tests only: no person has seen it in a window. To
   look at on the first candidate that carries it: the plain rows are dim on the drawer's ground, 4.5 to 1 by arithmetic;
@@ -1439,9 +1445,14 @@ owned by `docs/CLAUDE.md`.
   both channels. The words of `not_own_message` claim no more than that Slack would not let the app delete the message; a
   workspace whose administrators restrict who may delete gives the same code. Seen so far, by a session on a live hub on
   2026-11-24, in its own channel and not a throwaway one: of (1), 19 of the app's own text posts in threads deleted (`deleted`);
-  of (3), 11 posts a person had already deleted in Slack answered `gone`, exit 0. Not seen: (2), a thread parent with replies,
-  and (4), which a session can now reach: it finds a file post's time with `sot-fe chat read` and deletes it (CHAT-READ-UNMEASURED
-  lists the check). Close this item when these have been seen.
+  of (3), 11 posts a person had already deleted in Slack answered `gone`, exit 0. Seen on 2026-11-25, by another session on
+  the same hub in a throwaway channel, on its person's word naming each message: of (2), a message the maintainer had typed
+  in Slack was refused (`not_own_message`, exit 2); of (3), the session's own post with a reply under it was deleted
+  (`deleted`), and the maintainer then saw in Slack that the reply stayed, as a delete removes one message; of (4), the
+  session's own post that shared a file, whose answer had named its time, was deleted (`deleted`). Not seen: of (2), a
+  message a person posted from the window's Chat drawer and one another app posted; of (3), a second delete of a deleted
+  parent; of (4), what became of the file, and a file post whose time a session finds with `sot-fe chat read`
+  (CHAT-READ-UNMEASURED lists the check). Close this item when these have been seen.
 - **CHAT-DELETE-FILES-STAY** [note] The command deletes the message and no file; what Slack then does with a file the message
   shared (removes it, unshares it, or leaves it with no message to show it in) is not measured. A delete of the files themselves is
   not built, because a right file delete needs more than the message's delete: (1) Slack's file

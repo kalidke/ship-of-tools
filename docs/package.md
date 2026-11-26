@@ -60,7 +60,7 @@ over this page. The table above says what each guarantees to the rest.
   Rests on: the OS. Owns no runtime state. Does not: start processes for anyone but the native launcher it hands out.
 - **wire:** `rust/protocol/CLAUDE.md`, the frames and payloads between our programs (the lanes' frames are the capsule's,
   the sidecars' protocols the sidecars'). Rests on: serde, the compiler, platform. Owns nothing at run time.
-- **chat:** `rust/chat/CLAUDE.md`, crate `sot-chat`, on wire, platform and `toml`. `sotd` builds its service on the configured hub alone (`rust/backend/src/chat.rs`), and admits each chat action through one recheck of its row and channel; its nine request ops, `chat.post_file`, `chat.delete`, `chat.read` and `chat.file` among them, are dispatched to it (`rust/backend/src/chat/ops.rs`; the setup's three in `chat/setup.rs`), and the watches and the `chat.changed` and `chat.status` events are served (`rust/backend/src/chat/watch.rs`). Owns:
+- **chat:** `rust/chat/CLAUDE.md`, crate `sot-chat`, on wire, platform and `toml`. `sotd` builds its service on the configured hub alone (`rust/backend/src/chat.rs`), and admits each chat action through one recheck of its row and channel; its nine request ops, `chat.post_file`, `chat.delete`, `chat.read` and `chat.file` among them, are dispatched to it (`rust/backend/src/chat/ops.rs`; the setup's five in `chat/setup.rs`), and the watches and the `chat.changed` and `chat.status` events are served (`rust/backend/src/chat/watch.rs`). Owns:
   normalization of Slack's message JSON into the wire's record (representation: wire's), `http`, the one door to the
   network, the Slack calls, the Socket Mode listener, and the configuration and channel mapping read through platform's
   config folder. Does not: hold a credential at rest, resolve a row, lock a workspace or file mail.
@@ -194,6 +194,12 @@ morning, on the maintainer's ask, by its own session on one window computer; the
 below that something was used on the candidate, it is that use, and what the use found wrong is in
 `docs/defects.md` (CHAT-DELETE-CANNOT-REACH-A-FILE-POST, CHAT-POST-UNKNOWN-NOT-READ-BACK,
 CODEX-ROWS-BEFORE-AN-UPDATE-NOT-WOKEN, CHAT-PAIR-STOPPED-BY-CLASSIFIER, PDF-COPY-SPLITS-HEADINGS-AND-SUBSCRIPTS).
+Four of the five are closed on `main` since that day by changes this page names below, none used by a person yet
+(a session's read of its channel, the mark and the restart for a Codex session mail does not wake, and the copy
+of a PDF selection); the other, a session's pairing stopped by its agent's permission mode, is open, since a
+person's permission settings are theirs. The maintainer said that day to make the second candidate, or the
+release, when it was ready; the second candidate was chosen, since the release would carry changes no person
+has used.
 `main` carries 0.7.4-rc.2-dev, and past 0.7.3 it holds that fault's fix, which the maintainer used on the candidate
 and reported as passing (a page of twelve large tables, a switch away and back): built table sets are
 kept within a budget so a return to such a session draws them at once, no table is built in the frame that first
@@ -470,8 +476,10 @@ deletes a message its project's Slack app posted in its own project's channel, w
 asked it to; the daemon admits a delete only for the asking session's own channel, Slack lets the app remove
 only its own posts, and the owner's permission is a rule of the session's skill, which the daemon cannot check;
 the files a message shared are not deleted, CHAT-DELETE-FILES-STAY; a session used it on the candidate at its
-person's ask, 19 of its own posts deleted and 11 already gone, and a post that shared a file cannot be named to it,
-CHAT-DELETE-CANNOT-REACH-A-FILE-POST; the checks still owed are in CHAT-DELETE-UNMEASURED); and, the same day, a
+person's ask, 19 of its own posts deleted and 11 already gone, and the next day another, on the maintainer's word,
+deleted its own post that had a reply under it (the reply stayed, as a delete removes one message) and its own
+post that shared a file, and was refused a message he had typed; the checks still owed are in
+CHAT-DELETE-UNMEASURED); and, the same day, a
 session pairs a project with a Slack channel and unpairs it, with `sot-fe chat pair <session> <channel>`
 (the channel by its name or its id) and `sot-fe chat unpair <session>`, and the daemon's log says who made each
 pairing, a window or a session by its handle (the maintainer asked that day that a session can pair a project
@@ -481,8 +489,9 @@ channel with a channel no mapping holds, or by unpairing, so moving a paired fol
 folder's channel stay a person's in the window; a window showing a project with no channel asks again each
 minute, so a session's pairing shows there within a minute; the window's own pairing runs through the same core
 as a session's and behaves as it did; on the candidate a session, asked by the maintainer, was refused for a name
-the Slack app could not see and then paired its project with a channel he named; an unpairing by a session, mail
-from a channel a session paired and the window's showing of it are not seen); and, on `main` since 2026-11-25 and
+the Slack app could not see and then paired its project with a channel he named, and later unpaired it and paired
+it again, after which a post he made in that channel reached the session as mail marked as its user's own and
+woke it; the window's showing of a session's pairing is not seen); and, on `main` since 2026-11-25 and
 in no candidate, used by no person: a session lists the Slack workspaces this computer connects and the channels
 the Slack app can see in one of them, with `sot-fe chat workspaces` and `sot-fe chat channels` (the maintainer
 asked that day, after that refused pairing, that a session can compare what a person asked for with what exists;
@@ -521,7 +530,10 @@ the shown page marks whole words and the pane's copy chord copies them, from the
 the kernel's PDF plugin reads with the text tool beside its page tool and the daemon serves only as words (five of
 the seven landings of a written plan; the hosted run fetched Julia's copy of the tools and read a page's words on
 Ubuntu, macOS and Windows; the maintainer selected and copied on the candidate, on Windows, the first copy through a
-real clipboard, and the text came whole with two differences from the page, PDF-COPY-SPLITS-HEADINGS-AND-SUBSCRIPTS). The agent does not see that selection yet: the last two landings, the share and the
+real clipboard, and the text came whole with two differences from the page, a heading's number and its title on
+two lines and each subscript apart from its letter; on `main` since that day, used by no person, a copy keeps a
+section's number on the line of the title beside it and a subscript or superscript on its letter,
+PDF-COPY-SPLITS-HEADINGS-AND-SUBSCRIPTS, Closed, which has the limits). The agent does not see that selection yet: the last two landings, the share and the
 daemon's check of it, are unbuilt (`docs/defects.md`, PDF-TEXT-SELECTION, open). Also in
 progress: the daemon test run toward the maintainer's four minutes, and one shared test tool.
 The gate runs bash 3.2 per changed suite and its longest jobs first (a whole run about 4 minutes at 20 jobs), and
@@ -548,7 +560,16 @@ a clear, a compaction or a resume; and a Codex session records which conversatio
 state folder (CODEX-ROOT-THREAD-HOOKS, open), and mail filed to a Ready Codex row asks that conversation to poll
 through Codex's own queue, once for each batch of unread mail, with nothing typed into its terminal (sessions operating
 Codex rows had seen them never woken by mail, CODEX-IDLE-ROW-NOT-WOKEN, Closed; proved against a stand-in Codex only,
-no live row has been woken, CODEX-WAKE-QUEUE-LIVE, open); and, since 2026-11-23, a Codex row's work state belongs to
+no live row has been woken, CODEX-WAKE-QUEUE-LIVE, open); and, since 2026-11-25 and used by no person, a Codex
+session that mail does not wake, because its agent was started without the session's Codex hooks and has named
+no conversation, is marked `[not woken by mail]` in the window's Sessions list and listed by `sotd status`, and
+`sot-fe restart <session>` starts such a session's agent again under the current daemon, in a new conversation
+(sessions on a hub had seen every Codex session that was running through the update to the first 0.7.4 candidate
+stay unwoken, with nothing to say so and nothing to start it again, CODEX-ROWS-BEFORE-AN-UPDATE-NOT-WOKEN, Closed;
+the restart is refused during a turn, for the asking session's own and for a session that is not marked, the
+daemon restarts nothing by itself, and a send still says only that it was filed; mail wakes the session afterward
+only where that computer's install starts Codex with the hooks, which the command's words say; proved against a
+stand-in Codex only); and, since 2026-11-23, a Codex row's work state belongs to
 the root turn that set it: an interrupted turn releases the row's working state where the row had stayed working, and
 a late event of an older turn no longer clears or completes the newer one, by rules built on what Codex 0.171.0 was
 measured to send to its hooks in a scratch home (CODEX-TURN-OWNERSHIP-LIMITS has the limits; no live row's interrupt

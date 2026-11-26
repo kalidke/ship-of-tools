@@ -1,5 +1,6 @@
 //! workspace.restart: a Ready Codex session's agent is stopped and started again with the row's own recipe, so the new
-//! leg carries the row's hooks and names its conversation, and mail wakes it (messaging's `not_woken_by_mail`).
+//! leg can carry the row's hooks and name its conversation; mail wakes it then only where this computer's install
+//! starts Codex with the hooks (messaging's `not_woken_by_mail`).
 //!
 //! Every check comes before any effect, in this order: the session, whether it is the asker's own, its kind, its phase,
 //! whether it is marked not woken by mail (a session that is not marked is left alone), a running turn (a registry that cannot be
