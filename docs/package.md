@@ -60,7 +60,7 @@ over this page. The table above says what each guarantees to the rest.
   Rests on: the OS. Owns no runtime state. Does not: start processes for anyone but the native launcher it hands out.
 - **wire:** `rust/protocol/CLAUDE.md`, the frames and payloads between our programs (the lanes' frames are the capsule's,
   the sidecars' protocols the sidecars'). Rests on: serde, the compiler, platform. Owns nothing at run time.
-- **chat:** `rust/chat/CLAUDE.md`, crate `sot-chat`, on wire, platform and `toml`. `sotd` builds its service on the configured hub alone (`rust/backend/src/chat.rs`), and admits each chat action through one recheck of its row and channel; its nine request ops, `chat.post_file`, `chat.delete`, `chat.read` and `chat.file` among them, are dispatched to it (`rust/backend/src/chat/ops.rs`; the setup's five in `chat/setup.rs`), and the watches and the `chat.changed` and `chat.status` events are served (`rust/backend/src/chat/watch.rs`). Owns:
+- **chat:** `rust/chat/CLAUDE.md`, crate `sot-chat`, on wire, platform and `toml`. `sotd` builds its service on the configured hub alone (`rust/backend/src/chat.rs`), and admits each chat action through one recheck of its row and channel; its nine request ops, `chat.post_file`, `chat.delete_post`, `chat.read` and `chat.file` among them, are dispatched to it (`rust/backend/src/chat/ops.rs`; the setup's five in `chat/setup.rs`), and the watches and the `chat.changed` and `chat.status` events are served (`rust/backend/src/chat/watch.rs`). Owns:
   normalization of Slack's message JSON into the wire's record (representation: wire's), `http`, the one door to the
   network, the Slack calls, the Socket Mode listener, and the configuration and channel mapping read through platform's
   config folder. Does not: hold a credential at rest, resolve a row, lock a workspace or file mail.
@@ -503,11 +503,21 @@ deletes a message its project's Slack app posted in its own project's channel, w
 (the maintainer asked that day that a session may delete messages in its channel when its owner has explicitly
 asked it to; the daemon admits a delete only for the asking session's own channel, Slack lets the app remove
 only its own posts, and the owner's permission is a rule of the session's skill, which the daemon cannot check;
-the files a message shared are not deleted, CHAT-DELETE-FILES-STAY; a session used it on the candidate at its
+the candidates through the third delete the message and leave the files it shared in Slack, shared nowhere; a
+session used it on the candidate at its
 person's ask, 19 of its own posts deleted and 11 already gone, and the next day another, on the maintainer's word,
 deleted its own post that had a reply under it (the reply stayed, as a delete removes one message) and its own
-post that shared a file, and was refused a message he had typed; the checks still owed are in
-CHAT-DELETE-UNMEASURED); and, the same day, a
+post that shared a file, and was refused a message he had typed); and, on `main` since 2026-11-26, in no candidate
+and used by no person, a session's delete of a post takes the post's own files with it: the daemon reads the
+message itself, checks that it is the app's own, deletes each file the app posted that it sees shared in that one
+message and nowhere else, and deletes the message last, so the same command run again finishes a delete that
+stopped halfway (the maintainer asked that day that a session can delete the files and images it posted, since
+otherwise it cannot delete the whole post or reply; a reply is asked for with its thread's time, a session can
+name no file, a file a person uploaded or one the app sees shared anywhere else stays and is named with why, and
+a share the app cannot see is not known to it, so such a file goes with the post; what Slack does at each step
+was measured against it that day, a private channel's share and a share hidden from the app excepted;
+CHAT-DELETE-FILES-STAY, Closed; the checks a candidate owes are in CHAT-DELETE-UNMEASURED, and the files earlier
+deletes left behind stay, CHAT-DELETED-POSTS-LEFT-FILES); and, on 2026-11-24, a
 session pairs a project with a Slack channel and unpairs it, with `sot-fe chat pair <session> <channel>`
 (the channel by its name or its id) and `sot-fe chat unpair <session>`, and the daemon's log says who made each
 pairing, a window or a session by its handle (the maintainer asked that day that a session can pair a project

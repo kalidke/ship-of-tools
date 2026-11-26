@@ -3691,3 +3691,28 @@ the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the sa
       for a candidate behind a larger change asked the same morning, which was the session's choice and wrong:
       a change a person asked for and can use at once should not wait in a candidate for one that is still being
       built.
+- A session's delete of a post takes the post's own files with it, 2026-11-26: five commits, the five landings
+    of a written plan (CHAT-DELETE-FILES-STAY). Asked by the maintainer at 09:54; what Slack does was asked of a
+    session that holds a harness against it at 09:56 and came back at 10:57; planned from 11:00 to 11:21; built by
+    one builder of the cheaper kind from 11:20 to 12:10, with a second set of measurements folded in by 12:22;
+    read from 12:24 to 12:55; the reading's findings built from 12:56 to 13:07 and read again by 13:20.
+    - The measurements decided the design: a deleted message leaves its file alive and shared nowhere, where
+      nothing can find it again, and a deleted file leaves its message standing with a placeholder, so the files
+      go first and the message last and a second ask finishes what a first left. The plan added that the daemon
+      reads the message itself and checks it is the app's own before any file goes, since the files are deleted
+      before Slack would refuse a person's message; that a reply is asked for with its thread's time; and a new
+      op name, so that an older daemon asked by a newer command deletes nothing where it would have deleted the
+      message alone.
+    - The first reading stopped the delete at every call under every fault and found that a second ask always
+      finished it and no order of failures orphaned a file. Its blockers: the manual and the skill said a file
+      shared anywhere else stays, where a share the app cannot see is not known to it; nothing tested that a
+      failed read of a file's facts stops the delete; two record sentences still said files are never deleted.
+      It also found a file Slack lists twice for one message left behind and a share of an unknown kind deleted;
+      both rules were rewritten. The second reading found the three code changes right.
+    - What it cost and showed: 3 hours 26 minutes from the ask to the second reading, 61 of them waiting for the
+      first measurement, 21 planning, 62 building and folding, 11 on the findings, 31 and 12 reading. About 1,050 product lines in the
+      first build, a third of them the fake Slack. The maintainer asked at 12:29 why it had taken so long. The
+      session's answer was that the size was its own doing: it asked a planner to settle every case of the
+      entry and staffed the five landings it got back, without first offering him the small change (delete the
+      message, then the app's own files it carried) beside the large one; and it waited an hour for the
+      measurement where the plan could have begun with each unmeasured case refusing.
