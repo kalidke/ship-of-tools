@@ -199,8 +199,23 @@ Four of the five are closed on `main` since that day by changes this page names 
 of a PDF selection); the other, a session's pairing stopped by its agent's permission mode, is open, since a
 person's permission settings are theirs. The maintainer said that day to make the second candidate, or the
 release, when it was ready; the second candidate was chosen, since the release would carry changes no person
-has used.
-`main` carries 0.7.4-rc.2-dev, and past 0.7.3 it holds that fault's fix, which the maintainer used on the candidate
+has used. v0.7.4-rc.2 (2026-11-25) is an unpublished draft, cut from `main` that evening on that word after the
+whole local gate had passed at the commit before the release's; its release workflow's builds, smokes and install
+smokes passed. It carries everything this page says is on `main` past 0.7.3 except what is marked as since
+2026-11-26. It was installed by archive the next morning, on the maintainer's word in a session's pane, by the
+maintaining session on the hub (the daemon restarted, every session there after it) and by its own session on the
+window computer the maintainer uses, and the comm matrix then passed between the two, six lines of six; the other
+window computers stay on 0.7.3. The maintainer used it at that window on 2026-11-26 and a session used it on the
+hub; where this page says below that something was used on the second candidate, it is that use. Two things in
+it were wrong, both seen by the session reading its own channel, and both are closed on `main` since that day by
+changes no person has used: every read of a channel was refused, because Slack's history refuses the zero lower
+bound the read sent, where a read of one thread worked (CHAT-READ-REFUSED-AT-ZERO-OLDEST, Closed; the read now
+asks from a bound Slack was measured to accept, no scan sends a zero one, and a refused read is logged once with
+a fixed code for why), and a session's own file posts read back as an app's, because Slack lists the app's share
+with no subtype where the chat looked for one (CHAT-OWN-SHARE-READS-AS-APP, Closed; an own message that carries a
+file has its origin read from its label whatever its subtype, in a session's read and in the Chat drawer). The
+maintainer asked that day for a third candidate with the fix, installed when it is ready.
+`main` carries 0.7.4-rc.3-dev, and past 0.7.3 it holds that fault's fix, which the maintainer used on the candidate
 and reported as passing (a page of twelve large tables, a switch away and back): built table sets are
 kept within a budget so a return to such a session draws them at once, no table is built in the frame that first
 draws an arriving session or uncovers the preview, and a covered preview builds nothing and keeps what it holds;
@@ -491,24 +506,29 @@ minute, so a session's pairing shows there within a minute; the window's own pai
 as a session's and behaves as it did; on the candidate a session, asked by the maintainer, was refused for a name
 the Slack app could not see and then paired its project with a channel he named, and later unpaired it and paired
 it again, after which a post he made in that channel reached the session as mail marked as its user's own and
-woke it; the window's showing of a session's pairing is not seen); and, on `main` since 2026-11-25 and
-in no candidate, used by no person: a session lists the Slack workspaces this computer connects and the channels
+woke it; the window's showing of a session's pairing is not seen); and, since 2026-11-25, a session lists the
+Slack workspaces this computer connects and the channels
 the Slack app can see in one of them, with `sot-fe chat workspaces` and `sot-fe chat channels` (the maintainer
 asked that day, after that refused pairing, that a session can compare what a person asked for with what exists;
 a listing writes and joins nothing, marks the channels a mapping holds, and with no workspace named is of the
-default, as a pairing is; CHAT-LIST-UNMEASURED, CHAT-LIST-LIMITS); and the Chat drawer's list for choosing a
+default, as a pairing is; a session ran both on the second candidate against real Slack, and no one has compared
+a listing with Slack's own, CHAT-LIST-UNMEASURED, CHAT-LIST-LIMITS); and the Chat drawer's list for choosing a
 project's channel is a tree, every running workspace a row that opens in place with Right and closes with Left,
 its channels beneath it, drawn as the nav pane draws its rows (the maintainer asked that day that choosing a Slack
 workspace and channel look and work like the window's file and session navigation; the three landings of a
-written plan; the paging between workspaces with Left and Right is gone; proved by unit tests only, seen in no
-window, CHAT-PICKER-TREE-NOT-SEEN); and, on `main` since 2026-11-25 and used by no person, a session reads its project's
+written plan; the paging between workspaces with Left and Right is gone; the maintainer used it on the second
+candidate and reported that the tree works; the particulars not yet looked at one by one are in
+CHAT-PICKER-TREE-NOT-SEEN); and, since 2026-11-25, a session reads its project's
 channel, or one thread of it, back with `sot-fe chat read` (the newest 50 messages as one line each: time, who, files and
 first words, with a deleted parent whose thread has replies listed as one line), the exit-3 words of a post name the read that
 shows whether it went out, a file post whose share answer names no message time asks Slack once more for the file and, when that
 names none either, says on a second line how to find the time with the read, and the daemon's log carries one line for each post or file post that ends unknown, with the Slack
 step and a fixed code for why (a session had seen a post end unknown with nothing to say why or whether it existed, and
 another could not name its file posts to the delete; CHAT-POST-UNKNOWN-NOT-READ-BACK and
-CHAT-DELETE-CANNOT-REACH-A-FILE-POST, Closed; proved against the fake Slack only, CHAT-READ-UNMEASURED); and, the same day and used by no person, three chat words a session found
+CHAT-DELETE-CANNOT-REACH-A-FILE-POST, Closed; on the second candidate a session's read of a thread worked and its
+read of a channel was refused, as told above, and its two file posts, one with a comment at the top level and one
+with none into that post's thread, each printed their time; the checks still owed are in CHAT-READ-UNMEASURED);
+and, the same day and used by no person, three chat words a session found
 unclear (a pairing that delivers says new posts reach this project's session when it is the session's own, an unpairing says a
 delivering channel's posts no longer reach it, and a chat mail's first line names the channel as `#<name> (<id>)` when the
 daemon's name cache holds it);
@@ -559,8 +579,10 @@ itself is not seen, the same entry); a Codex session is told its handle, its han
 a clear, a compaction or a resume; and a Codex session records which conversation it is in, in a file of the row's
 state folder (CODEX-ROOT-THREAD-HOOKS, open), and mail filed to a Ready Codex row asks that conversation to poll
 through Codex's own queue, once for each batch of unread mail, with nothing typed into its terminal (sessions operating
-Codex rows had seen them never woken by mail, CODEX-IDLE-ROW-NOT-WOKEN, Closed; proved against a stand-in Codex only,
-no live row has been woken, CODEX-WAKE-QUEUE-LIVE, open); and, since 2026-11-25 and used by no person, a Codex
+Codex rows had seen them never woken by mail, CODEX-IDLE-ROW-NOT-WOKEN, Closed; seen once in a live session, on the
+second candidate: mail filed to an idle Codex session began a turn there within seconds, by the queued request and
+with nothing typed into its terminal, and the session answered; the other checks of CODEX-WAKE-QUEUE-LIVE are owed,
+open); and, since 2026-11-25 and used by no person, a Codex
 session that mail does not wake, because its agent was started without the session's Codex hooks and has named
 no conversation, is marked `[not woken by mail]` in the window's Sessions list and listed by `sotd status`, and
 `sot-fe restart <session>` starts such a session's agent again under the current daemon, in a new conversation
@@ -568,8 +590,11 @@ no conversation, is marked `[not woken by mail]` in the window's Sessions list a
 stay unwoken, with nothing to say so and nothing to start it again, CODEX-ROWS-BEFORE-AN-UPDATE-NOT-WOKEN, Closed;
 the restart is refused during a turn, for the asking session's own and for a session that is not marked, the
 daemon restarts nothing by itself, and a send still says only that it was filed; mail wakes the session afterward
-only where that computer's install starts Codex with the hooks, which the command's words say; proved against a
-stand-in Codex only); and, since 2026-11-23, a Codex row's work state belongs to
+only where that computer's install starts Codex with the hooks, which the command's words say; a session used
+both on the second candidate: `sotd status` listed the two Codex sessions that had run through the updates, a
+restart of one, asked by another session, started a new conversation, took the session off that list and was
+followed by the wake told above, and a restart of the asker's own session and of an unknown name were refused;
+the window's mark is not seen); and, since 2026-11-23, a Codex row's work state belongs to
 the root turn that set it: an interrupted turn releases the row's working state where the row had stayed working, and
 a late event of an older turn no longer clears or completes the newer one, by rules built on what Codex 0.171.0 was
 measured to send to its hooks in a scratch home (CODEX-TURN-OWNERSHIP-LIMITS has the limits; no live row's interrupt

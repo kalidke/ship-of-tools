@@ -636,7 +636,12 @@ owned by `docs/CLAUDE.md`.
   verify that the session names its handle and handoff once, the open question stays stamped, and no second join occurs.
 
 - **CODEX-WAKE-QUEUE-LIVE** [note] Messaging's wake of a Codex row (a request through Codex's own queue, to the
-  conversation the binding names) is proved against a stand-in `codex`; no live row has been woken by it. After
+  conversation the binding names) is proved against a stand-in `codex`, and was seen once in a live session, on the
+  second 0.7.4 candidate on 2026-11-26: a Codex session restarted that minute with `sot-fe restart` sat idle, another
+  session filed mail to it, the daemon's log said two seconds later that it asked the conversation to poll, and
+  within a few seconds more the session's screen showed the queued request as a new turn, its poll and the mail;
+  its answer was filed nine seconds after the mail, and nothing was typed into its terminal. The window was open,
+  the composer was empty and no turn was running, so what follows is still owed. After
   release, in a real Codex row with a separate sender: a directed mail reaches the exact conversation with the window
   closed; a draft in the composer survives with its text and cursor; a running turn finishes before the request is
   taken; no second request goes while one is pending or while that mail is unread. Also unmeasured: a request while an
@@ -895,8 +900,9 @@ owned by `docs/CLAUDE.md`.
   method (composed text, the emoji picker) probably cannot either, which no one has tried. Not built and not planned: it
   waits on the maintainer's word.
 - **CHAT-PICKER-TREE-NOT-SEEN** [note] The Chat drawer's channel list as a tree of workspaces (built 2026-11-25 at the
-  maintainer's ask, fe-ui's contract, the channel picker) is proved by unit tests only: no person has seen it in a window. To
-  look at on the first candidate that carries it: the plain rows are dim on the drawer's ground, 4.5 to 1 by arithmetic;
+  maintainer's ask, fe-ui's contract, the channel picker) is proved by unit tests, and the maintainer used it at a window on
+  the second 0.7.4 candidate on 2026-11-26 and reported that the tree works. He reported nothing of the particulars below,
+  which stay to look at: the plain rows are dim on the drawer's ground, 4.5 to 1 by arithmetic;
   the words above the list name the workspace the cursor is in, so they change length as the cursor crosses workspaces and
   the list can move by a row; a held list is not read again while the list stays open; the sentence for a list cut at its
   bound is the last row under its workspace, after up to 1,000 channels; a pasted channel id with the cursor on `No channel
@@ -1390,8 +1396,11 @@ owned by `docs/CLAUDE.md`.
   closed only by the skill's rule to pass the listed workspace's id.
 - **CHAT-LIST-UNMEASURED** [note] A session's listing of the Slack workspaces and channels it could pair a project with (`sot-fe chat
   workspaces` and `sot-fe chat channels`, the daemon's `chat.channels` with `by`, chat guarantee 30), asked by the maintainer on 2026-11-25
-  after a first pairing in use was refused for a channel name the hub's Slack app could not see, is proved against the fake Slack only: no
-  listing has run against real Slack. The checks are made on the first release candidate that carries it, on a live hub: a listing
+  after a first pairing in use was refused for a channel name the hub's Slack app could not see, is proved against the fake Slack, and
+  a session ran both on a live hub on the second 0.7.4 candidate on 2026-11-26: the workspaces listing named five connected
+  workspaces with the default marked, and the channels listing of the default one printed nine channels with their kind, whether
+  the app is in each and whether a mapping holds it, the asking project's own private channel among them as `taken`, and no
+  private channel the app is not in. No one has compared a listing with Slack's own list, which is the check still owed: a listing
   shows the public channels, the private ones the app is in, and no private one it is not in, and marks the channel a project is
   paired with `taken`; a workspace of over 1,000 channels is cut and says so.
 - **CHAT-READ-UNMEASURED** [note] A session's read of its channel (`sot-fe chat read`, `chat.read`, chat guarantee 37) is proved

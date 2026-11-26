@@ -1087,9 +1087,11 @@ bot identity, workspace name, read-pacing instant, name cache, member list (guar
    bytes are held twice while step 2 runs (the caller's and `Http`'s clone for its one hop), so two callers waiting hold
    at most 64 MiB of files; a caller that drops the call frees its permit while `Http` runs the step it had sent to that
    step's deadline (guarantee 7), so what is held is bounded by `Http`'s sixteen operations, not by the two permits,
-   and the daemon never drops a file call while its connection ends. Unmeasured until a person's first use (each built to fail closed, pinned against the
-   fake): that the upload URL is on a Slack host, that `thread_ts` shares into the thread (else the file lands at the
-   top level and still reads `Posted`), and where step 3's answer puts the share's `ts`. Tests: see the table.
+   and the daemon never drops a file call while its connection ends. Seen in a session's use of the second 0.7.4 candidate
+   against real Slack (2026-11-26, two posts): the upload went to the URL Slack answered, which the door admits only on a
+   Slack host, and a share sent with `thread_ts` was listed in that thread. Unmeasured still (built to fail closed, pinned
+   against the fake): where step 3's answer puts the share's `ts`; both posts printed a time, and whether step 3's answer or
+   the one `files.info` read gave it was not recorded. Tests: see the table.
 
 
 33. **A picture is fetched only from a channel it is shared in, bounded before and while it streams, and only a body

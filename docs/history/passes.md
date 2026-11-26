@@ -3628,3 +3628,45 @@ the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the sa
     above. A second Codex session that had run through the update was not woken, as the first; no Codex session
     started after the update exists on that hub, so the wake itself is still unseen. The system's voice typing
     key, tried at a window on Windows, found no text box (WINDOW-TAKES-NO-OS-TEXT-INPUT).
+- The second 0.7.4 candidate, 2026-11-25 and 26: cut at 19:01 on the maintainer's word of that afternoon, after
+    the whole local gate at the commit before the release's; the release workflow's jobs were green at 19:22. No
+    install was made that evening, since a hub install restarts its daemon and takes the maintainer's word. He gave
+    it the next morning at 09:13: the hub was installed by archive from 09:14 to 09:15, with 36 sessions before and
+    after, the window computer he uses by its own session at 09:19, and the comm matrix passed between the two at
+    09:21, six lines of six.
+    - What a session then did on the hub in the quarter hour after, as a user: listed the workspaces and the channels;
+      read its own channel, which was refused every time, and one thread of it, which worked; restarted its own
+      Codex builder session with `sot-fe restart` and mailed it, and the mail began a turn there, its answer
+      filed nine seconds after the mail, the first wake of a live Codex session (CODEX-WAKE-QUEUE-LIVE); posted two
+      small files, which printed their times, and read them back listed as an app's. The maintainer reported at
+      09:23 that the Chat drawer's tree works, and asked for the rest to be tried, a third candidate with the fix,
+      and a list of the tests only he can do.
+    - The lesson of the two faults is one: each rested on a premise about Slack that the contract already
+      named as unmeasured or that no one had thought to name, and the fake Slack answered as the code hoped. A
+      second session that holds a harness against live Slack measured each in a few minutes, by reads only, once
+      it was asked: the first candidate that carries a new Slack call should have its calls measured before the
+      cut, not found by the first use after it.
+- A session's read of its channel reaches Slack, and a refused read says why, 2026-11-26: two commits
+    (CHAT-READ-REFUSED-AT-ZERO-OLDEST). Seen at 09:17; the cause measured by 09:23 (Slack's history refuses a zero
+    lower bound written with its fraction digits and accepts it written any other way, and its replies accept
+    it); built by one builder of the cheaper kind from 09:25 to 09:34; read from 09:35 to 10:11; the reading's
+    findings folded in by 10:16; gated with the change below from 10:17 to 10:21 and on `main` at 10:22.
+    - The reading found no regression and nothing to change in the code: it went through every path that could
+      send the refused bound and found one left, a history request with a lower bound a client supplies, which no
+      client of ours sends. Its two blockers were in the records. One note said a hub's zero floor stops every
+      pass, where only a channel whose own floor comes out zero is stopped. The other was the session's fault:
+      its brief had told the builder to shorten the list of live checks the read still owes. One test was added
+      to pin the fake's refusal, which nothing had pinned.
+    - 65 minutes from the fault to `main`: 6 finding the cause, 9 building, 36 reading, 4 folding, 4 in the gate,
+      the rest between steps.
+- A session's own file post reads back as the session's, 2026-11-26: one commit (CHAT-OWN-SHARE-READS-AS-APP).
+    Seen at 09:27; the cause measured by 09:35 (Slack lists a share the app makes with no subtype, where the chat
+    read the session's label only under one); built by a second builder of the cheaper kind from 09:37 to 09:45,
+    on top of the change above; read from 09:46 to 10:01; folded in by 10:04; gated and landed with it.
+    - The reading found no regression, and that the change can make nothing mail and stop nothing being mail. Its
+      one blocker: two of the three conditions of the new rule had no test, and each could be deleted with every
+      suite green. Two assertions were added, each shown red with its condition removed. Its limits went into the
+      entry: the live event's shape is unmeasured as history's was, and a window that held older pages before its
+      daemon was replaced shows those file posts as before.
+    - 55 minutes from the fault to `main`: 8 finding the cause, 8 building, 15 reading, 3 folding, the rest
+      waiting for the change beneath it and in the gate.
