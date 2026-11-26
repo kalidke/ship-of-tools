@@ -8,7 +8,7 @@ use crate::chat::{Chat, Status};
 use crate::lifecycle::retire::{Participant, Registry};
 use serde_json::{json, Value};
 use sot_chat::config::{self, CONFIG_FILE};
-use sot_chat::fake_slack::{eventually, FakeSlack, History, Identity, Reply, Upload};
+use sot_chat::fake_slack::{eventually, FakeSlack, History, Identity, Posts, Reply, Upload};
 use sot_chat::service::Status as ServiceStatus;
 use sot_platform::test_hold::Holds;
 use sot_protocol::ops::{ChatChannel, ChatService, ChatTarget, ChatWatchState};
@@ -64,6 +64,10 @@ pub(super) struct Levers {
     pub(super) channel_name: Arc<Mutex<Option<String>>>,
     /// While set, a file's share answers no `ts` of its own, as Slack's answers have.
     pub(super) no_share_ts: Arc<std::sync::atomic::AtomicBool>,
+    /// When set, a post's reads and deletes (`conversations.history`, `conversations.replies`, `files.info`,
+    /// `files.delete`, `chat.delete`) are answered by this world of messages and files (`fake_slack::Posts`), in place of the
+    /// empty page and a delete that is always `ok`.
+    pub(super) posts: Arc<Mutex<Option<Arc<Posts>>>>,
 }
 
 /// A fake Slack with a live socket: `auth.test` names the workspace, history answers an empty page, a file's upload is
@@ -86,11 +90,12 @@ pub(super) async fn live() -> (FakeSlack, Levers) {
         hello_app: Arc::new(Mutex::new(None)),
         channel_name: Arc::new(Mutex::new(None)),
         no_share_ts: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        posts: Arc::new(Mutex::new(None)),
     };
     let (mode, gate, acked, histories, hello, channel) = (lv.mode.clone(), lv.gate.clone(), lv.acked.clone(), lv.histories.clone(), lv.hello.clone(), lv.channel.clone());
     let (replies_fail, replies_failed, names_hang) = (lv.replies_fail.clone(), lv.replies_failed.clone(), lv.names_hang.clone());
     let (bot_app, hello_app, channel_name, no_share_ts) = (lv.bot_app.clone(), lv.hello_app.clone(), lv.channel_name.clone(), lv.no_share_ts.clone());
-    let (upload, upload_no_ts) = (Upload::new(), Upload::new().no_ts());
+    let (upload, upload_no_ts, posts) = (Upload::new(), Upload::new().no_ts(), lv.posts.clone());
     let fake = FakeSlack::start(Identity::Trusted, move |seen, port| {
         let path = seen.path();
         if path.ends_with("/auth.test") {
@@ -99,6 +104,10 @@ pub(super) async fn live() -> (FakeSlack, Levers) {
                 return Reply::json(&json!({"ok": true, "team_id": "T0AAAA", "user_id": "U0OWNER"}));
             }
             return Reply::json(&json!({"ok": true, "team_id": "T0AAAA", "user_id": "U0BOT", "bot_id": "B0BOT"}));
+        }
+        let world = posts.lock().unwrap().clone();
+        if let Some(r) = world.and_then(|w| w.reply(seen)) {
+            return r;
         }
         if let Some(r) = (if no_share_ts.load(Ordering::SeqCst) { &upload_no_ts } else { &upload }).reply(seen, port) {
             return r;

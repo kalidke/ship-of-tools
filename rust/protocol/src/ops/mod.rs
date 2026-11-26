@@ -524,6 +524,9 @@ pub mod op {
     /// One message of the row's own channel deleted once, never resent: [`crate::ops::ChatDeleteReq`], reply
     /// [`crate::ops::ChatDeleteRes`].
     pub const CHAT_DELETE: &str = "chat.delete";
+    /// One message of the row's own channel deleted with the files the app posted with it, each step once and none
+    /// resent: [`crate::ops::ChatDeleteReq`] (with the `thread` of a reply), reply [`crate::ops::ChatDeleteRes`].
+    pub const CHAT_DELETE_POST: &str = "chat.delete_post";
     /// A session reads its own channel or one thread of it, one Slack read, changing nothing: [`crate::ops::ChatReadReq`],
     /// reply [`crate::ops::ChatReadRes`].
     pub const CHAT_READ: &str = "chat.read";

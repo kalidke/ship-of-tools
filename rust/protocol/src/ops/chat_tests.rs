@@ -52,6 +52,7 @@ fn the_chat_ops_are_declared_in_the_one_table() {
         "chat.post",
         "chat.post_file",
         "chat.delete",
+        "chat.delete_post",
         "chat.read",
         "chat.file",
         "chat.changed",
@@ -662,7 +663,8 @@ fn every_code_has_its_one_text() {
         (ChatCode::NotAnImage, "that file is not a picture the chat can show"),
         (ChatCode::OtherApp, "these Slack codes may belong to a different Slack app than the one this Slack workspace is connected with now; nothing was changed"),
         (ChatCode::MixedApps, "the \"App-Level Token\" belongs to a different Slack app than the \"Bot User OAuth Token\", so nothing was changed; all three codes must come from one Slack app"),
-        (ChatCode::NotOwnMessage, "Slack would not let this project's Slack app delete that message (a person's or another app's message stays)"),
+        (ChatCode::NotOwnMessage, "that message is not one this project's Slack app posted, or Slack would not let the app delete it (a person's or another app's message stays)"),
+        (ChatCode::UnclearFile, "a file of that post could not be checked as this project's Slack app's own and shared only in that post, so nothing was deleted (a person can delete the post in Slack)"),
         (ChatCode::AlreadyPaired, "the project already has a channel; unpair it first"),
         (ChatCode::SeveralChannels, "several channels have that name; name one by its ID"),
         (ChatCode::Failed, "the chat request failed"),
@@ -671,7 +673,7 @@ fn every_code_has_its_one_text() {
     for (code, words) in table {
         assert_eq!(code.text(), words, "{code:?}");
     }
-    for code in ["bot_token_refused", "app_token_refused", "user_token_refused", "no_user_token", "not_a_member", "other_workspace", "not_in_channel", "channel_taken", "not_saved", "not_a_file", "too_large", "not_an_image", "too_many_workspaces", "no_such_channel", "other_app", "mixed_apps", "not_own_message", "already_paired", "several_channels"] {
+    for code in ["bot_token_refused", "app_token_refused", "user_token_refused", "no_user_token", "not_a_member", "other_workspace", "not_in_channel", "channel_taken", "not_saved", "not_a_file", "too_large", "not_an_image", "too_many_workspaces", "no_such_channel", "other_app", "mixed_apps", "not_own_message", "already_paired", "several_channels", "unclear_file"] {
         let r: ChatRefusal = serde_json::from_value(json!({"error": "text", "code": code})).unwrap();
         assert_ne!(r.code, Some(ChatCode::Other), "{code} is a code of this reader");
     }
@@ -905,33 +907,61 @@ fn sot_fe_and_the_wire_print_the_same_report() {
     }
 }
 
-/// `chat.delete` keeps its shape: a ts, the row's handle and the target, no kind and no channel but the target's; each
-/// outcome pinned; a reader takes an outcome or a code added later for `unknown` and `other`, never for `deleted`; and an
-/// older daemon answers the op as an unknown op, a refusal with no code.
+/// `chat.delete_post` keeps its shape: a ts, the row's handle, the target and the thread of a reply (left out when none),
+/// no kind, no channel but the target's and no file; each outcome pinned with the files it reports (left out when there are
+/// none, so a reply with none is the older reply's); a list of files past `MAX_FILES`, an id that is no id and a ts that is
+/// no ts do not decode; a reason or an outcome or a code added later reads as `other`, `unknown` and `other`, never as
+/// `deleted`; and an older daemon answers the op as an unknown op, a refusal with no code.
 #[test]
-fn the_delete_pair_keeps_its_shape_and_reads_what_is_added_later_as_not_known() {
-    pinned(
-        ChatDeleteReq { target: target(), name: "alpha-h".into(), ts: ts("1700000000.000100") },
-        json!({"target": target_json(), "name": "alpha-h", "ts": "1700000000.000100"}),
-    );
-    pinned(ChatDeleteRes::Deleted, json!({"outcome": "deleted"}));
-    pinned(ChatDeleteRes::Gone, json!({"outcome": "gone"}));
-    pinned(ChatDeleteRes::Refused { code: ChatCode::NotOwnMessage }, json!({"outcome": "refused", "code": "not_own_message"}));
-    pinned(ChatDeleteRes::Limited { retry_after_secs: 7, assumed: true }, json!({"outcome": "limited", "retry_after_secs": 7, "assumed": true}));
+fn the_delete_post_pair_keeps_its_shape_and_its_bounds() {
+    let req = |thread: Option<&str>| ChatDeleteReq { target: target(), name: "alpha-h".into(), ts: ts("1700000000.000100"), thread: thread.map(ts) };
+    pinned(req(None), json!({"target": target_json(), "name": "alpha-h", "ts": "1700000000.000100"}));
+    pinned(req(Some("1700000000.000050")), json!({"target": target_json(), "name": "alpha-h", "ts": "1700000000.000100", "thread": "1700000000.000050"}));
+    let none = ChatPostFiles::default();
+    let some = ChatPostFiles {
+        deleted: vec!["F0AAAA".into()],
+        kept: vec![ChatKeptFile { file: "F0BBBB".into(), why: ChatKeptWhy::NotTheApps }, ChatKeptFile { file: "F0CCCC".into(), why: ChatKeptWhy::SharedElsewhere }],
+    };
+    let some_json = json!({"deleted": ["F0AAAA"], "kept": [{"file": "F0BBBB", "why": "not_the_apps"}, {"file": "F0CCCC", "why": "shared_elsewhere"}]});
+    pinned(ChatDeleteRes::Deleted { files: none.clone() }, json!({"outcome": "deleted"}));
+    pinned(ChatDeleteRes::Deleted { files: some.clone() }, json!({"outcome": "deleted", "files": some_json}));
+    pinned(ChatDeleteRes::Gone { files: none.clone() }, json!({"outcome": "gone"}));
+    pinned(ChatDeleteRes::Gone { files: some.clone() }, json!({"outcome": "gone", "files": some_json}));
+    pinned(ChatDeleteRes::Refused { code: ChatCode::NotOwnMessage, files: none.clone() }, json!({"outcome": "refused", "code": "not_own_message"}));
+    pinned(ChatDeleteRes::Refused { code: ChatCode::UnclearFile, files: some.clone() }, json!({"outcome": "refused", "code": "unclear_file", "files": some_json}));
+    pinned(ChatDeleteRes::Limited { retry_after_secs: 7, assumed: true, files: none.clone() }, json!({"outcome": "limited", "retry_after_secs": 7, "assumed": true}));
+    pinned(ChatDeleteRes::Limited { retry_after_secs: 7, assumed: false, files: some.clone() }, json!({"outcome": "limited", "retry_after_secs": 7, "assumed": false, "files": some_json}));
     pinned(ChatDeleteRes::Unknown, json!({"outcome": "unknown"}));
+    // Files with only one list, or an empty `files`, are what they say.
+    let only_kept: ChatDeleteRes = serde_json::from_value(json!({"outcome": "deleted", "files": {"kept": [{"file": "F0BBBB", "why": "not_the_apps"}]}})).unwrap();
+    assert_eq!(only_kept, ChatDeleteRes::Deleted { files: ChatPostFiles { deleted: vec![], kept: vec![ChatKeptFile { file: "F0BBBB".into(), why: ChatKeptWhy::NotTheApps }] } });
+    assert_eq!(serde_json::from_value::<ChatDeleteRes>(json!({"outcome": "gone", "files": {}})).unwrap(), ChatDeleteRes::Gone { files: none.clone() });
     // A wait is clamped to an hour, as a post's is.
     let limited: ChatDeleteRes = serde_json::from_value(json!({"outcome": "limited", "retry_after_secs": u64::MAX, "assumed": false})).unwrap();
-    assert_eq!(limited, ChatDeleteRes::Limited { retry_after_secs: MAX_RETRY_SECS, assumed: false });
+    assert_eq!(limited, ChatDeleteRes::Limited { retry_after_secs: MAX_RETRY_SECS, assumed: false, files: none.clone() });
+    // What is added later reads as not known: an outcome, a code, a reason a file was kept.
     assert_eq!(serde_json::from_value::<ChatDeleteRes>(json!({"outcome": "queued"})).unwrap(), ChatDeleteRes::Unknown);
     let refused: ChatDeleteRes = serde_json::from_value(json!({"outcome": "refused", "code": "from_the_future"})).unwrap();
-    assert_eq!(refused, ChatDeleteRes::Refused { code: ChatCode::Other });
-    // The request is bounded as a post's: a ts that is not Slack's six-digit form, and a name past its bound, do not decode.
-    for bad in [json!({"ts": "17.5"}), json!({"name": "n".repeat(crate::chat::MAX_NAME + 1)}), json!({"ts": 7})] {
+    assert_eq!(refused, ChatDeleteRes::Refused { code: ChatCode::Other, files: none });
+    let later: ChatDeleteRes = serde_json::from_value(json!({"outcome": "deleted", "files": {"kept": [{"file": "F0BBBB", "why": "from_the_future"}]}})).unwrap();
+    assert_eq!(later, ChatDeleteRes::Deleted { files: ChatPostFiles { deleted: vec![], kept: vec![ChatKeptFile { file: "F0BBBB".into(), why: ChatKeptWhy::Other }] } });
+    // The files are bounded: nine of either list, an id that is no id and a reason that is no string do not decode.
+    let ids = |n: usize| (0..n).map(|i| format!("F0N{i:04}")).collect::<Vec<_>>();
+    let kept = |n: usize| ids(n).into_iter().map(|file| json!({"file": file, "why": "not_the_apps"})).collect::<Vec<_>>();
+    for fine in [json!({"deleted": ids(8)}), json!({"kept": kept(8)})] {
+        assert!(serde_json::from_value::<ChatDeleteRes>(json!({"outcome": "deleted", "files": fine})).is_ok());
+    }
+    for bad in [json!({"deleted": ids(9)}), json!({"kept": kept(9)}), json!({"deleted": ["F0 AAAA"]}), json!({"deleted": [7]}), json!({"kept": [{"file": "", "why": "not_the_apps"}]}), json!({"kept": [{"file": "F0AAAA", "why": 7}]})] {
+        assert!(serde_json::from_value::<ChatDeleteRes>(json!({"outcome": "deleted", "files": bad})).is_err(), "{bad}");
+    }
+    // The request is bounded as a post's: a ts or thread that is not Slack's six-digit form, and a name past its bound, do
+    // not decode.
+    for bad in [json!({"ts": "17.5"}), json!({"thread": "17.5"}), json!({"name": "n".repeat(crate::chat::MAX_NAME + 1)}), json!({"ts": 7}), json!({"thread": 7})] {
         let mut v = json!({"target": target_json(), "name": "alpha-h", "ts": "1700000000.000100"});
         v.as_object_mut().unwrap().extend(bad.as_object().unwrap().clone());
         assert!(serde_json::from_value::<ChatDeleteReq>(v).is_err());
     }
-    let r: ChatRefusal = serde_json::from_value(json!({"error": "unknown op: chat.delete"})).unwrap();
+    let r: ChatRefusal = serde_json::from_value(json!({"error": "unknown op: chat.delete_post"})).unwrap();
     assert_eq!(r.code, None);
 }
 

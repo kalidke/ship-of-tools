@@ -13,7 +13,7 @@ use crate::rows::{Workspace, Workspaces};
 use serde_json::{json, Value};
 use sot_chat::config;
 use sot_chat::delivery::Timing;
-use sot_chat::fake_slack::{listed_share, FakeSlack, History, Upload};
+use sot_chat::fake_slack::{listed_share, Fault, FakeSlack, History, Posts, Upload};
 use sot_chat::service::{Service, Status as ServiceStatus};
 use sot_platform::test_hold::Holds;
 use sot_protocol::chat::Ts;
@@ -1243,5 +1243,79 @@ async fn a_file_post_that_names_no_time_is_found_by_a_read_and_deleted() {
     assert_eq!(deleted, json!({"outcome": "deleted"}));
     let sent = w.fake.seen().into_iter().rfind(|s| s.path().ends_with("/chat.delete")).and_then(|s| s.json()).unwrap();
     assert_eq!(sent, json!({"channel": "C0AAAA", "ts": at}));
+    stop(chat);
+}
+
+/// The change's done test, through the daemon's `chat.delete_post`: a session's file post is deleted with its file, files
+/// first and the message last; a delete whose `files.delete` Slack performed but whose answer was lost is unknown, and the
+/// same ask again finishes it with the same files; and a file also shared in another channel stays, and is said to.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sessions_post_is_deleted_with_its_own_files_and_a_second_ask_finishes_a_half_done_one() {
+    let (t1, t2, t3) = ("1700000100.000100", "1700000100.000200", "1700000100.000300");
+    let w = world(false).await;
+    let chat = w.start(&w.fake).await;
+    let posts = Arc::new(
+        Posts::new("U0BOT", "B0BOT")
+            .share("C0AAAA", t1, None, "F0AAAA")
+            .share("C0AAAA", t2, None, "F0BBBB")
+            .share("C0AAAA", t3, None, "F0CCCC")
+            .also_shared("F0CCCC", "C0OTHER", "1700000100.000900"),
+    );
+    *w.lv.posts.lock().unwrap() = Some(posts.clone());
+    let (mut conn, _root, alpha) = session(&w, &chat).await;
+    let ask = |n: u64, ts: &str| json!({"target": super::chat_ops_tests::target(&alpha, "C0AAAA"), "name": "alpha-h", "ts": ts, "n": n});
+    // The five methods the fake plays, in the order the daemon sent them.
+    let sent = |w: &World| -> Vec<String> {
+        const PLAYED: [&str; 5] = ["conversations.history", "conversations.replies", "files.info", "files.delete", "chat.delete"];
+        w.fake.seen().iter().filter_map(|s| s.path().strip_prefix("/api/").map(String::from)).filter(|m| PLAYED.contains(&m.as_str())).collect()
+    };
+
+    // A file post: the message and its file are both gone, and Slack was asked in that order.
+    let done = conn.ask(10, op::CHAT_DELETE_POST, ask(10, t1)).await;
+    assert_eq!((done["outcome"].as_str(), done["files"]["deleted"].clone()), (Some("deleted"), json!(["F0AAAA"])), "{done}");
+    assert_eq!(done["files"]["kept"], json!([]));
+    assert_eq!(sent(&w), ["conversations.history", "files.info", "files.delete", "chat.delete"]);
+    assert!(!posts.holds_message("C0AAAA", t1) && !posts.holds_file("F0AAAA"), "the fake holds neither the message nor the file");
+
+    // A file delete Slack performed whose answer was lost: unknown, with the message standing; the same ask finishes it.
+    posts.fault("files.delete", Fault::DropAfter);
+    let lost = conn.ask(11, op::CHAT_DELETE_POST, ask(11, t2)).await;
+    assert_eq!(lost, json!({"outcome": "unknown"}), "{lost}");
+    assert!(!posts.holds_file("F0BBBB") && posts.holds_message("C0AAAA", t2));
+    let again = conn.ask(12, op::CHAT_DELETE_POST, ask(12, t2)).await;
+    assert_eq!((again["outcome"].as_str(), again["files"]["deleted"].clone()), (Some("deleted"), json!(["F0BBBB"])), "{again}");
+    assert!(!posts.holds_message("C0AAAA", t2));
+
+    // A file also shared in another channel is kept, and the post goes.
+    let kept = conn.ask(13, op::CHAT_DELETE_POST, ask(13, t3)).await;
+    assert_eq!(kept["outcome"], "deleted", "{kept}");
+    assert_eq!((kept["files"]["deleted"].clone(), kept["files"]["kept"].clone()), (json!([]), json!([{"file": "F0CCCC", "why": "shared_elsewhere"}])));
+    assert!(!posts.holds_message("C0AAAA", t3) && posts.holds_file("F0CCCC"));
+    stop(chat);
+}
+
+/// A reply's file post, with the share Slack was measured to list for one (one entry at the reply's own time, the thread's
+/// time beside it), is deleted whole through the daemon when its thread is given: asked with no thread nothing is found and
+/// only the channel's read is sent.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_replys_file_post_is_deleted_whole_with_the_share_slack_lists_for_it() {
+    let (q, at) = ("1700000100.000100", "1700000100.000300");
+    let w = world(false).await;
+    let chat = w.start(&w.fake).await;
+    let posts = Arc::new(Posts::new("U0BOT", "B0BOT").bot_post("C0AAAA", q, None).share("C0AAAA", at, Some(q), "F0REPLY"));
+    *w.lv.posts.lock().unwrap() = Some(posts.clone());
+    let (mut conn, _root, alpha) = session(&w, &chat).await;
+    let target = super::chat_ops_tests::target(&alpha, "C0AAAA");
+    let sent = |w: &World| -> Vec<String> {
+        w.fake.seen().iter().filter_map(|s| s.path().strip_prefix("/api/").map(String::from)).filter(|m| m == "conversations.history" || m == "conversations.replies" || m.starts_with("files.") || m == "chat.delete").collect()
+    };
+    let bare = conn.ask(10, op::CHAT_DELETE_POST, json!({"target": target, "name": "alpha-h", "ts": at})).await;
+    assert_eq!(bare, json!({"outcome": "gone"}), "{bare}");
+    assert_eq!(sent(&w), ["conversations.history"]);
+    assert!(posts.holds_file("F0REPLY") && posts.holds_message("C0AAAA", at));
+    let done = conn.ask(11, op::CHAT_DELETE_POST, json!({"target": target, "name": "alpha-h", "ts": at, "thread": q})).await;
+    assert_eq!(done, json!({"outcome": "deleted", "files": {"deleted": ["F0REPLY"], "kept": []}}), "{done}");
+    assert_eq!(sent(&w)[1..], ["conversations.replies", "files.info", "files.delete", "chat.delete"]);
+    assert!(!posts.holds_file("F0REPLY") && !posts.holds_message("C0AAAA", at) && posts.holds_message("C0AAAA", q), "the reply and its file go, the parent stays");
     stop(chat);
 }

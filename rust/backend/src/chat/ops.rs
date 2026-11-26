@@ -1,4 +1,4 @@
-//! The chat's request ops: `chat.resolve`, `chat.history`, `chat.post`, `chat.post_file`, `chat.delete`, `chat.read` and `chat.file`, each a job (never the
+//! The chat's request ops: `chat.resolve`, `chat.history`, `chat.post`, `chat.post_file`, `chat.delete`, `chat.delete_post`, `chat.read` and `chat.file`, each a job (never the
 //! loop), and `chat.watch` and `chat.unwatch`, which run in the loop. Every action that reaches Slack passes `Chat::admit` first, on the blocking pool, since admission
 //! canonicalizes the row's folder on the shared home; the Slack call then runs on the job's own task, and each of its
 //! bounds is the API's own deadline. A post is made once here and never again: no path of this file retries, and an
@@ -11,12 +11,13 @@ use std::time::Instant;
 
 use anyhow::Result;
 use serde::Deserialize;
+use sot_chat::api::delete::{Kept, PostDelete, PostEnd, Refusal};
 use sot_chat::api::{refuses_the_token, ApiError, Bounds, Continuation, DeleteOutcome, FileFetch, FileOutcome, FileVariant, HistoryQuery, PostKind, PostOutcome, ScanPage, ScanQuery};
 use sot_chat::config::{self, Resolution};
 use sot_chat::http::HttpError;
 use sot_chat::mail::read_lines;
 use sot_protocol::ops::{
-    op, ChatChannel, ChatCode, ChatDeleteReq, ChatDeleteRes, ChatFileReq, ChatFileRes, ChatFileVariant, ChatHistoryReq, ChatHistoryRes, ChatPostFileReq, ChatPostFileRes, ChatPostKind,
+    op, ChatChannel, ChatCode, ChatDeleteReq, ChatDeleteRes, ChatKeptFile, ChatKeptWhy, ChatPostFiles, ChatFileReq, ChatFileRes, ChatFileVariant, ChatHistoryReq, ChatHistoryRes, ChatPostFileReq, ChatPostFileRes, ChatPostKind,
     ChatPostReq, ChatPostRes, ChatReadReq, ChatReadRes, ChatResolveReq, ChatResolveRes, ChatTarget, ChatUnwatchReq, ChatUnwatchRes, ChatUpper,
     ChatWatchReq, ChatWatchRes, MAX_CHAT_FILE, MAX_CHAT_READ,
 };
@@ -364,18 +365,112 @@ pub(crate) async fn delete(req_id: u64, payload: serde_json::Value, chat: &Arc<C
     let outcome = api.delete_message(req.target.channel.as_str(), req.ts.as_str()).await;
     let mut why = String::new();
     let res = match outcome {
-        Err(e) => ChatDeleteRes::Refused { code: code_of(&e) },
-        Ok(DeleteOutcome::Deleted) => ChatDeleteRes::Deleted,
-        Ok(DeleteOutcome::Gone) => ChatDeleteRes::Gone,
-        Ok(DeleteOutcome::Refused(why)) if why == "cant_delete_message" => ChatDeleteRes::Refused { code: ChatCode::NotOwnMessage },
-        Ok(DeleteOutcome::Refused(why)) => ChatDeleteRes::Refused { code: post_refusal_code(PostKind::Row, &why) },
-        Ok(DeleteOutcome::Limited { retry_after, assumed }) => ChatDeleteRes::Limited { retry_after_secs: retry_after.as_secs(), assumed },
+        Err(e) => ChatDeleteRes::Refused { code: code_of(&e), files: ChatPostFiles::default() },
+        Ok(DeleteOutcome::Deleted) => ChatDeleteRes::Deleted { files: ChatPostFiles::default() },
+        Ok(DeleteOutcome::Gone) => ChatDeleteRes::Gone { files: ChatPostFiles::default() },
+        Ok(DeleteOutcome::Refused(why)) if why == "cant_delete_message" => ChatDeleteRes::Refused { code: ChatCode::NotOwnMessage, files: ChatPostFiles::default() },
+        Ok(DeleteOutcome::Refused(why)) => ChatDeleteRes::Refused { code: post_refusal_code(PostKind::Row, &why), files: ChatPostFiles::default() },
+        Ok(DeleteOutcome::Limited { retry_after, assumed }) => ChatDeleteRes::Limited { retry_after_secs: retry_after.as_secs(), assumed, files: ChatPostFiles::default() },
         Ok(DeleteOutcome::Unknown(code)) => {
             why = code;
             ChatDeleteRes::Unknown
         }
     };
     log(&res, &why);
+    reply(req_id, NAME, &res)
+}
+
+/// What a delete of a post ended as, for the reply and the log: the reply, the Slack code (or fixed one) that says why for
+/// a stop that has one, and the log's `outcome` word.
+fn post_end(end: PostEnd, files: ChatPostFiles) -> (ChatDeleteRes, String) {
+    let refused = |code, why: &str| (ChatDeleteRes::Refused { code, files: files.clone() }, why.to_string());
+    match end {
+        PostEnd::Deleted => (ChatDeleteRes::Deleted { files }, String::new()),
+        PostEnd::Gone => (ChatDeleteRes::Gone { files }, String::new()),
+        PostEnd::Limited { retry_after, assumed } => (ChatDeleteRes::Limited { retry_after_secs: retry_after.as_secs(), assumed, files }, String::new()),
+        PostEnd::Unknown(why) => (ChatDeleteRes::Unknown, why),
+        PostEnd::Refused(Refusal::NotOwnMessage) => refused(ChatCode::NotOwnMessage, ""),
+        PostEnd::Refused(Refusal::UnclearFile) => refused(ChatCode::UnclearFile, ""),
+        PostEnd::Refused(Refusal::Incomplete) => refused(ChatCode::Failed, "read_incomplete"),
+        PostEnd::Refused(Refusal::Deadline) => refused(ChatCode::Busy, "deadline"),
+        PostEnd::Refused(Refusal::Recheck(code)) => refused(code, ""),
+        PostEnd::Refused(Refusal::Call(e)) => {
+            let why = match &e {
+                ApiError::Slack(code) => code.as_str(),
+                other => other.code(),
+            };
+            refused(read_code(&e), why)
+        }
+        PostEnd::Refused(Refusal::Slack(code)) => refused(post_refusal_code(PostKind::Row, &code), &code),
+    }
+}
+
+/// The log's word for an outcome: the outcome's name, and the code of a refusal.
+fn outcome_word(res: &ChatDeleteRes) -> String {
+    let name = |v: &serde_json::Value| v.as_str().unwrap_or("").to_string();
+    match res {
+        ChatDeleteRes::Deleted { .. } => "deleted".into(),
+        ChatDeleteRes::Gone { .. } => "gone".into(),
+        ChatDeleteRes::Limited { .. } => "limited".into(),
+        ChatDeleteRes::Unknown => "unknown".into(),
+        ChatDeleteRes::Refused { code, .. } => format!("refused {}", name(&serde_json::to_value(code).unwrap_or_default())),
+    }
+}
+
+fn kept_files(kept: Vec<(String, Kept)>) -> Vec<ChatKeptFile> {
+    kept.into_iter()
+        .map(|(file, why)| ChatKeptFile { file, why: match why { Kept::NotTheApps => ChatKeptWhy::NotTheApps, Kept::SharedElsewhere => ChatKeptWhy::SharedElsewhere } })
+        .collect()
+}
+
+/// `chat.delete_post`: one message of the row's own channel (a reply with its `thread`) deleted with the files the app posted
+/// with it, by `Api::delete_post` (chat's contract, guarantee 36: the read first, only the app's own message, every file
+/// judged before any is deleted, files then message, each step once). Admitted, and the asker checked, as a delete's is,
+/// before any Slack call; then the one admission is asked again before every later call. One log line each, refused before
+/// Slack included, with who asked, where the delete ended and which files it deleted and kept, never a message's text, a
+/// file's name, a URL or a token.
+pub(crate) async fn delete_post(req_id: u64, payload: serde_json::Value, chat: &Arc<Chat>, rows: &Workspaces, window: bool) -> Result<HandlerOutput> {
+    const NAME: &str = op::CHAT_DELETE_POST;
+    let req = match decode::<ChatDeleteReq>(payload) {
+        Ok(r) => r,
+        Err(c) => {
+            tracing::info!(outcome = ?c, "project chat: a session's delete was not a request");
+            return Ok(refuse(req_id, NAME, c));
+        }
+    };
+    let thread = req.thread.as_ref().map_or("", |t| t.as_str());
+    let refused = |code: ChatCode| -> Result<HandlerOutput> {
+        tracing::info!(channel = req.target.channel.as_str(), ts = req.ts.as_str(), thread, handle = req.name.as_str(), row = req.target.row.as_str(), outcome = ?code, why = "", "project chat: a session's delete");
+        Ok(refuse(req_id, NAME, code))
+    };
+    let service = match admitted(chat, rows, req.target.clone()).await {
+        Ok(s) => s,
+        Err(c) => return refused(c),
+    };
+    if window || !may_post(ChatPostKind::Row, &req.name, &req.target.row, rows, window) {
+        return refused(ChatCode::BadRequest);
+    }
+    let api = match service.api() {
+        Ok(a) => a,
+        Err(_) => return refused(ChatCode::Unavailable),
+    };
+    // The whole admission again before each Slack call after the first: the row, its mapping and the asker's handle.
+    let recheck = || {
+        let (chat, rows, target, name) = (chat.clone(), rows.clone(), req.target.clone(), req.name.clone());
+        async move {
+            let row = target.row.clone();
+            admitted(&chat, &rows, target).await?;
+            if is_bound(&name, &row, &rows) { Ok(()) } else { Err(ChatCode::BadRequest) }
+        }
+    };
+    let PostDelete { end, files, step, file } = api.delete_post(req.target.channel.as_str(), req.thread.as_ref().map(Ts::as_str), req.ts.as_str(), recheck).await;
+    let files = ChatPostFiles { deleted: files.deleted, kept: kept_files(files.kept) };
+    let (deleted, kept) = (files.deleted.join(","), files.kept.iter().map(|k| format!("{}:{}", k.file, serde_json::to_value(k.why).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default())).collect::<Vec<_>>().join(","));
+    let (res, why) = post_end(end, files);
+    tracing::info!(
+        channel = req.target.channel.as_str(), ts = req.ts.as_str(), thread, handle = req.name.as_str(), row = req.target.row.as_str(),
+        outcome = outcome_word(&res), step, file = file.as_str(), why = why.as_str(), deleted, kept, "project chat: a session's delete"
+    );
     reply(req_id, NAME, &res)
 }
 

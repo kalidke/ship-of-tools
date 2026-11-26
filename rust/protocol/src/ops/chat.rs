@@ -1,7 +1,7 @@
 // the project chat's operations and events (B2d): what the window and the daemon say about one watched channel
 
 use super::*;
-use crate::chat::{an_id, at_most, is_id, within, ChatRecord, Ts, MAX_ID, MAX_MENTIONS, MAX_MIME, MAX_NAME, MAX_TEXT};
+use crate::chat::{an_id, at_most, is_id, within, ChatRecord, Ts, MAX_FILES, MAX_ID, MAX_MENTIONS, MAX_MIME, MAX_NAME, MAX_TEXT};
 
 /// The most messages a history page asks for or holds.
 pub const MAX_PAGE: u16 = 20;
@@ -125,8 +125,8 @@ pub enum ChatCode {
     /// nothing was saved. A window sends the person back to the app-level token's step, the other two kept, and shows the
     /// text there and on its status line.
     MixedApps,
-    /// A `chat.delete` Slack refused with `cant_delete_message`: it would not let the hub's Slack app delete that message
-    /// (the app's own, or not: the words claim no more).
+    /// A `chat.delete` or `chat.delete_post` of a message that is not the hub's Slack app's, as the daemon read it, or that Slack
+    /// refused with `cant_delete_message`: the app does not delete it (the words claim no more).
     NotOwnMessage,
     /// A session's `chat.row_pair` of a project that already has a channel: nothing was changed, and the refusal's body is
     /// the folder's pairing (`ChatPairing`), so the session can say what it has and that it must unpair it first.
@@ -134,6 +134,9 @@ pub enum ChatCode {
     /// A session's `chat.row_pair` named a channel by a name that more than one channel has: nothing was joined or changed,
     /// and the refusal's body names them (`ChatSeveralChannels`).
     SeveralChannels,
+    /// A `chat.delete_post` found a file of the post that it could not check as the Slack app's own and shared in that post
+    /// alone, so it deleted nothing.
+    UnclearFile,
     Failed,
     #[serde(other)]
     Other,
@@ -167,9 +170,10 @@ impl ChatCode {
             ChatCode::NotAnImage => "that file is not a picture the chat can show",
             ChatCode::OtherApp => "these Slack codes may belong to a different Slack app than the one this Slack workspace is connected with now; nothing was changed",
             ChatCode::MixedApps => "the \"App-Level Token\" belongs to a different Slack app than the \"Bot User OAuth Token\", so nothing was changed; all three codes must come from one Slack app",
-            ChatCode::NotOwnMessage => "Slack would not let this project's Slack app delete that message (a person's or another app's message stays)",
+            ChatCode::NotOwnMessage => "that message is not one this project's Slack app posted, or Slack would not let the app delete it (a person's or another app's message stays)",
             ChatCode::AlreadyPaired => "the project already has a channel; unpair it first",
             ChatCode::SeveralChannels => "several channels have that name; name one by its ID",
+            ChatCode::UnclearFile => "a file of that post could not be checked as this project's Slack app's own and shared only in that post, so nothing was deleted (a person can delete the post in Slack)",
             ChatCode::Failed | ChatCode::Other => "the chat request failed",
         }
     }
@@ -746,32 +750,94 @@ pub enum ChatPostFileRes {
     Unknown,
 }
 
-/// `chat.delete`: the message `ts` of the row's own channel, deleted once under the Slack app's own token and never
-/// resent. A row's request only (a window's is `bad_request`): `name` is the row's bound handle, checked as a row's post's
-/// is. There is no kind and no channel but the target's, which the daemon rechecks against the row's mapping.
+/// `chat.delete` and `chat.delete_post`: the message `ts` of the row's own channel (a reply with the `thread` it is in),
+/// deleted under the Slack app's own token and never resent; `chat.delete_post` also deletes the files the app posted with
+/// it. A row's request only (a window's is `bad_request`): `name` is the row's bound handle, checked as a row's post's is.
+/// There is no kind and no channel but the target's, which the daemon rechecks against the row's mapping, and no file: the
+/// daemon finds the post's files itself. `thread` is the time of the thread's first message, which a reply is read in;
+/// absent, the message is looked for at the top of the channel.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChatDeleteReq {
     pub target: ChatTarget,
     #[serde(deserialize_with = "within::<_, MAX_NAME>")]
     pub name: String,
     pub ts: Ts,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread: Option<Ts>,
 }
 
-/// Reply to `chat.delete`, by `outcome`. `deleted`: the message is gone (a file it shared is not touched). `gone`: Slack
-/// has no such message (also what a second ask after a delete reads). `refused`: definitely nothing changed
-/// (`not_own_message`: Slack would not let the app delete that message). `limited`: nothing was deleted, and `retry_after_secs` is how
-/// long Slack asked to wait (`assumed` when the wait is a guess). `unknown`: the message may be deleted, so ask again,
-/// which says what is true now.
+/// Why a file of a deleted post was kept; a reason added later reads as `other`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatKeptWhy {
+    /// A person's or another app's file.
+    NotTheApps,
+    /// Also shared somewhere else in Slack.
+    SharedElsewhere,
+    #[serde(other)]
+    Other,
+}
+
+/// A file of the post that was kept, and why.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChatKeptFile {
+    #[serde(deserialize_with = "an_id")]
+    pub file: String,
+    pub why: ChatKeptWhy,
+}
+
+/// What a delete of a post left of its files: the files deleted now, whichever ask deleted them, and the files kept with
+/// why; a file the delete had not reached when it stopped is in neither. At most `MAX_FILES` of each.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChatPostFiles {
+    #[serde(default, deserialize_with = "file_ids")]
+    pub deleted: Vec<String>,
+    #[serde(default, deserialize_with = "at_most::<_, ChatKeptFile, MAX_FILES>")]
+    pub kept: Vec<ChatKeptFile>,
+}
+
+impl ChatPostFiles {
+    pub fn is_empty(&self) -> bool {
+        self.deleted.is_empty() && self.kept.is_empty()
+    }
+}
+
+fn file_ids<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
+    #[derive(Deserialize)]
+    struct Id(#[serde(deserialize_with = "an_id")] String);
+    Ok(at_most::<_, Id, MAX_FILES>(d)?.into_iter().map(|id| id.0).collect())
+}
+
+/// Reply to `chat.delete`, by `outcome`; `chat.delete_post` answers with it too. `deleted`: the message is gone. `gone`:
+/// Slack lists no such message (also what a second ask after a delete reads; a reply asked for with no `thread` is not
+/// looked for, so it reads `gone` too). `refused`: the message stands and nothing is in doubt (`not_own_message`: it is
+/// not the app's, or Slack would not let the app delete it; `unclear_file`: a file of the post could not be checked, so
+/// nothing was deleted). `limited`: Slack asked for a wait of `retry_after_secs` (`assumed` when it is a guess), and
+/// nothing more was sent. `unknown`: an answer was lost, so the post may be partly deleted: ask again, which finishes it
+/// or says it is gone. Every outcome but `unknown` carries `files`, what the post's files are now; `chat.delete`'s says
+/// none.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum ChatDeleteRes {
-    Deleted,
-    Gone,
-    Refused { code: ChatCode },
+    Deleted {
+        #[serde(default, skip_serializing_if = "ChatPostFiles::is_empty")]
+        files: ChatPostFiles,
+    },
+    Gone {
+        #[serde(default, skip_serializing_if = "ChatPostFiles::is_empty")]
+        files: ChatPostFiles,
+    },
+    Refused {
+        code: ChatCode,
+        #[serde(default, skip_serializing_if = "ChatPostFiles::is_empty")]
+        files: ChatPostFiles,
+    },
     Limited {
         #[serde(deserialize_with = "retry_wait")]
         retry_after_secs: u64,
         assumed: bool,
+        #[serde(default, skip_serializing_if = "ChatPostFiles::is_empty")]
+        files: ChatPostFiles,
     },
     /// Also what a reader takes an outcome added later for.
     #[serde(other)]
