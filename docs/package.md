@@ -222,8 +222,16 @@ hub (the daemon restarted, every session there after it) and, on the maintainer'
 window computer he uses, and the comm matrix passed between the two, six lines of six. On the hub a session then
 read its own channel (its messages one line each, then the line saying Slack's plan hides the older ones) and saw
 its two file posts of that morning listed as its own, in the channel and in their thread: both changes seen
-against real Slack. What `main` holds since that cut is in no candidate.
-`main` carries 0.7.4-rc.4-dev, and past 0.7.3 it holds that fault's fix, which the maintainer used on the candidate
+against real Slack. v0.7.4-rc.4 (2026-11-27) is an unpublished draft, cut from `main` that morning on the
+maintainer's answer, in a session's pane, to a question that had stood since the day before, after the whole
+local gate had passed at the commit before the release's (the day before; `main` had not moved since); its
+release workflow's builds, smokes and install smokes passed. It is the third candidate with the two keys and the
+delete of a post's files that this page names below. It was installed by archive within the half hour by the
+maintaining session on the hub (the daemon restarted, every session there after it), where a session's read of
+its own channel then worked. The session of the window computer the maintainer uses was asked twice to install it
+and had not answered four hours after the cut, so that computer stays on the third candidate and the comm matrix
+between the two is owed. No person has used it.
+`main` carries 0.7.4-rc.5-dev, and past 0.7.3 it holds that fault's fix, which the maintainer used on the candidate
 and reported as passing (a page of twelve large tables, a switch away and back): built table sets are
 kept within a budget so a return to such a session draws them at once, no table is built in the frame that first
 draws an arriving session or uncovers the preview, and a covered preview builds nothing and keeps what it holds;
@@ -240,7 +248,7 @@ another session, moves it, at most 10 s behind, where what a program prints does
 (RECENT-ORDER-LEAVES-SESSIONS-WITHOUT-AN-AGENT, Closed; mail moves a session only through what follows it, the
 wake's typed line for an idle Claude session or the turn a Codex session's queue request starts, the second by the
 code and not seen in a live row, so mail to a busy session or with a refused wake moves none,
-MAIL-ALONE-MOVES-NO-SESSION, open); and, on `main` since 2026-11-26, in no candidate and used by no person, two
+MAIL-ALONE-MOVES-NO-SESSION, open); and, on `main` since 2026-11-26, in the fourth candidate and used by no person, two
 keys, `Ctrl+Alt+ArrowLeft` and `Ctrl+Alt+ArrowRight`, switch the window to the first and to the last session of the
 shown session's computer in the session strip, in the order the strip shows (the maintainer asked that day for
 keys to the leftmost and the rightmost session of a computer's group; they never cross to another computer's
@@ -507,8 +515,8 @@ the candidates through the third delete the message and leave the files it share
 session used it on the candidate at its
 person's ask, 19 of its own posts deleted and 11 already gone, and the next day another, on the maintainer's word,
 deleted its own post that had a reply under it (the reply stayed, as a delete removes one message) and its own
-post that shared a file, and was refused a message he had typed); and, on `main` since 2026-11-26, in no candidate
-and used by no person, a session's delete of a post takes the post's own files with it: the daemon reads the
+post that shared a file, and was refused a message he had typed); and, on `main` since 2026-11-26, in the fourth
+candidate and used by no person, a session's delete of a post takes the post's own files with it: the daemon reads the
 message itself, checks that it is the app's own, deletes each file the app posted that it sees shared in that one
 message and nowhere else, and deletes the message last, so the same command run again finishes a delete that
 stopped halfway (the maintainer asked that day that a session can delete the files and images it posted, since

@@ -3716,3 +3716,17 @@ the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the sa
       entry and staffed the five landings it got back, without first offering him the small change (delete the
       message, then the app's own files it carried) beside the large one; and it waited an hour for the
       measurement where the plan could have begun with each unmeasured case refusing.
+- The fourth 0.7.4 candidate, 2026-11-27: the session asked on 2026-11-26 at 12:29 whether to cut it; the whole
+    local gate passed at `main`'s head at 13:36 that day, on its second run. The maintainer answered in the
+    session's pane the next morning at about 09:25, the cut followed at 09:26, the release workflow's jobs were
+    green at 09:52, and the hub was installed by archive from 09:53 to 09:54, with 35 sessions before and after.
+    The window computer's session was asked at 09:54 and again at 13:05 and had not answered by 13:20.
+    - The first run of the whole gate, at 13:00 on 2026-11-26, was red in two jobs the change could not touch:
+      a Julia test that ran out its time and an install smoke. The gate host's disk was full, and the gate's own
+      build cache held most of it, grown over weeks of gates with incremental builds on. The cache was deleted,
+      the gate scripts now build with incremental compilation off, and free space on that host is read before a
+      whole gate. A gate red in jobs its change cannot reach gets its host's disk looked at first.
+    - Twenty-one hours from the question to the answer. At 07:04 on the day of the cut another session relayed
+      that the maintainer had said yes in a chat channel; the session did not cut on it, by the rule that a
+      relayed word does not cut a tag, and prepared everything short of the tag (the release clone at `main`'s
+      head, the dry run) so that the cut took one command when the answer came in its pane.
