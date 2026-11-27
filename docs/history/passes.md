@@ -3723,7 +3723,9 @@ the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the sa
     The window computer's session was asked at 09:54, while that computer was not up, and again at 13:05 after
     the maintainer said at 12:49 that it was; its window ran the candidate at 13:30 and the comm matrix passed at
     13:32. Four hours 6 minutes from the cut to both computers: 26 the release workflow, 2 the hub, and the rest
-    waiting for the window computer and then for its session.
+    waiting for the window computer and then for its session. At about 13:41 the maintainer reported that the two
+    keys work and asked for the session's two test posts to be deleted; both were gone with their files by 13:42,
+    the first run of the delete of files against real Slack.
     - The first run of the whole gate, at 13:00 on 2026-11-26, was red in two jobs the change could not touch:
       a Julia test that ran out its time and an install smoke. The gate host's disk was full, and the gate's own
       build cache held most of it, grown over weeks of gates with incremental builds on. The cache was deleted,

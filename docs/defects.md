@@ -895,7 +895,9 @@ owned by `docs/CLAUDE.md`.
 
 - **STRIP-END-KEYS-NOT-SEEN** [note] `workspace.first` and `workspace.last` (`Ctrl+Alt+ArrowLeft` and `Ctrl+Alt+ArrowRight`,
   built 2026-11-26 at the maintainer's ask: switch to the first and to the last session of the shown session's computer
-  block) are proved by unit tests and seen in no window. Known from the desktop's shipped defaults and not tried: GNOME
+  block) are proved by unit tests. The maintainer reported on 2026-11-27 that the keys work, on the fourth 0.7.4
+  candidate, whose one window then ran on Windows, so that desktop left both chords to the window; what he tried beyond
+  that is not recorded, and no other desktop has been seen. Known from the desktop's shipped defaults and not tried: GNOME
   binds both chords to switching its own workspaces (its window-manager keybindings schema), so on a default Ubuntu desktop
   the desktop is expected to take them and they never reach the window; the manual's keybindings page says how to rebind or
   free them. Other desktops were not checked, nor macOS (VoiceOver takes Control+Option+arrow while it is on) and Windows
@@ -1491,7 +1493,14 @@ owned by `docs/CLAUDE.md`.
   posts a person had already deleted in Slack answered `gone`. Seen on 2026-11-25, by another session on the same hub in a
   throwaway channel, on its person's word naming each message, with the older delete: a message the maintainer had typed in Slack
   was refused; the session's own post with a reply under it was deleted and the reply stayed; the session's own post that shared a
-  file was deleted, and its file stayed in Slack shared nowhere (CHAT-DELETED-POSTS-LEFT-FILES). Limits of the delete as built,
+  file was deleted, and its file stayed in Slack shared nowhere (CHAT-DELETED-POSTS-LEFT-FILES). Seen on 2026-11-27 on the
+  fourth 0.7.4 candidate, the first with the delete of files, by a session on a live hub in its own channel and not a
+  throwaway one, on the maintainer's word naming its two test posts: a reply that shared one small text file, asked for with
+  `--thread`, answered `deleted <ts>` and `file <id> deleted` in two seconds, and the read of the thread no longer listed it;
+  the thread's first message, a file post with a comment, then answered the same, and the read said the thread holds no
+  message; each asked once more answered `gone`. That is the second half of C2 and, for a text file, the command's side of
+  C1: the file's `files.info` was not read after it, no image was posted, and the reply was not first asked for without
+  `--thread`. C3 to C7 are not seen. Limits of the delete as built,
   from its review: (a) finishing a half-done delete rests on Slack still answering `file_deleted` for a file it deleted (measured
   the same day only); an answer of `file_not_found` there makes the post `unclear_file`, with the message left standing, and
   counting the `{id, mode: "tombstone"}` entry the daemon's own read already shows as deleted, with no call, would remove that
