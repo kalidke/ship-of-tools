@@ -586,8 +586,10 @@ the kernel's PDF plugin reads with the text tool beside its page tool and the da
 the seven landings of a written plan; the hosted run fetched Julia's copy of the tools and read a page's words on
 Ubuntu, macOS and Windows; the maintainer selected and copied on the candidate, on Windows, the first copy through a
 real clipboard, and the text came whole with two differences from the page, a heading's number and its title on
-two lines and each subscript apart from its letter; on `main` since that day, used by no person, a copy keeps a
-section's number on the line of the title beside it and a subscript or superscript on its letter,
+two lines and each subscript apart from its letter; since that day a copy keeps a
+section's number on the line of the title beside it and a subscript or superscript on its letter, which the
+maintainer saw on the fourth candidate, on Windows, copying a numbered heading and the paragraph under it from
+the repo's sample page (the heading came as one line and each subscript on its letter),
 PDF-COPY-SPLITS-HEADINGS-AND-SUBSCRIPTS, Closed, which has the limits). The agent does not see that selection yet: the last two landings, the share and the
 daemon's check of it, are unbuilt (`docs/defects.md`, PDF-TEXT-SELECTION, open). Also in
 progress: the daemon test run toward the maintainer's four minutes, and one shared test tool.
