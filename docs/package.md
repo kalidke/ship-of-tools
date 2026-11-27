@@ -228,9 +228,10 @@ local gate had passed at the commit before the release's (the day before; `main`
 release workflow's builds, smokes and install smokes passed. It is the third candidate with the two keys and the
 delete of a post's files that this page names below. It was installed by archive within the half hour by the
 maintaining session on the hub (the daemon restarted, every session there after it), where a session's read of
-its own channel then worked. The session of the window computer the maintainer uses was asked twice to install it
-and had not answered four hours after the cut, so that computer stays on the third candidate and the comm matrix
-between the two is owed. No person has used it.
+its own channel then worked. The window computer the maintainer uses was installed by archive that afternoon by
+its own session, once that computer was up (asked at the hub's install and again three hours later, it installed
+within the half hour of the second ask), and the comm matrix then passed between the two, six lines of six; the
+other window computers stay on 0.7.3. No person has used it.
 `main` carries 0.7.4-rc.5-dev, and past 0.7.3 it holds that fault's fix, which the maintainer used on the candidate
 and reported as passing (a page of twelve large tables, a switch away and back): built table sets are
 kept within a budget so a return to such a session draws them at once, no table is built in the frame that first

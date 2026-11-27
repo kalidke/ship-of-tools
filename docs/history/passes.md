@@ -3720,7 +3720,10 @@ the trial: Sonnet arm is the `implementer-high` role as defined, Opus arm the sa
     local gate passed at `main`'s head at 13:36 that day, on its second run. The maintainer answered in the
     session's pane the next morning at about 09:25, the cut followed at 09:26, the release workflow's jobs were
     green at 09:52, and the hub was installed by archive from 09:53 to 09:54, with 35 sessions before and after.
-    The window computer's session was asked at 09:54 and again at 13:05 and had not answered by 13:20.
+    The window computer's session was asked at 09:54, while that computer was not up, and again at 13:05 after
+    the maintainer said at 12:49 that it was; its window ran the candidate at 13:30 and the comm matrix passed at
+    13:32. Four hours 6 minutes from the cut to both computers: 26 the release workflow, 2 the hub, and the rest
+    waiting for the window computer and then for its session.
     - The first run of the whole gate, at 13:00 on 2026-11-26, was red in two jobs the change could not touch:
       a Julia test that ran out its time and an install smoke. The gate host's disk was full, and the gate's own
       build cache held most of it, grown over weeks of gates with incremental builds on. The cache was deleted,
